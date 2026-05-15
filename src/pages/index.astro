@@ -1,0 +1,68 @@
+---
+import Base from "../layouts/Base.astro";
+
+export const prerender = false;
+---
+
+<Base title="slopspot · paste — share LLM conversations">
+  <section class="hero">
+    <h1>Share an LLM conversation, readably.</h1>
+    <p class="hero-sub">
+      Paste a transcript below. We render it as a chat — bubbles, code blocks,
+      markdown — and give you a link. Anonymous. Auto-deletes after 30 days.
+    </p>
+  </section>
+
+  <form id="paste-form" class="paste-form" action="/api/paste" method="post">
+    <label for="content" class="visually-hidden">Conversation text</label>
+    <textarea
+      id="content"
+      name="content"
+      rows="18"
+      required
+      placeholder={`Paste a conversation. Recognized formats:
+
+## User
+What's the time complexity of quicksort?
+
+## Assistant
+Average O(n log n), worst-case O(n²).
+
+— or "You said:" / "ChatGPT said:" — or "Human:" / "Assistant:" —`}
+    ></textarea>
+    <div class="form-row">
+      <button type="submit" class="btn-primary">Share it</button>
+      <span class="form-hint">Up to ~256 KB. No edit, no delete — disappears in 30 days.</span>
+    </div>
+    <p id="form-error" class="form-error" role="alert" hidden></p>
+  </form>
+
+  <script is:inline>
+    const form = document.getElementById("paste-form");
+    const err = document.getElementById("form-error");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      err.hidden = true;
+      const btn = form.querySelector("button[type=submit]");
+      btn.disabled = true;
+      btn.textContent = "Sharing…";
+      try {
+        const res = await fetch("/api/paste", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ content: form.content.value }),
+        });
+        const body = await res.json();
+        if (!res.ok || !body.slug) {
+          throw new Error(body.error || "Server error");
+        }
+        window.location.assign("/" + body.slug);
+      } catch (e2) {
+        err.textContent = e2.message;
+        err.hidden = false;
+        btn.disabled = false;
+        btn.textContent = "Share it";
+      }
+    });
+  </script>
+</Base>

@@ -1,0 +1,9 @@
+node_modules
+dist
+.astro
+.wrangler
+.dev.vars
+.env*
+.DS_Store
+# Generated from wrangler.toml by `wrangler types` (see package.json prebuild).
+worker-configuration.d.ts

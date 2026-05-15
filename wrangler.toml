@@ -1,0 +1,12 @@
+name = "slopspot-paste"
+compatibility_date = "2025-05-01"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "./dist"
+
+# [LAW:single-enforcer] The KV namespace is the one storage. 30-day TTL is set
+# per-put via expirationTtl — the storage layer enforces expiry, not app code.
+# Replace `id`/`preview_id` with real values from `wrangler kv namespace create PASTES`.
+[[kv_namespaces]]
+binding = "PASTES"
+id = "REPLACE_WITH_KV_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
