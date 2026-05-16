@@ -257,18 +257,50 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 }
 .bubble-body a { color: var(--accent); text-underline-offset: 2px; }
 .bubble-body hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
+/* The wrap frame absorbs horizontal overflow inside the bubble — wide tables
+   scroll *within* the frame rather than pushing the page wider. */
+.bubble-body .table-wrap {
+  margin: 0.8em 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  background: var(--bg-elev);
+}
+.bubble-body .table-wrap > table {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
 .bubble-body table {
   border-collapse: collapse;
   margin: 0.6em 0;
-  font-size: 0.95em;
+  font-size: 0.94em;
   width: 100%;
+  /* Long URLs / unbroken tokens wrap inside cells instead of forcing the
+     table wider than the frame. */
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .bubble-body th, .bubble-body td {
   border: 1px solid var(--border);
-  padding: 6px 10px;
+  padding: 7px 11px;
   text-align: left;
+  vertical-align: top;
+  line-height: 1.45;
 }
-.bubble-body th { background: var(--bg-code); }
+.bubble-body th {
+  background: var(--bg-code);
+  font-weight: 600;
+  font-size: 0.88em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+/* Stripes for legibility on long tables. */
+.bubble-body tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-code) 45%, transparent);
+}
 
 .inline-code {
   font-family: var(--font-mono);

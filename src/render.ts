@@ -8,7 +8,108 @@ import { Marked } from "marked";
 export const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+// ─── Table normalization ─────────────────────────────────────────────
+// LLMs commonly emit pipe-separated rows without the GFM separator row,
+// e.g. `| a | b |` followed by `| 1 | 2 |` with no `| --- | --- |` in
+// between. Marked's table type-guard requires the separator, so without it
+// the block is rendered as paragraphs of pipe-laden text — unaligned and
+// blowing past the column. We detect the recoverable shape and inject the
+// separator so marked's normal table path runs unchanged.
+//
+// [LAW:types-are-the-program] A "table block" is N>=2 consecutive non-empty
+// lines, each with the same number of pipe-separated cells (>=2). Validity
+// upgrade — adding the separator — is purely structural; no per-callsite
+// branching downstream.
+// [LAW:dataflow-not-control-flow] Same renderMarkdown path for every message.
+// We rewrite the *input* into the canonical GFM shape; we don't fork the
+// renderer based on what kind of table we saw.
+
+const FENCE_RE = /^\s*(```|~~~)/;
+
+// A GFM separator row: pipes around 2+ cells, each `:?-+:?`, optional spaces.
+const SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+
+// Pipes are unescaped `|` (not `\|`). Count cells by splitting on unescaped
+// pipes after stripping the optional leading/trailing pipe.
+const splitPipes = (line: string): string[] => {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return [];
+  const inner = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  // Split on `|` that isn't preceded by a backslash.
+  return inner.split(/(?<!\\)\|/);
+};
+
+const cellCount = (line: string): number => {
+  if (!line.includes("|")) return 0;
+  return splitPipes(line).length;
+};
+
+const normalizePipeRow = (line: string): string => {
+  let t = line.trim();
+  if (!t.startsWith("|")) t = "| " + t;
+  if (!t.endsWith("|")) t = t + " |";
+  return t;
+};
+
+const synthesizeSeparator = (cells: number): string =>
+  "| " + Array(cells).fill("---").join(" | ") + " |";
+
+export const normalizeTables = (md: string): string => {
+  const lines = md.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (FENCE_RE.test(line)) {
+      inFence = !inFence;
+      out.push(line);
+      i++;
+      continue;
+    }
+    if (inFence) {
+      out.push(line);
+      i++;
+      continue;
+    }
+    const firstCount = cellCount(line);
+    if (firstCount >= 2) {
+      // Collect the contiguous pipe-line run.
+      const run: string[] = [];
+      let j = i;
+      while (j < lines.length) {
+        const c = cellCount(lines[j]!);
+        if (c < 2) break;
+        run.push(lines[j]!);
+        j++;
+      }
+      // Need at least 2 rows AND all rows must agree on cell count.
+      // Mismatched counts → likely prose with pipes; leave untouched.
+      const counts = run.map(cellCount);
+      const allMatch = counts.length >= 2 && counts.every((c) => c === counts[0]);
+      if (allMatch) {
+        const cells = counts[0]!;
+        const hasSep = run.length >= 2 && SEPARATOR_RE.test(run[1]!);
+        if (hasSep) {
+          // Already valid GFM; normalize pipes for consistency.
+          for (const r of run) out.push(normalizePipeRow(r));
+        } else {
+          out.push(normalizePipeRow(run[0]!));
+          out.push(synthesizeSeparator(cells));
+          for (let k = 1; k < run.length; k++) out.push(normalizePipeRow(run[k]!));
+        }
+        i = j;
+        continue;
+      }
+    }
+    out.push(line);
+    i++;
+  }
+  return out.join("\n");
+};
+
 export const renderMarkdown = (md: string): string => {
+  const normalized = normalizeTables(md);
   const m = new Marked({
     gfm: true,
     breaks: false,
@@ -24,9 +125,19 @@ export const renderMarkdown = (md: string): string => {
         return `<code class="inline-code">${escapeHtml(text)}</code>`;
       },
     },
+    hooks: {
+      // Wrap every emitted table in a scroll container so a wide table
+      // overflows *inside* the bubble rather than pushing the page.
+      // [LAW:single-enforcer] One place owns the wrap; no per-template div.
+      postprocess(html: string): string {
+        return html
+          .replace(/<table>/g, '<div class="table-wrap"><table>')
+          .replace(/<\/table>/g, "</table></div>");
+      },
+    },
   });
 
-  return m.parse(md, { async: false, gfm: true, breaks: false });
+  return m.parse(normalized, { async: false, gfm: true, breaks: false });
 };
 
 // ─── Tool-output sub-parsers ─────────────────────────────────────────

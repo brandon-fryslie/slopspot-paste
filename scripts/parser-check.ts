@@ -6,7 +6,13 @@
 // parser honest as we add new sources.
 
 import { parsePaste } from "../src/parser";
-import { parseDiff, parseFileRead, formatBashTerminal } from "../src/render";
+import {
+  parseDiff,
+  parseFileRead,
+  formatBashTerminal,
+  normalizeTables,
+  renderMarkdown,
+} from "../src/render";
 import type { Turn } from "../src/types";
 
 const CC_SAMPLE = `❯ deleted
@@ -265,6 +271,85 @@ assert(
   "empty output ok",
   formatBashTerminal("pwd", "") === "$ pwd",
 );
+
+console.log("\nTable normalization:");
+{
+  // Case 1: Pipe rows missing separator — must inject one.
+  const input = `Some intro.
+
+| Tool | Purpose |
+| ripgrep | fast text search |
+| fd | fast file find |
+
+After.`;
+  const normalized = normalizeTables(input);
+  const norm = normalized.split("\n");
+  assert(
+    "separator injected after header",
+    norm.some((l) => /^\|\s*---\s*\|\s*---\s*\|$/.test(l)),
+  );
+  // The data rows must be preserved.
+  assert(
+    "data rows preserved",
+    norm.includes("| ripgrep | fast text search |") &&
+      norm.includes("| fd | fast file find |"),
+  );
+  // And marked must render it as a real table.
+  const html = renderMarkdown(input);
+  assert("renders <table>", html.includes("<table>"));
+  assert("wraps in scroll container", html.includes('<div class="table-wrap">'));
+  assert("contains 'ripgrep' td", /<td[^>]*>ripgrep<\/td>/.test(html));
+}
+
+{
+  // Case 2: Valid GFM table — separator already present, must not be doubled.
+  const input = `| a | b |
+| --- | --- |
+| 1 | 2 |`;
+  const normalized = normalizeTables(input);
+  const seps = normalized
+    .split("\n")
+    .filter((l) => /^\|?\s*:?-{3,}:?(\s*\|\s*:?-{3,}:?)+\s*\|?$/.test(l.trim()));
+  assertEq("valid GFM keeps exactly one separator", seps.length, 1);
+  const html = renderMarkdown(input);
+  assert("valid GFM still renders <table>", html.includes("<table>"));
+}
+
+{
+  // Case 3: Pipes inside a code fence — leave alone, no table promotion.
+  const input = "```\n| a | b |\n| 1 | 2 |\n```";
+  const normalized = normalizeTables(input);
+  // Inside the fence: no synthetic separator injected.
+  assert(
+    "code fence pipes untouched (no separator injected)",
+    !/\|\s*---\s*\|\s*---\s*\|/.test(normalized),
+  );
+  const html = renderMarkdown(input);
+  assert("code fence renders as pre, not table", !html.includes("<table>"));
+}
+
+{
+  // Case 4: Pipe-prose with mismatched cell counts — must NOT be promoted.
+  const input = `Conditions: x | y | z all hold
+but only when a | b matches.`;
+  const normalized = normalizeTables(input);
+  assert(
+    "mismatched-cell prose not promoted",
+    !/\|\s*---\s*\|/.test(normalized),
+  );
+}
+
+{
+  // Case 5: Wide table — the renderer must still wrap it for overflow.
+  const input = `| col1 | col2 | col3 | col4 | col5 |
+| --- | --- | --- | --- | --- |
+| https://example.com/a/very/long/path/that/has/no/spaces | b | c | d | e |`;
+  const html = renderMarkdown(input);
+  assert(
+    "wide table wrapped for overflow",
+    /<div class="table-wrap"><table>/.test(html),
+  );
+}
 
 if (process.exitCode) {
   console.error("\nFAILED");
