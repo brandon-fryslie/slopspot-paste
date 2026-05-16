@@ -22,6 +22,7 @@ const { title, description = "Share LLM conversations, readably." } = Astro.prop
     <meta property="og:site_name" content="slopspot paste" />
     <meta name="twitter:card" content="summary" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <slot name="head" />
   </head>
   <body>
     <header class="site-header">

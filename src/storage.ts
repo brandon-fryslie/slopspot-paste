@@ -44,3 +44,27 @@ export const getConversation = async (
     return null;
   }
 };
+
+// [LAW:one-source-of-truth] Admin listing derives from the same KV records
+// that the read path returns; no parallel index, no stored summary fields.
+// [LAW:no-defensive-null-guards] The `c !== null` filter is a real trust
+// boundary: a key can expire between `list` and `get`, and a malformed record
+// (pre-schema or hand-edited) parses to null. Both are legitimate values to
+// drop from the admin view.
+export const listConversations = async (
+  kv: KVNamespace,
+): Promise<ReadonlyArray<Conversation>> => {
+  const out: Conversation[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await kv.list({ prefix: KEY_PREFIX, cursor });
+    const batch = await Promise.all(
+      page.keys.map((k) => getConversation(kv, k.name.slice(KEY_PREFIX.length))),
+    );
+    for (const c of batch) {
+      if (c !== null) out.push(c);
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return out;
+};

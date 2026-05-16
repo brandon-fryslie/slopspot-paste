@@ -1,0 +1,88 @@
+---
+import { env } from "cloudflare:workers";
+import Base from "../layouts/Base.astro";
+import { listConversations } from "../storage";
+
+export const prerender = false;
+
+// [LAW:locality-or-seam] The admin view is its own route; it doesn't reach
+// into the read or write paths or share rendering with [slug].astro. Changes
+// here don't ripple into either.
+//
+// [LAW:dataflow-not-control-flow] One handler shape: fetch the list, render
+// the list. An empty list renders as "no pastes" via the same map — no branch
+// that skips the table.
+
+const conversations = await listConversations(env.PASTES);
+
+// Newest first. Sorting in the page (not the storage layer) keeps the storage
+// API order-agnostic; other callers can sort however they want.
+const rows = [...conversations].sort((a, b) => b.createdAt - a.createdAt);
+
+const fmtDate = (ms: number): string => {
+  const d = new Date(ms);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}Z`;
+};
+
+const fmtDaysLeft = (expiresAt: number): string => {
+  const days = Math.max(0, Math.ceil((expiresAt - Date.now()) / 86_400_000));
+  return `${days}d`;
+};
+
+const previewOf = (c: (typeof rows)[number]): string => {
+  const first = c.turns.find((t) => t.kind === "message");
+  if (!first) return "";
+  const text = (first as { content: string }).content.replace(/\s+/g, " ").trim();
+  return text.length > 120 ? text.slice(0, 117) + "…" : text;
+};
+---
+
+<Base title="sloppy · admin">
+  <Fragment slot="head">
+    <meta name="robots" content="noindex, nofollow" />
+  </Fragment>
+
+  <section class="admin-header">
+    <h1>All pastes</h1>
+    <p class="admin-meta">
+      <span>{rows.length} {rows.length === 1 ? "paste" : "pastes"}</span>
+    </p>
+  </section>
+
+  {rows.length === 0 ? (
+    <p class="admin-empty">No pastes yet.</p>
+  ) : (
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Slug</th>
+            <th scope="col">Title</th>
+            <th scope="col" class="num">Turns</th>
+            <th scope="col">Created (UTC)</th>
+            <th scope="col" class="num">Expires</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((c) => (
+            <tr>
+              <td><a class="admin-slug" href={`/${c.slug}`}>{c.slug}</a></td>
+              <td>
+                <div class="admin-title">{c.title ?? "(untitled)"}</div>
+                <div class="admin-preview">{previewOf(c)}</div>
+              </td>
+              <td class="num">{c.turns.length}</td>
+              <td class="ts">{fmtDate(c.createdAt)}</td>
+              <td class="num">{fmtDaysLeft(c.expiresAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+</Base>
