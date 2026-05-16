@@ -6,6 +6,7 @@
 // parser honest as we add new sources.
 
 import { parsePaste } from "../src/parser";
+import { parseDiff, parseFileRead, formatBashTerminal } from "../src/render";
 import type { Turn } from "../src/types";
 
 const CC_SAMPLE = `❯ deleted
@@ -187,6 +188,82 @@ assertEq(
   "roles",
   gpt.turns.map((t) => (t.kind === "message" ? t.role : null)),
   ["user", "assistant", "user", "assistant"],
+);
+
+console.log("\nUpdate-tool diff parsing:");
+const UPDATE_SAMPLE = `❯ apply the patch
+
+⏺ Update(docs/PIPELINE_STAGES.md)
+  ⎿  Added 1 line
+      159  - Writes: nothing (test exit code).
+      160  - Transformation: runs the isolated unit suites.
+      161  - **Diagnostic only.** Tests catch regressions in pipeline tooling itself; they are not safety evi
+           dence for the reconstruction transformation.
+      162 +- Includes \`tests/entrypoint-smoke.test.mjs\`, which parameterizes over every successfully-built en
+          +trypoint in \`bun-build.json\` and asserts each one loads without a body-eval-time \`TypeError\` — the
+          + bpl.14 failure shape, broadened from \`cli-contract.test.mjs\`'s cli-only coverage so a regression
+          +on \`mcp.ts\` / \`init.ts\` / SDK roots cannot hide behind unexercised commands.
+      163
+      164  ## Stage-input map (which stage feeds which)
+      165
+
+⏺ Done.
+`;
+const up = parsePaste(UPDATE_SAMPLE);
+if (!up.ok) {
+  console.error("  ✗ parse failed:", up.reason);
+  process.exit(1);
+}
+const updateTurn = up.turns.find((t) => t.kind === "tool-call" && t.tool === "Update");
+assert("Update turn exists", !!updateTurn);
+if (updateTurn && updateTurn.kind === "tool-call") {
+  assert("args is the file path", updateTurn.args.trim() === "docs/PIPELINE_STAGES.md");
+  assert("output kind is diff", updateTurn.output?.kind === "diff");
+  const diff = parseDiff(updateTurn.output?.text ?? "");
+  assertEq("diff summary", diff.summary, "Added 1 line");
+  const added = diff.lines.filter((l) => l.kind === "added");
+  const contAdded = diff.lines.filter((l) => l.kind === "cont-added");
+  const context = diff.lines.filter((l) => l.kind === "context");
+  assert("at least one added line", added.length >= 1);
+  assert("continuation-added lines present", contAdded.length >= 3);
+  assert("at least three context lines", context.length >= 3);
+  const firstAdded = added[0]!;
+  assertEq("first added line number", firstAdded.lineNo, 162);
+  assert(
+    "first added content starts with '- Includes'",
+    firstAdded.content.startsWith("- Includes"),
+  );
+}
+
+console.log("\nFile-read parsing:");
+const READ_SAMPLE = `1  import { foo } from "bar";
+   2
+   3  export const main = () => {
+   4    console.log("hi");
+   5  };`;
+const fr = parseFileRead(READ_SAMPLE);
+assertEq(
+  "line numbers",
+  fr.lines.map((l) => l.lineNo),
+  [1, 2, 3, 4, 5],
+);
+assertEq("line 1 content", fr.lines[0]!.content, 'import { foo } from "bar";');
+assertEq("line 4 content", fr.lines[3]!.content, '  console.log("hi");');
+
+console.log("\nBash terminal formatting:");
+assertEq(
+  "single-line $-prefix",
+  formatBashTerminal("ls -la", "total 0"),
+  "$ ls -la\ntotal 0",
+);
+assertEq(
+  "multi-line continuation indent",
+  formatBashTerminal("cd /tmp && \\\n  npm install", "ok"),
+  "$ cd /tmp && \\\n  npm install\nok",
+);
+assert(
+  "empty output ok",
+  formatBashTerminal("pwd", "") === "$ pwd",
 );
 
 if (process.exitCode) {

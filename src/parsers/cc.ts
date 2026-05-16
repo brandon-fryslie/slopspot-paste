@@ -39,6 +39,10 @@ const TOOL_OUTPUT_KIND: ReadonlyMap<string, ToolOutputKind> = new Map([
   ["Shell", "terminal"],
   ["Read", "file-read"],
   ["NotebookRead", "file-read"],
+  ["Update", "diff"],
+  ["Edit", "diff"],
+  ["Write", "diff"],
+  ["MultiEdit", "diff"],
 ]);
 
 const outputKindFor = (tool: string): ToolOutputKind =>

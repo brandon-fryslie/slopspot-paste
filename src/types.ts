@@ -10,7 +10,7 @@
 
 export type Role = "user" | "assistant" | "system";
 
-export type ToolOutputKind = "terminal" | "file-read" | "generic";
+export type ToolOutputKind = "terminal" | "file-read" | "diff" | "generic";
 
 export interface ToolOutput {
   readonly kind: ToolOutputKind;
