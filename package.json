@@ -9,8 +9,8 @@
     "pretypecheck": "wrangler types",
     "dev": "astro dev",
     "build": "astro build",
-    "preview": "wrangler pages dev ./dist --kv PASTES",
-    "deploy": "astro build && wrangler pages deploy ./dist",
+    "preview": "wrangler dev --config dist/server/wrangler.json",
+    "deploy": "astro build && wrangler deploy --config dist/server/wrangler.json",
     "typecheck": "astro check"
   },
   "dependencies": {

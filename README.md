@@ -1,15 +1,15 @@
 # slopspot · paste
 
-Share LLM conversations as readable chat UI. Anonymous, write-once, auto-deletes after 30 days.
+Share LLM conversations as a readable chat UI. Anonymous, write-once, auto-deletes after 30 days.
 
-Lives at **paste.slopspot.ai**.
+Live at **https://paste.slopspot.ai**.
 
 ## Architecture
 
-- **Astro 6** SSR on **Cloudflare Pages** (free tier).
-- **Cloudflare KV** for storage, with `expirationTtl: 30 days` per write — the storage layer is the single enforcer of expiry. No cleanup job exists or needs to exist.
-- **marked** for markdown rendering at the edge. Code blocks render as plain monospace with a language label; syntax highlighting is a planned follow-up.
-- Slug is a 10-char random base57 string; it is the only identity.
+- **Astro 6** SSR deployed as a **Cloudflare Worker** (free tier). The Astro 6 Cloudflare adapter is Workers-first — Pages is no longer the deploy target.
+- **Cloudflare KV** for storage, with `expirationTtl: 30 days` per write — the storage layer is the **single enforcer** of expiry. No cleanup job exists or needs to exist.
+- **marked** for markdown rendering at the edge. Code blocks render as plain monospace with a language label; syntax highlighting is a planned follow-up (Shiki was prototyped but failed in the workerd dev sandbox).
+- Slug is a 10-char random base57 string from `crypto.getRandomValues`; it is the only identity.
 
 ## One-time setup
 
@@ -18,27 +18,31 @@ Lives at **paste.slopspot.ai**.
 cd slopspot-paste
 npm install
 
-# 2. Create the KV namespace and copy the IDs into wrangler.toml
-wrangler kv namespace create PASTES
-wrangler kv namespace create PASTES --preview
-
-# Paste the printed `id` and `preview_id` values into wrangler.toml.
-
-# 3. Auth wrangler (one-time, opens browser)
+# 2. Auth wrangler (one-time, opens browser)
 wrangler login
 
-# 4. Create the Pages project (one-time)
-wrangler pages project create slopspot-paste --production-branch main
+# 3. Create both KV namespaces and copy IDs into wrangler.toml
+wrangler kv namespace create PASTES
+wrangler kv namespace create PASTES --preview
+wrangler kv namespace create SESSION   # required by the adapter even if unused
+# Paste the printed ids into the [[kv_namespaces]] blocks in wrangler.toml.
+
+# 4. Set the custom-domain claim in wrangler.toml (already done for paste.slopspot.ai):
+#   [[routes]]
+#   pattern = "paste.slopspot.ai"
+#   custom_domain = true
 ```
+
+> ⚠️  Do **not** also create a manual DNS record for the hostname.
+> `custom_domain = true` tells Cloudflare the Worker owns the DNS record — it
+> will refuse to claim a hostname that already has a manually-managed record.
 
 ## Dev
 
 ```bash
-npm run dev          # local dev with in-memory KV via Astro
-npm run preview      # build, then run wrangler pages dev against ./dist
+npm run dev          # local Astro dev (in-memory KV emulation)
+npm run preview      # built worker via wrangler dev (real KV bindings)
 ```
-
-`wrangler pages dev` honors the KV binding in `wrangler.toml`, so `--preview` is closest to production.
 
 ## Deploy
 
@@ -46,21 +50,18 @@ npm run preview      # build, then run wrangler pages dev against ./dist
 npm run deploy
 ```
 
-Pushes to the `production` Pages env. First deploy gives you `slopspot-paste.pages.dev`.
+This runs `astro build && wrangler deploy --config dist/server/wrangler.json`.
+The adapter generates a full Workers config at `dist/server/wrangler.json`
+(including `main`, `[assets]`, and merged bindings) — wrangler reads from there.
 
-## DNS — `paste.slopspot.ai`
+After the first deploy, two URLs serve the Worker:
 
-In Cloudflare DNS for `slopspot.ai`:
-
-| Type  | Name  | Target                        | Proxy |
-| ----- | ----- | ----------------------------- | ----- |
-| CNAME | paste | `slopspot-paste.pages.dev`    | ✓     |
-
-Then in the Pages project → Custom domains → Add `paste.slopspot.ai`. Cloudflare provisions the cert automatically.
+- `https://slopspot-paste.<account>.workers.dev` — permanent fallback.
+- `https://paste.slopspot.ai` — primary, via `custom_domain` route.
 
 ## Recognized paste formats
 
-The parser converges these inputs to the same `Turn[]` shape:
+The parser converges these inputs into the same `Turn[]`:
 
 - Markdown headings: `## User` / `## Assistant` / `## System`
 - ChatGPT copy-paste: `You said:` / `ChatGPT said:` markers

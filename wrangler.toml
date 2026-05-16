@@ -1,12 +1,30 @@
 name = "slopspot-paste"
 compatibility_date = "2025-05-01"
 compatibility_flags = ["nodejs_compat"]
-pages_build_output_dir = "./dist"
+workers_dev = true
+
+# [LAW:single-enforcer] This wrangler.toml is read by `wrangler kv ...` /
+# `wrangler types` / dev tooling. The deploy command uses the adapter-emitted
+# `dist/server/wrangler.json` which has `main`, `[assets]`, and merges these
+# bindings into the final Worker config.
+
+# [LAW:single-enforcer] The custom domain lives next to the Worker that serves
+# it. `custom_domain = true` tells Cloudflare to attach the hostname to this
+# Worker and provision the cert chain on deploy — no dashboard click-trail.
+[[routes]]
+pattern = "paste.slopspot.ai"
+custom_domain = true
 
 # [LAW:single-enforcer] The KV namespace is the one storage. 30-day TTL is set
 # per-put via expirationTtl — the storage layer enforces expiry, not app code.
 # Replace `id`/`preview_id` with real values from `wrangler kv namespace create PASTES`.
 [[kv_namespaces]]
 binding = "PASTES"
-id = "REPLACE_WITH_KV_ID"
-preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
+id = "9e0d7e9ec62e4bf0b46f418356e29a0f"
+preview_id = "6b206d1d59964bebb9a87a65392d2992"
+
+# Required by the Astro 6 Cloudflare adapter, which always provisions a
+# SESSION binding for Astro.session support — even when we don't use it.
+[[kv_namespaces]]
+binding = "SESSION"
+id = "99408375e4f64187809cfca2685e9c95"
