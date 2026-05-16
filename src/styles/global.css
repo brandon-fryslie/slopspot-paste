@@ -276,10 +276,13 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   margin: 0.6em 0;
   font-size: 0.94em;
   width: 100%;
-  /* Long URLs / unbroken tokens wrap inside cells instead of forcing the
-     table wider than the frame. */
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  /* `break-word` only breaks when no soft-break point exists *and* doesn't
+     shrink min-content sizing. Short words (`PASTES`) stay intact; long
+     unbroken tokens (URLs, hashes) push the table wider and the wrap frame's
+     overflow-x: auto absorbs the excess inside the bubble. `anywhere` would
+     also break short words because it lets layout assume any char is a break
+     opportunity. */
+  overflow-wrap: break-word;
 }
 .bubble-body th, .bubble-body td {
   border: 1px solid var(--border);
