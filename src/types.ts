@@ -1,14 +1,32 @@
-// [LAW:types-are-the-program] The strongest true theorem about a paste:
-// it is an ordered list of role-tagged markdown turns plus identity + lifetime.
-// Anonymous + write-once + 30-day expiry means no ownerId, no updatedAt,
-// no edit tokens — those fields would permit illegal states.
+// [LAW:types-are-the-program] A paste is an ordered list of typed events plus
+// identity + lifetime. Each event kind carries exactly the fields it needs and
+// no more — illegal states (a tool-call without a tool name, an insight with a
+// role) are not representable.
+//
+// Source format (Claude Code / ChatGPT / Claude.ai / markdown headers) is a
+// value the parser consumes and discards. It is *not* a type axis: there is
+// no `CCConversation` vs `ChatGPTConversation`. Every parser converges to this
+// same union, and downstream rendering operates on `kind` alone.
 
 export type Role = "user" | "assistant" | "system";
 
-export interface Turn {
-  readonly role: Role;
-  readonly content: string;
+export type ToolOutputKind = "terminal" | "file-read" | "generic";
+
+export interface ToolOutput {
+  readonly kind: ToolOutputKind;
+  readonly text: string;
 }
+
+export type Turn =
+  | { readonly kind: "message"; readonly role: Role; readonly content: string }
+  | {
+      readonly kind: "tool-call";
+      readonly tool: string;
+      readonly args: string;
+      readonly output: ToolOutput | null;
+    }
+  | { readonly kind: "insight"; readonly content: string }
+  | { readonly kind: "turn-summary"; readonly text: string };
 
 export interface Conversation {
   readonly slug: string;

@@ -1,13 +1,14 @@
 import type { ParseResult, Role, Turn } from "./types";
+import { parseClaudeCode } from "./parsers/cc";
 
-// [LAW:types-are-the-program] Input is plain text; output is typed Turn[].
-// All variability — which export format, which header style — is absorbed at this
-// boundary. Downstream code receives the same shape every time.
-// [LAW:dataflow-not-control-flow] We try patterns by *iterating* over a fixed list
-// of detectors; we don't branch on "is this ChatGPT?" — each detector inspects the
-// value and either claims it or yields, and the first claim wins.
+// [LAW:types-are-the-program] Every parser produces the same Turn[] union.
+// All variability — which export format, which header style — is absorbed at
+// this boundary. Downstream code receives one shape, dispatches on `kind`.
+//
+// [LAW:dataflow-not-control-flow] We iterate over a fixed list of parsers and
+// take the first claim. No "is this ChatGPT?" branching at callsites.
 
-interface Detector {
+interface HeaderDetector {
   readonly name: string;
   readonly headerPattern: RegExp;
   readonly classify: (label: string) => Role | null;
@@ -40,7 +41,7 @@ const classifyLabel = (raw: string): Role | null => {
   return ROLE_BY_LABEL.get(leading) ?? null;
 };
 
-const DETECTORS: ReadonlyArray<Detector> = [
+const HEADER_DETECTORS: ReadonlyArray<HeaderDetector> = [
   // ## User / ## Assistant / ### system  — markdown headings (most explicit)
   {
     name: "markdown-heading",
@@ -61,13 +62,11 @@ const DETECTORS: ReadonlyArray<Detector> = [
   },
 ];
 
-interface Split {
-  readonly role: Role;
-  readonly start: number; // line index where content begins
-}
-
-const trySplit = (lines: ReadonlyArray<string>, detector: Detector): Turn[] | null => {
-  const splits: Array<Split & { headerLine: number }> = [];
+const trySplitByHeaders = (
+  lines: ReadonlyArray<string>,
+  detector: HeaderDetector,
+): Turn[] | null => {
+  const splits: Array<{ role: Role; headerLine: number; start: number }> = [];
   for (let i = 0; i < lines.length; i++) {
     const m = detector.headerPattern.exec(lines[i]!);
     if (!m) continue;
@@ -75,39 +74,58 @@ const trySplit = (lines: ReadonlyArray<string>, detector: Detector): Turn[] | nu
     if (!role) continue;
     splits.push({ role, headerLine: i, start: i + 1 });
   }
-  if (splits.length < 2) return null; // need at least two turns to call it a conversation
+  if (splits.length < 2) return null;
 
   const turns: Turn[] = [];
   for (let i = 0; i < splits.length; i++) {
     const cur = splits[i]!;
     const next = splits[i + 1];
     const end = next ? next.headerLine : lines.length;
-    const body = lines.slice(cur.start, end).join("\n").replace(/^\s+|\s+$/g, "");
+    const body = lines
+      .slice(cur.start, end)
+      .join("\n")
+      .replace(/^\s+|\s+$/g, "");
     if (body.length === 0) continue;
-    turns.push({ role: cur.role, content: body });
+    turns.push({ kind: "message", role: cur.role, content: body });
   }
   return turns.length >= 2 ? turns : null;
+};
+
+const parseHeaderFormats = (text: string): Turn[] | null => {
+  const lines = text.split("\n");
+  for (const detector of HEADER_DETECTORS) {
+    const turns = trySplitByHeaders(lines, detector);
+    if (turns) return turns;
+  }
+  return null;
 };
 
 export const parsePaste = (input: string): ParseResult => {
   const text = input.replace(/\r\n?/g, "\n").trim();
   if (text.length === 0) return { ok: false, reason: "empty input" };
 
-  const lines = text.split("\n");
-  for (const detector of DETECTORS) {
-    const turns = trySplit(lines, detector);
-    if (turns) return { ok: true, turns };
-  }
+  // [LAW:dataflow-not-control-flow] Parsers as values in a list; first claim wins.
+  // CC is tried first because its markers (❯ ⏺ ⎿) are highly specific and won't
+  // false-positive on other formats.
+  const ccTurns = parseClaudeCode(text);
+  if (ccTurns) return { ok: true, turns: ccTurns };
 
-  // Fallback: a single assistant turn. Better to render the whole thing
-  // than reject — user can re-paste with explicit headers.
-  return { ok: true, turns: [{ role: "assistant", content: text }] };
+  const headerTurns = parseHeaderFormats(text);
+  if (headerTurns) return { ok: true, turns: headerTurns };
+
+  // Fallback: a single assistant turn. Better to render the whole thing than
+  // reject — user can re-paste with explicit headers.
+  return { ok: true, turns: [{ kind: "message", role: "assistant", content: text }] };
 };
 
-// [LAW:one-source-of-truth] Title is derived from the first user turn's first line,
-// or null. Not stored as a separate concept the user maintains.
+// [LAW:one-source-of-truth] Title is derived from the first user message
+// (or the first message of any role if no user turn exists). Tool calls and
+// turn-summary events are skipped — they don't carry conversational content.
 export const deriveTitle = (turns: ReadonlyArray<Turn>): string | null => {
-  const firstUser = turns.find((t) => t.role === "user") ?? turns[0];
+  const messages = turns.filter(
+    (t): t is Extract<Turn, { kind: "message" }> => t.kind === "message",
+  );
+  const firstUser = messages.find((t) => t.role === "user") ?? messages[0];
   if (!firstUser) return null;
   const firstLine = firstUser.content.split("\n").find((l) => l.trim().length > 0);
   if (!firstLine) return null;

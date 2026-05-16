@@ -5,7 +5,7 @@ import { Marked } from "marked";
 // [LAW:single-enforcer] All markdown→HTML rendering goes through renderMarkdown.
 // Callsites never touch marked directly.
 
-const escapeHtml = (s: string): string =>
+export const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export const renderMarkdown = (md: string): string => {

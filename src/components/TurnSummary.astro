@@ -1,0 +1,14 @@
+---
+import { escapeHtml } from "../render";
+
+interface Props {
+  text: string;
+  index: number;
+}
+
+const { text, index } = Astro.props;
+---
+
+<aside class="bubble-turn-summary" data-kind="turn-summary" data-index={index}>
+  <span set:html={escapeHtml(text)} />
+</aside>

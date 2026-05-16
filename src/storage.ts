@@ -17,16 +17,29 @@ export const putConversation = async (
   await kv.put(KEY_PREFIX + c.slug, JSON.stringify(c), { expirationTtl: TTL_SECONDS });
 };
 
+// [LAW:types-are-the-program] KV is a trust boundary: records were written by
+// *some* version of this code. Records written before the Turn discriminated
+// union landed have `{ role, content }` (no kind). Normalize on read so the
+// type system below this function sees the current shape only.
+const normalizeTurn = (t: unknown): unknown => {
+  if (t && typeof t === "object" && !("kind" in t) && "role" in t && "content" in t) {
+    const old = t as { role: string; content: string };
+    return { kind: "message", role: old.role, content: old.content };
+  }
+  return t;
+};
+
 export const getConversation = async (
   kv: KVNamespace,
   slug: string,
 ): Promise<Conversation | null> => {
   const raw = await kv.get(KEY_PREFIX + slug, "text");
   if (raw === null) return null;
-  // Trust boundary: the value came from our own writes. Parse failures here
-  // mean storage corruption — surface as null (404) rather than 500.
   try {
-    return JSON.parse(raw) as Conversation;
+    const parsed = JSON.parse(raw) as Conversation & {
+      turns: ReadonlyArray<unknown>;
+    };
+    return { ...parsed, turns: parsed.turns.map(normalizeTurn) } as Conversation;
   } catch {
     return null;
   }

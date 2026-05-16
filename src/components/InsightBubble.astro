@@ -1,0 +1,19 @@
+---
+import { renderMarkdown } from "../render";
+
+interface Props {
+  content: string;
+  index: number;
+}
+
+const { content, index } = Astro.props;
+const html = renderMarkdown(content);
+---
+
+<article class="bubble bubble-insight" data-kind="insight" data-index={index}>
+  <header class="bubble-role">
+    <span class="role-dot role-dot-insight" aria-hidden="true">★</span>
+    <span class="role-name">Insight</span>
+  </header>
+  <div class="bubble-body" set:html={html} />
+</article>

@@ -259,7 +259,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 }
 
 /* Code blocks — readable monospace. Syntax-highlighting is a follow-up. */
-.bubble-body pre.code-block {
+pre.code-block {
   position: relative;
   margin: 0.8em 0;
   padding: 14px 16px;
@@ -270,12 +270,13 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   font-size: 13.5px;
   line-height: 1.55;
 }
-.bubble-body pre.code-block code {
+pre.code-block code {
   font-family: var(--font-mono);
   color: var(--fg);
   background: transparent;
+  white-space: pre;
 }
-.bubble-body .code-lang {
+.code-lang {
   position: absolute;
   top: 6px;
   right: 10px;
@@ -285,4 +286,120 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   text-transform: lowercase;
   color: var(--fg-muted);
   user-select: none;
+}
+
+/* ─── Tool-call bubbles ──────────────────────────────────────────── */
+.bubble-tool-call {
+  background: var(--bg-elev);
+  border-color: var(--border);
+  padding: 12px 14px;
+}
+.bubble-tool-call .tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+}
+.bubble-tool-call .tool-arrow {
+  color: var(--accent);
+  font-weight: 700;
+}
+.bubble-tool-call .tool-name {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.bubble-tool-call .tool-args,
+.bubble-tool-call .tool-output {
+  margin: 6px 0;
+  font-size: 13px;
+}
+.bubble-tool-call .tool-args {
+  background: var(--bg-code);
+}
+.bubble-tool-call .tool-output {
+  background: var(--bg-code);
+}
+.bubble-tool-call .output-kind-pill {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  user-select: none;
+}
+/* terminal output reads as a console — slightly darker, mono-tinted */
+.bubble-tool-call .tool-output[data-output-kind="terminal"] {
+  background: #0f1419;
+  border-color: #1f2730;
+}
+.bubble-tool-call .tool-output[data-output-kind="terminal"] code {
+  color: #d6deeb;
+}
+.bubble-tool-call .tool-output[data-output-kind="terminal"] .output-kind-pill {
+  color: #5b6975;
+}
+@media (prefers-color-scheme: dark) {
+  .bubble-tool-call .tool-output[data-output-kind="terminal"] {
+    background: #07090c;
+    border-color: #1a2027;
+  }
+}
+/* file-read output reads as a file viewer — neutral with a tiny rule */
+.bubble-tool-call .tool-output[data-output-kind="file-read"] {
+  border-left: 3px solid var(--accent);
+  padding-left: 18px;
+}
+
+/* ─── Insight bubbles ─────────────────────────────────────────────── */
+.bubble-insight {
+  background: linear-gradient(
+    to bottom right,
+    color-mix(in srgb, var(--accent) 8%, var(--bg-elev)),
+    var(--bg-elev) 60%
+  );
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  position: relative;
+}
+.bubble-insight::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: var(--radius);
+  pointer-events: none;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 50%, transparent), transparent 40%);
+  -webkit-mask: linear-gradient(white, white) content-box, linear-gradient(white, white);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  padding: 1px;
+}
+.role-dot-insight {
+  width: auto;
+  height: auto;
+  background: transparent !important;
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ─── Turn-summary footer chip ────────────────────────────────────── */
+.bubble-turn-summary {
+  margin: 0;
+  padding: 0 6px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+  text-align: right;
+  align-self: flex-end;
+  user-select: none;
+}
+/* CSS adjacent-sibling — visually glue the chip to the bubble above it. */
+.bubble + .bubble-turn-summary {
+  margin-top: -10px;
+  padding-top: 2px;
 }

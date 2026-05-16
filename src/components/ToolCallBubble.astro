@@ -1,0 +1,35 @@
+---
+import type { ToolOutput } from "../types";
+import { escapeHtml } from "../render";
+
+interface Props {
+  tool: string;
+  args: string;
+  output: ToolOutput | null;
+  index: number;
+}
+
+const { tool, args, output, index } = Astro.props;
+
+// [LAW:single-enforcer] Args and output are rendered as plain pre/code blocks,
+// not through markdown. Args are typically shell/code; output is verbatim
+// terminal text or file contents. We escape and present, we don't interpret.
+const argsHtml = args.trim().length > 0 ? escapeHtml(args) : null;
+const outputHtml = output ? escapeHtml(output.text) : null;
+---
+
+<article class="bubble bubble-tool-call" data-kind="tool-call" data-tool={tool} data-index={index}>
+  <header class="tool-header">
+    <span class="tool-arrow" aria-hidden="true">▸</span>
+    <span class="tool-name">{tool}</span>
+  </header>
+  {argsHtml && (
+    <pre class="code-block tool-args"><code set:html={argsHtml} /></pre>
+  )}
+  {outputHtml && (
+    <pre class="code-block tool-output" data-output-kind={output!.kind}>
+      <span class="output-kind-pill" aria-hidden="true">{output!.kind}</span>
+      <code set:html={outputHtml} />
+    </pre>
+  )}
+</article>
