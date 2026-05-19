@@ -14,8 +14,14 @@ export const prerender = false;
 // kind of guard — this IS the trust boundary; unknown JSON from the wire has
 // to be classified into one of the typed cases.
 
-const MAX_BYTES = 256 * 1024; // 256 KB
-const MAX_TURNS = 1000;
+// [LAW:single-enforcer] One size cap for every kind. The 256 KB initial cap
+// from T0 was tuned for hand-pasted transcripts; CC session JSONL routinely
+// exceeds it (an active session this branch was built in observed at 1.74 MB).
+// Bumped to 8 MB for honest real-world headroom — comfortably accommodates
+// JSON-encoding overhead on the request body and most long sessions, while
+// staying well under KV's 25 MB per-value ceiling.
+const MAX_BYTES = 8 * 1024 * 1024; // 8 MB
+const MAX_TURNS = 10000;
 
 const json = (status: number, body: Record<string, unknown>): Response =>
   new Response(JSON.stringify(body), {

@@ -63,6 +63,7 @@ export type ParseResult =
 // new *fields on the relevant arm* rather than as flag combinations.
 export type PasteInput =
   | { readonly kind: "claude-code"; readonly content: string }
+  | { readonly kind: "claude-jsonl"; readonly content: string }
   | { readonly kind: "chatgpt"; readonly content: string }
   | { readonly kind: "claude-paste"; readonly content: string }
   | { readonly kind: "markdown"; readonly content: string }
@@ -76,6 +77,7 @@ export type SourceKind = PasteInput["kind"];
 // Reordered from T1's initial guess so dropdown display order matches the
 // priority used to auto-select the best-fit kind from a detection result.
 export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
+  "claude-jsonl",  // CC session JSONL — strictest structural match (valid JSON)
   "claude-code",   // ❯ ⏺ ⎿ — most specific markers, can't false-positive
   "markdown",      // ## User / ## Assistant — explicit heading
   "chatgpt",       // "You said:" / "ChatGPT said:" — copy-paste marker
@@ -84,6 +86,7 @@ export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
 ];
 
 export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
+  "claude-jsonl": "Claude Code session JSONL (raw transcript file)",
   "claude-code": "Claude Code transcript",
   "chatgpt": "ChatGPT / Claude.ai (You said: / … said:)",
   "claude-paste": "Claude (Human: / Assistant:)",

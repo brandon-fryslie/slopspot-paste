@@ -412,6 +412,97 @@ console.log("\nparseInput per-kind dispatch:");
   assert("empty content fails cleanly", !r.ok);
 }
 
+console.log("\nclaude-jsonl parser (T4):");
+{
+  // Synthetic transcript exercising every block type the parser handles.
+  // Two user prompts, one assistant text + tool_use + paired tool_result,
+  // a thinking block (must be dropped), and a system-reminder envelope
+  // (must be stripped from the user message body).
+  const JSONL_SAMPLE = [
+    { type: "user", message: { role: "user", content: "what's in the repo?" } },
+    {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "internal reasoning, should be filtered" },
+          { type: "text", text: "Let me look around." },
+          { type: "tool_use", id: "tool_abc", name: "Bash", input: { command: "ls", description: "List files" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool_abc", content: "src\nREADME.md" }] },
+    },
+    {
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "Two entries." }] },
+    },
+    {
+      type: "user",
+      message: {
+        role: "user",
+        content: "thanks!<system-reminder>You are in 'explanatory' mode.</system-reminder>",
+      },
+    },
+    // Non-message event (must be ignored, not crash the parser)
+    { type: "permission-mode", permissionMode: "default", sessionId: "abc" },
+  ].map((e) => JSON.stringify(e)).join("\n");
+
+  const r = parseInput({ kind: "claude-jsonl", content: JSONL_SAMPLE });
+  assert("claude-jsonl arm ok", r.ok);
+  if (r.ok) {
+    assertEq(
+      "kinds sequence",
+      kinds(r.turns),
+      ["message", "message", "tool-call", "message", "message"],
+    );
+    const t0 = r.turns[0]!;
+    assert("turn[0] is user 'what's in the repo?'",
+      t0.kind === "message" && t0.role === "user" && t0.content === "what's in the repo?");
+    const t1 = r.turns[1]!;
+    assert("turn[1] is assistant 'Let me look around.'",
+      t1.kind === "message" && t1.role === "assistant" && t1.content === "Let me look around.");
+    // Thinking block MUST be filtered — verify it's not in the output.
+    assert("no turn contains 'internal reasoning'",
+      r.turns.every((t) => t.kind !== "message" || !t.content.includes("internal reasoning")));
+    const t2 = r.turns[2]!;
+    assert("turn[2] is Bash tool-call",
+      t2.kind === "tool-call" && t2.tool === "Bash");
+    assert("turn[2] args contain the command (JSON-serialized)",
+      t2.kind === "tool-call" && t2.args.includes('"command": "ls"'));
+    assert("turn[2] output paired from tool_result",
+      t2.kind === "tool-call" && t2.output?.text === "src\nREADME.md");
+    assert("turn[2] output kind classified as terminal (Bash)",
+      t2.kind === "tool-call" && t2.output?.kind === "terminal");
+    const t4 = r.turns[4]!;
+    assert("turn[4] is user 'thanks!' (system-reminder envelope stripped)",
+      t4.kind === "message" && t4.role === "user" && t4.content === "thanks!");
+  }
+
+  // Detector picks up the new kind on JSONL input.
+  const det = detectSources(JSONL_SAMPLE);
+  assert("detector includes claude-jsonl on JSONL input", det.includes("claude-jsonl"));
+  assert("detector ranks claude-jsonl first (most specific)", det[0] === "claude-jsonl");
+
+  // Bogus first line → null (not JSONL).
+  const r2 = parseInput({ kind: "claude-jsonl", content: "this is not JSON\n{\"type\":\"user\"}" });
+  assert("non-JSONL input fails cleanly", !r2.ok);
+
+  // Empty JSONL → null.
+  const r3 = parseInput({ kind: "claude-jsonl", content: "" });
+  assert("empty input fails cleanly", !r3.ok);
+
+  // JSONL with only non-message events → null (no parseable transcript).
+  const noMsgs = [
+    { type: "permission-mode", permissionMode: "default" },
+    { type: "bridge-session", sessionId: "x" },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const r4 = parseInput({ kind: "claude-jsonl", content: noMsgs });
+  assert("JSONL with no message events fails cleanly", !r4.ok);
+}
+
 console.log("\ndetectSources (T2 — UI-gating detector):");
 {
   // The detector IS the parser: it must return exactly the kinds for which
@@ -450,7 +541,8 @@ console.log("\ndetectSources (T2 — UI-gating detector):");
 
   // Pure prose with no markers: only raw matches. The dropdown will collapse
   // to a single option, which is the correct typed expression of "we have no
-  // structural signal, the user gets a single bubble."
+  // structural signal, the user gets a single bubble." claude-jsonl is also
+  // excluded because plain prose isn't valid JSON on the first line.
   const proseSet = detectSources("just a single paragraph of text, no markers anywhere here");
   assertEq("plain prose → only raw", proseSet, ["raw"]);
 }

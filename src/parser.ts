@@ -1,6 +1,7 @@
 import type { ParseResult, PasteInput, Role, SourceKind, Turn } from "./types";
 import { SOURCE_KINDS } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
+import { parseClaudeJsonl } from "./parsers/jsonl";
 
 // [LAW:types-are-the-program] Every parser produces the same Turn[] union.
 // All variability — which export format, which header style — is absorbed at
@@ -129,6 +130,7 @@ const parseRaw = (text: string): Turn[] => [
 const PARSER_BY_KIND: {
   readonly [K in SourceKind]: (text: string) => Turn[] | null;
 } = {
+  "claude-jsonl": parseClaudeJsonl,
   "claude-code": parseClaudeCode,
   "chatgpt": parseSingleDetector(SAID_MARKER_DETECTOR),
   "claude-paste": parseSingleDetector(NAME_COLON_DETECTOR),
