@@ -70,15 +70,17 @@ export type PasteInput =
 
 export type SourceKind = PasteInput["kind"];
 
-// [LAW:one-source-of-truth] The dropdown's option list and the parser's
-// dispatch table are derived from this same tuple. Adding a kind requires
-// touching exactly one place to surface it everywhere.
+// [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
+// table, AND the T2 detector's iteration order are derived from this one
+// tuple. Order is detection-priority: most-specific markers first, raw last.
+// Reordered from T1's initial guess so dropdown display order matches the
+// priority used to auto-select the best-fit kind from a detection result.
 export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
-  "claude-code",
-  "chatgpt",
-  "claude-paste",
-  "markdown",
-  "raw",
+  "claude-code",   // ❯ ⏺ ⎿ — most specific markers, can't false-positive
+  "markdown",      // ## User / ## Assistant — explicit heading
+  "chatgpt",       // "You said:" / "ChatGPT said:" — copy-paste marker
+  "claude-paste",  // "Human:" / "Assistant:" — bare name+colon
+  "raw",           // always succeeds; fallback bubble
 ];
 
 export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {

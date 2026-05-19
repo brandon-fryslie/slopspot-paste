@@ -5,7 +5,9 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { parseInput, parsePaste } from "../src/parser";
+import { detectSources, parseInput, parsePaste } from "../src/parser";
+import { SOURCE_KINDS } from "../src/types";
+import type { SourceKind } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -408,6 +410,49 @@ console.log("\nparseInput per-kind dispatch:");
   // empty content → typed failure regardless of kind
   const r = parseInput({ kind: "chatgpt", content: "   \n  " });
   assert("empty content fails cleanly", !r.ok);
+}
+
+console.log("\ndetectSources (T2 — UI-gating detector):");
+{
+  // The detector IS the parser: it must return exactly the kinds for which
+  // parseInput would succeed. Verified by construction here against every
+  // sample; if the parser changes its mind, the detector follows it.
+  const expected = (text: string): ReadonlyArray<SourceKind> =>
+    SOURCE_KINDS.filter((k) => parseInput({ kind: k, content: text }).ok);
+
+  assertEq("empty → all kinds (priming)", detectSources(""), SOURCE_KINDS);
+  assertEq("whitespace-only → all kinds (priming)", detectSources("   \n  \t  "), SOURCE_KINDS);
+
+  // CC sample must include claude-code; raw is always present for non-empty.
+  const ccSet = detectSources(CC_SAMPLE);
+  assertEq("CC sample matches parser-truth", ccSet, expected(CC_SAMPLE));
+  assert("CC sample includes claude-code", ccSet.includes("claude-code"));
+  assert("CC sample includes raw", ccSet.includes("raw"));
+  assert("CC sample's first kind is claude-code (priority)", ccSet[0] === "claude-code");
+
+  const mdSet = detectSources(MARKDOWN_SAMPLE);
+  assertEq("markdown sample matches parser-truth", mdSet, expected(MARKDOWN_SAMPLE));
+  assert("markdown sample includes markdown", mdSet.includes("markdown"));
+  assert("markdown sample's first kind is markdown (priority over raw)", mdSet[0] === "markdown");
+  assert("markdown sample excludes claude-code", !mdSet.includes("claude-code"));
+
+  const gptSet = detectSources(CHATGPT_SAMPLE);
+  assertEq("chatgpt sample matches parser-truth", gptSet, expected(CHATGPT_SAMPLE));
+  assert("chatgpt sample includes chatgpt", gptSet.includes("chatgpt"));
+  assert("chatgpt sample's first kind is chatgpt (priority)", gptSet[0] === "chatgpt");
+  // Parser overlap is a real feature, not a bug: the name-colon regex matches
+  // "You said:" as a bare name + colon, classifyLabel resolves "you"→user via
+  // leading-word fallback. Both parsers produce equivalent turns. The detector
+  // surfaces both because both genuinely succeed — this is detector-is-the-
+  // parser working correctly. A separate predicate would have lied about it.
+  assert("chatgpt sample also includes claude-paste (parser overlap)",
+    gptSet.includes("claude-paste"));
+
+  // Pure prose with no markers: only raw matches. The dropdown will collapse
+  // to a single option, which is the correct typed expression of "we have no
+  // structural signal, the user gets a single bubble."
+  const proseSet = detectSources("just a single paragraph of text, no markers anywhere here");
+  assertEq("plain prose → only raw", proseSet, ["raw"]);
 }
 
 if (process.exitCode) {

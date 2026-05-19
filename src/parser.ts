@@ -1,4 +1,5 @@
 import type { ParseResult, PasteInput, Role, SourceKind, Turn } from "./types";
+import { SOURCE_KINDS } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 
 // [LAW:types-are-the-program] Every parser produces the same Turn[] union.
@@ -139,8 +140,8 @@ const normalize = (input: string): string => input.replace(/\r\n?/g, "\n").trim(
 
 // [LAW:types-are-the-program] parseInput commits to the kind the caller named.
 // No silent fallback to a different parser — a wrong pick is a typed failure.
-// Today the dropdown can offer wrong picks (T1 has no detector); T2 adds the
-// detector that makes wrong picks unreachable from the UI.
+// The T2 detector (detectSources, below) makes wrong picks unreachable from
+// the UI by populating the dropdown only with kinds that actually parse.
 export const parseInput = (input: PasteInput): ParseResult => {
   const text = normalize(input.content);
   if (text.length === 0) return { ok: false, reason: "empty input" };
@@ -152,6 +153,20 @@ export const parseInput = (input: PasteInput): ParseResult => {
     };
   }
   return { ok: true, turns };
+};
+
+// [LAW:one-source-of-truth] The detector IS the parser. It calls parseInput
+// for each SourceKind and keeps the ones that succeed. There is no separate
+// "could-this-parse" heuristic — that would be a second source of truth that
+// could drift from the real parser. Drift is structurally impossible here.
+//
+// [LAW:dataflow-not-control-flow] Empty input is the priming state: no text
+// to classify yet, so every kind is a legitimate pre-selection for the about-
+// to-be-pasted content. The return shape (a ReadonlyArray<SourceKind>) is the
+// same in every case; the dropdown reads it as data and rebuilds its options.
+export const detectSources = (input: string): ReadonlyArray<SourceKind> => {
+  if (normalize(input).length === 0) return SOURCE_KINDS;
+  return SOURCE_KINDS.filter((kind) => parseInput({ kind, content: input }).ok);
 };
 
 // [LAW:locality-or-seam] The legacy auto-race lives behind its own seam so
