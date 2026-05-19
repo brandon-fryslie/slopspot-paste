@@ -123,6 +123,30 @@ main {
 .hero-sub { color: var(--fg-muted); margin: 0 0 28px; font-size: 17px; }
 
 .paste-form { display: flex; flex-direction: column; gap: 12px; }
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.source-label {
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.source-select {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.3;
+  min-width: 240px;
+  cursor: pointer;
+}
+.source-select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 textarea {
   width: 100%;
   min-height: 320px;

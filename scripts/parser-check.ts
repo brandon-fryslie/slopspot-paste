@@ -5,7 +5,7 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { parsePaste } from "../src/parser";
+import { parseInput, parsePaste } from "../src/parser";
 import {
   parseDiff,
   parseFileRead,
@@ -349,6 +349,65 @@ but only when a | b matches.`;
     "wide table wrapped for overflow",
     /<div class="table-wrap"><table>/.test(html),
   );
+}
+
+console.log("\nparseInput per-kind dispatch:");
+{
+  // chatgpt arm parses said-marker content cleanly
+  const r = parseInput({ kind: "chatgpt", content: CHATGPT_SAMPLE });
+  assert("chatgpt arm ok", r.ok);
+  if (r.ok) {
+    assertEq(
+      "chatgpt roles",
+      r.turns.map((t) => (t.kind === "message" ? t.role : null)),
+      ["user", "assistant", "user", "assistant"],
+    );
+  }
+}
+{
+  // markdown arm parses markdown headings cleanly
+  const r = parseInput({ kind: "markdown", content: MARKDOWN_SAMPLE });
+  assert("markdown arm ok", r.ok);
+  if (r.ok) assertEq("markdown turn count", r.turns.length, 4);
+}
+{
+  // claude-code arm parses the CC transcript
+  const r = parseInput({ kind: "claude-code", content: CC_SAMPLE });
+  assert("claude-code arm ok", r.ok);
+  if (r.ok) assert("claude-code emits insight + turn-summary",
+    r.turns.some((t) => t.kind === "insight") &&
+    r.turns.some((t) => t.kind === "turn-summary"));
+}
+{
+  // raw arm always produces one assistant bubble
+  const r = parseInput({ kind: "raw", content: "just plain text\nno markers" });
+  assert("raw arm ok", r.ok);
+  if (r.ok) {
+    assertEq("raw turn count", r.turns.length, 1);
+    assert("raw is assistant message",
+      r.turns[0]!.kind === "message" && r.turns[0]!.role === "assistant");
+  }
+}
+{
+  // wrong kind for content → typed failure, not silent fallback
+  const r = parseInput({ kind: "claude-code", content: "## User\nhi\n## Assistant\nhello" });
+  assert("wrong-kind pick fails cleanly", !r.ok);
+  if (!r.ok) assert("failure reason names the kind",
+    r.reason.toLowerCase().includes("claude-code"));
+}
+{
+  // claude-paste arm parses Human:/Assistant: format
+  const r = parseInput({
+    kind: "claude-paste",
+    content: "Human:\nhi\n\nAssistant:\nhello\n\nHuman:\nbye\n\nAssistant:\nlater",
+  });
+  assert("claude-paste arm ok", r.ok);
+  if (r.ok) assertEq("claude-paste turn count", r.turns.length, 4);
+}
+{
+  // empty content → typed failure regardless of kind
+  const r = parseInput({ kind: "chatgpt", content: "   \n  " });
+  assert("empty content fails cleanly", !r.ok);
 }
 
 if (process.exitCode) {

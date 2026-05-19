@@ -1,5 +1,6 @@
 ---
 import Base from "../layouts/Base.astro";
+import { SOURCE_KINDS, SOURCE_LABEL } from "../types";
 
 export const prerender = false;
 ---
@@ -14,6 +15,15 @@ export const prerender = false;
   </section>
 
   <form id="paste-form" class="paste-form" action="/api/paste" method="post">
+    <div class="source-row">
+      <label for="source" class="source-label">Source format</label>
+      <select id="source" name="source" class="source-select">
+        <option value="">Auto-detect</option>
+        {SOURCE_KINDS.map((k) => (
+          <option value={k}>{SOURCE_LABEL[k]}</option>
+        ))}
+      </select>
+    </div>
     <label for="content" class="visually-hidden">Conversation text</label>
     <textarea
       id="content"
@@ -39,8 +49,13 @@ Average O(n log n), worst-case O(n²).
   </form>
 
   <script is:inline>
+    // [LAW:dataflow-not-control-flow] One submit path. The source field's
+    // value is either an empty string (Auto-detect → omit `source`, server
+    // uses parseAuto) or a SourceKind (server uses parseInput). The branch
+    // lives in the constructed body shape, not in two code paths.
     const form = document.getElementById("paste-form");
     const err = document.getElementById("form-error");
+    const sourceEl = document.getElementById("source");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       err.hidden = true;
@@ -48,16 +63,19 @@ Average O(n log n), worst-case O(n²).
       btn.disabled = true;
       btn.textContent = "Sharing…";
       try {
+        const kind = sourceEl.value;
+        const content = form.content.value;
+        const body = kind === "" ? { content } : { source: { kind, content } };
         const res = await fetch("/api/paste", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content: form.content.value }),
+          body: JSON.stringify(body),
         });
-        const body = await res.json();
-        if (!res.ok || !body.slug) {
-          throw new Error(body.error || "Server error");
+        const result = await res.json();
+        if (!res.ok || !result.slug) {
+          throw new Error(result.error || "Server error");
         }
-        window.location.assign("/" + body.slug);
+        window.location.assign("/" + result.slug);
       } catch (e2) {
         err.textContent = e2.message;
         err.hidden = false;

@@ -1,12 +1,16 @@
-import type { ParseResult, Role, Turn } from "./types";
+import type { ParseResult, PasteInput, Role, SourceKind, Turn } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 
 // [LAW:types-are-the-program] Every parser produces the same Turn[] union.
 // All variability — which export format, which header style — is absorbed at
 // this boundary. Downstream code receives one shape, dispatches on `kind`.
 //
-// [LAW:dataflow-not-control-flow] We iterate over a fixed list of parsers and
-// take the first claim. No "is this ChatGPT?" branching at callsites.
+// [LAW:dataflow-not-control-flow] Per-kind dispatch is a lookup, not a
+// switch — PARSER_BY_KIND maps SourceKind → parser function. `parseInput`
+// is two lines: normalize, dispatch. Wrong-kind failure is a clean
+// `{ ok: false }` (T2 makes wrong-kind unreachable by gating the dropdown
+// with a detector); we don't silently fall back to a different parser
+// because that would lie about what the user asked for.
 
 interface HeaderDetector {
   readonly name: string;
@@ -41,25 +45,34 @@ const classifyLabel = (raw: string): Role | null => {
   return ROLE_BY_LABEL.get(leading) ?? null;
 };
 
-const HEADER_DETECTORS: ReadonlyArray<HeaderDetector> = [
+// [LAW:one-source-of-truth] Each detector is named once, lives once, and is
+// referenced by both the legacy auto-race (HEADER_DETECTORS) and the per-kind
+// dispatch table below. No copy of the regex anywhere else.
+const MARKDOWN_HEADING_DETECTOR: HeaderDetector = {
   // ## User / ## Assistant / ### system  — markdown headings (most explicit)
-  {
-    name: "markdown-heading",
-    headerPattern: /^#{1,6}\s+([A-Za-z][A-Za-z0-9 .\-]{0,40})\s*$/,
-    classify: classifyLabel,
-  },
+  name: "markdown-heading",
+  headerPattern: /^#{1,6}\s+([A-Za-z][A-Za-z0-9 .\-]{0,40})\s*$/,
+  classify: classifyLabel,
+};
+
+const SAID_MARKER_DETECTOR: HeaderDetector = {
   // "You said:" / "ChatGPT said:" / "Claude said:" — ChatGPT/Claude copy-paste
-  {
-    name: "said-marker",
-    headerPattern: /^\*{0,2}([A-Za-z][A-Za-z0-9 .\-]{0,40})\s+said:?\*{0,2}\s*$/,
-    classify: classifyLabel,
-  },
+  name: "said-marker",
+  headerPattern: /^\*{0,2}([A-Za-z][A-Za-z0-9 .\-]{0,40})\s+said:?\*{0,2}\s*$/,
+  classify: classifyLabel,
+};
+
+const NAME_COLON_DETECTOR: HeaderDetector = {
   // "User:" / "Assistant:" / "Human:" — bare name+colon on its own line
-  {
-    name: "name-colon",
-    headerPattern: /^\*{0,2}([A-Za-z][A-Za-z0-9 .\-]{0,40})\*{0,2}\s*:\s*$/,
-    classify: classifyLabel,
-  },
+  name: "name-colon",
+  headerPattern: /^\*{0,2}([A-Za-z][A-Za-z0-9 .\-]{0,40})\*{0,2}\s*:\s*$/,
+  classify: classifyLabel,
+};
+
+const HEADER_DETECTORS: ReadonlyArray<HeaderDetector> = [
+  MARKDOWN_HEADING_DETECTOR,
+  SAID_MARKER_DETECTOR,
+  NAME_COLON_DETECTOR,
 ];
 
 const trySplitByHeaders = (
@@ -100,23 +113,68 @@ const parseHeaderFormats = (text: string): Turn[] | null => {
   return null;
 };
 
-export const parsePaste = (input: string): ParseResult => {
-  const text = input.replace(/\r\n?/g, "\n").trim();
+// [LAW:dataflow-not-control-flow] Per-kind parsing is a table lookup. Each
+// entry takes normalized text and returns the parser's claim — Turn[] when it
+// fits, null when it doesn't. The dispatch in parseInput is two lines.
+const parseSingleDetector =
+  (detector: HeaderDetector) =>
+  (text: string): Turn[] | null =>
+    trySplitByHeaders(text.split("\n"), detector);
+
+const parseRaw = (text: string): Turn[] => [
+  { kind: "message", role: "assistant", content: text },
+];
+
+const PARSER_BY_KIND: {
+  readonly [K in SourceKind]: (text: string) => Turn[] | null;
+} = {
+  "claude-code": parseClaudeCode,
+  "chatgpt": parseSingleDetector(SAID_MARKER_DETECTOR),
+  "claude-paste": parseSingleDetector(NAME_COLON_DETECTOR),
+  "markdown": parseSingleDetector(MARKDOWN_HEADING_DETECTOR),
+  "raw": parseRaw,
+};
+
+const normalize = (input: string): string => input.replace(/\r\n?/g, "\n").trim();
+
+// [LAW:types-are-the-program] parseInput commits to the kind the caller named.
+// No silent fallback to a different parser — a wrong pick is a typed failure.
+// Today the dropdown can offer wrong picks (T1 has no detector); T2 adds the
+// detector that makes wrong picks unreachable from the UI.
+export const parseInput = (input: PasteInput): ParseResult => {
+  const text = normalize(input.content);
+  if (text.length === 0) return { ok: false, reason: "empty input" };
+  const turns = PARSER_BY_KIND[input.kind](text);
+  if (turns === null || turns.length === 0) {
+    return {
+      ok: false,
+      reason: `Content does not parse as ${input.kind}.`,
+    };
+  }
+  return { ok: true, turns };
+};
+
+// [LAW:locality-or-seam] The legacy auto-race lives behind its own seam so
+// the API can use it for the no-source path (form posts that pre-date the
+// dropdown, direct API callers) without re-introducing race logic into the
+// per-kind dispatch above. CC tried first because its markers (❯ ⏺ ⎿) are
+// highly specific and won't false-positive on other formats.
+export const parseAuto = (input: string): ParseResult => {
+  const text = normalize(input);
   if (text.length === 0) return { ok: false, reason: "empty input" };
 
-  // [LAW:dataflow-not-control-flow] Parsers as values in a list; first claim wins.
-  // CC is tried first because its markers (❯ ⏺ ⎿) are highly specific and won't
-  // false-positive on other formats.
   const ccTurns = parseClaudeCode(text);
   if (ccTurns) return { ok: true, turns: ccTurns };
 
   const headerTurns = parseHeaderFormats(text);
   if (headerTurns) return { ok: true, turns: headerTurns };
 
-  // Fallback: a single assistant turn. Better to render the whole thing than
-  // reject — user can re-paste with explicit headers.
-  return { ok: true, turns: [{ kind: "message", role: "assistant", content: text }] };
+  return { ok: true, turns: parseRaw(text) };
 };
+
+// Aliased so imports that pre-date the per-kind API (parser-check tests, any
+// in-flight branches) keep compiling. New callers use parseInput / parseAuto.
+export const parsePaste = parseAuto;
 
 // [LAW:one-source-of-truth] Title is derived from the first user message
 // (or the first message of any role if no user turn exists). Tool calls and

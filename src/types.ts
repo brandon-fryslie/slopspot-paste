@@ -46,3 +46,45 @@ export const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
 export type ParseResult =
   | { ok: true; turns: ReadonlyArray<Turn> }
   | { ok: false; reason: string };
+
+// [LAW:types-are-the-program] PasteInput IS the input to parsing — each arm
+// carries exactly the fields its parser needs and no more. A flat enum with a
+// separate `content` field would admit illegal pairings (e.g. a URL-kind with
+// `content` and no URL); the discriminated shape forbids them by construction.
+//
+// [LAW:single-enforcer] Network access lives on exactly one arm. Text arms
+// dispatch to local pure parsers; only the URL arm (added in T3) can reach
+// the network. The cost model is visible in the types — no scattered
+// `if (looksLikeUrl(...)) fetch(...)` gates.
+//
+// [LAW:no-mode-explosion] Each arm earns its keep by mapping to a distinct
+// header-detector in src/parser.ts (or, for claude-share, an entirely
+// distinct ingestion path). No "config bag" — per-source options land as
+// new *fields on the relevant arm* rather than as flag combinations.
+export type PasteInput =
+  | { readonly kind: "claude-code"; readonly content: string }
+  | { readonly kind: "chatgpt"; readonly content: string }
+  | { readonly kind: "claude-paste"; readonly content: string }
+  | { readonly kind: "markdown"; readonly content: string }
+  | { readonly kind: "raw"; readonly content: string };
+
+export type SourceKind = PasteInput["kind"];
+
+// [LAW:one-source-of-truth] The dropdown's option list and the parser's
+// dispatch table are derived from this same tuple. Adding a kind requires
+// touching exactly one place to surface it everywhere.
+export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
+  "claude-code",
+  "chatgpt",
+  "claude-paste",
+  "markdown",
+  "raw",
+];
+
+export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
+  "claude-code": "Claude Code transcript",
+  "chatgpt": "ChatGPT / Claude.ai (You said: / … said:)",
+  "claude-paste": "Claude (Human: / Assistant:)",
+  "markdown": "Markdown headings (## User / ## Assistant)",
+  "raw": "Raw (single bubble, no parsing)",
+};
