@@ -53,7 +53,7 @@ export type ParseResult =
 // `content` and no URL); the discriminated shape forbids them by construction.
 //
 // [LAW:single-enforcer] Network access lives on exactly one arm. Text arms
-// dispatch to local pure parsers; only the URL arm (added in T3) can reach
+// dispatch to local pure parsers; only the URL arm (claude-share) can reach
 // the network. The cost model is visible in the types — no scattered
 // `if (looksLikeUrl(...)) fetch(...)` gates.
 //
@@ -67,17 +67,26 @@ export type PasteInput =
   | { readonly kind: "chatgpt"; readonly content: string }
   | { readonly kind: "claude-paste"; readonly content: string }
   | { readonly kind: "markdown"; readonly content: string }
-  | { readonly kind: "raw"; readonly content: string };
+  | { readonly kind: "raw"; readonly content: string }
+  | { readonly kind: "claude-share"; readonly url: string };
+
+// [LAW:types-are-the-program] The URL/text bifurcation IS the type — text arms
+// expose `content`, the URL arm exposes `url`. Code that needs to read "the
+// user-supplied string regardless of shape" goes through this accessor so the
+// discriminator stays the single point of dispatch.
+export const inputBytes = (input: PasteInput): string =>
+  input.kind === "claude-share" ? input.url : input.content;
 
 export type SourceKind = PasteInput["kind"];
 
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
 // table, AND the T2 detector's iteration order are derived from this one
 // tuple. Order is detection-priority: most-specific markers first, raw last.
-// Reordered from T1's initial guess so dropdown display order matches the
-// priority used to auto-select the best-fit kind from a detection result.
+// claude-share leads — a matching URL pattern is the cheapest, strictest
+// classifier we have (one regex on one trimmed line).
 export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
-  "claude-jsonl",  // CC session JSONL — strictest structural match (valid JSON)
+  "claude-share",  // https://claude.ai/share/<id> — strictest, no false-positive
+  "claude-jsonl",  // CC session JSONL — valid JSON on the first line
   "claude-code",   // ❯ ⏺ ⎿ — most specific markers, can't false-positive
   "markdown",      // ## User / ## Assistant — explicit heading
   "chatgpt",       // "You said:" / "ChatGPT said:" — copy-paste marker
@@ -86,6 +95,7 @@ export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
 ];
 
 export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
+  "claude-share": "claude.ai/share URL (we fetch + parse it)",
   "claude-jsonl": "Claude Code session JSONL (raw transcript file)",
   "claude-code": "Claude Code transcript",
   "chatgpt": "ChatGPT / Claude.ai (You said: / … said:)",

@@ -2,6 +2,8 @@ import type { ParseResult, PasteInput, Role, SourceKind, Turn } from "./types";
 import { SOURCE_KINDS } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
+import { parseClaudeShare } from "./parsers/claude-share";
+import { firecrawlScrape, type FirecrawlEnv } from "./firecrawl";
 
 // [LAW:types-are-the-program] Every parser produces the same Turn[] union.
 // All variability — which export format, which header style — is absorbed at
@@ -127,8 +129,15 @@ const parseRaw = (text: string): Turn[] => [
   { kind: "message", role: "assistant", content: text },
 ];
 
+// Text arms only — claude-share is excluded because it has no synchronous
+// (text: string) => Turn[] interpretation; its ingest path is async and
+// lives in ingestPaste below. Keeping this table strictly typed prevents a
+// future contributor from wiring claude-share into the sync dispatch.
+type TextArmKind = Exclude<SourceKind, "claude-share">;
+type TextArm = Extract<PasteInput, { content: string }>;
+
 const PARSER_BY_KIND: {
-  readonly [K in SourceKind]: (text: string) => Turn[] | null;
+  readonly [K in TextArmKind]: (text: string) => Turn[] | null;
 } = {
   "claude-jsonl": parseClaudeJsonl,
   "claude-code": parseClaudeCode,
@@ -144,23 +153,80 @@ const normalize = (input: string): string => input.replace(/\r\n?/g, "\n").trim(
 // No silent fallback to a different parser — a wrong pick is a typed failure.
 // The T2 detector (detectSources, below) makes wrong picks unreachable from
 // the UI by populating the dropdown only with kinds that actually parse.
+//
+// [LAW:single-enforcer] URL ingestion is genuinely async (Firecrawl fetch).
+// Rather than poison this signature with a Promise return for every arm,
+// claude-share gets a typed redirect to `ingestPaste`. Callers that want a
+// uniform async surface use ingestPaste; callers that only care about text
+// arms (parser-check tests, detector) use parseInput.
 export const parseInput = (input: PasteInput): ParseResult => {
-  const text = normalize(input.content);
+  if (input.kind === "claude-share") {
+    return {
+      ok: false,
+      reason: "claude-share is a URL arm; use ingestPaste() to fetch and parse.",
+    };
+  }
+  const arm = input as TextArm;
+  const text = normalize(arm.content);
   if (text.length === 0) return { ok: false, reason: "empty input" };
-  const turns = PARSER_BY_KIND[input.kind](text);
+  const turns = PARSER_BY_KIND[arm.kind](text);
   if (turns === null || turns.length === 0) {
     return {
       ok: false,
-      reason: `Content does not parse as ${input.kind}.`,
+      reason: `Content does not parse as ${arm.kind}.`,
     };
   }
   return { ok: true, turns };
 };
 
-// [LAW:one-source-of-truth] The detector IS the parser. It calls parseInput
-// for each SourceKind and keeps the ones that succeed. There is no separate
-// "could-this-parse" heuristic — that would be a second source of truth that
-// could drift from the real parser. Drift is structurally impossible here.
+// [LAW:single-enforcer] The one entry point that does network I/O for
+// PasteInput. Text arms pass straight through to parseInput; the URL arm
+// fetches via Firecrawl and parses the returned markdown. The API handler
+// uses this so it doesn't branch on `kind` itself — `kind` discrimination
+// stays inside the parser module.
+export const ingestPaste = async (
+  input: PasteInput,
+  env: FirecrawlEnv,
+): Promise<ParseResult> => {
+  if (input.kind !== "claude-share") return parseInput(input);
+
+  if (!isClaudeShareUrl(input.url)) {
+    return { ok: false, reason: "Not a valid claude.ai/share URL." };
+  }
+  const fetched = await firecrawlScrape(input.url, env);
+  if (!fetched.ok) return { ok: false, reason: fetched.reason };
+  const turns = parseClaudeShare(fetched.markdown);
+  if (turns === null || turns.length === 0) {
+    return {
+      ok: false,
+      reason: "Fetched the page, but could not extract a conversation.",
+    };
+  }
+  return { ok: true, turns };
+};
+
+// [LAW:one-source-of-truth] The URL shape claude-share accepts lives here,
+// once. The detector calls it; ingestPaste re-validates at the trust boundary
+// (defense against a directly-crafted API request that bypassed the UI).
+const CLAUDE_SHARE_RE =
+  /^https?:\/\/claude\.ai\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i;
+
+export const isClaudeShareUrl = (input: string): boolean => {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.includes("\n")) return false;
+  return CLAUDE_SHARE_RE.test(trimmed);
+};
+
+// [LAW:one-source-of-truth] For text arms, the detector IS the parser — it
+// calls parseInput and keeps kinds that succeed. There is no separate
+// "could-this-parse" heuristic for text arms; drift is structurally impossible.
+//
+// For claude-share, the detector necessarily diverges: a fetch on every
+// keystroke would be wrong (rate-limited, slow, costs money), so the URL arm
+// is recognized by pattern. The actual fetch + parse happens at submit time
+// inside ingestPaste. This split is the single point where the URL/text
+// asymmetry surfaces; comment it so it doesn't metastasize.
 //
 // [LAW:dataflow-not-control-flow] Empty input is the priming state: no text
 // to classify yet, so every kind is a legitimate pre-selection for the about-
@@ -168,7 +234,11 @@ export const parseInput = (input: PasteInput): ParseResult => {
 // same in every case; the dropdown reads it as data and rebuilds its options.
 export const detectSources = (input: string): ReadonlyArray<SourceKind> => {
   if (normalize(input).length === 0) return SOURCE_KINDS;
-  return SOURCE_KINDS.filter((kind) => parseInput({ kind, content: input }).ok);
+  return SOURCE_KINDS.filter((kind) =>
+    kind === "claude-share"
+      ? isClaudeShareUrl(input)
+      : parseInput({ kind, content: input } as PasteInput).ok,
+  );
 };
 
 // [LAW:locality-or-seam] The legacy auto-race lives behind its own seam so

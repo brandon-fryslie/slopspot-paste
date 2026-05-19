@@ -5,9 +5,10 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { detectSources, parseInput, parsePaste } from "../src/parser";
+import { detectSources, isClaudeShareUrl, parseInput, parsePaste } from "../src/parser";
+import { parseClaudeShare } from "../src/parsers/claude-share";
 import { SOURCE_KINDS } from "../src/types";
-import type { SourceKind } from "../src/types";
+import type { PasteInput, SourceKind } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -16,6 +17,7 @@ import {
   renderMarkdown,
 } from "../src/render";
 import type { Turn } from "../src/types";
+import { readFileSync } from "node:fs";
 
 const CC_SAMPLE = `❯ deleted
 
@@ -505,11 +507,14 @@ console.log("\nclaude-jsonl parser (T4):");
 
 console.log("\ndetectSources (T2 — UI-gating detector):");
 {
-  // The detector IS the parser: it must return exactly the kinds for which
-  // parseInput would succeed. Verified by construction here against every
-  // sample; if the parser changes its mind, the detector follows it.
+  // For text arms: the detector IS the parser. expected() mirrors the text-
+  // arm half of the detector; if the parser changes its mind, the detector
+  // follows it. The claude-share arm uses a pattern check (not the parser)
+  // so it's excluded here and verified separately in the T3 block below.
   const expected = (text: string): ReadonlyArray<SourceKind> =>
-    SOURCE_KINDS.filter((k) => parseInput({ kind: k, content: text }).ok);
+    SOURCE_KINDS.filter(
+      (k) => k !== "claude-share" && parseInput({ kind: k, content: text } as PasteInput).ok,
+    );
 
   assertEq("empty → all kinds (priming)", detectSources(""), SOURCE_KINDS);
   assertEq("whitespace-only → all kinds (priming)", detectSources("   \n  \t  "), SOURCE_KINDS);
@@ -545,6 +550,96 @@ console.log("\ndetectSources (T2 — UI-gating detector):");
   // excluded because plain prose isn't valid JSON on the first line.
   const proseSet = detectSources("just a single paragraph of text, no markers anywhere here");
   assertEq("plain prose → only raw", proseSet, ["raw"]);
+}
+
+console.log("\nclaude-share parser (T3 — URL ingestion):");
+{
+  // isClaudeShareUrl — positive cases
+  assert("https URL accepted",
+    isClaudeShareUrl("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"));
+  assert("http URL accepted (we upgrade later)",
+    isClaudeShareUrl("http://claude.ai/share/abc123"));
+  assert("trailing slash accepted",
+    isClaudeShareUrl("https://claude.ai/share/abc123/"));
+  assert("surrounding whitespace tolerated",
+    isClaudeShareUrl("  https://claude.ai/share/abc123  \n"));
+  assert("uppercase scheme accepted",
+    isClaudeShareUrl("HTTPS://claude.ai/share/abc123"));
+  assert("query string tolerated",
+    isClaudeShareUrl("https://claude.ai/share/abc123?utm=x"));
+
+  // isClaudeShareUrl — negative cases
+  assert("plain text rejected", !isClaudeShareUrl("hello world"));
+  assert("non-claude URL rejected", !isClaudeShareUrl("https://example.com/share/abc"));
+  assert("claude.ai non-share URL rejected", !isClaudeShareUrl("https://claude.ai/new"));
+  assert("share without id rejected", !isClaudeShareUrl("https://claude.ai/share/"));
+  assert("multiline rejected", !isClaudeShareUrl("https://claude.ai/share/abc\nmore text"));
+  assert("empty rejected", !isClaudeShareUrl(""));
+  assert("whitespace-only rejected", !isClaudeShareUrl("   \n\t "));
+
+  // Detector recognizes URLs and prioritizes claude-share
+  const url = "https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82";
+  const urlSet = detectSources(url);
+  assert("URL detection includes claude-share", urlSet.includes("claude-share"));
+  assert("URL detection ranks claude-share first", urlSet[0] === "claude-share");
+  // URLs are short single lines; the raw fallback still applies because raw
+  // never rejects anything. This is intentional: it gives the user an escape
+  // hatch to render the URL string as a single bubble if Firecrawl is down.
+  assert("URL detection still includes raw fallback", urlSet.includes("raw"));
+  // None of the text-arm parsers should match a bare URL — no false-positives.
+  ["claude-jsonl", "claude-code", "markdown", "chatgpt", "claude-paste"].forEach((k) => {
+    assert(`URL excludes ${k}`, !urlSet.includes(k as SourceKind));
+  });
+
+  // parseInput must reject claude-share with a useful redirect message —
+  // it has no synchronous interpretation.
+  const blocked = parseInput({ kind: "claude-share", url } as PasteInput);
+  assert("parseInput rejects claude-share arm", !blocked.ok);
+  if (!blocked.ok) {
+    assert("parseInput error names the async path", blocked.reason.includes("ingestPaste"));
+  }
+
+  // parseClaudeShare against the real captured fixture
+  const fixture = readFileSync("test/fixtures/claude-share.md", "utf8");
+  const turns = parseClaudeShare(fixture);
+  assert("fixture parses to non-null", turns !== null);
+  if (turns) {
+    assertEq("fixture turn count", turns.length, 2);
+    const t0 = turns[0]!;
+    const t1 = turns[1]!;
+    assert("turn[0] is a user message",
+      t0.kind === "message" && t0.role === "user");
+    assert("turn[1] is an assistant message",
+      t1.kind === "message" && t1.role === "assistant");
+    assert("user message body contains original question",
+      t0.kind === "message" && t0.content.includes("comrehensible to me without dumbing"));
+    assert("assistant message contains the substantive answer",
+      t1.kind === "message" && t1.content.includes("IsoAcoustics"));
+    assert("boilerplate stripped from user body",
+      t0.kind === "message" && !t0.content.includes("This is a copy of a chat"));
+    assert("date stamp stripped from user body",
+      t0.kind === "message" && !/\bMay\s+18\b/.test(t0.content));
+    assert("footer stripped from assistant body",
+      t1.kind === "message" && !t1.content.includes("Ask Claude your own question"));
+  }
+
+  // parseClaudeShare fails cleanly on input with no headings.
+  const noHeadings = parseClaudeShare("just some markdown with no\n## headings\nat all");
+  assert("no You-said headings → null", noHeadings === null);
+
+  // parseClaudeShare fails cleanly on input with only one heading
+  // (single-turn share — we treat as malformed for now, two-turn minimum).
+  const single = parseClaudeShare("## You said: hi\n\nhi\n");
+  assert("single-heading share → null", single === null);
+
+  // parseClaudeShare handles the alternate "Claude said:" label too.
+  const altLabel = parseClaudeShare(
+    "## You said: question\n\nquestion\n\n## Claude said: answer\n\nanswer body\n",
+  );
+  assert("alternate 'Claude said:' label parses", altLabel !== null);
+  if (altLabel) {
+    assertEq("alt label turn count", altLabel.length, 2);
+  }
 }
 
 if (process.exitCode) {

@@ -38,7 +38,8 @@ What's the time complexity of quicksort?
 Average O(n log n), worst-case O(n²).
 
 — or "You said:" / "ChatGPT said:" — or "Human:" / "Assistant:" —
-— or a Claude Code transcript (❯ / ⏺ / ⎿ markers) —`}
+— or a Claude Code transcript (❯ / ⏺ / ⎿ markers) —
+— or a https://claude.ai/share/<id> URL (we fetch it for you) —`}
     ></textarea>
     <div class="form-row">
       <button type="submit" class="btn-primary">Share it</button>
@@ -103,22 +104,30 @@ Average O(n log n), worst-case O(n²).
 
     const submitBtn = must("#paste-form button[type=submit]", HTMLButtonElement);
 
+    // [LAW:types-are-the-program] The submit payload mirrors the PasteInput
+    // discriminated union shape. claude-share carries `url`; every other arm
+    // carries `content`. No shared "body" field with mode flags — the wire
+    // shape IS the type.
+    const sourcePayload = (kind: SourceKind, text: string): object =>
+      kind === "claude-share"
+        ? { kind, url: text.trim() }
+        : { kind, content: text };
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       err.hidden = true;
       submitBtn.disabled = true;
-      submitBtn.textContent = "Sharing…";
+      // Dropdown is invariant-guaranteed to hold a valid SourceKind when
+      // content is non-empty (raw is always in the detected set). Submit
+      // as the matching arm shape; the legacy { content }-only path on the
+      // server stays for direct API callers, not used from this page.
+      const kind = sourceEl.value as SourceKind;
+      submitBtn.textContent = kind === "claude-share" ? "Fetching…" : "Sharing…";
       try {
-        // Dropdown is invariant-guaranteed to hold a valid SourceKind when
-        // content is non-empty (raw is always in the detected set). Submit
-        // unconditionally as { source }; the legacy { content }-only path on
-        // the server stays for direct API callers, not used from this page.
-        const kind = sourceEl.value as SourceKind;
-        const content = contentEl.value;
         const res = await fetch("/api/paste", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ source: { kind, content } }),
+          body: JSON.stringify({ source: sourcePayload(kind, contentEl.value) }),
         });
         const result = await res.json() as { slug?: string; error?: string };
         if (!res.ok || !result.slug) {

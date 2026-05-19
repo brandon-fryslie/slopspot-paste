@@ -31,6 +31,13 @@ wrangler kv namespace create SESSION   # required by the adapter even if unused
 #   [[routes]]
 #   pattern = "paste.slopspot.ai"
 #   custom_domain = true
+
+# 5. Configure the Firecrawl secret (powers claude.ai/share URL ingestion).
+#    Get a key from https://firecrawl.dev. Without this secret, the URL arm
+#    returns a typed 'not configured' error; all text arms keep working.
+echo "<your-key>" | wrangler secret put FIRECRAWL_API_KEY
+# For local dev, put the same key in .dev.vars (gitignored):
+#   FIRECRAWL_API_KEY=fc-...
 ```
 
 > ⚠️  Do **not** also create a manual DNS record for the hostname.
@@ -67,6 +74,12 @@ The parser converges these inputs into the same `Turn[]`:
 - ChatGPT copy-paste: `You said:` / `ChatGPT said:` markers
 - Claude copy-paste: `Human:` / `Assistant:` markers
 - Bare name + colon on its own line: `User:` / `Assistant:`
+- Claude Code transcript: `❯` / `⏺` / `⎿` markers
+- Claude Code session JSONL: a raw `~/.claude/projects/.../<uuid>.jsonl` file
+- **claude.ai/share URL**: paste a `https://claude.ai/share/<id>` link; the
+  server fetches it via Firecrawl and parses the rendered markdown. The URL
+  arm is the only ingest path that does network I/O — see `src/firecrawl.ts`
+  for the single enforcer.
 
 If none match, the entire paste renders as a single assistant turn.
 

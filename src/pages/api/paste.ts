@@ -1,10 +1,10 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
-import { parseAuto, parseInput, deriveTitle } from "../../parser";
+import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import type { Conversation, ParseResult, PasteInput, SourceKind } from "../../types";
-import { SOURCE_KINDS, TTL_SECONDS } from "../../types";
+import { inputBytes, SOURCE_KINDS, TTL_SECONDS } from "../../types";
 
 export const prerender = false;
 
@@ -32,10 +32,16 @@ const json = (status: number, body: Record<string, unknown>): Response =>
 const isSourceKind = (v: unknown): v is SourceKind =>
   typeof v === "string" && (SOURCE_KINDS as ReadonlyArray<string>).includes(v);
 
+// [LAW:types-are-the-program] The trust boundary classifies wire JSON into
+// one of the union arms. Each arm's required field is checked against its
+// kind — a claude-share payload without `url` (or any other arm without
+// `content`) fails here instead of crashing downstream.
 const isPasteInput = (v: unknown): v is PasteInput => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; content?: unknown };
-  return isSourceKind(o.kind) && typeof o.content === "string";
+  const o = v as { kind?: unknown; content?: unknown; url?: unknown };
+  if (!isSourceKind(o.kind)) return false;
+  if (o.kind === "claude-share") return typeof o.url === "string";
+  return typeof o.content === "string";
 };
 
 // [LAW:dataflow-not-control-flow] One decode path returns one tagged value.
@@ -57,12 +63,15 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
     return { ok: false, reason: "Missing 'source' or 'content' field." };
   }
   const form = await request.formData().catch(() => null);
-  const content = form?.get("content");
   const kind = form?.get("source");
+  // The form encoding only carries text arms; URL arms are JSON-only (the
+  // browser script always submits JSON). The `<form action="/api/paste">`
+  // fallback exists for users with JS disabled or external clients.
+  const content = form?.get("content");
   if (typeof content !== "string") {
     return { ok: false, reason: "Missing 'content' field." };
   }
-  if (isSourceKind(kind)) {
+  if (isSourceKind(kind) && kind !== "claude-share") {
     return { ok: true, input: { kind, content } as PasteInput };
   }
   return { ok: true, legacy: content };
@@ -74,14 +83,20 @@ export const POST: APIRoute = async ({ request }) => {
   const decoded = await decodeRequest(request);
   if (!decoded.ok) return json(400, { error: decoded.reason });
 
-  const rawSize = "input" in decoded ? sizeOf(decoded.input.content) : sizeOf(decoded.legacy);
+  // [LAW:single-enforcer] One size cap, one place. inputBytes returns the
+  // user-supplied string regardless of arm (url or content), so the check
+  // is uniform — a 200 MB URL still gets rejected here, not in firecrawl.
+  const rawSize = "input" in decoded ? sizeOf(inputBytes(decoded.input)) : sizeOf(decoded.legacy);
   if (rawSize === 0) return json(400, { error: "Empty paste." });
   if (rawSize > MAX_BYTES) {
     return json(413, { error: `Paste exceeds ${MAX_BYTES} bytes.` });
   }
 
+  // [LAW:single-enforcer] ingestPaste is the one entry point that handles
+  // both sync text parsing and async URL ingestion. The kind discrimination
+  // stays inside the parser module — this handler does not branch on it.
   const parsed: ParseResult =
-    "input" in decoded ? parseInput(decoded.input) : parseAuto(decoded.legacy);
+    "input" in decoded ? await ingestPaste(decoded.input, env) : parseAuto(decoded.legacy);
   if (!parsed.ok) return json(400, { error: parsed.reason });
   if (parsed.turns.length > MAX_TURNS) {
     return json(413, { error: `Too many turns (max ${MAX_TURNS}).` });
