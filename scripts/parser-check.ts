@@ -7,8 +7,8 @@
 
 import { detectSources, isClaudeShareUrl, parseInput, parsePaste } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { SOURCE_KINDS } from "../src/types";
-import type { PasteInput, SourceKind } from "../src/types";
+import { SOURCE_KINDS, textArmInput } from "../src/types";
+import type { SourceKind } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -514,7 +514,7 @@ console.log("\ndetectSources (T2 — UI-gating detector):");
   // so it's excluded here and verified separately in the T3 block below.
   const expected = (text: string): ReadonlyArray<SourceKind> =>
     SOURCE_KINDS.filter(
-      (k) => k !== "claude-share" && parseInput({ kind: k, content: text } as PasteInput).ok,
+      (k) => k !== "claude-share" && parseInput(textArmInput(k, text)).ok,
     );
 
   assertEq("empty → all kinds (priming)", detectSources(""), SOURCE_KINDS);
@@ -594,7 +594,7 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
 
   // parseInput must reject claude-share with a useful redirect message —
   // it has no synchronous interpretation.
-  const blocked = parseInput({ kind: "claude-share", url } as PasteInput);
+  const blocked = parseInput({ kind: "claude-share", url });
   assert("parseInput rejects claude-share arm", !blocked.ok);
   if (!blocked.ok) {
     assert("parseInput error names the async path", blocked.reason.includes("ingestPaste"));
