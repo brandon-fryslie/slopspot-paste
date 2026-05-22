@@ -8,6 +8,12 @@ import { Marked } from "marked";
 export const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+// [LAW:single-enforcer] Attribute-context escaping lives beside escapeHtml so
+// there is one home for "make this string safe to interpolate." The extra
+// quote escaping is what an attribute value needs that element text does not.
+export const escapeAttr = (s: string): string =>
+  escapeHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
 // ─── Table normalization ─────────────────────────────────────────────
 // LLMs commonly emit pipe-separated rows without the GFM separator row,
 // e.g. `| a | b |` followed by `| 1 | 2 |` with no `| --- | --- |` in

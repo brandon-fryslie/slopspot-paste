@@ -16,6 +16,7 @@ import {
   normalizeTables,
   renderMarkdown,
 } from "../src/render";
+import { renderTurnsHtml } from "../src/renderTurns";
 import type { Turn } from "../src/types";
 import { readFileSync } from "node:fs";
 
@@ -640,6 +641,74 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
   if (altLabel) {
     assertEq("alt label turn count", altLabel.length, 2);
   }
+}
+
+console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
+{
+  // [LAW:behavior-not-structure] Assert the rendered-markup landmarks that the
+  // permalink page and the future live preview both depend on — not the
+  // function's internals. One fixture exercises every kind and every output kind.
+  const DIFF_OUTPUT = `Added 1 line
+      162 +new line of code
+      163  context line`;
+  const FILE_OUTPUT = `Read 2 lines
+1  import { foo } from "bar";
+2  export const x = 1;`;
+  const fixture: Turn[] = [
+    { kind: "message", role: "user", content: "hello" },
+    { kind: "message", role: "assistant", content: "hi there" },
+    { kind: "message", role: "system", content: "you are helpful" },
+    { kind: "insight", content: "a key realization" },
+    { kind: "turn-summary", text: "Sautéed for 53s" },
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
+    { kind: "tool-call", tool: "Update", args: "src/x.ts", output: { kind: "diff", text: DIFF_OUTPUT } },
+    { kind: "tool-call", tool: "Read", args: "src/x.ts", output: { kind: "file-read", text: FILE_OUTPUT } },
+    { kind: "tool-call", tool: "WebFetch", args: "{json}", output: { kind: "generic", text: "some output" } },
+    { kind: "tool-call", tool: "cherry-mcp", args: "", output: null },
+  ];
+  const html = renderTurnsHtml(fixture);
+
+  const has = (label: string, needle: string) => assert(label, html.includes(needle));
+
+  has("message user bubble", '<article class="bubble bubble-user" data-kind="message" data-role="user"');
+  has("message assistant bubble", 'class="bubble bubble-assistant"');
+  has("message system bubble", 'class="bubble bubble-system"');
+  has("role label rendered", '<span class="role-name">Assistant</span>');
+  has("insight star", '<span class="role-dot role-dot-insight" aria-hidden="true">★</span>');
+  has("insight name", '<span class="role-name">Insight</span>');
+  has("turn-summary aside", '<aside class="bubble-turn-summary" data-kind="turn-summary"');
+  has("tool-call article + data-tool", '<article class="bubble bubble-tool-call" data-kind="tool-call" data-tool="Bash"');
+  has("terminal frame", 'data-output-kind="terminal"');
+  has("terminal $-prefix", '$ ls -la');
+  has("diff frame", 'data-output-kind="diff"');
+  has("diff added row", '<div class="diff-line diff-added">');
+  has("diff summary pill", '>Added 1 line<');
+  has("file-read frame", 'data-output-kind="file-read"');
+  has("file row", '<div class="file-line">');
+  has("generic frame", 'data-output-kind="generic"');
+  has("generic args frame", 'data-output-kind="args"');
+  // output: null tool-call shows only its header, no output frame. cherry-mcp is
+  // the last turn, so nothing after its marker should contain a frame.
+  const cherryIdx = html.indexOf('data-tool="cherry-mcp"');
+  assert(
+    "null-output tool-call emits header only",
+    cherryIdx !== -1 && !html.slice(cherryIdx).includes("tool-output-frame"),
+  );
+
+  // [LAW:single-enforcer] The attribute/text-node escaping that Astro's auto-
+  // escaping gave the deleted components must survive the move to string
+  // concatenation. (Message/insight bodies go through renderMarkdown, whose
+  // HTML handling is unchanged by this refactor and tested elsewhere.)
+  const xss: Turn[] = [
+    { kind: "tool-call", tool: 'evil" onload="x', args: "", output: null },
+    { kind: "turn-summary", text: "<b>not bold</b>" },
+    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "<i>raw</i>" } },
+  ];
+  const xssHtml = renderTurnsHtml(xss);
+  assert("tool name attribute escaped (no quote breakout)", !xssHtml.includes('data-tool="evil" onload='));
+  assert("tool name attribute escaped form present", xssHtml.includes("evil&quot; onload="));
+  assert("turn-summary text escaped", xssHtml.includes("&lt;b&gt;not bold&lt;/b&gt;"));
+  assert("tool output text escaped", xssHtml.includes("&lt;i&gt;raw&lt;/i&gt;"));
 }
 
 if (process.exitCode) {
