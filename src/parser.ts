@@ -1,5 +1,5 @@
-import type { ParseResult, PasteInput, Role, SourceKind, Turn } from "./types";
-import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS } from "./types";
+import type { ParseResult, PasteInput, Role, SourceKind, TextArmKind, Turn } from "./types";
+import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
 import { parseClaudeShare } from "./parsers/claude-share";
@@ -133,8 +133,6 @@ const parseRaw = (text: string): Turn[] => [
 // (text: string) => Turn[] interpretation; its ingest path is async and
 // lives in ingestPaste below. Keeping this table strictly typed prevents a
 // future contributor from wiring claude-share into the sync dispatch.
-type TextArmKind = Exclude<SourceKind, "claude-share">;
-
 const PARSER_BY_KIND: {
   readonly [K in TextArmKind]: (text: string) => Turn[] | null;
 } = {
@@ -243,7 +241,7 @@ export const detectSources = (input: string): ReadonlyArray<SourceKind> => {
   return SOURCE_KINDS.filter((kind) =>
     kind === "claude-share"
       ? isClaudeShareUrl(input)
-      : parseInput({ kind, content: input } as PasteInput).ok,
+      : parseInput(textArmInput(kind, input)).ok,
   );
 };
 

@@ -87,6 +87,17 @@ export const inputText = (input: PasteInput): string =>
 
 export type SourceKind = PasteInput["kind"];
 
+// [LAW:types-are-the-program] The content-bearing kinds (everything but the URL
+// arm) and a typed constructor for building their PasteInput. Callers that hold
+// a non-share kind + content build the arm through textArmInput so the union
+// shape is checked by the compiler — no `as PasteInput` assertion that would
+// mask a future URL-shaped arm.
+export type TextArmKind = Exclude<SourceKind, "claude-share">;
+export const textArmInput = (kind: TextArmKind, content: string): PasteInput => ({
+  kind,
+  content,
+});
+
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
 // table, AND the T2 detector's iteration order are derived from this one
 // tuple. Order is detection-priority: most-specific markers first, raw last.

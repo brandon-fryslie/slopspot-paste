@@ -4,7 +4,7 @@ import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import type { Conversation, ParseResult, PasteInput, SourceKind } from "../../types";
-import { inputText, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, TTL_SECONDS } from "../../types";
+import { inputText, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput, TTL_SECONDS } from "../../types";
 
 export const prerender = false;
 
@@ -68,6 +68,12 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
   if (typeof content !== "string") {
     return { ok: false, reason: "Missing 'content' field." };
   }
+  // No recognized source kind → legacy path (direct API callers without a
+  // source field). Checking this first lets the claude-share guard below narrow
+  // kind to a text arm, so textArmInput is built without a cast.
+  if (!isSourceKind(kind)) {
+    return { ok: true, legacy: content };
+  }
   // [LAW:no-silent-fallbacks] claude-share is a URL arm that only the JS submit
   // path (JSON { url }) can fulfill. A form-encoded claude-share request fails
   // loudly here instead of being silently re-routed to parseAuto, which would
@@ -78,10 +84,7 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
       reason: "claude.ai/share URLs require JavaScript enabled (they're fetched via the JSON submit path).",
     };
   }
-  if (isSourceKind(kind)) {
-    return { ok: true, input: { kind, content } as PasteInput };
-  }
-  return { ok: true, legacy: content };
+  return { ok: true, input: textArmInput(kind, content) };
 };
 
 const sizeOf = (s: string): number => new Blob([s]).size;
