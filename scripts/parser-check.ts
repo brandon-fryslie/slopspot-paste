@@ -643,6 +643,42 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
   }
 }
 
+console.log("\nclaude-jsonl robustness + legacy auto-path (PR review):");
+{
+  // [LAW:behavior-not-structure] A malformed/hand-edited JSONL block (null or a
+  // primitive where an object is expected) must be skipped at the trust
+  // boundary, not crash the request. The valid text block alongside it survives.
+  const MALFORMED = [
+    { type: "user", message: { role: "user", content: "hi" } },
+    {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [null, "oops", 42, { type: "text", text: "still here" }],
+      },
+    },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const r = parseInput({ kind: "claude-jsonl", content: MALFORMED });
+  assert("malformed JSONL blocks skipped (no crash)", r.ok);
+  if (r.ok) {
+    assert("valid text block survives malformed siblings",
+      r.turns.some((t) => t.kind === "message" && t.content === "still here"));
+  }
+
+  // [LAW:one-source-of-truth] The legacy no-source path (parseAuto/parsePaste)
+  // must recognize JSONL too, not fall through to a single raw bubble.
+  const VALID = [
+    { type: "user", message: { role: "user", content: "what's in the repo?" } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Two entries." }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const auto = parsePaste(VALID);
+  assert("parseAuto recognizes JSONL", auto.ok);
+  if (auto.ok) {
+    assertEq("parseAuto JSONL kinds", kinds(auto.turns), ["message", "message"]);
+    assert("parseAuto did NOT fall back to a single raw bubble", auto.turns.length === 2);
+  }
+}
+
 console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
 {
   // [LAW:behavior-not-structure] Assert the rendered-markup landmarks that the

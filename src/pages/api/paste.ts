@@ -4,7 +4,7 @@ import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import type { Conversation, ParseResult, PasteInput, SourceKind } from "../../types";
-import { inputText, MAX_PASTE_BYTES, SOURCE_KINDS, TTL_SECONDS } from "../../types";
+import { inputText, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, TTL_SECONDS } from "../../types";
 
 export const prerender = false;
 
@@ -96,7 +96,7 @@ export const POST: APIRoute = async ({ request }) => {
   const rawSize = "input" in decoded ? sizeOf(inputText(decoded.input)) : sizeOf(decoded.legacy);
   if (rawSize === 0) return json(400, { error: "Empty paste." });
   if (rawSize > MAX_PASTE_BYTES) {
-    return json(413, { error: `Paste exceeds ${MAX_PASTE_BYTES} bytes.` });
+    return json(413, { error: `Paste exceeds the ${MAX_PASTE_LABEL} limit (${MAX_PASTE_BYTES} bytes).` });
   }
 
   // [LAW:single-enforcer] ingestPaste is the one entry point that handles

@@ -133,6 +133,11 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
     if (!Array.isArray(content)) continue;
 
     for (const block of content) {
+      // [LAW:no-defensive-null-guards] Legitimate trust-boundary guard: content
+      // comes from JSON.parse of untrusted JSONL, so an element may be null or a
+      // primitive despite the structural type. Skip it like any unknown block
+      // rather than crashing on `.type`.
+      if (!block || typeof block !== "object") continue;
       if (block.type === "text") {
         const text = (block as TextBlock).text;
         if (typeof text !== "string") continue;

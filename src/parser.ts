@@ -250,6 +250,13 @@ export const parseAuto = (input: string): ParseResult => {
   const text = normalize(input);
   if (text.length === 0) return { ok: false, reason: "empty input" };
 
+  // [LAW:one-source-of-truth] The race order mirrors SOURCE_KINDS priority:
+  // JSONL is the most specific (first non-blank line must be valid JSON) and
+  // cheapest to rule out, so it leads — a session JSONL paste on the legacy
+  // no-source path now ingests correctly instead of falling through to raw.
+  const jsonlTurns = parseClaudeJsonl(text);
+  if (jsonlTurns) return { ok: true, turns: jsonlTurns };
+
   const ccTurns = parseClaudeCode(text);
   if (ccTurns) return { ok: true, turns: ccTurns };
 
