@@ -16,7 +16,7 @@ export const prerender = false;
 
 // [LAW:single-enforcer] One size cap for every kind, stated once in types.ts
 // (MAX_PASTE_BYTES) so the API limit and the page's advertised limit share a
-// source. 8 MB gives honest headroom for JSON-encoding overhead on long CC
+// source. 8 MiB gives honest headroom for JSON-encoding overhead on long CC
 // session JSONL (observed at 1.74 MB) while staying under KV's 25 MB ceiling.
 const MAX_TURNS = 10000;
 
