@@ -4,7 +4,7 @@ import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import type { Conversation, ParseResult, PasteInput, SourceKind } from "../../types";
-import { inputBytes, SOURCE_KINDS, TTL_SECONDS } from "../../types";
+import { inputBytes, MAX_PASTE_BYTES, SOURCE_KINDS, TTL_SECONDS } from "../../types";
 
 export const prerender = false;
 
@@ -14,13 +14,10 @@ export const prerender = false;
 // kind of guard — this IS the trust boundary; unknown JSON from the wire has
 // to be classified into one of the typed cases.
 
-// [LAW:single-enforcer] One size cap for every kind. The 256 KB initial cap
-// from T0 was tuned for hand-pasted transcripts; CC session JSONL routinely
-// exceeds it (an active session this branch was built in observed at 1.74 MB).
-// Bumped to 8 MB for honest real-world headroom — comfortably accommodates
-// JSON-encoding overhead on the request body and most long sessions, while
-// staying well under KV's 25 MB per-value ceiling.
-const MAX_BYTES = 8 * 1024 * 1024; // 8 MB
+// [LAW:single-enforcer] One size cap for every kind, stated once in types.ts
+// (MAX_PASTE_BYTES) so the API limit and the page's advertised limit share a
+// source. 8 MB gives honest headroom for JSON-encoding overhead on long CC
+// session JSONL (observed at 1.74 MB) while staying under KV's 25 MB ceiling.
 const MAX_TURNS = 10000;
 
 const json = (status: number, body: Record<string, unknown>): Response =>
@@ -71,7 +68,17 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
   if (typeof content !== "string") {
     return { ok: false, reason: "Missing 'content' field." };
   }
-  if (isSourceKind(kind) && kind !== "claude-share") {
+  // [LAW:no-silent-fallbacks] claude-share is a URL arm that only the JS submit
+  // path (JSON { url }) can fulfill. A form-encoded claude-share request fails
+  // loudly here instead of being silently re-routed to parseAuto, which would
+  // render the URL as a raw bubble — the opposite of what the user asked for.
+  if (kind === "claude-share") {
+    return {
+      ok: false,
+      reason: "claude.ai/share URLs require JavaScript enabled (they're fetched via the JSON submit path).",
+    };
+  }
+  if (isSourceKind(kind)) {
     return { ok: true, input: { kind, content } as PasteInput };
   }
   return { ok: true, legacy: content };
@@ -88,8 +95,8 @@ export const POST: APIRoute = async ({ request }) => {
   // is uniform — a 200 MB URL still gets rejected here, not in firecrawl.
   const rawSize = "input" in decoded ? sizeOf(inputBytes(decoded.input)) : sizeOf(decoded.legacy);
   if (rawSize === 0) return json(400, { error: "Empty paste." });
-  if (rawSize > MAX_BYTES) {
-    return json(413, { error: `Paste exceeds ${MAX_BYTES} bytes.` });
+  if (rawSize > MAX_PASTE_BYTES) {
+    return json(413, { error: `Paste exceeds ${MAX_PASTE_BYTES} bytes.` });
   }
 
   // [LAW:single-enforcer] ingestPaste is the one entry point that handles

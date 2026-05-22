@@ -17,6 +17,11 @@ export interface FirecrawlEnv {
 
 const FIRECRAWL_ENDPOINT = "https://api.firecrawl.dev/v1/scrape";
 
+// [LAW:single-enforcer] One timeout governs the ingestion fetch. Without it a
+// stalled Firecrawl ties up the Worker until the platform ceiling; this fails
+// fast with a typed reason so the caller's ok:false path runs predictably.
+const FIRECRAWL_TIMEOUT_MS = 20_000;
+
 interface ScrapeResponse {
   readonly success?: boolean;
   readonly data?: { readonly markdown?: string };
@@ -41,6 +46,9 @@ export const firecrawlScrape = async (
     };
   }
 
+  // [LAW:types-are-the-program] The catch returns the rejection value, then
+  // `instanceof Response` narrows success from failure — a timeout (DOMException
+  // TimeoutError from AbortSignal.timeout) becomes a distinct typed reason.
   const response = await fetch(FIRECRAWL_ENDPOINT, {
     method: "POST",
     headers: {
@@ -48,13 +56,17 @@ export const firecrawlScrape = async (
       authorization: `Bearer ${key}`,
     },
     body: JSON.stringify({ url, formats: ["markdown"] }),
-  }).catch((e: unknown): null => {
-    void e;
-    return null;
-  });
+    signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
+  }).catch((e: unknown): unknown => e);
 
-  if (response === null) {
-    return { ok: false, reason: "Firecrawl request failed (network error)." };
+  if (!(response instanceof Response)) {
+    const timedOut = response instanceof DOMException && response.name === "TimeoutError";
+    return {
+      ok: false,
+      reason: timedOut
+        ? `Firecrawl request timed out after ${FIRECRAWL_TIMEOUT_MS / 1000}s.`
+        : "Firecrawl request failed (network error).",
+    };
   }
   if (!response.ok) {
     return {
