@@ -122,6 +122,13 @@ Average O(n log n), worst-case O(n²).
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      // [LAW:one-source-of-truth] Flush any pending debounce and re-narrow from
+      // the current content before reading the kind, so a not-yet-fired keystroke
+      // can't leave a stale selection (e.g. claude-share for non-URL text) that
+      // submits a mismatched { kind, url/content } shape. The detector is the
+      // single authority for what the content currently is.
+      if (timer !== undefined) window.clearTimeout(timer);
+      renderOptions(detectSources(contentEl.value));
       err.hidden = true;
       submitBtn.disabled = true;
       // Dropdown is invariant-guaranteed to hold a valid SourceKind when

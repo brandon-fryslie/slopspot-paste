@@ -146,7 +146,9 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
         turns.push({ kind: "message", role, content: cleaned });
       } else if (block.type === "tool_use") {
         const tu = block as ToolUseBlock;
-        if (typeof tu.name !== "string") continue;
+        // id keys the pending-pairing map; a non-string id from untrusted input
+        // would corrupt pairing, so require both fields before emitting.
+        if (typeof tu.name !== "string" || typeof tu.id !== "string") continue;
         turns.push({
           kind: "tool-call",
           tool: tu.name,
@@ -156,6 +158,7 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
         pendingToolIndex.set(tu.id, turns.length - 1);
       } else if (block.type === "tool_result") {
         const tr = block as ToolResultBlock;
+        if (typeof tr.tool_use_id !== "string") continue;
         const idx = pendingToolIndex.get(tr.tool_use_id);
         if (idx === undefined) continue;
         const existing = turns[idx];

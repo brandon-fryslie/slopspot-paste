@@ -1,5 +1,5 @@
 import type { ParseResult, PasteInput, Role, SourceKind, Turn } from "./types";
-import { SOURCE_KINDS } from "./types";
+import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
 import { parseClaudeShare } from "./parsers/claude-share";
@@ -195,6 +195,12 @@ export const ingestPaste = async (
   }
   const fetched = await firecrawlScrape(input.url, env);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
+  // [LAW:single-enforcer] The same size cap that the API applies to user input
+  // also governs fetched content — otherwise a tiny URL could smuggle an
+  // arbitrarily large markdown body past the boundary into parse + KV storage.
+  if (new TextEncoder().encode(fetched.markdown).length > MAX_PASTE_BYTES) {
+    return { ok: false, reason: `Fetched content exceeds the ${MAX_PASTE_LABEL} limit.` };
+  }
   const turns = parseClaudeShare(fetched.markdown);
   if (turns === null || turns.length === 0) {
     return {

@@ -665,6 +665,23 @@ console.log("\nclaude-jsonl robustness + legacy auto-path (PR review):");
       r.turns.some((t) => t.kind === "message" && t.content === "still here"));
   }
 
+  // A tool_use with a non-string/missing id can't key the pairing map; it must
+  // be skipped, not emit a tool-call with a corrupt key.
+  const NO_ID = [
+    { type: "assistant", message: { role: "assistant", content: [
+      { type: "tool_use", name: "Bash", input: { command: "ls" } },
+      { type: "text", text: "after" },
+    ] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rid = parseInput({ kind: "claude-jsonl", content: NO_ID });
+  assert("tool_use without id is skipped", rid.ok);
+  if (rid.ok) {
+    assert("no tool-call emitted for id-less tool_use",
+      !rid.turns.some((t) => t.kind === "tool-call"));
+    assert("sibling text still emitted",
+      rid.turns.some((t) => t.kind === "message" && t.content === "after"));
+  }
+
   // [LAW:one-source-of-truth] The legacy no-source path (parseAuto/parsePaste)
   // must recognize JSONL too, not fall through to a single raw bubble.
   const VALID = [
