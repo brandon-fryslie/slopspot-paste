@@ -41,12 +41,13 @@ export interface Conversation {
 export const TTL_DAYS = 30;
 export const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
 
-// [LAW:one-source-of-truth] The size cap is stated once. The API enforces
-// MAX_PASTE_BYTES at the trust boundary; the index page shows MAX_PASTE_LABEL
-// in its hint. They are co-located so the enforced limit and the advertised
-// limit cannot drift (they did: a hardcoded "256 KB" hint outlived an 8 MB cap).
+// [LAW:one-source-of-truth] The size cap is stated once, as a byte count. The
+// API enforces MAX_PASTE_BYTES at the trust boundary; the index page shows
+// MAX_PASTE_LABEL in its hint. The label is *derived* from the byte count so the
+// advertised limit cannot drift from (or unit-mismatch) the enforced one — a
+// hardcoded "256 KB" hint once outlived the real cap.
 export const MAX_PASTE_BYTES = 8 * 1024 * 1024;
-export const MAX_PASTE_LABEL = "8 MB";
+export const MAX_PASTE_LABEL = `${MAX_PASTE_BYTES / (1024 * 1024)} MiB`;
 
 // [LAW:types-are-the-program] Discriminated result instead of throws/null
 // so callers must structurally handle both outcomes.
@@ -81,7 +82,7 @@ export type PasteInput =
 // expose `content`, the URL arm exposes `url`. Code that needs to read "the
 // user-supplied string regardless of shape" goes through this accessor so the
 // discriminator stays the single point of dispatch.
-export const inputBytes = (input: PasteInput): string =>
+export const inputText = (input: PasteInput): string =>
   input.kind === "claude-share" ? input.url : input.content;
 
 export type SourceKind = PasteInput["kind"];

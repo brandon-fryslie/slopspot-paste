@@ -4,7 +4,7 @@ import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import type { Conversation, ParseResult, PasteInput, SourceKind } from "../../types";
-import { inputBytes, MAX_PASTE_BYTES, SOURCE_KINDS, TTL_SECONDS } from "../../types";
+import { inputText, MAX_PASTE_BYTES, SOURCE_KINDS, TTL_SECONDS } from "../../types";
 
 export const prerender = false;
 
@@ -90,10 +90,10 @@ export const POST: APIRoute = async ({ request }) => {
   const decoded = await decodeRequest(request);
   if (!decoded.ok) return json(400, { error: decoded.reason });
 
-  // [LAW:single-enforcer] One size cap, one place. inputBytes returns the
+  // [LAW:single-enforcer] One size cap, one place. inputText returns the
   // user-supplied string regardless of arm (url or content), so the check
   // is uniform — a 200 MB URL still gets rejected here, not in firecrawl.
-  const rawSize = "input" in decoded ? sizeOf(inputBytes(decoded.input)) : sizeOf(decoded.legacy);
+  const rawSize = "input" in decoded ? sizeOf(inputText(decoded.input)) : sizeOf(decoded.legacy);
   if (rawSize === 0) return json(400, { error: "Empty paste." });
   if (rawSize > MAX_PASTE_BYTES) {
     return json(413, { error: `Paste exceeds ${MAX_PASTE_BYTES} bytes.` });

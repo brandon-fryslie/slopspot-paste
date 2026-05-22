@@ -98,7 +98,7 @@ Average O(n log n), worst-case O(n²).
     renderOptions(detectSources(contentEl.value));
 
     // [LAW:single-enforcer] One event handler owns dropdown freshness.
-    // Debounced so a 256 KB paste followed by typing doesn't re-parse on
+    // Debounced so a large paste followed by typing doesn't re-parse on
     // every keystroke; 120 ms is below the perceptual threshold for "the
     // dropdown updated when I pasted" while skipping mid-burst keystrokes.
     let timer: number | undefined;

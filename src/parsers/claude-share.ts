@@ -12,7 +12,7 @@ import type { Role, Turn } from "../types";
 // Nothing upstream (Firecrawl client) or downstream (renderer) knows it.
 // When Anthropic changes the share-page format, only this file changes.
 
-const HEADING_RE = /^##\s+(You\s+said|Claude\s+responded|Claude\s+said|Human|Assistant)\s*:\s*(.*)$/i;
+const HEADING_RE = /^##\s+(You\s+said|Claude\s+responded|Claude\s+said|Human|Assistant)\s*:\s*.*$/i;
 
 const ROLE_BY_LABEL: ReadonlyMap<string, Role> = new Map([
   ["you said", "user"],
@@ -52,7 +52,6 @@ const cleanBody = (body: string): string => {
 interface HeadingMatch {
   readonly role: Role;
   readonly lineIdx: number;
-  readonly previewBody: string;
 }
 
 const findHeadings = (lines: ReadonlyArray<string>): ReadonlyArray<HeadingMatch> => {
@@ -63,7 +62,7 @@ const findHeadings = (lines: ReadonlyArray<string>): ReadonlyArray<HeadingMatch>
     const label = m[1]!.trim().replace(/\s+/g, " ").toLowerCase();
     const role = ROLE_BY_LABEL.get(label);
     if (!role) continue;
-    out.push({ role, lineIdx: i, previewBody: m[2] ?? "" });
+    out.push({ role, lineIdx: i });
   }
   return out;
 };
