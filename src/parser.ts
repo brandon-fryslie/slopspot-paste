@@ -134,7 +134,6 @@ const parseRaw = (text: string): Turn[] => [
 // lives in ingestPaste below. Keeping this table strictly typed prevents a
 // future contributor from wiring claude-share into the sync dispatch.
 type TextArmKind = Exclude<SourceKind, "claude-share">;
-type TextArm = Extract<PasteInput, { content: string }>;
 
 const PARSER_BY_KIND: {
   readonly [K in TextArmKind]: (text: string) => Turn[] | null;
@@ -166,14 +165,15 @@ export const parseInput = (input: PasteInput): ParseResult => {
       reason: "claude-share is a URL arm; use ingestPaste() to fetch and parse.",
     };
   }
-  const arm = input as TextArm;
-  const text = normalize(arm.content);
+  // input is narrowed to the content-bearing arms here (claude-share returned
+  // above), so no cast is needed — a future URL-shaped arm would fail to compile.
+  const text = normalize(input.content);
   if (text.length === 0) return { ok: false, reason: "empty input" };
-  const turns = PARSER_BY_KIND[arm.kind](text);
+  const turns = PARSER_BY_KIND[input.kind](text);
   if (turns === null || turns.length === 0) {
     return {
       ok: false,
-      reason: `Content does not parse as ${arm.kind}.`,
+      reason: `Content does not parse as ${input.kind}.`,
     };
   }
   return { ok: true, turns };
