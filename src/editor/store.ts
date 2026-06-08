@@ -56,6 +56,16 @@ export class EditorStore {
   view: View = "blocks";
   importError: string | null = null;
   submitError: string | null = null;
+  // [LAW:one-source-of-truth] The baseline a reparse is judged against: the turns
+  // as last loaded (parse/fetch/confirmed-reparse). NOT a second live copy of
+  // blocks — it's a snapshot of a *different moment*, so isDirty is derivable
+  // (current blocks vs this baseline) rather than tracked as a flag that drifts.
+  pristineTurns: ReadonlyArray<Turn> = [];
+  // [LAW:no-ambient-temporal-coupling] A reparse that would discard hand-edits is
+  // a two-phase action (parse -> confirm -> commit). The middle phase is typed
+  // state carrying the already-parsed turns, not an ordering assumption or a
+  // `force` boolean. null = no decision pending.
+  pendingReparse: { readonly turns: ReadonlyArray<Turn> } | null = null;
   // One in-flight flag for any network action (fetch OR submit): while either is
   // running, both buttons disable. There is no legitimate state where a fetch
   // and a submit race, so a single flag is the honest representation.
@@ -111,6 +121,22 @@ export class EditorStore {
     return this.blocks.length > 0 && !this.busy;
   }
 
+  // [LAW:one-source-of-truth] "Were the blocks hand-edited since the last parse?"
+  // is derived, never a stored flag. Turn is pure JSON data (it is exactly what
+  // crosses the wire to /api/paste), so structural-string equality is exact for
+  // content and stable for identically-shaped turns. The asymmetry is the whole
+  // point: a false "dirty" only over-warns (harmless); it can never under-warn
+  // into the silent clobber [LAW:no-silent-failure] forbids.
+  get isDirty(): boolean {
+    return JSON.stringify(this.turns) !== JSON.stringify(this.pristineTurns);
+  }
+
+  // The one concept the reparse-confirm guards: there is visible edited work a
+  // reparse would destroy. Empty editor or an untouched parse: nothing to lose.
+  get wouldClobber(): boolean {
+    return this.blocks.length > 0 && this.isDirty;
+  }
+
   // ── Import box ──────────────────────────────────────────────────────────
 
   setImport(text: string): void {
@@ -120,11 +146,15 @@ export class EditorStore {
     // instant the text changes. A user override that no longer matches the text
     // is dropped by the getter, not patched here.
     this.importError = null;
+    // Editing the import box invalidates any staged reparse: the confirm offered
+    // "replace with THAT parse", which no longer matches the text on screen.
+    this.pendingReparse = null;
   }
 
   setImportKind(kind: SourceKind): void {
     this.userKind = kind;
     this.importError = null;
+    this.pendingReparse = null;
   }
 
   // The single import action. claude-share is the async URL arm (delegates to
@@ -143,7 +173,7 @@ export class EditorStore {
       this.importError = result.reason;
       return;
     }
-    this.loadTurns(result.turns);
+    this.accept(result.turns);
   }
 
   private async fetchShare(url: string): Promise<void> {
@@ -156,17 +186,43 @@ export class EditorStore {
         this.importError = result.reason;
         return;
       }
-      this.loadTurns(result.turns);
+      this.accept(result.turns);
     });
   }
 
   // ── Blocks ──────────────────────────────────────────────────────────────
 
+  // [LAW:single-enforcer] The one decision every freshly-parsed/fetched batch
+  // passes through: replace now, or stage for confirmation. The value
+  // (wouldClobber) selects the outcome — both are legitimate data states, not a
+  // skipped operation. No `force` flag duplicates this decision at callsites.
+  private accept(turns: ReadonlyArray<Turn>): void {
+    if (this.wouldClobber) {
+      this.pendingReparse = { turns };
+      return;
+    }
+    this.loadTurns(turns);
+  }
+
+  // The user confirmed a clobbering reparse. Commit the staged turns through the
+  // same single loader; a no-op when nothing is staged (idempotent confirm).
+  confirmReparse(): void {
+    const pending = this.pendingReparse;
+    if (pending === null) return;
+    this.loadTurns(pending.turns);
+  }
+
+  cancelReparse(): void {
+    this.pendingReparse = null;
+  }
+
   // [LAW:single-enforcer] The only place parsed/fetched turns become editable
-  // blocks. Replaces the list wholesale and snaps to the blocks view so the user
-  // sees what they imported.
+  // blocks. Replaces the list wholesale, resets the dirty baseline to the loaded
+  // turns, clears any pending decision, and snaps to the blocks view.
   private loadTurns(turns: ReadonlyArray<Turn>): void {
     this.blocks = toBlocks(turns);
+    this.pristineTurns = turns;
+    this.pendingReparse = null;
     this.view = "blocks";
   }
 

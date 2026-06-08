@@ -728,6 +728,37 @@ body:has(.admin-empty) main { max-width: 1100px; }
 .btn-secondary:hover { border-color: var(--accent); }
 .btn-secondary:disabled { opacity: 0.6; cursor: progress; }
 
+/* Destructive confirm — the "Replace" half of the no-clobber reparse gate. */
+.btn-danger {
+  background: #b91c1c;
+  color: #fff;
+  border: 1px solid #b91c1c;
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-danger:hover { background: #991b1b; border-color: #991b1b; }
+
+/* The reparse confirmation strip: warning text + Keep editing / Replace. Sits
+   inside the import box, only present while a clobbering parse is staged. */
+.reparse-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #fef3c7;
+  color: #78350f;
+  font-size: 14px;
+}
+.reparse-confirm span { margin-right: auto; }
+@media (prefers-color-scheme: dark) {
+  .reparse-confirm { background: #422006; color: #fde68a; }
+}
+
 /* Import box — paste a transcript, parse it into blocks. */
 .import-box {
   display: flex;
