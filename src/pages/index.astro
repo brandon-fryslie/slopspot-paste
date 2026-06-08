@@ -1,7 +1,15 @@
 ---
 import Base from "../layouts/Base.astro";
+import { MAX_PASTE_LABEL, SOURCE_KINDS, SOURCE_LABEL } from "../types";
 
 export const prerender = false;
+
+// [LAW:no-silent-fallbacks] The no-JS <form> POST path cannot fetch URLs
+// (claude-share is a JS-only JSON arm; the server rejects it on the form path).
+// So the server-rendered fallback offers only the kinds that path can fulfill.
+// With JS on, the client script rebuilds the dropdown from detectSources and
+// restores claude-share when a URL is detected.
+const fallbackKinds = SOURCE_KINDS.filter((k) => k !== "claude-share");
 ---
 
 <Base title="slopspot · paste — share LLM conversations">
@@ -14,6 +22,14 @@ export const prerender = false;
   </section>
 
   <form id="paste-form" class="paste-form" action="/api/paste" method="post">
+    <div class="source-row">
+      <label for="source" class="source-label">Source format</label>
+      <select id="source" name="source" class="source-select">
+        {fallbackKinds.map((k) => (
+          <option value={k}>{SOURCE_LABEL[k]}</option>
+        ))}
+      </select>
+    </div>
     <label for="content" class="visually-hidden">Conversation text</label>
     <textarea
       id="content"
@@ -29,40 +45,114 @@ What's the time complexity of quicksort?
 Average O(n log n), worst-case O(n²).
 
 — or "You said:" / "ChatGPT said:" — or "Human:" / "Assistant:" —
-— or a Claude Code transcript (❯ / ⏺ / ⎿ markers) —`}
+— or a Claude Code transcript (❯ / ⏺ / ⎿ markers) —
+— or a https://claude.ai/share/<id> URL — we fetch it (JavaScript required) —`}
     ></textarea>
     <div class="form-row">
       <button type="submit" class="btn-primary">Share it</button>
-      <span class="form-hint">Up to ~256 KB. No edit, no delete — disappears in 30 days.</span>
+      <span class="form-hint">Up to {MAX_PASTE_LABEL}. No edit, no delete — disappears in 30 days.</span>
     </div>
     <p id="form-error" class="form-error" role="alert" hidden></p>
   </form>
 
-  <script is:inline>
-    const form = document.getElementById("paste-form");
-    const err = document.getElementById("form-error");
+  <script>
+    // [LAW:one-source-of-truth] Detector + dropdown labels imported from the
+    // same module the server uses. No re-implementation of "is this CC?" in
+    // the browser — Astro bundles the parser module into the client script.
+    import { detectSources } from "../parser";
+    import { SOURCE_LABEL, type SourceKind } from "../types";
+
+    // [LAW:no-defensive-null-guards] DOM lookup is a trust boundary (the page
+    // HTML may or may not contain the element this script expects). One loud
+    // guard here means downstream code gets typed non-null values and never
+    // needs to defend again. Passing the constructor gives us *runtime*
+    // verification (instanceof) instead of a bare type assertion — if the
+    // page ships a tag mismatch we fail loudly, not silently.
+    const must = <T,>(sel: string, ctor: new () => T): T => {
+      const el = document.querySelector(sel);
+      if (el === null) throw new Error(`required element missing: ${sel}`);
+      if (!(el instanceof ctor)) throw new Error(`element ${sel} is not ${ctor.name}`);
+      return el;
+    };
+
+    const form = must("#paste-form", HTMLFormElement);
+    const err = must("#form-error", HTMLParagraphElement);
+    const sourceEl = must("#source", HTMLSelectElement);
+    const contentEl = must("#content", HTMLTextAreaElement);
+
+    // [LAW:dataflow-not-control-flow] Rebuilding the dropdown is a pure
+    // function of the detected set + the current selection. No branches on
+    // "did the user paste?" or "is this the first run?" — same code path
+    // every time, behavior varies with the data the detector returns.
+    const renderOptions = (kinds: ReadonlyArray<SourceKind>): void => {
+      const prev = sourceEl.value as SourceKind | "";
+      const html = kinds.map((k) => `<option value="${k}">${SOURCE_LABEL[k]}</option>`).join("");
+      sourceEl.innerHTML = html;
+      // Preserve the user's pick if it's still valid; else fall to the first
+      // (highest-priority) detected kind. This is the wrong-pick-unreachable
+      // invariant: every option in the dropdown is one the parser will accept.
+      sourceEl.value = (kinds as ReadonlyArray<string>).includes(prev) ? prev : (kinds[0] ?? "");
+    };
+
+    // Initial render: empty textarea → priming state (all kinds shown).
+    renderOptions(detectSources(contentEl.value));
+
+    // [LAW:single-enforcer] One event handler owns dropdown freshness.
+    // Debounced so a large paste followed by typing doesn't re-parse on
+    // every keystroke; 120 ms is below the perceptual threshold for "the
+    // dropdown updated when I pasted" while skipping mid-burst keystrokes.
+    let timer: number | undefined;
+    contentEl.addEventListener("input", () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        renderOptions(detectSources(contentEl.value));
+      }, 120);
+    });
+
+    const submitBtn = must("#paste-form button[type=submit]", HTMLButtonElement);
+
+    // [LAW:types-are-the-program] The submit payload mirrors the PasteInput
+    // discriminated union shape. claude-share carries `url`; every other arm
+    // carries `content`. No shared "body" field with mode flags — the wire
+    // shape IS the type.
+    const sourcePayload = (kind: SourceKind, text: string): object =>
+      kind === "claude-share"
+        ? { kind, url: text.trim() }
+        : { kind, content: text };
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      // [LAW:one-source-of-truth] Flush any pending debounce and re-narrow from
+      // the current content before reading the kind, so a not-yet-fired keystroke
+      // can't leave a stale selection (e.g. claude-share for non-URL text) that
+      // submits a mismatched { kind, url/content } shape. The detector is the
+      // single authority for what the content currently is.
+      if (timer !== undefined) window.clearTimeout(timer);
+      renderOptions(detectSources(contentEl.value));
       err.hidden = true;
-      const btn = form.querySelector("button[type=submit]");
-      btn.disabled = true;
-      btn.textContent = "Sharing…";
+      submitBtn.disabled = true;
+      // Dropdown is invariant-guaranteed to hold a valid SourceKind when
+      // content is non-empty (raw is always in the detected set). Submit
+      // as the matching arm shape; the legacy { content }-only path on the
+      // server stays for direct API callers, not used from this page.
+      const kind = sourceEl.value as SourceKind;
+      submitBtn.textContent = kind === "claude-share" ? "Fetching…" : "Sharing…";
       try {
         const res = await fetch("/api/paste", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content: form.content.value }),
+          body: JSON.stringify({ source: sourcePayload(kind, contentEl.value) }),
         });
-        const body = await res.json();
-        if (!res.ok || !body.slug) {
-          throw new Error(body.error || "Server error");
+        const result = await res.json() as { slug?: string; error?: string };
+        if (!res.ok || !result.slug) {
+          throw new Error(result.error ?? "Server error");
         }
-        window.location.assign("/" + body.slug);
+        window.location.assign("/" + result.slug);
       } catch (e2) {
-        err.textContent = e2.message;
+        err.textContent = e2 instanceof Error ? e2.message : String(e2);
         err.hidden = false;
-        btn.disabled = false;
-        btn.textContent = "Share it";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Share it";
       }
     });
   </script>

@@ -1,7 +1,7 @@
 ---
 import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
-import Turn from "../components/Turn.astro";
+import { renderTurnsHtml } from "../renderTurns";
 import { getConversation } from "../storage";
 import { isValidSlug } from "../slug";
 
@@ -37,7 +37,5 @@ const expiresIn = Math.max(0, Math.ceil((conversation.expiresAt - Date.now()) / 
     </p>
   </section>
 
-  <section class="conversation" aria-label="Conversation">
-    {conversation.turns.map((turn, i) => <Turn turn={turn} index={i} />)}
-  </section>
+  <section class="conversation" aria-label="Conversation" set:html={renderTurnsHtml(conversation.turns)} />
 </Base>
