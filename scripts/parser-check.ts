@@ -20,7 +20,9 @@ import { renderTurnsHtml } from "../src/renderTurns";
 import {
   convertKind,
   emptyTurn,
+  mergeTurns,
   newId,
+  splitTurn,
   toBlocks,
   toTurns,
 } from "../src/editor/blocks";
@@ -868,6 +870,60 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
     "convertKind to same kind preserves role (identity)",
     sameKind.kind === "message" && sameKind.role === "user" && sameKind.content === "keep my role",
   );
+
+  // splitTurn — a pure cut of the primary text; both halves keep kind + non-text
+  // fields, and the halves reconstruct the original exactly (nothing inserted).
+  const [sh, st] = splitTurn({ kind: "message", role: "user", content: "hello world" }, 5);
+  assert(
+    "splitTurn divides text, both halves keep role",
+    sh.kind === "message" && st.kind === "message" &&
+      sh.role === "user" && st.role === "user" &&
+      sh.content === "hello" && st.content === " world",
+  );
+  assert(
+    "splitTurn is a pure cut (head + tail === original)",
+    sh.kind === "message" && st.kind === "message" && sh.content + st.content === "hello world",
+  );
+  // Edge offsets clamp; one empty half (a legal block) rather than an out-of-range slice.
+  const [eh, et2] = splitTurn({ kind: "insight", content: "abc" }, 99);
+  assert(
+    "splitTurn clamps past end -> full head, empty tail",
+    eh.kind === "insight" && et2.kind === "insight" && eh.content === "abc" && et2.content === "",
+  );
+  const [nh] = splitTurn({ kind: "turn-summary", text: "abc" }, -5);
+  assert("splitTurn clamps negative -> empty head", nh.kind === "turn-summary" && nh.text === "");
+  // tool-call splits its primary field (args), preserving tool name + output.
+  const [th, tt] = splitTurn(
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "out" } },
+    2,
+  );
+  assert(
+    "splitTurn(tool-call) cuts args, keeps tool + output on both",
+    th.kind === "tool-call" && tt.kind === "tool-call" &&
+      th.tool === "Bash" && tt.tool === "Bash" &&
+      th.args === "ls" && tt.args === " -la" &&
+      th.output?.text === "out" && tt.output?.text === "out",
+  );
+
+  // mergeTurns — keeps prev's shape, joins texts with a blank line, drops next's
+  // non-text fields (one merged block keeps exactly one shape).
+  const merged = mergeTurns(
+    { kind: "message", role: "user", content: "first" },
+    { kind: "message", role: "assistant", content: "second" },
+  );
+  assert(
+    "mergeTurns keeps prev role, joins with blank line, drops next role",
+    merged.kind === "message" && merged.role === "user" && merged.content === "first\n\nsecond",
+  );
+  // Merge across kinds: prev's kind wins; next contributes only its primary text.
+  const mixedMerge = mergeTurns(
+    { kind: "insight", content: "note" },
+    { kind: "turn-summary", text: "summary" },
+  );
+  assert(
+    "mergeTurns keeps prev kind, appends next primary text",
+    mixedMerge.kind === "insight" && mixedMerge.content === "note\n\nsummary",
+  );
 }
 
 console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-reparse):");
@@ -950,6 +1006,62 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
   assert("staged before re-edit", s3.pendingReparse !== null);
   s3.setImport("## User\ne\n\n## Assistant\nf");
   assert("editing import text drops the stale pending reparse", s3.pendingReparse === null);
+}
+
+console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
+{
+  const io: EditorIo = {
+    fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+    submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
+    navigate: () => {},
+  };
+
+  // --- splitBlock: one card becomes two in place; head keeps id, tail is fresh ---
+  const s = new EditorStore(io);
+  s.setImport("## User\nhello world\n\n## Assistant\nreply");
+  s.ingest();
+  assert("two blocks loaded", s.blocks.length === 2);
+  const headId = s.blocks[0]!.id;
+  const tailIdBefore = s.blocks[1]!.id;
+  s.splitBlock(headId, 5);
+  assert("splitBlock grows the list by one", s.blocks.length === 3);
+  assert("head keeps the original id (DOM/caret stability)", s.blocks[0]!.id === headId);
+  assert("tail gets a fresh id distinct from head", s.blocks[1]!.id !== headId);
+  assert("the untouched following block is unmoved", s.blocks[2]!.id === tailIdBefore);
+  const h = s.blocks[0]!.turn;
+  const t = s.blocks[1]!.turn;
+  assert(
+    "split content divides at the offset, role preserved",
+    h.kind === "message" && t.kind === "message" &&
+      h.content === "hello" && t.content === " world" && h.role === "user" && t.role === "user",
+  );
+  assert("split marks the store dirty (derives from blocks)", s.isDirty);
+
+  // A stale split id (concurrent delete) is a total no-op, not a throw.
+  const lenBefore = s.blocks.length;
+  s.splitBlock("does-not-exist", 0);
+  assert("splitBlock on a missing id is a no-op", s.blocks.length === lenBefore);
+
+  // --- mergeBlocks: a card folds into the one above; prev id + shape survive ---
+  const m = new EditorStore(io);
+  m.setImport("## User\nfirst\n\n## Assistant\nsecond");
+  m.ingest();
+  const prevId = m.blocks[0]!.id;
+  const curId = m.blocks[1]!.id;
+  m.mergeBlocks(curId);
+  assert("mergeBlocks shrinks the list by one", m.blocks.length === 1);
+  assert("merged block keeps the previous block's id", m.blocks[0]!.id === prevId);
+  const mt = m.blocks[0]!.turn;
+  assert(
+    "merged text joins prev + cur with a blank line, prev role wins",
+    mt.kind === "message" && mt.role === "user" && mt.content === "first\n\nsecond",
+  );
+  assert("the consumed block's id is gone", !m.blocks.some((b) => b.id === curId));
+
+  // Merging the first block has nothing above it — a total no-op.
+  const firstOnly = m.blocks[0]!.id;
+  m.mergeBlocks(firstOnly);
+  assert("mergeBlocks on the first block is a no-op", m.blocks.length === 1);
 }
 
 console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } arm):");

@@ -49,6 +49,21 @@ const asRole = (v: string): Role => {
 const valueOf = (e: Event): string =>
   (e.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value;
 
+// [LAW:effects-at-boundaries] Reading the live caret is an irreducible DOM read —
+// the acknowledged last-inch-of-UI carve-out. The split control sits in the
+// kind-agnostic header, so from the clicked button it locates this card's primary
+// text field (every kind tags exactly one `.primary-text`) and returns its caret
+// offset. The store clamps, so a never-focused field's 0 is a valid edge split,
+// not an error. [LAW:no-silent-failure] a card with no primary field throws.
+const caretOffsetIn = (origin: HTMLElement): number => {
+  const field = origin
+    .closest(".block-card")
+    ?.querySelector<HTMLTextAreaElement | HTMLInputElement>(".primary-text");
+  if (field === null || field === undefined)
+    throw new Error("block card has no .primary-text field");
+  return field.selectionStart ?? field.value.length;
+};
+
 // ── Per-kind card bodies ────────────────────────────────────────────────────
 // Each receives a turn already narrowed to its kind, so the new-turn value it
 // builds on edit is checked by the compiler against that exact arm.
@@ -67,7 +82,7 @@ const messageBody = (
       ${ROLES.map((r) => html`<option value=${r}>${ROLE_LABEL[r]}</option>`)}
     </select>
     <textarea
-      class="block-content"
+      class="block-content primary-text"
       rows="4"
       .value=${turn.content}
       @input=${(e: Event) => store.replaceTurn(id, { ...turn, content: valueOf(e) })}
@@ -82,7 +97,7 @@ const insightBody = (
 ): TemplateResult => html`
   <div class="block-fields">
     <textarea
-      class="block-content"
+      class="block-content primary-text"
       rows="3"
       .value=${turn.content}
       @input=${(e: Event) => store.replaceTurn(id, { ...turn, content: valueOf(e) })}
@@ -97,7 +112,7 @@ const turnSummaryBody = (
 ): TemplateResult => html`
   <div class="block-fields">
     <input
-      class="block-summary"
+      class="block-summary primary-text"
       .value=${turn.text}
       @input=${(e: Event) => store.replaceTurn(id, { ...turn, text: valueOf(e) })}
     />
@@ -139,7 +154,7 @@ const toolCallBody = (
         @input=${(e: Event) => store.replaceTurn(id, { ...turn, tool: valueOf(e) })}
       />
       <textarea
-        class="block-args"
+        class="block-args primary-text"
         rows="2"
         placeholder="args"
         .value=${turn.args}
@@ -212,6 +227,21 @@ const blockCard = (store: EditorStore, block: Block, index: number): TemplateRes
         >⠿</span
       >
       ${kindBadge(store, block.id, block.turn)}
+      <button
+        class="block-act block-split"
+        title="Split at cursor"
+        @click=${(e: Event) => store.splitBlock(block.id, caretOffsetIn(e.currentTarget as HTMLElement))}
+      >
+        ✂
+      </button>
+      <button
+        class="block-act block-merge"
+        title="Merge into the block above"
+        ?disabled=${index === 0}
+        @click=${() => store.mergeBlocks(block.id)}
+      >
+        ↥
+      </button>
       <button
         class="block-del"
         title="Delete block"
