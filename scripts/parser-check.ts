@@ -5,7 +5,10 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { parsePaste } from "../src/parser";
+import { detectSources, isClaudeShareUrl, parseInput, parsePaste } from "../src/parser";
+import { parseClaudeShare } from "../src/parsers/claude-share";
+import { SOURCE_KINDS, textArmInput } from "../src/types";
+import type { SourceKind } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -13,7 +16,9 @@ import {
   normalizeTables,
   renderMarkdown,
 } from "../src/render";
+import { renderTurnsHtml } from "../src/renderTurns";
 import type { Turn } from "../src/types";
+import { readFileSync } from "node:fs";
 
 const CC_SAMPLE = `❯ deleted
 
@@ -349,6 +354,421 @@ but only when a | b matches.`;
     "wide table wrapped for overflow",
     /<div class="table-wrap"><table>/.test(html),
   );
+}
+
+console.log("\nparseInput per-kind dispatch:");
+{
+  // chatgpt arm parses said-marker content cleanly
+  const r = parseInput({ kind: "chatgpt", content: CHATGPT_SAMPLE });
+  assert("chatgpt arm ok", r.ok);
+  if (r.ok) {
+    assertEq(
+      "chatgpt roles",
+      r.turns.map((t) => (t.kind === "message" ? t.role : null)),
+      ["user", "assistant", "user", "assistant"],
+    );
+  }
+}
+{
+  // markdown arm parses markdown headings cleanly
+  const r = parseInput({ kind: "markdown", content: MARKDOWN_SAMPLE });
+  assert("markdown arm ok", r.ok);
+  if (r.ok) assertEq("markdown turn count", r.turns.length, 4);
+}
+{
+  // claude-code arm parses the CC transcript
+  const r = parseInput({ kind: "claude-code", content: CC_SAMPLE });
+  assert("claude-code arm ok", r.ok);
+  if (r.ok) assert("claude-code emits insight + turn-summary",
+    r.turns.some((t) => t.kind === "insight") &&
+    r.turns.some((t) => t.kind === "turn-summary"));
+}
+{
+  // raw arm always produces one assistant bubble
+  const r = parseInput({ kind: "raw", content: "just plain text\nno markers" });
+  assert("raw arm ok", r.ok);
+  if (r.ok) {
+    assertEq("raw turn count", r.turns.length, 1);
+    assert("raw is assistant message",
+      r.turns[0]!.kind === "message" && r.turns[0]!.role === "assistant");
+  }
+}
+{
+  // wrong kind for content → typed failure, not silent fallback
+  const r = parseInput({ kind: "claude-code", content: "## User\nhi\n## Assistant\nhello" });
+  assert("wrong-kind pick fails cleanly", !r.ok);
+  if (!r.ok) assert("failure reason names the kind",
+    r.reason.toLowerCase().includes("claude-code"));
+}
+{
+  // claude-paste arm parses Human:/Assistant: format
+  const r = parseInput({
+    kind: "claude-paste",
+    content: "Human:\nhi\n\nAssistant:\nhello\n\nHuman:\nbye\n\nAssistant:\nlater",
+  });
+  assert("claude-paste arm ok", r.ok);
+  if (r.ok) assertEq("claude-paste turn count", r.turns.length, 4);
+}
+{
+  // empty content → typed failure regardless of kind
+  const r = parseInput({ kind: "chatgpt", content: "   \n  " });
+  assert("empty content fails cleanly", !r.ok);
+}
+
+console.log("\nclaude-jsonl parser (T4):");
+{
+  // Synthetic transcript exercising every block type the parser handles.
+  // Two user prompts, one assistant text + tool_use + paired tool_result,
+  // a thinking block (must be dropped), and a system-reminder envelope
+  // (must be stripped from the user message body).
+  const JSONL_SAMPLE = [
+    { type: "user", message: { role: "user", content: "what's in the repo?" } },
+    {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "internal reasoning, should be filtered" },
+          { type: "text", text: "Let me look around." },
+          { type: "tool_use", id: "tool_abc", name: "Bash", input: { command: "ls", description: "List files" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool_abc", content: "src\nREADME.md" }] },
+    },
+    {
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "Two entries." }] },
+    },
+    {
+      type: "user",
+      message: {
+        role: "user",
+        content: "thanks!<system-reminder>You are in 'explanatory' mode.</system-reminder>",
+      },
+    },
+    // Non-message event (must be ignored, not crash the parser)
+    { type: "permission-mode", permissionMode: "default", sessionId: "abc" },
+  ].map((e) => JSON.stringify(e)).join("\n");
+
+  const r = parseInput({ kind: "claude-jsonl", content: JSONL_SAMPLE });
+  assert("claude-jsonl arm ok", r.ok);
+  if (r.ok) {
+    assertEq(
+      "kinds sequence",
+      kinds(r.turns),
+      ["message", "message", "tool-call", "message", "message"],
+    );
+    const t0 = r.turns[0]!;
+    assert("turn[0] is user 'what's in the repo?'",
+      t0.kind === "message" && t0.role === "user" && t0.content === "what's in the repo?");
+    const t1 = r.turns[1]!;
+    assert("turn[1] is assistant 'Let me look around.'",
+      t1.kind === "message" && t1.role === "assistant" && t1.content === "Let me look around.");
+    // Thinking block MUST be filtered — verify it's not in the output.
+    assert("no turn contains 'internal reasoning'",
+      r.turns.every((t) => t.kind !== "message" || !t.content.includes("internal reasoning")));
+    const t2 = r.turns[2]!;
+    assert("turn[2] is Bash tool-call",
+      t2.kind === "tool-call" && t2.tool === "Bash");
+    assert("turn[2] args contain the command (JSON-serialized)",
+      t2.kind === "tool-call" && t2.args.includes('"command": "ls"'));
+    assert("turn[2] output paired from tool_result",
+      t2.kind === "tool-call" && t2.output?.text === "src\nREADME.md");
+    assert("turn[2] output kind classified as terminal (Bash)",
+      t2.kind === "tool-call" && t2.output?.kind === "terminal");
+    const t4 = r.turns[4]!;
+    assert("turn[4] is user 'thanks!' (system-reminder envelope stripped)",
+      t4.kind === "message" && t4.role === "user" && t4.content === "thanks!");
+  }
+
+  // Detector picks up the new kind on JSONL input.
+  const det = detectSources(JSONL_SAMPLE);
+  assert("detector includes claude-jsonl on JSONL input", det.includes("claude-jsonl"));
+  assert("detector ranks claude-jsonl first (most specific)", det[0] === "claude-jsonl");
+
+  // Bogus first line → null (not JSONL).
+  const r2 = parseInput({ kind: "claude-jsonl", content: "this is not JSON\n{\"type\":\"user\"}" });
+  assert("non-JSONL input fails cleanly", !r2.ok);
+
+  // Empty JSONL → null.
+  const r3 = parseInput({ kind: "claude-jsonl", content: "" });
+  assert("empty input fails cleanly", !r3.ok);
+
+  // JSONL with only non-message events → null (no parseable transcript).
+  const noMsgs = [
+    { type: "permission-mode", permissionMode: "default" },
+    { type: "bridge-session", sessionId: "x" },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const r4 = parseInput({ kind: "claude-jsonl", content: noMsgs });
+  assert("JSONL with no message events fails cleanly", !r4.ok);
+}
+
+console.log("\ndetectSources (T2 — UI-gating detector):");
+{
+  // For text arms: the detector IS the parser. expected() mirrors the text-
+  // arm half of the detector; if the parser changes its mind, the detector
+  // follows it. The claude-share arm uses a pattern check (not the parser)
+  // so it's excluded here and verified separately in the T3 block below.
+  const expected = (text: string): ReadonlyArray<SourceKind> =>
+    SOURCE_KINDS.filter(
+      (k) => k !== "claude-share" && parseInput(textArmInput(k, text)).ok,
+    );
+
+  assertEq("empty → all kinds (priming)", detectSources(""), SOURCE_KINDS);
+  assertEq("whitespace-only → all kinds (priming)", detectSources("   \n  \t  "), SOURCE_KINDS);
+
+  // CC sample must include claude-code; raw is always present for non-empty.
+  const ccSet = detectSources(CC_SAMPLE);
+  assertEq("CC sample matches parser-truth", ccSet, expected(CC_SAMPLE));
+  assert("CC sample includes claude-code", ccSet.includes("claude-code"));
+  assert("CC sample includes raw", ccSet.includes("raw"));
+  assert("CC sample's first kind is claude-code (priority)", ccSet[0] === "claude-code");
+
+  const mdSet = detectSources(MARKDOWN_SAMPLE);
+  assertEq("markdown sample matches parser-truth", mdSet, expected(MARKDOWN_SAMPLE));
+  assert("markdown sample includes markdown", mdSet.includes("markdown"));
+  assert("markdown sample's first kind is markdown (priority over raw)", mdSet[0] === "markdown");
+  assert("markdown sample excludes claude-code", !mdSet.includes("claude-code"));
+
+  const gptSet = detectSources(CHATGPT_SAMPLE);
+  assertEq("chatgpt sample matches parser-truth", gptSet, expected(CHATGPT_SAMPLE));
+  assert("chatgpt sample includes chatgpt", gptSet.includes("chatgpt"));
+  assert("chatgpt sample's first kind is chatgpt (priority)", gptSet[0] === "chatgpt");
+  // Parser overlap is a real feature, not a bug: the name-colon regex matches
+  // "You said:" as a bare name + colon, classifyLabel resolves "you"→user via
+  // leading-word fallback. Both parsers produce equivalent turns. The detector
+  // surfaces both because both genuinely succeed — this is detector-is-the-
+  // parser working correctly. A separate predicate would have lied about it.
+  assert("chatgpt sample also includes claude-paste (parser overlap)",
+    gptSet.includes("claude-paste"));
+
+  // Pure prose with no markers: only raw matches. The dropdown will collapse
+  // to a single option, which is the correct typed expression of "we have no
+  // structural signal, the user gets a single bubble." claude-jsonl is also
+  // excluded because plain prose isn't valid JSON on the first line.
+  const proseSet = detectSources("just a single paragraph of text, no markers anywhere here");
+  assertEq("plain prose → only raw", proseSet, ["raw"]);
+}
+
+console.log("\nclaude-share parser (T3 — URL ingestion):");
+{
+  // isClaudeShareUrl — positive cases
+  assert("https URL accepted",
+    isClaudeShareUrl("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"));
+  assert("http URL accepted (we upgrade later)",
+    isClaudeShareUrl("http://claude.ai/share/abc123"));
+  assert("trailing slash accepted",
+    isClaudeShareUrl("https://claude.ai/share/abc123/"));
+  assert("surrounding whitespace tolerated",
+    isClaudeShareUrl("  https://claude.ai/share/abc123  \n"));
+  assert("uppercase scheme accepted",
+    isClaudeShareUrl("HTTPS://claude.ai/share/abc123"));
+  assert("query string tolerated",
+    isClaudeShareUrl("https://claude.ai/share/abc123?utm=x"));
+
+  // isClaudeShareUrl — negative cases
+  assert("plain text rejected", !isClaudeShareUrl("hello world"));
+  assert("non-claude URL rejected", !isClaudeShareUrl("https://example.com/share/abc"));
+  assert("claude.ai non-share URL rejected", !isClaudeShareUrl("https://claude.ai/new"));
+  assert("share without id rejected", !isClaudeShareUrl("https://claude.ai/share/"));
+  assert("multiline rejected", !isClaudeShareUrl("https://claude.ai/share/abc\nmore text"));
+  assert("empty rejected", !isClaudeShareUrl(""));
+  assert("whitespace-only rejected", !isClaudeShareUrl("   \n\t "));
+
+  // Detector recognizes URLs and prioritizes claude-share
+  const url = "https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82";
+  const urlSet = detectSources(url);
+  assert("URL detection includes claude-share", urlSet.includes("claude-share"));
+  assert("URL detection ranks claude-share first", urlSet[0] === "claude-share");
+  // URLs are short single lines; the raw fallback still applies because raw
+  // never rejects anything. This is intentional: it gives the user an escape
+  // hatch to render the URL string as a single bubble if Firecrawl is down.
+  assert("URL detection still includes raw fallback", urlSet.includes("raw"));
+  // None of the text-arm parsers should match a bare URL — no false-positives.
+  ["claude-jsonl", "claude-code", "markdown", "chatgpt", "claude-paste"].forEach((k) => {
+    assert(`URL excludes ${k}`, !urlSet.includes(k as SourceKind));
+  });
+
+  // parseInput must reject claude-share with a useful redirect message —
+  // it has no synchronous interpretation.
+  const blocked = parseInput({ kind: "claude-share", url });
+  assert("parseInput rejects claude-share arm", !blocked.ok);
+  if (!blocked.ok) {
+    assert("parseInput error names the async path", blocked.reason.includes("ingestPaste"));
+  }
+
+  // parseClaudeShare against the real captured fixture
+  const fixture = readFileSync("test/fixtures/claude-share.md", "utf8");
+  const turns = parseClaudeShare(fixture);
+  assert("fixture parses to non-null", turns !== null);
+  if (turns) {
+    assertEq("fixture turn count", turns.length, 2);
+    const t0 = turns[0]!;
+    const t1 = turns[1]!;
+    assert("turn[0] is a user message",
+      t0.kind === "message" && t0.role === "user");
+    assert("turn[1] is an assistant message",
+      t1.kind === "message" && t1.role === "assistant");
+    assert("user message body contains original question",
+      t0.kind === "message" && t0.content.includes("comrehensible to me without dumbing"));
+    assert("assistant message contains the substantive answer",
+      t1.kind === "message" && t1.content.includes("IsoAcoustics"));
+    assert("boilerplate stripped from user body",
+      t0.kind === "message" && !t0.content.includes("This is a copy of a chat"));
+    assert("date stamp stripped from user body",
+      t0.kind === "message" && !/\bMay\s+18\b/.test(t0.content));
+    assert("footer stripped from assistant body",
+      t1.kind === "message" && !t1.content.includes("Ask Claude your own question"));
+  }
+
+  // parseClaudeShare fails cleanly on input with no headings.
+  const noHeadings = parseClaudeShare("just some markdown with no\n## headings\nat all");
+  assert("no You-said headings → null", noHeadings === null);
+
+  // parseClaudeShare fails cleanly on input with only one heading
+  // (single-turn share — we treat as malformed for now, two-turn minimum).
+  const single = parseClaudeShare("## You said: hi\n\nhi\n");
+  assert("single-heading share → null", single === null);
+
+  // parseClaudeShare handles the alternate "Claude said:" label too.
+  const altLabel = parseClaudeShare(
+    "## You said: question\n\nquestion\n\n## Claude said: answer\n\nanswer body\n",
+  );
+  assert("alternate 'Claude said:' label parses", altLabel !== null);
+  if (altLabel) {
+    assertEq("alt label turn count", altLabel.length, 2);
+  }
+}
+
+console.log("\nclaude-jsonl robustness + legacy auto-path (PR review):");
+{
+  // [LAW:behavior-not-structure] A malformed/hand-edited JSONL block (null or a
+  // primitive where an object is expected) must be skipped at the trust
+  // boundary, not crash the request. The valid text block alongside it survives.
+  const MALFORMED = [
+    { type: "user", message: { role: "user", content: "hi" } },
+    {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [null, "oops", 42, { type: "text", text: "still here" }],
+      },
+    },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const r = parseInput({ kind: "claude-jsonl", content: MALFORMED });
+  assert("malformed JSONL blocks skipped (no crash)", r.ok);
+  if (r.ok) {
+    assert("valid text block survives malformed siblings",
+      r.turns.some((t) => t.kind === "message" && t.content === "still here"));
+  }
+
+  // A tool_use with a non-string/missing id can't key the pairing map; it must
+  // be skipped, not emit a tool-call with a corrupt key.
+  const NO_ID = [
+    { type: "assistant", message: { role: "assistant", content: [
+      { type: "tool_use", name: "Bash", input: { command: "ls" } },
+      { type: "text", text: "after" },
+    ] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rid = parseInput({ kind: "claude-jsonl", content: NO_ID });
+  assert("tool_use without id is skipped", rid.ok);
+  if (rid.ok) {
+    assert("no tool-call emitted for id-less tool_use",
+      !rid.turns.some((t) => t.kind === "tool-call"));
+    assert("sibling text still emitted",
+      rid.turns.some((t) => t.kind === "message" && t.content === "after"));
+  }
+
+  // [LAW:one-source-of-truth] The legacy no-source path (parseAuto/parsePaste)
+  // must recognize JSONL too, not fall through to a single raw bubble.
+  const VALID = [
+    { type: "user", message: { role: "user", content: "what's in the repo?" } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Two entries." }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const auto = parsePaste(VALID);
+  assert("parseAuto recognizes JSONL", auto.ok);
+  if (auto.ok) {
+    assertEq("parseAuto JSONL kinds", kinds(auto.turns), ["message", "message"]);
+    assert("parseAuto did NOT fall back to a single raw bubble", auto.turns.length === 2);
+  }
+}
+
+console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
+{
+  // [LAW:behavior-not-structure] Assert the rendered-markup landmarks that the
+  // permalink page and the future live preview both depend on — not the
+  // function's internals. One fixture exercises every kind and every output kind.
+  const DIFF_OUTPUT = `Added 1 line
+      162 +new line of code
+      163  context line`;
+  const FILE_OUTPUT = `Read 2 lines
+1  import { foo } from "bar";
+2  export const x = 1;`;
+  const fixture: Turn[] = [
+    { kind: "message", role: "user", content: "hello" },
+    { kind: "message", role: "assistant", content: "hi there" },
+    { kind: "message", role: "system", content: "you are helpful" },
+    { kind: "insight", content: "a key realization" },
+    { kind: "turn-summary", text: "Sautéed for 53s" },
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
+    { kind: "tool-call", tool: "Update", args: "src/x.ts", output: { kind: "diff", text: DIFF_OUTPUT } },
+    { kind: "tool-call", tool: "Read", args: "src/x.ts", output: { kind: "file-read", text: FILE_OUTPUT } },
+    { kind: "tool-call", tool: "WebFetch", args: "{json}", output: { kind: "generic", text: "some output" } },
+    { kind: "tool-call", tool: "cherry-mcp", args: "", output: null },
+  ];
+  const html = renderTurnsHtml(fixture);
+
+  const has = (label: string, needle: string) => assert(label, html.includes(needle));
+
+  has("message user bubble", '<article class="bubble bubble-user" data-kind="message" data-role="user"');
+  has("message assistant bubble", 'class="bubble bubble-assistant"');
+  has("message system bubble", 'class="bubble bubble-system"');
+  has("role label rendered", '<span class="role-name">Assistant</span>');
+  has("insight star", '<span class="role-dot role-dot-insight" aria-hidden="true">★</span>');
+  has("insight name", '<span class="role-name">Insight</span>');
+  has("turn-summary aside", '<aside class="bubble-turn-summary" data-kind="turn-summary"');
+  has("tool-call article + data-tool", '<article class="bubble bubble-tool-call" data-kind="tool-call" data-tool="Bash"');
+  has("terminal frame", 'data-output-kind="terminal"');
+  has("terminal $-prefix", '$ ls -la');
+  has("diff frame", 'data-output-kind="diff"');
+  has("diff added row", '<div class="diff-line diff-added">');
+  has("diff summary pill", '>Added 1 line<');
+  has("file-read frame", 'data-output-kind="file-read"');
+  has("file row", '<div class="file-line">');
+  has("generic frame", 'data-output-kind="generic"');
+  has("generic args frame", 'data-output-kind="args"');
+  // output: null tool-call shows only its header, no output frame. cherry-mcp is
+  // the last turn, so nothing after its marker should contain a frame.
+  const cherryIdx = html.indexOf('data-tool="cherry-mcp"');
+  assert(
+    "null-output tool-call emits header only",
+    cherryIdx !== -1 && !html.slice(cherryIdx).includes("tool-output-frame"),
+  );
+
+  // [LAW:single-enforcer] The attribute/text-node escaping that Astro's auto-
+  // escaping gave the deleted components must survive the move to string
+  // concatenation. (Message/insight bodies go through renderMarkdown, whose
+  // HTML handling is unchanged by this refactor and tested elsewhere.)
+  const xss: Turn[] = [
+    { kind: "tool-call", tool: 'evil" onload="x', args: "", output: null },
+    { kind: "turn-summary", text: "<b>not bold</b>" },
+    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "<i>raw</i>" } },
+  ];
+  const xssHtml = renderTurnsHtml(xss);
+  assert("tool name attribute escaped (no quote breakout)", !xssHtml.includes('data-tool="evil" onload='));
+  assert("tool name attribute escaped form present", xssHtml.includes("evil&quot; onload="));
+  assert("turn-summary text escaped", xssHtml.includes("&lt;b&gt;not bold&lt;/b&gt;"));
+  assert("tool output text escaped", xssHtml.includes("&lt;i&gt;raw&lt;/i&gt;"));
+
+  // A code-fence info string is user-controlled and lands in a class="" value;
+  // escapeHtml alone leaves quotes intact, so a fence like ```js" onx=" would
+  // break out of the attribute. The class attribute must quote-escape it.
+  const fenceXss = renderMarkdown('```js" onmouseover="alert(1)\nx\n```');
+  assert("fence language attribute escaped (no quote breakout)", !fenceXss.includes('" onmouseover="alert(1)"'));
+  assert("fence language attribute escaped form present", fenceXss.includes("language-js&quot; onmouseover=&quot;alert(1)"));
 }
 
 if (process.exitCode) {
