@@ -25,7 +25,8 @@ import {
   toTurns,
 } from "../src/editor/blocks";
 import type { Kind } from "../src/editor/blocks";
-import type { Turn } from "../src/types";
+import { EditorStore, type EditorIo, type SubmitResult } from "../src/editor/store";
+import type { ParseResult, Turn } from "../src/types";
 import { readFileSync } from "node:fs";
 
 const CC_SAMPLE = `❯ deleted
@@ -867,6 +868,88 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
     "convertKind to same kind preserves role (identity)",
     sameKind.kind === "message" && sameKind.role === "user" && sameKind.content === "keep my role",
   );
+}
+
+console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-reparse):");
+{
+  // A fake IO — the store's only contact with the world, injected. Records what
+  // crossed the boundary so a test can assert on submit/fetch without a network.
+  const fakeIo = (): {
+    io: EditorIo;
+    submitted: Turn[][];
+    navigated: string[];
+  } => {
+    const submitted: Turn[][] = [];
+    const navigated: string[] = [];
+    const io: EditorIo = {
+      fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+      submit: async (turns): Promise<SubmitResult> => {
+        submitted.push([...turns]);
+        return { ok: true, slug: "test-slug" };
+      },
+      navigate: (slug) => navigated.push(slug),
+    };
+    return { io, submitted, navigated };
+  };
+
+  // --- importKind derivation (b48.5 fix: 'raw' is no longer sticky) ---
+  const s1 = new EditorStore(fakeIo().io);
+  s1.setImport("## User\nhi\n\n## Assistant\nyo");
+  assertEq("importKind snaps to most-specific detection (markdown)", s1.importKind, "markdown");
+  // A user override is honored only while it stays a detected kind.
+  s1.setImportKind("raw");
+  assertEq("explicit override honored when detected", s1.importKind, "raw");
+  s1.setImport("just some unstructured text with no markers");
+  // markdown no longer detected -> override 'raw' still valid here (raw always
+  // detected), so it remains; prove the getter, not a stored snapshot.
+  assert("override dropped by getter when undetected", s1.detected.includes(s1.importKind));
+
+  // --- confirm-on-reparse: first parse never warns (nothing to clobber) ---
+  const s2 = new EditorStore(fakeIo().io);
+  s2.setImport("## User\nhello\n\n## Assistant\nworld");
+  s2.ingest();
+  assert("first parse loads blocks immediately", s2.blocks.length === 2);
+  assert("freshly-loaded blocks are not dirty", !s2.isDirty);
+  assert("no pending reparse after clean load", s2.pendingReparse === null);
+
+  // --- hand-edit makes the store dirty; a reparse stages instead of clobbering ---
+  const firstId = s2.blocks[0]!.id;
+  s2.replaceTurn(firstId, { kind: "message", role: "user", content: "EDITED" });
+  assert("editing a block marks dirty", s2.isDirty && s2.wouldClobber);
+  const editedSnapshot = JSON.stringify(s2.turns);
+  s2.setImport("## User\nbrand\n\n## Assistant\nnew");
+  s2.ingest();
+  assert("reparse over edits stages, does not replace", s2.pendingReparse !== null);
+  assertEq("blocks untouched while reparse pending", JSON.stringify(s2.turns), editedSnapshot);
+
+  // --- cancel keeps edits; confirm commits the staged parse ---
+  s2.cancelReparse();
+  assert("cancel clears the pending reparse", s2.pendingReparse === null);
+  assertEq("cancel preserves the edited blocks", JSON.stringify(s2.turns), editedSnapshot);
+
+  s2.setImport("## User\nbrand\n\n## Assistant\nnew");
+  s2.ingest();
+  assert("reparse stages again", s2.pendingReparse !== null);
+  s2.confirmReparse();
+  assert("confirm replaces blocks with the staged parse", s2.blocks.length === 2);
+  assert("confirmed reparse resets dirty baseline", !s2.isDirty);
+  assert("confirm clears pending", s2.pendingReparse === null);
+  const confirmedFirst = s2.turns[0]!;
+  assert(
+    "confirmed blocks carry the new content",
+    confirmedFirst.kind === "message" && confirmedFirst.content === "brand",
+  );
+
+  // --- editing the import box invalidates a staged reparse ---
+  const s3 = new EditorStore(fakeIo().io);
+  s3.setImport("## User\na\n\n## Assistant\nb");
+  s3.ingest();
+  s3.replaceTurn(s3.blocks[0]!.id, { kind: "insight", content: "changed kind" });
+  s3.setImport("## User\nc\n\n## Assistant\nd");
+  s3.ingest();
+  assert("staged before re-edit", s3.pendingReparse !== null);
+  s3.setImport("## User\ne\n\n## Assistant\nf");
+  assert("editing import text drops the stale pending reparse", s3.pendingReparse === null);
 }
 
 console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } arm):");

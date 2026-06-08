@@ -190,14 +190,13 @@ const kindBadge = (store: EditorStore, id: string, turn: Turn): TemplateResult =
   </select>
 `;
 
-// Basic drag-reorder via dataTransfer (no store drag state). b48.6 polishes the
-// UX (drop indicators); the moveBlock seam it exercises lives here now.
+// Drag-reorder: the ⠿ handle is the ONLY drag origin (the card itself is not
+// draggable), so a mouse-drag inside a textarea selects text instead of seizing
+// the card. The card is the drop target; moveBlock owns the index arithmetic.
 const blockCard = (store: EditorStore, block: Block, index: number): TemplateResult => html`
   <article
     class="block-card"
     data-kind=${block.turn.kind}
-    draggable="true"
-    @dragstart=${(e: DragEvent) => e.dataTransfer?.setData("text/plain", String(index))}
     @dragover=${(e: DragEvent) => e.preventDefault()}
     @drop=${(e: DragEvent) => {
       e.preventDefault();
@@ -205,7 +204,13 @@ const blockCard = (store: EditorStore, block: Block, index: number): TemplateRes
     }}
   >
     <header class="block-card-head">
-      <span class="drag-handle" aria-hidden="true">⠿</span>
+      <span
+        class="drag-handle"
+        draggable="true"
+        title="Drag to reorder"
+        @dragstart=${(e: DragEvent) => e.dataTransfer?.setData("text/plain", String(index))}
+        >⠿</span
+      >
       ${kindBadge(store, block.id, block.turn)}
       <button
         class="block-del"
@@ -272,8 +277,27 @@ const importBox = (store: EditorStore): TemplateResult => html`
     ${store.importError === null
       ? nothing
       : html`<p class="form-error" role="alert">${store.importError}</p>`}
+    ${reparseConfirm(store)}
   </div>
 `;
+
+// [LAW:no-silent-failure] The no-clobber gate. When a parse would overwrite
+// hand-edited blocks, the store stages it (pendingReparse) instead of replacing;
+// this strip is the explicit choice. No pending decision -> renders nothing, so
+// the common path (first parse, or reparse of untouched blocks) is silent.
+const reparseConfirm = (store: EditorStore): TemplateResult | typeof nothing => {
+  if (store.pendingReparse === null) return nothing;
+  const n = store.blocks.length;
+  return html`
+    <div class="reparse-confirm" role="alert">
+      <span
+        >Replace ${n} edited block${n === 1 ? "" : "s"}? This discards your changes.</span
+      >
+      <button class="btn-secondary" @click=${() => store.cancelReparse()}>Keep editing</button>
+      <button class="btn-danger" @click=${() => store.confirmReparse()}>Replace</button>
+    </div>
+  `;
+};
 
 // ── Toolbar + preview ───────────────────────────────────────────────────────
 
