@@ -17,6 +17,14 @@ import {
   renderMarkdown,
 } from "../src/render";
 import { renderTurnsHtml } from "../src/renderTurns";
+import {
+  convertKind,
+  emptyTurn,
+  newId,
+  toBlocks,
+  toTurns,
+} from "../src/editor/blocks";
+import type { Kind } from "../src/editor/blocks";
 import type { Turn } from "../src/types";
 import { readFileSync } from "node:fs";
 
@@ -769,6 +777,96 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
   const fenceXss = renderMarkdown('```js" onmouseover="alert(1)\nx\n```');
   assert("fence language attribute escaped (no quote breakout)", !fenceXss.includes('" onmouseover="alert(1)"'));
   assert("fence language attribute escaped form present", fenceXss.includes("language-js&quot; onmouseover=&quot;alert(1)"));
+}
+
+console.log("\nBlock model (b48.2 — pure editor blocks):");
+{
+  // One fixture exercising every kind, including a tool-call with output.
+  const fixture: Turn[] = [
+    { kind: "message", role: "user", content: "hello" },
+    { kind: "message", role: "assistant", content: "hi there" },
+    { kind: "insight", content: "a key realization" },
+    { kind: "turn-summary", text: "Sautéed for 53s" },
+    {
+      kind: "tool-call",
+      tool: "Bash",
+      args: "ls -la",
+      output: { kind: "terminal", text: "total 0" },
+    },
+  ];
+
+  // Round-trip: identity must attach and strip without touching the turn.
+  const blocks = toBlocks(fixture);
+  assertEq("toBlocks preserves count", blocks.length, fixture.length);
+  assertEq("toTurns(toBlocks(t)) === t", toTurns(blocks), fixture);
+  assert(
+    "every block carries a non-empty id",
+    blocks.every((b) => typeof b.id === "string" && b.id.length > 0),
+  );
+  assert(
+    "ids are unique across blocks",
+    new Set(blocks.map((b) => b.id)).size === blocks.length,
+  );
+
+  // newId draws fresh identity every call (no fixed/colliding value).
+  const ids = [newId(), newId(), newId()];
+  assert("newId is unique across calls", new Set(ids).size === 3);
+
+  // emptyTurn seeds an empty turn of each kind.
+  const allKinds: Kind[] = ["message", "insight", "turn-summary", "tool-call"];
+  allKinds.forEach((k) => assertEq(`emptyTurn(${k}).kind`, emptyTurn(k).kind, k));
+  const em = emptyTurn("message");
+  assert(
+    "emptyTurn(message) defaults role + empty content",
+    em.kind === "message" && em.role === "assistant" && em.content === "",
+  );
+  const et = emptyTurn("tool-call");
+  assert(
+    "emptyTurn(tool-call) is empty tool, no output",
+    et.kind === "tool-call" && et.tool === "" && et.args === "" && et.output === null,
+  );
+
+  // convertKind — content-bearing kinds preserve text across conversion.
+  const ins = convertKind({ kind: "message", role: "user", content: "carry me" }, "insight");
+  assert(
+    "message -> insight preserves text",
+    ins.kind === "insight" && ins.content === "carry me",
+  );
+  const sum = convertKind({ kind: "insight", content: "carry me" }, "turn-summary");
+  assert(
+    "insight -> turn-summary preserves text",
+    sum.kind === "turn-summary" && sum.text === "carry me",
+  );
+
+  // convertKind TO tool-call — prior text seeds args, tool name empty.
+  const toTool = convertKind({ kind: "message", role: "user", content: "do the thing" }, "tool-call");
+  assert(
+    "X -> tool-call seeds args, empty tool, no output",
+    toTool.kind === "tool-call" &&
+      toTool.tool === "" &&
+      toTool.args === "do the thing" &&
+      toTool.output === null,
+  );
+
+  // convertKind FROM tool-call — tool/args/output joined into the content field.
+  const fromTool = convertKind(
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
+    "message",
+  );
+  assert(
+    "tool-call -> message joins tool/args/output into content",
+    fromTool.kind === "message" &&
+      fromTool.content.includes("Bash") &&
+      fromTool.content.includes("ls -la") &&
+      fromTool.content.includes("total 0"),
+  );
+
+  // Same-kind conversion is the identity — preserves fields text can't carry.
+  const sameKind = convertKind({ kind: "message", role: "user", content: "keep my role" }, "message");
+  assert(
+    "convertKind to same kind preserves role (identity)",
+    sameKind.kind === "message" && sameKind.role === "user" && sameKind.content === "keep my role",
+  );
 }
 
 if (process.exitCode) {
