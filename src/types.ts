@@ -8,9 +8,14 @@
 // no `CCConversation` vs `ChatGPTConversation`. Every parser converges to this
 // same union, and downstream rendering operates on `kind` alone.
 
-export type Role = "user" | "assistant" | "system";
+// [LAW:one-source-of-truth] The runtime tuple is the source; the type is
+// derived from it. isTurn (below) iterates the tuple to validate wire JSON —
+// so the set of legal roles cannot drift between the type and the validator.
+export const ROLES = ["user", "assistant", "system"] as const;
+export type Role = (typeof ROLES)[number];
 
-export type ToolOutputKind = "terminal" | "file-read" | "diff" | "generic";
+export const TOOL_OUTPUT_KINDS = ["terminal", "file-read", "diff", "generic"] as const;
+export type ToolOutputKind = (typeof TOOL_OUTPUT_KINDS)[number];
 
 export interface ToolOutput {
   readonly kind: ToolOutputKind;
@@ -27,6 +32,56 @@ export type Turn =
     }
   | { readonly kind: "insight"; readonly content: string }
   | { readonly kind: "turn-summary"; readonly text: string };
+
+// [LAW:types-are-the-program] The runtime witness of the Turn union. It lives
+// beside the type so the two cannot drift: add an arm above and the exhaustive
+// switch below stops compiling until this validator learns it. The editor
+// submits an already-pristine Turn[] (its editor-only `id` is mapped away
+// client-side), but the API trust boundary cannot trust that — a directly
+// crafted request is classified here, where every illegal shape is rejected by
+// construction rather than crashing downstream render/store.
+const isToolOutput = (v: unknown): v is ToolOutput => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; text?: unknown };
+  return (
+    typeof o.text === "string" &&
+    (TOOL_OUTPUT_KINDS as ReadonlyArray<string>).includes(o.kind as string)
+  );
+};
+
+const isRole = (v: unknown): v is Role =>
+  typeof v === "string" && (ROLES as ReadonlyArray<string>).includes(v);
+
+export const isTurn = (v: unknown): v is Turn => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  // [LAW:dataflow-not-control-flow] One switch on the discriminator; each arm
+  // checks exactly the fields its kind carries. The default closes the
+  // enumeration gap: an unknown kind is rejected, never silently accepted.
+  switch (o.kind) {
+    case "message":
+      return isRole(o.role) && typeof o.content === "string";
+    case "tool-call":
+      return (
+        typeof o.tool === "string" &&
+        typeof o.args === "string" &&
+        (o.output === null || isToolOutput(o.output))
+      );
+    case "insight":
+      return typeof o.content === "string";
+    case "turn-summary":
+      return typeof o.text === "string";
+    default:
+      return false;
+  }
+};
+
+// [LAW:types-are-the-program] An empty array IS a Turn[]; this guard answers
+// only "is every element a Turn". The "a paste must have ≥1 turn" rule is a
+// separate invariant the API boundary enforces, so this predicate stays honest
+// to its name.
+export const isTurns = (v: unknown): v is Turn[] =>
+  Array.isArray(v) && v.every(isTurn);
 
 export interface Conversation {
   readonly slug: string;

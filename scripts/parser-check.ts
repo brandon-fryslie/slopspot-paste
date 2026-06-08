@@ -7,7 +7,7 @@
 
 import { detectSources, isClaudeShareUrl, parseInput, parsePaste } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { SOURCE_KINDS, textArmInput } from "../src/types";
+import { isTurns, SOURCE_KINDS, textArmInput } from "../src/types";
 import type { SourceKind } from "../src/types";
 import {
   parseDiff,
@@ -867,6 +867,79 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
     "convertKind to same kind preserves role (identity)",
     sameKind.kind === "message" && sameKind.role === "user" && sameKind.content === "keep my role",
   );
+}
+
+console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } arm):");
+{
+  // [LAW:types-are-the-program] The accept/reject table for the editor arm.
+  // isTurns is the single gate between user-edited wire JSON and the store; it
+  // must accept every legal Turn[] and reject every malformed one — a missing
+  // per-kind field, a bad discriminator, or a non-array. These are the shapes a
+  // directly crafted request (bypassing the pristine client-side toTurns) could
+  // send.
+
+  // --- accepts: one valid turn of every kind ---
+  assert("accepts message (all roles)", isTurns([
+    { kind: "message", role: "user", content: "hi" },
+    { kind: "message", role: "assistant", content: "yo" },
+    { kind: "message", role: "system", content: "be nice" },
+  ]));
+  assert("accepts tool-call with null output", isTurns([
+    { kind: "tool-call", tool: "Bash", args: "ls", output: null },
+  ]));
+  assert("accepts tool-call with every output kind", isTurns([
+    { kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", text: "x" } },
+    { kind: "tool-call", tool: "Update", args: "f", output: { kind: "diff", text: "x" } },
+    { kind: "tool-call", tool: "Read", args: "f", output: { kind: "file-read", text: "x" } },
+    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "x" } },
+  ]));
+  assert("accepts insight", isTurns([{ kind: "insight", content: "aha" }]));
+  assert("accepts turn-summary", isTurns([{ kind: "turn-summary", text: "Sautéed for 53s" }]));
+  // Empty array IS a Turn[] — isTurns stays honest to its name; the API
+  // boundary rejects empty separately as "Empty paste".
+  assert("accepts empty array (boundary rejects empty separately)", isTurns([]));
+
+  // --- rejects: malformed message ---
+  assert("rejects bad role", !isTurns([{ kind: "message", role: "bot", content: "x" }]));
+  assert("rejects missing role", !isTurns([{ kind: "message", content: "x" }]));
+  assert("rejects missing content", !isTurns([{ kind: "message", role: "user" }]));
+  assert("rejects non-string content", !isTurns([{ kind: "message", role: "user", content: 5 }]));
+
+  // --- rejects: malformed tool-call ---
+  assert("rejects tool-call missing output (must be explicit null)",
+    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls" }]));
+  assert("rejects tool-call non-string tool",
+    !isTurns([{ kind: "tool-call", tool: 1, args: "ls", output: null }]));
+  assert("rejects tool-call bad output kind",
+    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "bogus", text: "x" } }]));
+  assert("rejects tool-call output missing text",
+    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal" } }]));
+
+  // --- rejects: malformed insight / turn-summary ---
+  assert("rejects insight missing content", !isTurns([{ kind: "insight" }]));
+  assert("rejects turn-summary non-string text", !isTurns([{ kind: "turn-summary", text: [] }]));
+
+  // --- rejects: bad discriminator / shape (the enumeration gap) ---
+  assert("rejects unknown kind", !isTurns([{ kind: "banana", content: "x" }]));
+  assert("rejects missing kind", !isTurns([{ role: "user", content: "x" }]));
+  assert("rejects null element", !isTurns([null]));
+  assert("rejects primitive element", !isTurns([42]));
+  assert("rejects non-array (string)", !isTurns("nope"));
+  assert("rejects non-array (object)", !isTurns({ kind: "message", role: "user", content: "x" }));
+  assert("rejects null", !isTurns(null));
+  // One bad turn among good ones poisons the whole batch — no partial accept.
+  assert("rejects array with one malformed turn", !isTurns([
+    { kind: "message", role: "user", content: "ok" },
+    { kind: "message", role: "nope", content: "bad" },
+  ]));
+
+  // --- round-trip: toTurns output (what the editor actually submits) passes ---
+  const fixture: Turn[] = [
+    { kind: "message", role: "user", content: "hello" },
+    { kind: "insight", content: "a key realization" },
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
+  ];
+  assert("accepts editor toTurns output (round-trip)", isTurns(toTurns(toBlocks(fixture))));
 }
 
 if (process.exitCode) {

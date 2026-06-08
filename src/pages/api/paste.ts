@@ -3,8 +3,9 @@ import { env } from "cloudflare:workers";
 import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
-import type { Conversation, ParseResult, PasteInput, SourceKind } from "../../types";
-import { inputText, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput, TTL_SECONDS } from "../../types";
+import { json } from "../../http";
+import type { Conversation, ParseResult, PasteInput, SourceKind, Turn } from "../../types";
+import { inputText, isTurns, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput, TTL_SECONDS } from "../../types";
 
 export const prerender = false;
 
@@ -19,12 +20,6 @@ export const prerender = false;
 // source. 8 MiB gives honest headroom for JSON-encoding overhead on long CC
 // session JSONL (observed at 1.74 MB) while staying under KV's 25 MB ceiling.
 const MAX_TURNS = 10000;
-
-const json = (status: number, body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
 
 const isSourceKind = (v: unknown): v is SourceKind =>
   typeof v === "string" && (SOURCE_KINDS as ReadonlyArray<string>).includes(v);
@@ -46,6 +41,7 @@ const isPasteInput = (v: unknown): v is PasteInput => {
 // field?" scattered across the file.
 type DecodedRequest =
   | { ok: true; input: PasteInput }
+  | { ok: true; turns: ReadonlyArray<Turn> }
   | { ok: true; legacy: string }
   | { ok: false; reason: string };
 
@@ -53,11 +49,15 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
   const ct = request.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
     const body = (await request.json().catch(() => null)) as
-      | { source?: unknown; content?: unknown }
+      | { source?: unknown; content?: unknown; turns?: unknown }
       | null;
+    // [LAW:single-enforcer] The editor arm: a pre-parsed, user-edited Turn[]
+    // validated here at the one boundary, then stored without re-parsing.
+    // isTurns rejects every illegal shape so downstream trusts the typed value.
+    if (body && isTurns(body.turns)) return { ok: true, turns: body.turns };
     if (body && isPasteInput(body.source)) return { ok: true, input: body.source };
     if (body && typeof body.content === "string") return { ok: true, legacy: body.content };
-    return { ok: false, reason: "Missing 'source' or 'content' field." };
+    return { ok: false, reason: "Missing 'turns', 'source' or 'content' field." };
   }
   const form = await request.formData().catch(() => null);
   const kind = form?.get("source");
@@ -93,21 +93,39 @@ export const POST: APIRoute = async ({ request }) => {
   const decoded = await decodeRequest(request);
   if (!decoded.ok) return json(400, { error: decoded.reason });
 
-  // [LAW:single-enforcer] One size cap, one place. inputText returns the
-  // user-supplied string regardless of arm (url or content), so the check
-  // is uniform — a 200 MB URL still gets rejected here, not in firecrawl.
-  const rawSize = "input" in decoded ? sizeOf(inputText(decoded.input)) : sizeOf(decoded.legacy);
+  // [LAW:single-enforcer] One size cap, one place. Each arm names the bytes it
+  // puts at risk: the user-supplied string for input/legacy (url or content,
+  // via inputText), and the serialized turns for the editor arm — those bytes
+  // ARE the stored payload, since edited turns are not re-parsed. A 200 MB URL
+  // or a 200 MB block list is rejected here, not in firecrawl or KV.
+  const rawSize =
+    "input" in decoded
+      ? sizeOf(inputText(decoded.input))
+      : "turns" in decoded
+        ? sizeOf(JSON.stringify(decoded.turns))
+        : sizeOf(decoded.legacy);
   if (rawSize === 0) return json(400, { error: "Empty paste." });
   if (rawSize > MAX_PASTE_BYTES) {
     return json(413, { error: `Paste exceeds the ${MAX_PASTE_LABEL} limit (${MAX_PASTE_BYTES} bytes).` });
   }
 
-  // [LAW:single-enforcer] ingestPaste is the one entry point that handles
-  // both sync text parsing and async URL ingestion. The kind discrimination
-  // stays inside the parser module — this handler does not branch on it.
+  // [LAW:single-enforcer] Every arm converges to one ParseResult before the
+  // shared store tail. ingestPaste handles sync text parsing and async URL
+  // ingestion; the editor arm is already a validated Turn[] (isTurns ran at the
+  // decode boundary), so it becomes a ParseResult directly — the server never
+  // re-parses edited blocks. The kind discrimination stays inside the parser.
   const parsed: ParseResult =
-    "input" in decoded ? await ingestPaste(decoded.input, env) : parseAuto(decoded.legacy);
+    "input" in decoded
+      ? await ingestPaste(decoded.input, env)
+      : "turns" in decoded
+        ? { ok: true, turns: decoded.turns }
+        : parseAuto(decoded.legacy);
   if (!parsed.ok) return json(400, { error: parsed.reason });
+  // [LAW:dataflow-not-control-flow] Every arm flows through the same turn-count
+  // bounds. For text/URL these are no-ops (a parse always yields ≥1 turn), but
+  // the editor arm can submit an empty block list — caught here as the same
+  // "empty paste" condition, not a special case bolted onto one arm.
+  if (parsed.turns.length === 0) return json(400, { error: "Empty paste." });
   if (parsed.turns.length > MAX_TURNS) {
     return json(413, { error: `Too many turns (max ${MAX_TURNS}).` });
   }
