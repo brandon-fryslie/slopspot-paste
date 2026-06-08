@@ -762,6 +762,13 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
   assert("tool name attribute escaped form present", xssHtml.includes("evil&quot; onload="));
   assert("turn-summary text escaped", xssHtml.includes("&lt;b&gt;not bold&lt;/b&gt;"));
   assert("tool output text escaped", xssHtml.includes("&lt;i&gt;raw&lt;/i&gt;"));
+
+  // A code-fence info string is user-controlled and lands in a class="" value;
+  // escapeHtml alone leaves quotes intact, so a fence like ```js" onx=" would
+  // break out of the attribute. The class attribute must quote-escape it.
+  const fenceXss = renderMarkdown('```js" onmouseover="alert(1)\nx\n```');
+  assert("fence language attribute escaped (no quote breakout)", !fenceXss.includes('" onmouseover="alert(1)"'));
+  assert("fence language attribute escaped form present", fenceXss.includes("language-js&quot; onmouseover=&quot;alert(1)"));
 }
 
 if (process.exitCode) {

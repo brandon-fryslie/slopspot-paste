@@ -121,7 +121,7 @@ export const renderMarkdown = (md: string): string => {
     breaks: false,
     renderer: {
       code({ text, lang }) {
-        const langClass = lang ? ` language-${escapeHtml(lang)}` : "";
+        const langClass = lang ? ` language-${escapeAttr(lang)}` : "";
         const langLabel = lang
           ? `<span class="code-lang" aria-hidden="true">${escapeHtml(lang)}</span>`
           : "";
