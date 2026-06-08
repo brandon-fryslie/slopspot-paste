@@ -209,7 +209,12 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   gap: 8px;
 }
 
-.conversation {
+/* [LAW:one-source-of-truth] The conversation-list layout (column + gap) is one
+   rule shared by the permalink page (.conversation) and the editor preview
+   (.bubbles). The renderer emits the same flat list of .bubble articles for
+   both, so preview === permalink styling by construction — not a copied gap. */
+.conversation,
+.bubbles {
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -657,3 +662,207 @@ pre.code-block code {
 /* The admin route earns more horizontal room than the 820px reading column. */
 body:has(.admin-table-wrap) main,
 body:has(.admin-empty) main { max-width: 1100px; }
+
+/* ─── Block editor chrome (index page) ───────────────────────────────────
+   [LAW:dataflow-not-control-flow] Per-kind accents are driven by the
+   data-kind attribute flowing from the Turn discriminator — one attribute
+   selector per kind, no layout branching the type can't reach. The preview
+   pane reuses the .bubble* permalink classes verbatim, so only the editing
+   chrome is styled here. */
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Segmented Blocks/Preview control. */
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  padding: 2px;
+}
+.toggle {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.toggle.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* Counts take the slack so the Share button sits at the right edge. */
+.block-counts {
+  flex: 1;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.btn-secondary {
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-secondary:hover { border-color: var(--accent); }
+.btn-secondary:disabled { opacity: 0.6; cursor: progress; }
+
+/* Import box — paste a transcript, parse it into blocks. */
+.import-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+.import-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* [LAW:single-enforcer] The global `textarea` rule sets a 320px min-height for
+   the full-page paste box; editor textareas are compact and let their `rows`
+   attribute govern height. Overriding min-height here is the one place that
+   distinction lives. */
+.import-text,
+.block-content,
+.block-args,
+.block-out-text {
+  min-height: 0;
+}
+
+/* Block list + cards. */
+.block-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.block-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  padding: 12px 14px;
+}
+.block-card[data-kind="message"] { border-left-color: #6366f1; }
+.block-card[data-kind="tool-call"] { border-left-color: var(--accent); }
+.block-card[data-kind="insight"] { border-left-color: #f59e0b; }
+.block-card[data-kind="turn-summary"] { border-left-color: var(--fg-muted); }
+
+.block-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.drag-handle {
+  color: var(--fg-muted);
+  cursor: grab;
+  user-select: none;
+  font-size: 15px;
+  line-height: 1;
+}
+.block-del {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.block-del:hover { color: #b91c1c; background: var(--bg-code); }
+
+/* Add-block row — one button per kind. */
+.add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.add-block {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.add-block:hover { border-color: var(--accent); color: var(--fg); }
+
+/* Card fields. */
+.block-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Selects and text inputs inside cards share the .source-select chrome; these
+   add the few that aren't already that class. */
+.block-badge,
+.block-role,
+.block-out-kind {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.block-badge { font-weight: 600; }
+.block-badge:focus,
+.block-role:focus,
+.block-out-kind:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.block-summary,
+.block-tool {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.block-summary:focus,
+.block-tool:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

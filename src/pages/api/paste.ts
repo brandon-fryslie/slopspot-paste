@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
-import { json } from "../../http";
+import { json, seeOther } from "../../http";
 import type { Conversation, ParseResult, PasteInput, SourceKind, Turn } from "../../types";
 import { inputText, isTurns, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput, TTL_SECONDS } from "../../types";
 
@@ -90,6 +90,13 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
 const sizeOf = (s: string): number => new Blob([s]).size;
 
 export const POST: APIRoute = async ({ request }) => {
+  // [LAW:dataflow-not-control-flow] The success response modality is data
+  // derived from the request's content-type — the same predicate decodeRequest
+  // keys on. A form-encoded POST is the no-JS <form> (a browser navigation), so
+  // success redirects to the rendered paste; a JSON POST is the editor/API and
+  // gets { slug }. One store path, two representations. (Error bodies stay JSON
+  // for both — a no-JS error shows the readable `error` string, not a redirect.)
+  const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
   const decoded = await decodeRequest(request);
   if (!decoded.ok) return json(400, { error: decoded.reason });
 
@@ -140,5 +147,7 @@ export const POST: APIRoute = async ({ request }) => {
   };
 
   await putConversation(env.PASTES, conversation);
-  return json(200, { slug: conversation.slug });
+  return wantsRedirect
+    ? seeOther("/" + conversation.slug)
+    : json(200, { slug: conversation.slug });
 };
