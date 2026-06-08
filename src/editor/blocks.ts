@@ -19,7 +19,21 @@ export interface Block {
   readonly turn: Turn;
 }
 
-export type Kind = Turn["kind"];
+// [LAW:one-source-of-truth] The runtime witness of the kind set — the editor's
+// kind dropdown and per-kind counts iterate this tuple, so the list the UI
+// offers cannot drift from the kinds the model supports. Order is the dropdown
+// order (message first: the common case).
+export const KINDS = ["message", "tool-call", "insight", "turn-summary"] as const;
+export type Kind = (typeof KINDS)[number];
+
+// [LAW:types-are-the-program] KINDS must be *exactly* the Turn discriminator
+// set. If Turn gains a kind it's not listed here, or KINDS lists a non-kind,
+// one of these assignments stops compiling — the tuple can never silently
+// diverge from the union it claims to enumerate.
+type _KindsAreTurnKinds = Kind extends Turn["kind"] ? true : never;
+type _TurnKindsAreKinds = Turn["kind"] extends Kind ? true : never;
+const _kindsExact: [_KindsAreTurnKinds, _TurnKindsAreKinds] = [true, true];
+void _kindsExact;
 
 // [LAW:effects-at-boundaries] Identity generation is the one effect in this
 // module (randomness). It lives in a named, single-purpose function rather than
