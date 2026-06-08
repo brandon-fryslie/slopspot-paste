@@ -47,9 +47,12 @@ const clamp = (n: number, lo: number, hi: number): number =>
 export class EditorStore {
   blocks: Block[] = [];
   importText = "";
-  // Reconciled toward detected[0] as text arrives (see setImport). "raw" is the
-  // priming value — it's always in the detected set for empty input.
-  importKind: SourceKind = "raw";
+  // [LAW:one-source-of-truth] The selected source is DERIVED (see importKind),
+  // not stored. userKind is an explicit override the user picked from the
+  // dropdown; null means "follow detection". Storing the resolved kind directly
+  // would drift from the text — "raw" is always detected, so a stored default
+  // could never re-snap to a more-specific format once set.
+  userKind: SourceKind | null = null;
   view: View = "blocks";
   importError: string | null = null;
   submitError: string | null = null;
@@ -68,6 +71,17 @@ export class EditorStore {
 
   get detected(): ReadonlyArray<SourceKind> {
     return detectSources(this.importText);
+  }
+
+  // [LAW:dataflow-not-control-flow] The active source kind is a pure function of
+  // (detection, optional override): honor the user's pick while it stays a
+  // detected kind, else fall to the highest-priority detection. detected is
+  // ordered most-specific-first (SOURCE_KINDS), so detected[0] is the best
+  // auto-detection — paste markdown -> "markdown", not a sticky "raw".
+  get importKind(): SourceKind {
+    return this.userKind !== null && this.detected.includes(this.userKind)
+      ? this.userKind
+      : (this.detected[0] ?? "raw");
   }
 
   get turns(): Turn[] {
@@ -101,17 +115,15 @@ export class EditorStore {
 
   setImport(text: string): void {
     this.importText = text;
-    // [LAW:one-source-of-truth] The detector is the authority on what the text
-    // currently is; keep the user's pick only while it stays valid, else fall to
-    // the highest-priority detected kind (mirrors the index.astro dropdown).
-    if (!this.detected.includes(this.importKind)) {
-      this.importKind = this.detected[0] ?? "raw";
-    }
+    // [LAW:one-source-of-truth] No reconciliation needed: importKind is derived
+    // from importText + userKind, so it re-snaps to the best detection the
+    // instant the text changes. A user override that no longer matches the text
+    // is dropped by the getter, not patched here.
     this.importError = null;
   }
 
   setImportKind(kind: SourceKind): void {
-    this.importKind = kind;
+    this.userKind = kind;
     this.importError = null;
   }
 

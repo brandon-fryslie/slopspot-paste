@@ -7,3 +7,10 @@ export const json = (status: number, body: Record<string, unknown>): Response =>
     status,
     headers: { "content-type": "application/json" },
   });
+
+// [LAW:single-enforcer] Redirect responses are shaped here too. 303 See Other
+// makes the browser re-request the target with GET — the correct status after a
+// POST so a refresh doesn't re-submit. The no-JS <form> path uses this so a
+// JS-disabled user lands on the rendered paste, not a JSON body.
+export const seeOther = (location: string): Response =>
+  new Response(null, { status: 303, headers: { Location: location } });
