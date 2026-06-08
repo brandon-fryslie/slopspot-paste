@@ -1,0 +1,327 @@
+// lit-html templates as pure functions of the store. No state lives here; every
+// template is `state -> TemplateResult`. mount.ts runs `autorun(() =>
+// render(appTemplate(store), root))`, so any observable a template reads
+// re-renders it.
+//
+// [LAW:dataflow-not-control-flow] One card template dispatches on `turn.kind`;
+// each arm emits exactly the fields that kind carries and, on edit, hands the
+// store a freshly-narrowed Turn value. lit-html keyed `repeat` (by Block.id)
+// reuses DOM nodes across edit + reorder — the acknowledged "last inch of UI"
+// carve-out that preserves cursor focus during inline editing.
+
+import { html, nothing, type TemplateResult } from "lit-html";
+import { repeat } from "lit-html/directives/repeat.js";
+import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
+import type { Role, SourceKind, ToolOutputKind, Turn } from "../types";
+import { ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
+import type { Block, Kind } from "./blocks";
+import { convertKind, KINDS } from "./blocks";
+import type { EditorStore } from "./store";
+
+const KIND_LABEL: Record<Kind, string> = {
+  "message": "Message",
+  "tool-call": "Tool call",
+  "insight": "Insight",
+  "turn-summary": "Turn summary",
+};
+
+const ROLE_LABEL: Record<Role, string> = {
+  user: "User",
+  assistant: "Assistant",
+  system: "System",
+};
+
+// [LAW:no-silent-failure] Re-narrow a <select>'s string value back to its enum.
+// Every option is rendered from the enum tuple, so the lookup never misses in
+// practice — but if markup and enum ever diverge we throw, not silently coerce.
+const asKind = (v: string): Kind => {
+  const found = KINDS.find((k) => k === v);
+  if (found === undefined) throw new Error(`unknown block kind: ${v}`);
+  return found;
+};
+
+const asRole = (v: string): Role => {
+  const found = ROLES.find((r) => r === v);
+  if (found === undefined) throw new Error(`unknown role: ${v}`);
+  return found;
+};
+
+const valueOf = (e: Event): string =>
+  (e.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value;
+
+// ── Per-kind card bodies ────────────────────────────────────────────────────
+// Each receives a turn already narrowed to its kind, so the new-turn value it
+// builds on edit is checked by the compiler against that exact arm.
+
+const messageBody = (
+  store: EditorStore,
+  id: string,
+  turn: Extract<Turn, { kind: "message" }>,
+): TemplateResult => html`
+  <div class="block-fields">
+    <select
+      class="block-role"
+      .value=${turn.role}
+      @change=${(e: Event) => store.replaceTurn(id, { ...turn, role: asRole(valueOf(e)) })}
+    >
+      ${ROLES.map((r) => html`<option value=${r}>${ROLE_LABEL[r]}</option>`)}
+    </select>
+    <textarea
+      class="block-content"
+      rows="4"
+      .value=${turn.content}
+      @input=${(e: Event) => store.replaceTurn(id, { ...turn, content: valueOf(e) })}
+    ></textarea>
+  </div>
+`;
+
+const insightBody = (
+  store: EditorStore,
+  id: string,
+  turn: Extract<Turn, { kind: "insight" }>,
+): TemplateResult => html`
+  <div class="block-fields">
+    <textarea
+      class="block-content"
+      rows="3"
+      .value=${turn.content}
+      @input=${(e: Event) => store.replaceTurn(id, { ...turn, content: valueOf(e) })}
+    ></textarea>
+  </div>
+`;
+
+const turnSummaryBody = (
+  store: EditorStore,
+  id: string,
+  turn: Extract<Turn, { kind: "turn-summary" }>,
+): TemplateResult => html`
+  <div class="block-fields">
+    <input
+      class="block-summary"
+      .value=${turn.text}
+      @input=${(e: Event) => store.replaceTurn(id, { ...turn, text: valueOf(e) })}
+    />
+  </div>
+`;
+
+// [LAW:dataflow-not-control-flow] Output presence is a value transition: "No
+// output" maps to null, any kind maps to an output carrying the existing text.
+// The honest branch (null vs a kind) lives here, once.
+const setOutputKind = (
+  turn: Extract<Turn, { kind: "tool-call" }>,
+  raw: string,
+): Turn => {
+  if (raw === "none") return { ...turn, output: null };
+  const kind = TOOL_OUTPUT_KINDS.find((k) => k === raw);
+  if (kind === undefined) throw new Error(`unknown output kind: ${raw}`);
+  return { ...turn, output: { kind, text: turn.output?.text ?? "" } };
+};
+
+const OUTPUT_KIND_LABEL: Record<ToolOutputKind, string> = {
+  terminal: "Terminal",
+  "file-read": "File read",
+  diff: "Diff",
+  generic: "Generic",
+};
+
+const toolCallBody = (
+  store: EditorStore,
+  id: string,
+  turn: Extract<Turn, { kind: "tool-call" }>,
+): TemplateResult => {
+  const output = turn.output;
+  return html`
+    <div class="block-fields">
+      <input
+        class="block-tool"
+        placeholder="tool name"
+        .value=${turn.tool}
+        @input=${(e: Event) => store.replaceTurn(id, { ...turn, tool: valueOf(e) })}
+      />
+      <textarea
+        class="block-args"
+        rows="2"
+        placeholder="args"
+        .value=${turn.args}
+        @input=${(e: Event) => store.replaceTurn(id, { ...turn, args: valueOf(e) })}
+      ></textarea>
+      <select
+        class="block-out-kind"
+        .value=${output?.kind ?? "none"}
+        @change=${(e: Event) => store.replaceTurn(id, setOutputKind(turn, valueOf(e)))}
+      >
+        <option value="none">No output</option>
+        ${TOOL_OUTPUT_KINDS.map((k) => html`<option value=${k}>${OUTPUT_KIND_LABEL[k]}</option>`)}
+      </select>
+      ${output === null
+        ? nothing
+        : html`<textarea
+            class="block-out-text"
+            rows="3"
+            placeholder="output"
+            .value=${output.text}
+            @input=${(e: Event) =>
+              store.replaceTurn(id, { ...turn, output: { kind: output.kind, text: valueOf(e) } })}
+          ></textarea>`}
+    </div>
+  `;
+};
+
+const cardBody = (store: EditorStore, id: string, turn: Turn): TemplateResult => {
+  switch (turn.kind) {
+    case "message":
+      return messageBody(store, id, turn);
+    case "insight":
+      return insightBody(store, id, turn);
+    case "turn-summary":
+      return turnSummaryBody(store, id, turn);
+    case "tool-call":
+      return toolCallBody(store, id, turn);
+  }
+};
+
+const kindBadge = (store: EditorStore, id: string, turn: Turn): TemplateResult => html`
+  <select
+    class="block-badge"
+    .value=${turn.kind}
+    @change=${(e: Event) => store.replaceTurn(id, convertKind(turn, asKind(valueOf(e))))}
+  >
+    ${KINDS.map((k) => html`<option value=${k}>${KIND_LABEL[k]}</option>`)}
+  </select>
+`;
+
+// Basic drag-reorder via dataTransfer (no store drag state). b48.6 polishes the
+// UX (drop indicators); the moveBlock seam it exercises lives here now.
+const blockCard = (store: EditorStore, block: Block, index: number): TemplateResult => html`
+  <article
+    class="block-card"
+    data-kind=${block.turn.kind}
+    draggable="true"
+    @dragstart=${(e: DragEvent) => e.dataTransfer?.setData("text/plain", String(index))}
+    @dragover=${(e: DragEvent) => e.preventDefault()}
+    @drop=${(e: DragEvent) => {
+      e.preventDefault();
+      store.moveBlock(Number(e.dataTransfer?.getData("text/plain")), index);
+    }}
+  >
+    <header class="block-card-head">
+      <span class="drag-handle" aria-hidden="true">⠿</span>
+      ${kindBadge(store, block.id, block.turn)}
+      <button
+        class="block-del"
+        title="Delete block"
+        @click=${() => store.deleteBlock(block.id)}
+      >
+        ✕
+      </button>
+    </header>
+    ${cardBody(store, block.id, block.turn)}
+  </article>
+`;
+
+const blockList = (store: EditorStore): TemplateResult => html`
+  <div class="block-list">
+    ${repeat(
+      store.blocks,
+      (block) => block.id,
+      (block, index) => blockCard(store, block, index),
+    )}
+    <div class="add-row">
+      ${KINDS.map(
+        (k) => html`<button class="add-block" @click=${() => store.addBlock(k)}>+ ${KIND_LABEL[k]}</button>`,
+      )}
+    </div>
+  </div>
+`;
+
+// ── Import box ──────────────────────────────────────────────────────────────
+
+const asSourceKind = (store: EditorStore, v: string): SourceKind => {
+  const found = store.detected.find((k) => k === v);
+  if (found === undefined) throw new Error(`undetected source kind: ${v}`);
+  return found;
+};
+
+const importBox = (store: EditorStore): TemplateResult => html`
+  <div class="import-box">
+    <label class="visually-hidden" for="import-text">Conversation to import</label>
+    <textarea
+      id="import-text"
+      class="import-text"
+      rows="8"
+      placeholder="Paste a transcript, then parse it into editable blocks."
+      .value=${store.importText}
+      @input=${(e: Event) => store.setImport(valueOf(e))}
+    ></textarea>
+    <div class="import-row">
+      <select
+        class="source-select"
+        .value=${store.importKind}
+        @change=${(e: Event) => store.setImportKind(asSourceKind(store, valueOf(e)))}
+      >
+        ${store.detected.map((k) => html`<option value=${k}>${SOURCE_LABEL[k]}</option>`)}
+      </select>
+      <button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.ingest()}>
+        ${store.isUrlImport
+          ? store.busy
+            ? "Fetching…"
+            : "Fetch & parse"
+          : "Parse into blocks"}
+      </button>
+    </div>
+    ${store.importError === null
+      ? nothing
+      : html`<p class="form-error" role="alert">${store.importError}</p>`}
+  </div>
+`;
+
+// ── Toolbar + preview ───────────────────────────────────────────────────────
+
+const countsLabel = (counts: Record<Kind, number>): string => {
+  const parts = KINDS.filter((k) => counts[k] > 0).map(
+    (k) => `${counts[k]} ${KIND_LABEL[k].toLowerCase()}${counts[k] === 1 ? "" : "s"}`,
+  );
+  return parts.length === 0 ? "No blocks yet" : parts.join(" · ");
+};
+
+const toolbar = (store: EditorStore): TemplateResult => html`
+  <div class="editor-toolbar">
+    <div class="view-toggle" role="tablist">
+      <button
+        class="toggle ${store.view === "blocks" ? "active" : ""}"
+        @click=${() => store.setView("blocks")}
+      >
+        Blocks
+      </button>
+      <button
+        class="toggle ${store.view === "preview" ? "active" : ""}"
+        @click=${() => store.setView("preview")}
+      >
+        Preview
+      </button>
+    </div>
+    <span class="block-counts">${countsLabel(store.counts)}</span>
+    <button class="btn-primary" ?disabled=${!store.canSubmit} @click=${() => store.submit()}>
+      ${store.busy ? "Sharing…" : "Share it"}
+    </button>
+    ${store.submitError === null
+      ? nothing
+      : html`<span class="form-error" role="alert">${store.submitError}</span>`}
+  </div>
+`;
+
+// [LAW:one-source-of-truth] previewHtml comes from renderTurnsHtml — the SAME
+// renderer the permalink uses. unsafeHTML is correct here because that string is
+// the renderer's own escaped output, not raw user input.
+const previewPane = (store: EditorStore): TemplateResult => html`
+  <section class="preview-pane bubbles">${unsafeHTML(store.previewHtml)}</section>
+`;
+
+export const appTemplate = (store: EditorStore): TemplateResult => html`
+  <div class="editor">
+    ${toolbar(store)}
+    ${store.view === "blocks"
+      ? html`${importBox(store)}${blockList(store)}`
+      : previewPane(store)}
+  </div>
+`;
