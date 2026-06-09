@@ -690,6 +690,34 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
       t1.kind === "message" && !t1.content.includes("Ask Claude your own question"));
   }
 
+  // [LAW:single-enforcer] PUA strip — fixture built from the real paste
+  // CsDbeRFrMX, where every turn's content tail is the claude.ai icon-font run
+  // U+E056 U+E03B. The parser must drop all Private Use Area glyphs while every
+  // non-PUA character (including the substantive prose) survives.
+  const puaFixture = readFileSync("test/fixtures/claude-share-pua.md", "utf8");
+  assert(
+    "fixture actually contains the PUA artifact (guard against a clean fixture)",
+    /[\u{E000}-\u{F8FF}]/u.test(puaFixture),
+  );
+  const puaTurns = parseClaudeShare(puaFixture);
+  assert("PUA fixture parses to two turns", puaTurns !== null && puaTurns.length === 2);
+  if (puaTurns) {
+    const allText = puaTurns
+      .map((t) => (t.kind === "message" ? t.content : ""))
+      .join("\n");
+    assert(
+      "no PUA glyph survives in any parsed turn",
+      !/[\u{E000}-\u{F8FF}]/u.test(allText),
+    );
+    assert(
+      "legitimate prose preserved verbatim",
+      puaTurns[0]!.kind === "message" &&
+        puaTurns[0]!.content.includes("near-field monitors") &&
+        puaTurns[1]!.kind === "message" &&
+        puaTurns[1]!.content.includes("IsoAcoustics stands decouple"),
+    );
+  }
+
   // parseClaudeShare fails cleanly on input with no headings.
   const noHeadings = parseClaudeShare("just some markdown with no\n## headings\nat all");
   assert("no You-said headings → null", noHeadings === null);

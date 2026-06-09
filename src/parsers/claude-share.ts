@@ -41,11 +41,22 @@ const isChromeLine = (line: string): boolean => {
   return CHROME_LINE_RE.some((re) => re.test(trimmed));
 };
 
+// [LAW:single-enforcer] The Private Use Area (U+E000–U+F8FF) holds Claude.ai's
+// icon-font codepoints — its per-message action buttons (copy/retry) scrape
+// into Firecrawl's markdown as PUA glyphs trailing every turn. They are page
+// chrome, not conversation content, so they belong to the same residue strip
+// this file already owns. Default-deny the whole range, not a blocklist of the
+// glyphs seen today (U+E056/U+E03B): a blocklist leaks the next icon Anthropic
+// ships. No standard character lives in the PUA, so real prose — emoji, the CC
+// markers ❯⏺⎿★ — is outside the range and survives untouched.
+const PUA_RE = /[\u{E000}-\u{F8FF}]/gu;
+
 const cleanBody = (body: string): string => {
   const kept = body
     .split("\n")
     .filter((line) => !isChromeLine(line))
-    .join("\n");
+    .join("\n")
+    .replace(PUA_RE, "");
   return kept.replace(/^\s+|\s+$/g, "");
 };
 
