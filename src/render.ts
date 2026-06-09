@@ -150,7 +150,12 @@ export const renderMarkdown = (md: string): string => {
         const langLabel = lang
           ? `<span class="code-lang" aria-hidden="true">${escapeHtml(lang)}</span>`
           : "";
-        return `<pre class="code-block${langClass}">${langLabel}<code>${escapeHtml(text)}</code></pre>`;
+        // [LAW:one-source-of-truth] The copy button carries no copy of the code:
+        // the client reads this <code>'s textContent — the exact bytes shown —
+        // never a duplicated data-* attribute that could drift. It renders hidden
+        // and is revealed only once the client wires its clipboard effect
+        // ([LAW:effects-at-boundaries]), so a no-JS viewer never meets a dead button.
+        return `<pre class="code-block${langClass}">${langLabel}<button type="button" class="copy-code" aria-label="Copy code">Copy</button><code>${escapeHtml(text)}</code></pre>`;
       },
       codespan({ text }) {
         return `<code class="inline-code">${escapeHtml(text)}</code>`;
