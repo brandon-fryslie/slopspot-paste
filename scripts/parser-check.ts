@@ -7,7 +7,7 @@
 
 import { detectSources, isClaudeShareUrl, parseInput, parsePaste } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { isTurns, SOURCE_KINDS, textArmInput } from "../src/types";
+import { isSourceKind, isTurns, SOURCE_KINDS, textArmInput } from "../src/types";
 import type { SourceKind } from "../src/types";
 import {
   parseDiff,
@@ -28,7 +28,7 @@ import {
   toTurns,
 } from "../src/editor/blocks";
 import type { Kind } from "../src/editor/blocks";
-import { EditorStore, type EditorIo, type SubmitResult } from "../src/editor/store";
+import { EditorStore, type Draft, type EditorIo, type SubmitResult } from "../src/editor/store";
 import { persistDrafts } from "../src/editor/mount";
 import type { ParseResult, Turn } from "../src/types";
 import { readFileSync } from "node:fs";
@@ -460,6 +460,21 @@ console.log("\nparseInput per-kind dispatch:");
       r.turns[0]!.kind === "message" && r.turns[0]!.role === "assistant");
   }
 }
+console.log("\nParse provenance (source rides the ParseResult):");
+{
+  // [LAW:one-source-of-truth] The kind that parsed is reported by the parser
+  // that matched — explicit picks echo the pick, the auto-race reports its
+  // winner, and the raw fallback names itself rather than hiding provenance.
+  const md = parseInput({ kind: "markdown", content: MARKDOWN_SAMPLE });
+  assert("parseInput echoes the requested kind", md.ok && md.source === "markdown");
+  const autoCc = parsePaste(CC_SAMPLE);
+  assert("parseAuto reports the winning kind (claude-code)", autoCc.ok && autoCc.source === "claude-code");
+  const autoMd = parsePaste(MARKDOWN_SAMPLE);
+  assert("parseAuto reports the winning kind (markdown)", autoMd.ok && autoMd.source === "markdown");
+  const autoRaw = parsePaste("just plain text with no markers at all");
+  assert("parseAuto raw fallback carries source raw", autoRaw.ok && autoRaw.source === "raw");
+}
+
 {
   // wrong kind for content → typed failure, not silent fallback
   const r = parseInput({ kind: "claude-code", content: "## User\nhi\n## Assistant\nhello" });
@@ -1205,36 +1220,38 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
   // crossed the boundary so a test can assert on submit/fetch without a network.
   const fakeIo = (): {
     io: EditorIo;
-    submitted: Turn[][];
+    submitted: Draft[];
     navigated: string[];
     draftCell: () => string | null;
   } => {
-    const submitted: Turn[][] = [];
+    const submitted: Draft[] = [];
     const navigated: string[] = [];
     // Mirror localStorage's single string cell: saveDraft writes JSON, loadDraft
-    // reads + isTurns-validates (so the test exercises the same gate mount ships),
+    // reads + validates (so the test exercises the same gate mount ships),
     // clearDraft removes it. draftCell() lets a test assert what was persisted.
-    let draft: string | null = null;
+    let cell: string | null = null;
     const io: EditorIo = {
       fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
-      submit: async (turns): Promise<SubmitResult> => {
-        submitted.push([...turns]);
+      submit: async (draft): Promise<SubmitResult> => {
+        submitted.push(draft);
         return { ok: true, slug: "test-slug" };
       },
       navigate: (slug) => navigated.push(slug),
-      saveDraft: (turns) => {
-        draft = JSON.stringify(turns);
+      saveDraft: (draft) => {
+        cell = JSON.stringify(draft);
       },
-      loadDraft: (): Turn[] => {
-        if (draft === null) return [];
-        const parsed = JSON.parse(draft) as unknown;
-        return isTurns(parsed) ? parsed : [];
+      loadDraft: (): Draft => {
+        if (cell === null) return { turns: [], source: null };
+        const o = JSON.parse(cell) as { turns?: unknown; source?: unknown } | null;
+        return o && isTurns(o.turns)
+          ? { turns: o.turns, source: isSourceKind(o.source) ? o.source : null }
+          : { turns: [], source: null };
       },
       clearDraft: () => {
-        draft = null;
+        cell = null;
       },
     };
-    return { io, submitted, navigated, draftCell: () => draft };
+    return { io, submitted, navigated, draftCell: () => cell };
   };
 
   // --- importKind derivation (b48.5 fix: 'raw' is no longer sticky) ---
@@ -1250,7 +1267,8 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
   assert("override dropped by getter when undetected", s1.detected.includes(s1.importKind));
 
   // --- confirm-on-reparse: first parse never warns (nothing to clobber) ---
-  const s2 = new EditorStore(fakeIo().io);
+  const f2 = fakeIo();
+  const s2 = new EditorStore(f2.io);
   s2.setImport("## User\nhello\n\n## Assistant\nworld");
   s2.ingest();
   assert("first parse loads blocks immediately", s2.blocks.length === 2);
@@ -1285,6 +1303,11 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
     confirmedFirst.kind === "message" && confirmedFirst.content === "brand",
   );
 
+  // --- submit moves the Draft (turns + provenance) across the boundary ---
+  await s2.submit();
+  assertEq("submit carries the provenance with the turns", f2.submitted[0]?.source, "markdown");
+  assertEq("submit navigates on success", f2.navigated[0], "test-slug");
+
   // --- editing the import box invalidates a staged reparse ---
   const s3 = new EditorStore(fakeIo().io);
   s3.setImport("## User\na\n\n## Assistant\nb");
@@ -1304,7 +1327,7 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
     submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
     navigate: () => {},
     saveDraft: () => {},
-    loadDraft: (): Turn[] => [],
+    loadDraft: (): Draft => ({ turns: [], source: null }),
     clearDraft: () => {},
   };
 
@@ -1362,24 +1385,26 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
   // — the SAME reaction mount ships — so it exercises the real persistence path,
   // not a hand-rolled copy [LAW:behavior-not-structure].
   const draftIo = (): { io: EditorIo; cell: () => string | null } => {
-    let draft: string | null = null;
+    let cell: string | null = null;
     const io: EditorIo = {
       fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
       submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "saved-slug" }),
       navigate: () => {},
-      saveDraft: (turns) => {
-        draft = JSON.stringify(turns);
+      saveDraft: (draft) => {
+        cell = JSON.stringify(draft);
       },
-      loadDraft: (): Turn[] => {
-        if (draft === null) return [];
-        const parsed = JSON.parse(draft) as unknown;
-        return isTurns(parsed) ? parsed : [];
+      loadDraft: (): Draft => {
+        if (cell === null) return { turns: [], source: null };
+        const o = JSON.parse(cell) as { turns?: unknown; source?: unknown } | null;
+        return o && isTurns(o.turns)
+          ? { turns: o.turns, source: isSourceKind(o.source) ? o.source : null }
+          : { turns: [], source: null };
       },
       clearDraft: () => {
-        draft = null;
+        cell = null;
       },
     };
-    return { io, cell: () => draft };
+    return { io, cell: () => cell };
   };
 
   // --- restoring with no draft yields the same empty, clean editor as a fresh
@@ -1393,9 +1418,14 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
   const dispose = persistDrafts(s, a.io);
   s.setImport("## User\nhi\n\n## Assistant\nyo");
   s.ingest();
+  assertEq("ingest adopts the parse's provenance", s.source, "markdown");
   const firstId = s.blocks[0]!.id;
   s.replaceTurn(firstId, { kind: "message", role: "user", content: "EDITED DRAFT" });
-  assertEq("the reaction persisted the current turns", a.cell(), JSON.stringify(s.turns));
+  assertEq(
+    "the reaction persisted the current draft (turns + source)",
+    a.cell(),
+    JSON.stringify({ turns: s.turns, source: s.source }),
+  );
 
   // --- a fresh editor restoring that draft reproduces the edits and is NOT
   //     instantly dirty (restore sets pristineTurns via the shared loader) ---
@@ -1403,11 +1433,12 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
   s2.restoreDraft(a.io.loadDraft());
   assertEq("restored draft reproduces the edited blocks", JSON.stringify(s2.turns), JSON.stringify(s.turns));
   assert("restored draft is not instantly dirty", !s2.isDirty);
+  assertEq("restored draft carries the provenance through", s2.source, "markdown");
 
   // --- a successful submit clears the draft so the next visit starts clean ---
   await s2.submit();
   assert("successful submit clears the persisted draft", a.cell() === null);
-  assert("loadDraft after submit yields no draft", a.io.loadDraft().length === 0);
+  assert("loadDraft after submit yields no draft", a.io.loadDraft().turns.length === 0);
 
   dispose();
 }

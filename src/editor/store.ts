@@ -31,20 +31,31 @@ export type SubmitResult =
   | { readonly ok: true; readonly slug: string }
   | { readonly ok: false; readonly reason: string };
 
+// [LAW:one-type-per-behavior] The unit the editor authors: turns plus the
+// provenance they were parsed from (null = authored from scratch, no parser
+// ran). Submit and draft persistence both move this one shape — the source is
+// never separated from the turns it describes, so it cannot be dropped at one
+// seam and kept at another.
+export interface Draft {
+  readonly turns: ReadonlyArray<Turn>;
+  readonly source: SourceKind | null;
+}
+
 // [LAW:effects-at-boundaries] The store's entire contact with the world, named
-// as capabilities. fetchShare hits /api/fetch (URL -> turns), submit hits
-// /api/paste ({ turns } -> slug), navigate changes the page; saveDraft/loadDraft/
-// clearDraft persist the in-progress Turn[] to localStorage so an accidental
+// as capabilities. fetchShare hits /api/fetch (URL -> turns + source), submit
+// hits /api/paste (Draft -> slug), navigate changes the page; saveDraft/loadDraft/
+// clearDraft persist the in-progress Draft to localStorage so an accidental
 // reload doesn't lose work. mount.ts is the one place these are real.
 //
-// loadDraft returns [] for "no draft" (absent or unparseable) — the same empty
-// editor a fresh visit gets, so restore is unconditional dataflow, not a branch.
+// loadDraft returns the empty Draft ({ turns: [], source: null }) for "no
+// draft" (absent or unparseable) — the same empty editor a fresh visit gets,
+// so restore is unconditional dataflow, not a branch.
 export interface EditorIo {
   readonly fetchShare: (url: string) => Promise<ParseResult>;
-  readonly submit: (turns: ReadonlyArray<Turn>) => Promise<SubmitResult>;
+  readonly submit: (draft: Draft) => Promise<SubmitResult>;
   readonly navigate: (slug: string) => void;
-  readonly saveDraft: (turns: ReadonlyArray<Turn>) => void;
-  readonly loadDraft: () => Turn[];
+  readonly saveDraft: (draft: Draft) => void;
+  readonly loadDraft: () => Draft;
   readonly clearDraft: () => void;
 }
 
@@ -60,6 +71,11 @@ export class EditorStore {
   // would drift from the text — "raw" is always detected, so a stored default
   // could never re-snap to a more-specific format once set.
   userKind: SourceKind | null = null;
+  // [LAW:one-source-of-truth] The provenance of the loaded turns — which kind
+  // parsed them, set only by loadTurns (the single loader every parse/fetch/
+  // draft-restore passes through). null = authored from scratch. Hand-edits
+  // don't change where the content came from, so edits never touch it.
+  source: SourceKind | null = null;
   view: View = "blocks";
   importError: string | null = null;
   submitError: string | null = null;
@@ -72,7 +88,7 @@ export class EditorStore {
   // a two-phase action (parse -> confirm -> commit). The middle phase is typed
   // state carrying the already-parsed turns, not an ordering assumption or a
   // `force` boolean. null = no decision pending.
-  pendingReparse: { readonly turns: ReadonlyArray<Turn> } | null = null;
+  pendingReparse: Draft | null = null;
   // One in-flight flag for any network action (fetch OR submit): while either is
   // running, both buttons disable. There is no legitimate state where a fetch
   // and a submit race, so a single flag is the honest representation.
@@ -181,7 +197,7 @@ export class EditorStore {
       this.importError = result.reason;
       return;
     }
-    this.accept(result.turns);
+    this.accept({ turns: result.turns, source: result.source });
   }
 
   private async fetchShare(url: string): Promise<void> {
@@ -194,7 +210,7 @@ export class EditorStore {
         this.importError = result.reason;
         return;
       }
-      this.accept(result.turns);
+      this.accept({ turns: result.turns, source: result.source });
     });
   }
 
@@ -204,12 +220,12 @@ export class EditorStore {
   // passes through: replace now, or stage for confirmation. The value
   // (wouldClobber) selects the outcome — both are legitimate data states, not a
   // skipped operation. No `force` flag duplicates this decision at callsites.
-  private accept(turns: ReadonlyArray<Turn>): void {
+  private accept(draft: Draft): void {
     if (this.wouldClobber) {
-      this.pendingReparse = { turns };
+      this.pendingReparse = draft;
       return;
     }
-    this.loadTurns(turns);
+    this.loadTurns(draft);
   }
 
   // The user confirmed a clobbering reparse. Commit the staged turns through the
@@ -217,7 +233,7 @@ export class EditorStore {
   confirmReparse(): void {
     const pending = this.pendingReparse;
     if (pending === null) return;
-    this.loadTurns(pending.turns);
+    this.loadTurns(pending);
   }
 
   cancelReparse(): void {
@@ -229,23 +245,25 @@ export class EditorStore {
   // the restored turns and the draft is not instantly "dirty". Called once at
   // mount before any edit; an empty draft ([]) loads to the same empty editor a
   // fresh visit gets, so the caller never branches on "is there a draft".
-  restoreDraft(turns: ReadonlyArray<Turn>): void {
-    this.loadTurns(turns);
+  restoreDraft(draft: Draft): void {
+    this.loadTurns(draft);
   }
 
   // [LAW:single-enforcer] The only place parsed/fetched turns become editable
   // blocks. Replaces the list wholesale, resets the dirty baseline to the loaded
-  // turns, clears any pending decision, and snaps to the blocks view.
-  private loadTurns(turns: ReadonlyArray<Turn>): void {
+  // turns, adopts the batch's provenance, clears any pending decision, and snaps
+  // to the blocks view.
+  private loadTurns(draft: Draft): void {
     // [LAW:types-are-the-program] usage turns are source-derived token
     // accounting, not author-able content; the editor holds only AuthorableTurns,
     // so they are dropped here at the single load seam. Editing a transcript
     // discards token counts that no longer describe the edited content — the
     // baseline is set to the same filtered set so the editor isn't instantly
     // "dirty" against turns it never held.
-    const editable = turns.filter(isAuthorable);
+    const editable = draft.turns.filter(isAuthorable);
     this.blocks = toBlocks(editable);
     this.pristineTurns = editable;
+    this.source = draft.source;
     this.pendingReparse = null;
     this.view = "blocks";
   }
@@ -322,7 +340,7 @@ export class EditorStore {
     if (!this.canSubmit) return;
     this.busy = true;
     this.submitError = null;
-    const result = await this.io.submit(this.turns);
+    const result = await this.io.submit({ turns: this.turns, source: this.source });
     runInAction(() => {
       this.busy = false;
       if (!result.ok) this.submitError = result.reason;
