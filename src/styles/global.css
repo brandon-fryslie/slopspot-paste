@@ -209,6 +209,78 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   gap: 8px;
 }
 
+/* ─── Minimap / conversation timeline ─────────────────────────────────────
+   A fixed vertical rail of one marker per turn, sitting in the right gutter
+   beside the centred conversation column. Built client-side from the rendered
+   turn elements (see [slug].astro).
+
+   Two independent visibility gates, each owned by the layer that holds the fact:
+   - CSS media query: the viewport must be wide enough to have gutter room.
+   - body.has-timeline: JS toggles this iff the page overflows the viewport
+     (navigation only has value when there is off-screen content to reach).
+   Both must hold for the rail to show. An empty rail (no turns) hides via
+   :empty. No JS branch decides visibility — the values do. */
+.minimap {
+  display: none;
+}
+.minimap:empty {
+  display: none !important;
+}
+@media (min-width: 1100px) {
+  body.has-timeline .minimap {
+    display: flex;
+    position: fixed;
+    top: 50%;
+    right: 24px;
+    transform: translateY(-50%);
+    flex-direction: column;
+    gap: 5px;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 8px 6px;
+    z-index: 20;
+    scrollbar-width: none;
+  }
+}
+.minimap::-webkit-scrollbar { display: none; }
+.minimap-marker {
+  /* The bar IS the marker; its colour is the turn's kind. Idle bars are
+     understated so the rail reads as a faint spine until hovered/active. */
+  appearance: none;
+  border: none;
+  padding: 0;
+  width: 20px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--minimap-color, var(--fg-muted));
+  opacity: 0.32;
+  cursor: pointer;
+  transition: opacity 0.12s ease, width 0.12s ease;
+}
+.minimap-marker:hover,
+.minimap-marker:focus-visible {
+  opacity: 0.85;
+  width: 28px;
+  outline: none;
+}
+.minimap-marker.is-active {
+  opacity: 1;
+  width: 32px;
+}
+/* [LAW:dataflow-not-control-flow] The marker carries its kind/role as data-*;
+   CSS maps the value to a hue. Same colour vocabulary as the role dots, so the
+   rail and the bubbles agree by construction. */
+.minimap-marker[data-kind="message"][data-role="user"] { --minimap-color: #6366f1; }
+.minimap-marker[data-kind="message"][data-role="assistant"] { --minimap-color: #10b981; }
+.minimap-marker[data-kind="message"][data-role="system"] { --minimap-color: #f59e0b; }
+.minimap-marker[data-kind="insight"] { --minimap-color: var(--accent); }
+.minimap-marker[data-kind="tool-call"] { --minimap-color: #38bdf8; }
+.minimap-marker[data-kind="thinking"] { --minimap-color: var(--fg-muted); }
+.minimap-marker[data-kind="turn-summary"] {
+  --minimap-color: var(--fg-muted);
+  width: 12px;
+}
+
 /* [LAW:one-source-of-truth] The conversation-list layout (column + gap) is one
    rule shared by the permalink page (.conversation) and the editor preview
    (.bubbles). The renderer emits the same flat list of .bubble articles for

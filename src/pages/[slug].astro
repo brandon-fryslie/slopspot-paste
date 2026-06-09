@@ -38,4 +38,93 @@ const expiresIn = Math.max(0, Math.ceil((conversation.expiresAt - Date.now()) / 
   </section>
 
   <section class="conversation" aria-label="Conversation" set:html={renderTurnsHtml(conversation.turns)} />
+
+  <script>
+    // [LAW:one-source-of-truth] The timeline is a *projection of the rendered
+    // conversation*, never a second enumeration of turns. It reads the very
+    // elements renderTurns emitted (each carries data-index/data-kind/data-role),
+    // so a marker cannot point at an index the renderer didn't produce.
+    //
+    // [LAW:effects-at-boundaries] Scroll position, viewport overflow, and
+    // "which turn is in view" are facts only the browser holds. The server
+    // emitted the content; navigation over it is built here, client-side.
+    const conversation = document.querySelector<HTMLElement>(".conversation");
+    const turns = conversation
+      ? [...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")]
+      : [];
+
+    // aria-label text per kind — a value→string map, not a behaviour branch.
+    const roleName: Record<string, string> = {
+      user: "User",
+      assistant: "Assistant",
+      system: "System",
+    };
+    const markerLabel = (el: HTMLElement): string => {
+      const kind = el.dataset.kind ?? "turn";
+      if (kind === "message") return roleName[el.dataset.role ?? ""] ?? "Message";
+      if (kind === "tool-call") return el.dataset.tool ?? "Tool call";
+      if (kind === "turn-summary") return "Summary";
+      return kind.charAt(0).toUpperCase() + kind.slice(1);
+    };
+
+    const nav = document.createElement("nav");
+    nav.className = "minimap";
+    nav.setAttribute("aria-label", "Conversation timeline");
+
+    // One marker per turn, in order. Colour is carried as data-* and mapped to a
+    // hue by CSS — no colour logic in JS. The button is the correct interactive
+    // semantic, so keyboard activation and focus come for free.
+    const markers = new Map<number, HTMLButtonElement>();
+    for (const el of turns) {
+      const index = Number(el.dataset.index);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "minimap-marker";
+      btn.dataset.kind = el.dataset.kind ?? "";
+      if (el.dataset.role) btn.dataset.role = el.dataset.role;
+      btn.setAttribute("aria-label", `Jump to ${markerLabel(el)}`);
+      // [LAW:no-ambient-temporal-coupling] Native smooth scroll; the browser
+      // owns the animation lifecycle — no rAF loop, no easing timer of ours.
+      btn.addEventListener("click", () =>
+        el.scrollIntoView({ behavior: "smooth", block: "start" }),
+      );
+      nav.appendChild(btn);
+      markers.set(index, btn);
+    }
+    document.body.appendChild(nav);
+
+    // [LAW:no-ambient-temporal-coupling] IntersectionObserver is the browser's
+    // owner of "is this turn on screen" — not a scroll handler we debounce. We
+    // keep a derived set of intersecting indices and recompute the active marker
+    // as a pure function of it (top-most visible turn wins). The rootMargin
+    // biases "active" toward the turn entering the upper viewport.
+    const visible = new Set<number>();
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const i = Number((e.target as HTMLElement).dataset.index);
+          e.isIntersecting ? visible.add(i) : visible.delete(i);
+        }
+        const active = visible.size ? Math.min(...visible) : -1;
+        for (const [i, btn] of markers) btn.classList.toggle("is-active", i === active);
+      },
+      { rootMargin: "-12% 0px -78% 0px" },
+    );
+    for (const el of turns) io.observe(el);
+
+    // [LAW:dataflow-not-control-flow] Degradation is a value transition, not a
+    // branch that skips building the rail: the timeline is shown iff the page
+    // overflows the viewport — the exact condition under which jumping to
+    // off-screen turns has any value. No magic turn-count threshold. ResizeObserver
+    // owns content-size changes (images, fonts, reflow); window resize owns
+    // viewport changes; both feed the one derived boolean.
+    const recomputeOverflow = (): void => {
+      const overflows =
+        document.documentElement.scrollHeight > window.innerHeight + 4;
+      document.body.classList.toggle("has-timeline", overflows);
+    };
+    new ResizeObserver(recomputeOverflow).observe(document.documentElement);
+    window.addEventListener("resize", recomputeOverflow);
+    recomputeOverflow();
+  </script>
 </Base>
