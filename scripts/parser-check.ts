@@ -812,22 +812,30 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
     assert("parseInput error names the async path", blocked.reason.includes("ingestPaste"));
   }
 
-  // parseClaudeShare against the real captured fixture
+  // parseClaudeShare against the real captured fixture. Its assistant body
+  // opens with a doubled "Searched the web" indicator pair, now promoted to a
+  // single tool-call Turn between the user and assistant messages.
   const fixture = readFileSync("test/fixtures/claude-share.md", "utf8");
   const turns = parseClaudeShare(fixture);
   assert("fixture parses to non-null", turns !== null);
   if (turns) {
-    assertEq("fixture turn count", turns.length, 2);
+    assertEq("fixture kinds", kinds(turns), ["message", "tool-call", "message"]);
     const t0 = turns[0]!;
-    const t1 = turns[1]!;
+    const tc = turns[1]!;
+    const t1 = turns[2]!;
     assert("turn[0] is a user message",
       t0.kind === "message" && t0.role === "user");
-    assert("turn[1] is an assistant message",
+    assert("doubled indicator pair → ONE tool-call",
+      tc.kind === "tool-call" && tc.tool === "Searched the web" &&
+      tc.args === "" && tc.output === null);
+    assert("turn[2] is an assistant message",
       t1.kind === "message" && t1.role === "assistant");
     assert("user message body contains original question",
       t0.kind === "message" && t0.content.includes("comrehensible to me without dumbing"));
     assert("assistant message contains the substantive answer",
       t1.kind === "message" && t1.content.includes("IsoAcoustics"));
+    assert("indicator text sliced out of the assistant body",
+      t1.kind === "message" && !t1.content.includes("Searched the web"));
     assert("boilerplate stripped from user body",
       t0.kind === "message" && !t0.content.includes("This is a copy of a chat"));
     assert("date stamp stripped from user body",
@@ -918,6 +926,125 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
   if (altLabel) {
     assertEq("alt label turn count", altLabel.length, 2);
   }
+}
+
+console.log("\nclaude-share tool indicators (claude-share-4pf):");
+{
+  // Fixtures are real share pages captured via the production Firecrawl call
+  // (v1 /scrape, formats:[markdown]) — each one characterizes a distinct
+  // indicator shape observed in the wild.
+  const load = (name: string): Turn[] => {
+    const t = parseClaudeShare(readFileSync(`test/fixtures/${name}.md`, "utf8"));
+    if (t === null) throw new Error(`${name} parsed to null`);
+    return t;
+  };
+  const toolsOf = (turns: ReadonlyArray<Turn>): string[] =>
+    turns.flatMap((t) => (t.kind === "tool-call" ? [t.tool] : []));
+  const bodiesOf = (turns: ReadonlyArray<Turn>): string =>
+    turns.map((t) => (t.kind === "message" ? t.content : "")).join("\n");
+
+  // Web search: the canonical doubled indicator, alone at the turn start.
+  const ws = load("claude-share-tools-websearch");
+  assertEq("websearch kinds", kinds(ws), ["message", "tool-call", "message"]);
+  assertEq("websearch tool", toolsOf(ws), ["Searched the web"]);
+  assert("websearch body keeps the prose, drops the indicator",
+    bodiesOf(ws).includes("Car Presentation Submissions") &&
+    !bodiesOf(ws).includes("Searched the web"));
+
+  // Interleaved: prose → indicator → prose inside ONE assistant turn must
+  // come out as an ordered message/tool-call/message stream, and the
+  // attachment placeholder inside the user body is chrome.
+  const il = load("claude-share-tools-interleaved");
+  assertEq("interleaved opening sequence",
+    kinds(il).slice(0, 5),
+    ["message", "tool-call", "message", "tool-call", "message"]);
+  assert("interleaved count summaries promoted",
+    toolsOf(il).includes("Viewed 9 files, ran 2 commands") &&
+    toolsOf(il).includes("Ran 3 commands, read a file"));
+  assert("hidden-files placeholder stripped from user body",
+    !bodiesOf(il).includes("Files hidden in shared chats"));
+
+  // Artifact cards: type line + preceding title → tool + args; the analysis
+  // tool's label + "View analysis" button collapses to one tool-call.
+  const af = load("claude-share-tools-artifact");
+  const afTools = af.filter((t) => t.kind === "tool-call");
+  assert("artifact card carries title in args",
+    afTools.some((t) => t.kind === "tool-call" &&
+      t.tool === "Interactive artifact" &&
+      t.args === "Mortgage Calculator: Prepayment vs Investment"));
+  assert("artifact version line preserved in tool name",
+    afTools.some((t) => t.kind === "tool-call" &&
+      t.tool === "Interactive artifact ∙ Version 20"));
+  assert("Analyzed data + View analysis pair → one tool-call",
+    afTools.some((t) => t.kind === "tool-call" && t.tool === "Analyzed data"));
+  assert("View analysis button text not left in any body",
+    !bodiesOf(af).includes("View analysis"));
+  assert("prose before an artifact card survives the title pop",
+    bodiesOf(af).includes("Let me create that for you:"));
+
+  // Free-form labels: MCP tool names and status text are an OPEN set — the
+  // structural fingerprint must promote strings never seen before.
+  const mcp = load("claude-share-tools-mcp");
+  assert("MCP tool labels promoted",
+    toolsOf(mcp).includes("Search-designs") &&
+    toolsOf(mcp).includes("Loaded tools, used a tool") &&
+    toolsOf(mcp).includes("Used 2 tools"));
+  assert("Show more truncation button stripped",
+    !bodiesOf(mcp).includes("Show more"));
+
+  // Localized card titles double like indicators and must promote whole.
+  const ct = load("claude-share-tools-card-titles");
+  assert("localized card title promoted",
+    toolsOf(ct).includes("GitHub Actions workflow für Label-Bot und Issue-zu-PR Pipeline"));
+  assert("prose section headings stay prose",
+    bodiesOf(ct).includes("GitHub Actions Workflows"));
+
+  // Fence safety: repeated ASCII-diagram lines inside code fences must NOT
+  // be promoted — this fixture has doubles only inside fences.
+  const fa = load("claude-share-fenced-art");
+  assertEq("fenced diagrams produce zero tool-calls", toolsOf(fa), []);
+  assert("diagram glyphs survive verbatim", bodiesOf(fa).includes("▼"));
+
+  // No tools at all: bodies must come through untouched, zero tool-calls.
+  const nt = load("claude-share-no-tools");
+  assertEq("clean share produces zero tool-calls", toolsOf(nt), []);
+
+  // A share can BEGIN with an assistant turn (user upload hidden): the first
+  // event is the tool-call its body opens with.
+  const hf = load("claude-share-hidden-files");
+  assert("leading-assistant share opens with its tool-call",
+    hf[0]!.kind === "tool-call" && hf[0]!.tool === "Viewed 3 files");
+  assert("hidden-files placeholder stripped (leading-assistant share)",
+    !bodiesOf(hf).includes("Files hidden in shared chats"));
+
+  // Synthetic negatives — the reject half of the fingerprint.
+  // User bodies are never scanned: a doubled line a user pasted stays prose.
+  const userDouble = parseClaudeShare(
+    "## You said: hi\n\nfoo\n\nfoo\n\n## Claude responded: ok\n\nok body\n",
+  );
+  assert("doubled line in USER body stays prose",
+    userDouble !== null && kinds(userDouble).every((k) => k === "message"));
+
+  // Repeated prose with sentence punctuation is not an indicator.
+  const punct = parseClaudeShare(
+    "## You said: q\n\nq\n\n## Claude responded: a\n\nSame line.\n\nSame line.\n",
+  );
+  assert("doubled sentence-punctuated prose stays prose",
+    punct !== null && kinds(punct).every((k) => k === "message"));
+
+  // Repeated markdown-structural lines (lists, bold) are not indicators.
+  const structural = parseClaudeShare(
+    "## You said: q\n\nq\n\n## Claude responded: a\n\n- item\n\n- item\n\n**Bold**\n\n**Bold**\n",
+  );
+  assert("doubled structural lines stay prose",
+    structural !== null && kinds(structural).every((k) => k === "message"));
+
+  // An indicator-shaped line appearing ONCE is prose, not a tool-call.
+  const single = parseClaudeShare(
+    "## You said: q\n\nq\n\n## Claude responded: a\n\nRan a command\n\nthen explained it.\n",
+  );
+  assert("undoubled indicator-shaped line stays prose",
+    single !== null && kinds(single).every((k) => k === "message"));
 }
 
 console.log("\nclaude-jsonl robustness + legacy auto-path (PR review):");
