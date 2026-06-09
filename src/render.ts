@@ -14,6 +14,31 @@ export const escapeHtml = (s: string): string =>
 export const escapeAttr = (s: string): string =>
   escapeHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
+// ─── URL safety ──────────────────────────────────────────────────────
+// [LAW:single-enforcer] renderMarkdown is the one boundary where pasted text
+// becomes markup, so the theorem "no byte of input becomes executable HTML"
+// is kept here and nowhere else. Pasted links carry one of the two XSS vectors
+// (the other is raw HTML, handled in the renderer below): a `javascript:` href
+// runs on click.
+//
+// [LAW:types-are-the-program] A href is safe to emit iff — after stripping the
+// control/space characters a browser ignores while resolving a scheme — it is
+// either scheme-relative/path-relative (no scheme to abuse) or carries an
+// allowlisted scheme. Default-deny: an unknown scheme is the unsafe case, so we
+// never enumerate the dangerous ones. A blocklist leaks (miss one and it runs);
+// an allowlist cannot.
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+const SAFE_SCHEME_RE = /^(https?|mailto|tel):/i;
+
+export const sanitizeUrl = (href: string): string => {
+  // Browsers ignore C0 controls, space, and NBSP when reading a scheme, so a
+  // `java\nscript:` payload resolves live. Strip them before the scheme test.
+  const normalized = href.replace(/[\u0000-\u0020\u00a0]/g, "");
+  if (!URL_SCHEME_RE.test(normalized)) return href;
+  if (SAFE_SCHEME_RE.test(normalized)) return href;
+  return "#";
+};
+
 // ─── Table normalization ─────────────────────────────────────────────
 // LLMs commonly emit pipe-separated rows without the GFM separator row,
 // e.g. `| a | b |` followed by `| 1 | 2 |` with no `| --- | --- |` in
@@ -130,6 +155,24 @@ export const renderMarkdown = (md: string): string => {
       codespan({ text }) {
         return `<code class="inline-code">${escapeHtml(text)}</code>`;
       },
+      // [LAW:single-enforcer] Raw HTML is not a markup capability of this
+      // renderer — it renders as the literal text it is, the same escaping move
+      // code/codespan make for their content. This closes the stored-XSS vector
+      // where a pasted <script> / <img onerror=...> would otherwise execute for
+      // every viewer of the permalink.
+      html({ text }) {
+        return escapeHtml(text);
+      },
+    },
+    // [LAW:dataflow-not-control-flow] Link/image safety is a property of the
+    // href *value*, not a fork of the renderer: we rewrite a disallowed scheme
+    // to an inert href on the token and let marked's default link/image
+    // rendering run unchanged. The token's discriminant selects which tokens
+    // carry a href to sanitize.
+    walkTokens(token) {
+      if (token.type === "link" || token.type === "image") {
+        token.href = sanitizeUrl(token.href);
+      }
     },
     hooks: {
       // Wrap every emitted table in a scroll container so a wide table

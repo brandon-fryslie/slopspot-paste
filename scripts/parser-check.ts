@@ -15,6 +15,7 @@ import {
   formatBashTerminal,
   normalizeTables,
   renderMarkdown,
+  sanitizeUrl,
 } from "../src/render";
 import { renderTurnsHtml } from "../src/renderTurns";
 import {
@@ -364,6 +365,60 @@ but only when a | b matches.`;
   assert(
     "wide table wrapped for overflow",
     /<div class="table-wrap"><table>/.test(html),
+  );
+}
+
+console.log("\nrenderMarkdown XSS safety (stored-XSS enforcer):");
+{
+  // The renderMarkdown theorem: no byte of pasted input becomes executable
+  // HTML. These assert the contract (input → inert output), not the mechanism.
+
+  // Vector 1: raw HTML blocks/inline tags render as literal text, never markup.
+  const script = renderMarkdown("<script>alert(1)</script>");
+  assert("raw <script> is escaped, not emitted", !/<script>/i.test(script));
+  assert("raw <script> shown as text", script.includes("&lt;script&gt;"));
+
+  const imgOnerror = renderMarkdown("<img src=x onerror=alert(2)>");
+  assert(
+    "raw <img onerror> is escaped, not emitted",
+    !/<img/i.test(imgOnerror) && !/onerror/i.test(imgOnerror.replace(/&lt;[^&]*&gt;/g, "")),
+  );
+  assert("raw <img onerror> shown as text", imgOnerror.includes("&lt;img"));
+
+  const inlineTag = renderMarkdown("inline <b>x</b> y");
+  assert("inline raw HTML escaped", inlineTag.includes("&lt;b&gt;") && !/<b>/.test(inlineTag));
+
+  // Vector 2: dangerous URL schemes on links/images become inert.
+  const jsLink = renderMarkdown("[click](javascript:alert(3))");
+  assert("javascript: link href neutralized", !/href="javascript:/i.test(jsLink));
+  assert("neutralized link still renders an anchor", /<a /.test(jsLink));
+
+  const jsImg = renderMarkdown("![x](javascript:alert(4))");
+  assert("javascript: image src neutralized", !/src="javascript:/i.test(jsImg));
+
+  // Safe markdown is untouched — the fix must not over-reach.
+  const safeLink = renderMarkdown("[ok](https://example.com)");
+  assert("https link preserved", safeLink.includes('href="https://example.com"'));
+  const relLink = renderMarkdown("[rel](/path/to/page)");
+  assert("relative link preserved", relLink.includes('href="/path/to/page"'));
+
+  // sanitizeUrl unit contract — default-deny by scheme, whitespace-obfuscation safe.
+  assertEq("https allowed", sanitizeUrl("https://x.com"), "https://x.com");
+  assertEq("mailto allowed", sanitizeUrl("mailto:a@b.com"), "mailto:a@b.com");
+  assertEq("relative allowed", sanitizeUrl("/a/b"), "/a/b");
+  assertEq("fragment allowed", sanitizeUrl("#sec"), "#sec");
+  assertEq("javascript denied", sanitizeUrl("javascript:alert(1)"), "#");
+  assertEq("data denied", sanitizeUrl("data:text/html,<script>"), "#");
+  assertEq("vbscript denied", sanitizeUrl("vbscript:msgbox(1)"), "#");
+  assertEq(
+    "whitespace-obfuscated javascript denied",
+    sanitizeUrl("java\nscript:alert(1)"),
+    "#",
+  );
+  assertEq(
+    "leading-control javascript denied",
+    sanitizeUrl(String.fromCharCode(1, 9, 32) + "javascript:alert(1)"),
+    "#",
   );
 }
 
