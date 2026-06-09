@@ -1,5 +1,5 @@
 import type { ParseResult, PasteInput, Role, SourceKind, TextArmKind, Turn } from "./types";
-import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput } from "./types";
+import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, TEXT_ARM_KINDS, textArmInput } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
 import { parseClaudeShare } from "./parsers/claude-share";
@@ -73,12 +73,6 @@ const NAME_COLON_DETECTOR: HeaderDetector = {
   classify: classifyLabel,
 };
 
-const HEADER_DETECTORS: ReadonlyArray<HeaderDetector> = [
-  MARKDOWN_HEADING_DETECTOR,
-  SAID_MARKER_DETECTOR,
-  NAME_COLON_DETECTOR,
-];
-
 const trySplitByHeaders = (
   lines: ReadonlyArray<string>,
   detector: HeaderDetector,
@@ -106,15 +100,6 @@ const trySplitByHeaders = (
     turns.push({ kind: "message", role: cur.role, content: body });
   }
   return turns.length >= 2 ? turns : null;
-};
-
-const parseHeaderFormats = (text: string): Turn[] | null => {
-  const lines = text.split("\n");
-  for (const detector of HEADER_DETECTORS) {
-    const turns = trySplitByHeaders(lines, detector);
-    if (turns) return turns;
-  }
-  return null;
 };
 
 // [LAW:dataflow-not-control-flow] Per-kind parsing is a table lookup. Each
@@ -174,7 +159,7 @@ export const parseInput = (input: PasteInput): ParseResult => {
       reason: `Content does not parse as ${input.kind}.`,
     };
   }
-  return { ok: true, turns };
+  return { ok: true, turns, source: input.kind };
 };
 
 // [LAW:single-enforcer] The one entry point that does network I/O for
@@ -206,7 +191,7 @@ export const ingestPaste = async (
       reason: "Fetched the page, but could not extract a conversation.",
     };
   }
-  return { ok: true, turns };
+  return { ok: true, turns, source: "claude-share" };
 };
 
 // [LAW:one-source-of-truth] The URL shape claude-share accepts lives here,
@@ -248,26 +233,25 @@ export const detectSources = (input: string): ReadonlyArray<SourceKind> => {
 // [LAW:locality-or-seam] The legacy auto-race lives behind its own seam so
 // the API can use it for the no-source path (form posts that pre-date the
 // dropdown, direct API callers) without re-introducing race logic into the
-// per-kind dispatch above. CC tried first because its markers (❯ ⏺ ⎿) are
-// highly specific and won't false-positive on other formats.
+// per-kind dispatch above.
+//
+// [LAW:one-source-of-truth] The race IS an iteration of TEXT_ARM_KINDS over
+// PARSER_BY_KIND — priority order and parser pairing both come from the
+// canonical tuple in types.ts; there is no second hand-ordered list to drift.
+// The winner's kind rides out on the result, so auto-detected pastes carry
+// the same provenance as explicitly-picked ones. The raw arm always parses
+// (one fallback bubble) and sits last in the tuple, so the loop is total.
 export const parseAuto = (input: string): ParseResult => {
   const text = normalize(input);
   if (text.length === 0) return { ok: false, reason: "empty input" };
 
-  // [LAW:one-source-of-truth] The race order mirrors SOURCE_KINDS priority:
-  // JSONL is the most specific (first non-blank line must be valid JSON) and
-  // cheapest to rule out, so it leads — a session JSONL paste on the legacy
-  // no-source path now ingests correctly instead of falling through to raw.
-  const jsonlTurns = parseClaudeJsonl(text);
-  if (jsonlTurns) return { ok: true, turns: jsonlTurns };
-
-  const ccTurns = parseClaudeCode(text);
-  if (ccTurns) return { ok: true, turns: ccTurns };
-
-  const headerTurns = parseHeaderFormats(text);
-  if (headerTurns) return { ok: true, turns: headerTurns };
-
-  return { ok: true, turns: parseRaw(text) };
+  for (const kind of TEXT_ARM_KINDS) {
+    const turns = PARSER_BY_KIND[kind](text);
+    if (turns !== null && turns.length > 0) return { ok: true, turns, source: kind };
+  }
+  // [LAW:no-silent-failure] Unreachable while the raw parser is total; if that
+  // invariant ever breaks, fail loudly instead of fabricating a result.
+  throw new Error("parseAuto: no parser matched (raw must always parse)");
 };
 
 // Aliased so imports that pre-date the per-kind API (parser-check tests, any

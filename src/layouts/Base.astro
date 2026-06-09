@@ -1,12 +1,17 @@
 ---
 import "../styles/global.css";
+import type { Platform } from "../types";
 
 interface Props {
   title: string;
   description?: string;
+  // [LAW:dataflow-not-control-flow] The page theme is a value the body carries
+  // as data-platform; CSS variable overrides do all the theming. Pages without
+  // a platform (index, sloppy) omit the prop and get the default vars.
+  platform?: Platform;
 }
 
-const { title, description = "Share LLM conversations, readably." } = Astro.props;
+const { title, description = "Share LLM conversations, readably.", platform } = Astro.props;
 ---
 
 <!doctype html>
@@ -24,7 +29,7 @@ const { title, description = "Share LLM conversations, readably." } = Astro.prop
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <slot name="head" />
   </head>
-  <body>
+  <body data-platform={platform}>
     <header class="site-header">
       <a class="brand" href="/">slopspot<span class="brand-dot">·</span>paste</a>
       <nav><a href="/">New paste</a></nav>

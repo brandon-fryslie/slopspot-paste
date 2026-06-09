@@ -1,5 +1,5 @@
 import type { Conversation, Lifetime } from "./types";
-import { TTL_SECONDS } from "./types";
+import { isSourceKind, TTL_SECONDS } from "./types";
 
 // [LAW:single-enforcer] KV's expirationTtl is the ONLY mechanism that expires a
 // paste. No cron, no sweeper, no "isExpired" check anywhere else. The storage
@@ -71,6 +71,10 @@ export const getConversation = async (
       ...parsed,
       lifetime: normalizeLifetime({ lifetime: parsed.lifetime, expiresAt: _legacyExpiresAt }),
       turns: parsed.turns.map(normalizeTurn),
+      // [LAW:types-are-the-program] Records written before `source` landed (or
+      // hand-edited to junk) read as null — the same honest absence an
+      // editor-authored paste carries. isSourceKind closes the enumeration gap.
+      source: isSourceKind(parsed.source) ? parsed.source : null,
     } as Conversation;
   } catch {
     return null;

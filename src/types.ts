@@ -140,6 +140,12 @@ export interface Conversation {
   readonly lifetime: Lifetime;
   readonly turns: ReadonlyArray<Turn>;
   readonly title: string | null;
+  // [LAW:one-source-of-truth] Which SourceKind ingested this paste — captured
+  // once at the ingest boundary (the parser that matched) and carried on the
+  // record. Render derives styling from it via platformOf; nothing re-guesses
+  // the platform from content. null is genuine absence: turns authored in the
+  // editor without a parse, or records stored before this field existed.
+  readonly source: SourceKind | null;
 }
 
 // [LAW:single-enforcer] The single enforcer of expiry is KV's expirationTtl.
@@ -191,8 +197,13 @@ export const MAX_PASTE_LABEL = `${MAX_PASTE_BYTES / (1024 * 1024)} MiB`;
 
 // [LAW:types-are-the-program] Discriminated result instead of throws/null
 // so callers must structurally handle both outcomes.
+//
+// [LAW:one-source-of-truth] `source` is the kind that produced the turns,
+// reported by the one code that knows it — the parser that matched. null is
+// the editor arm only: pre-authored turns that never passed through a parser.
+// Every function in src/parser.ts returns a concrete kind.
 export type ParseResult =
-  | { ok: true; turns: ReadonlyArray<Turn> }
+  | { ok: true; turns: ReadonlyArray<Turn>; source: SourceKind | null }
   | { ok: false; reason: string };
 
 // [LAW:types-are-the-program] PasteInput IS the input to parsing — each arm
@@ -252,6 +263,50 @@ export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
   "claude-paste",  // "Human:" / "Assistant:" — bare name+colon
   "raw",           // always succeeds; fallback bubble
 ];
+
+// [LAW:one-source-of-truth] The text-arm subset and the wire validator are both
+// derived from SOURCE_KINDS, so neither can drift from the canonical tuple.
+// TEXT_ARM_KINDS preserves SOURCE_KINDS order — parseAuto's race priority IS
+// this order, not a second hand-maintained list.
+export const TEXT_ARM_KINDS: ReadonlyArray<TextArmKind> = SOURCE_KINDS.filter(
+  (k): k is TextArmKind => k !== "claude-share",
+);
+
+export const isSourceKind = (v: unknown): v is SourceKind =>
+  typeof v === "string" && (SOURCE_KINDS as ReadonlyArray<string>).includes(v);
+
+// [LAW:one-type-per-behavior] Several source kinds style identically — they are
+// instances of one Platform, not seven independent themes. The grouping is
+// stated once here; CSS themes the four platform values, never individual kinds.
+//
+// [LAW:dataflow-not-control-flow] platformOf is a total projection: every
+// source value (including the null of editor-authored / legacy records) maps to
+// a platform, and "generic" is a value like any other — the default theme is
+// the absence of CSS overrides, not a branch that skips emitting the attribute.
+export const PLATFORMS = ["claude-web", "claude-code", "chatgpt", "generic"] as const;
+export type Platform = (typeof PLATFORMS)[number];
+
+export const PLATFORM_BY_SOURCE: { readonly [K in SourceKind]: Platform } = {
+  "claude-share": "claude-web",
+  "claude-paste": "claude-web",
+  "claude-jsonl": "claude-code",
+  "claude-code": "claude-code",
+  "chatgpt": "chatgpt",
+  "markdown": "generic",
+  "raw": "generic",
+};
+
+export const platformOf = (source: SourceKind | null): Platform =>
+  source === null ? "generic" : PLATFORM_BY_SOURCE[source];
+
+// Short display name for the conversation meta line. generic carries no badge —
+// absence of provenance is shown as absence, never a fabricated label.
+export const PLATFORM_LABEL: { readonly [P in Platform]: string | null } = {
+  "claude-web": "Claude",
+  "claude-code": "Claude Code",
+  "chatgpt": "ChatGPT",
+  "generic": null,
+};
 
 export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
   "claude-share": "claude.ai/share URL (we fetch + parse it)",
