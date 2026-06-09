@@ -134,5 +134,41 @@ const lifetimeLabel =
     new ResizeObserver(recomputeOverflow).observe(document.documentElement);
     window.addEventListener("resize", recomputeOverflow);
     recomputeOverflow();
+
+    // [LAW:effects-at-boundaries] The clipboard is browser-only state; the copy
+    // affordance is wired here, not on the server. [LAW:one-source-of-truth] each
+    // button copies its block's <code> textContent — the exact bytes rendered —
+    // so the copied text can never drift from what the viewer sees.
+    //
+    // navigator.clipboard is a genuine capability discriminant: absent it (old
+    // browser, insecure origin) the buttons stay hidden rather than promising an
+    // action they can't deliver. Revealing them is one value flip, not a branch
+    // that conditionally builds the affordance.
+    if (navigator.clipboard) {
+      for (const btn of document.querySelectorAll<HTMLButtonElement>(
+        "pre.code-block > .copy-code",
+      )) {
+        const code = btn.parentElement?.querySelector("code");
+        // [LAW:no-silent-failure] render.ts always emits <code> inside the <pre>,
+        // so a missing sibling here is a broken template invariant, not a normal
+        // empty case — fail loudly rather than skip this button into silence.
+        if (!code) throw new Error("copy-code button has no sibling <code>");
+        // [LAW:one-source-of-truth] The revert text is read from the button the
+        // server rendered, never re-typed here, so the label can't drift from
+        // render.ts.
+        const label = btn.textContent;
+        btn.addEventListener("click", async () => {
+          await navigator.clipboard.writeText(code.textContent ?? "");
+          btn.classList.add("copied");
+          btn.textContent = "Copied";
+          // The button owns its own revert timer — no shared scheduler.
+          window.setTimeout(() => {
+            btn.classList.remove("copied");
+            btn.textContent = label;
+          }, 1200);
+        });
+      }
+      document.body.classList.add("code-copy-ready");
+    }
   </script>
 </Base>
