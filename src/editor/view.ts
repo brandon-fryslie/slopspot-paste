@@ -14,7 +14,7 @@ import { repeat } from "lit-html/directives/repeat.js";
 import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
 import type { Role, SourceKind, ToolOutputKind, Turn } from "../types";
 import { ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
-import type { Block, Kind } from "./blocks";
+import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { convertKind, KINDS } from "./blocks";
 import type { EditorStore } from "./store";
 
@@ -129,7 +129,7 @@ const turnSummaryBody = (
 const setOutputKind = (
   turn: Extract<Turn, { kind: "tool-call" }>,
   raw: string,
-): Turn => {
+): AuthorableTurn => {
   if (raw === "none") return { ...turn, output: null };
   const kind = TOOL_OUTPUT_KINDS.find((k) => k === raw);
   if (kind === undefined) throw new Error(`unknown output kind: ${raw}`);
@@ -186,7 +186,7 @@ const toolCallBody = (
   `;
 };
 
-const cardBody = (store: EditorStore, id: string, turn: Turn): TemplateResult => {
+const cardBody = (store: EditorStore, id: string, turn: AuthorableTurn): TemplateResult => {
   switch (turn.kind) {
     case "message":
       return messageBody(store, id, turn);
@@ -201,7 +201,7 @@ const cardBody = (store: EditorStore, id: string, turn: Turn): TemplateResult =>
   }
 };
 
-const kindBadge = (store: EditorStore, id: string, turn: Turn): TemplateResult => html`
+const kindBadge = (store: EditorStore, id: string, turn: AuthorableTurn): TemplateResult => html`
   <select
     class="block-badge"
     .value=${turn.kind}

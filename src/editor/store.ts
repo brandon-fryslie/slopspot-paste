@@ -17,8 +17,8 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import type { ParseResult, SourceKind, Turn } from "../types";
 import { textArmInput } from "../types";
-import type { Block, Kind } from "./blocks";
-import { emptyTurn, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
+import type { AuthorableTurn, Block, Kind } from "./blocks";
+import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
 import { renderTurnsHtml } from "../renderTurns";
 
@@ -67,7 +67,7 @@ export class EditorStore {
   // as last loaded (parse/fetch/confirmed-reparse). NOT a second live copy of
   // blocks — it's a snapshot of a *different moment*, so isDirty is derivable
   // (current blocks vs this baseline) rather than tracked as a flag that drifts.
-  pristineTurns: ReadonlyArray<Turn> = [];
+  pristineTurns: ReadonlyArray<AuthorableTurn> = [];
   // [LAW:no-ambient-temporal-coupling] A reparse that would discard hand-edits is
   // a two-phase action (parse -> confirm -> commit). The middle phase is typed
   // state carrying the already-parsed turns, not an ordering assumption or a
@@ -237,8 +237,15 @@ export class EditorStore {
   // blocks. Replaces the list wholesale, resets the dirty baseline to the loaded
   // turns, clears any pending decision, and snaps to the blocks view.
   private loadTurns(turns: ReadonlyArray<Turn>): void {
-    this.blocks = toBlocks(turns);
-    this.pristineTurns = turns;
+    // [LAW:types-are-the-program] usage turns are source-derived token
+    // accounting, not author-able content; the editor holds only AuthorableTurns,
+    // so they are dropped here at the single load seam. Editing a transcript
+    // discards token counts that no longer describe the edited content — the
+    // baseline is set to the same filtered set so the editor isn't instantly
+    // "dirty" against turns it never held.
+    const editable = turns.filter(isAuthorable);
+    this.blocks = toBlocks(editable);
+    this.pristineTurns = editable;
     this.pendingReparse = null;
     this.view = "blocks";
   }
@@ -248,7 +255,7 @@ export class EditorStore {
   // collapse to "this block now holds this turn"). Replacing the block object
   // keeps Block readonly (immutable coordination); the stable id rides through so
   // keyed lit-html reuses the DOM node.
-  replaceTurn(id: string, turn: Turn): void {
+  replaceTurn(id: string, turn: AuthorableTurn): void {
     const i = this.blocks.findIndex((b) => b.id === id);
     // A concurrent delete can remove the card between render and event; with the
     // card gone there is nothing to update. Genuine absence, not a swallowed bug.

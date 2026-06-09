@@ -588,6 +588,121 @@ console.log("\nclaude-jsonl parser (T4):");
   assert("JSONL with no message events fails cleanly", !r4.ok);
 }
 
+console.log("\nclaude-jsonl token usage (display-tba):");
+{
+  // The accuracy trap: ONE logical assistant message (one message.id) is split
+  // across several JSONL lines that each REPEAT the same usage total. Counting
+  // per line would multiply the real cost. msgA is split across 3 lines (each
+  // usage output=100); msgB is a tool-only message (no text) with output=50.
+  const usageA = {
+    input: 10, output_tokens: 100,
+    cache_creation_input_tokens: 5, cache_read_input_tokens: 20,
+  };
+  const withUsage = (extra: Record<string, number>) => ({
+    input_tokens: extra.input ?? 0,
+    output_tokens: extra.output_tokens,
+    cache_creation_input_tokens: extra.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: extra.cache_read_input_tokens ?? 0,
+  });
+  const SAMPLE = [
+    { type: "assistant", message: { id: "msgA", role: "assistant", usage: withUsage(usageA),
+      content: [{ type: "thinking", thinking: "reasoning" }] } },
+    { type: "assistant", message: { id: "msgA", role: "assistant", usage: withUsage(usageA),
+      content: [{ type: "text", text: "Looking." }] } },
+    { type: "assistant", message: { id: "msgA", role: "assistant", usage: withUsage(usageA),
+      content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } },
+    { type: "user", message: { role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t1", content: "out" }] } },
+    { type: "assistant", message: { id: "msgB", role: "assistant",
+      usage: { input_tokens: 2, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      content: [{ type: "tool_use", id: "t2", name: "Read", input: { file_path: "x" } }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+
+  const r = parseInput({ kind: "claude-jsonl", content: SAMPLE });
+  assert("usage sample parses", r.ok);
+  if (r.ok) {
+    // Each logical message contributes exactly one usage turn, after its content.
+    assertEq(
+      "usage turns positioned after each message's content",
+      kinds(r.turns),
+      ["thinking", "message", "tool-call", "usage", "tool-call", "usage"],
+    );
+    const u1 = r.turns[3]!;
+    const u2 = r.turns[5]!;
+    // DEDUP: msgA's 3 repeated lines (output=100 each) count ONCE as 100 — not 300.
+    assert("msgA usage counted once (not multiplied by its 3 lines)",
+      u1.kind === "usage" && u1.usage.output === 100);
+    assert("msgA full breakdown carried accurately",
+      u1.kind === "usage" && u1.usage.input === 10 && u1.usage.cacheCreation === 5 && u1.usage.cacheRead === 20);
+    // Tool-only message's tokens are NOT lost (no text turn to hang them on).
+    assert("tool-only msgB usage still counted (output=50)",
+      u2.kind === "usage" && u2.usage.output === 50);
+
+    // Running total folds across usage turns: 100, then 100+50=150.
+    const html = renderTurnsHtml(r.turns);
+    assert("per-message output rendered", html.includes("100 tokens") && html.includes("50 tokens"));
+    assert("running total rendered (100 then 150)",
+      html.includes("100 total") && html.includes("150 total"));
+    // No data-index on usage chips → the minimap (which selects [data-index]) skips them.
+    assert("usage chip carries no data-index",
+      !/data-kind="usage"[^>]*data-index/.test(html));
+  }
+
+  // A usage object without output_tokens is not a usage record — no turn, no
+  // fabricated zero. [LAW:no-silent-failure]
+  const NO_OUTPUT = [
+    { type: "assistant", message: { id: "m", role: "assistant", usage: { input_tokens: 5 },
+      content: [{ type: "text", text: "hi" }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rno = parseInput({ kind: "claude-jsonl", content: NO_OUTPUT });
+  assert("usage without output_tokens emits no usage turn", rno.ok);
+  if (rno.ok) assert("only the text message, no usage", !kinds(rno.turns).includes("usage"));
+
+  // Real-data regression: a multi-tool message's lines are INTERRUPTED by the
+  // tool_result (a user event) between its two tool calls, then the SAME id
+  // resumes. Consecutive-only dedup would count it twice; global dedup counts
+  // it once. [LAW:no-silent-failure]
+  const u = (out: number) => ({
+    input_tokens: 1, output_tokens: out, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+  });
+  const INTERRUPTED = [
+    { type: "assistant", message: { id: "mS", role: "assistant", usage: u(80),
+      content: [{ type: "tool_use", id: "a", name: "Bash", input: {} }] } },
+    { type: "user", message: { role: "user",
+      content: [{ type: "tool_result", tool_use_id: "a", content: "ok" }] } },
+    { type: "assistant", message: { id: "mS", role: "assistant", usage: u(80),
+      content: [{ type: "tool_use", id: "b", name: "Read", input: {} }] } },
+    { type: "user", message: { role: "user",
+      content: [{ type: "tool_result", tool_use_id: "b", content: "ok" }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const ri = parseInput({ kind: "claude-jsonl", content: INTERRUPTED });
+  assert("interrupted message parses", ri.ok);
+  if (ri.ok) {
+    const us = ri.turns.filter((t) => t.kind === "usage");
+    assert("interrupted-then-resumed id counted ONCE (not twice)", us.length === 1);
+    assert("interrupted id keeps its real output (80, not 160)",
+      us[0]!.kind === "usage" && us[0]!.usage.output === 80);
+  }
+
+  // Real-data regression: a streamed message repeats its id across lines with a
+  // GROWING output (an early partial flush, then the settled count). The
+  // authoritative value is the complete one (max output), not the partial.
+  const STREAMED = [
+    { type: "assistant", message: { id: "mT", role: "assistant", usage: u(3),
+      content: [{ type: "thinking", thinking: "..." }] } },
+    { type: "assistant", message: { id: "mT", role: "assistant", usage: u(500),
+      content: [{ type: "text", text: "done" }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rs = parseInput({ kind: "claude-jsonl", content: STREAMED });
+  assert("streamed message parses", rs.ok);
+  if (rs.ok) {
+    const us = rs.turns.filter((t) => t.kind === "usage");
+    assert("streamed id counted once", us.length === 1);
+    assert("streamed id uses the complete count (500, not the partial 3)",
+      us[0]!.kind === "usage" && us[0]!.usage.output === 500);
+  }
+}
+
 console.log("\ndetectSources (T2 — UI-gating detector):");
 {
   // For text arms: the detector IS the parser. expected() mirrors the text-

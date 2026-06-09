@@ -22,6 +22,26 @@ export interface ToolOutput {
   readonly text: string;
 }
 
+// [LAW:types-are-the-program] Token usage is a property of one *logical
+// assistant message* (one API response), not of a line or a single content
+// block. Every field is a non-negative count present in the source; there is
+// no "unknown" member, because the ABSENCE of usage is modeled by the absence
+// of a `usage` Turn — not by a usage object full of zeros. A source that
+// carries no token data (claude-share, pasted text) therefore emits no usage
+// Turns at all. [LAW:no-silent-failure] — counts are never fabricated.
+export interface Usage {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheCreation: number;
+  readonly cacheRead: number;
+}
+
+// [LAW:types-are-the-program] The `usage` arm is a typed event in the ordered
+// stream like any other — it carries exactly a Usage and nothing else. It is
+// the one Turn kind that is NOT author-able: it is derived from source token
+// accounting, never typed by a human. The editor excludes it by operating on
+// the AuthorableTurn subtype (see src/editor/blocks.ts), so a usage event can
+// be parsed, stored, and rendered, but never hand-edited into existence.
 export type Turn =
   | { readonly kind: "message"; readonly role: Role; readonly content: string }
   | {
@@ -32,7 +52,8 @@ export type Turn =
     }
   | { readonly kind: "insight"; readonly content: string }
   | { readonly kind: "thinking"; readonly content: string }
-  | { readonly kind: "turn-summary"; readonly text: string };
+  | { readonly kind: "turn-summary"; readonly text: string }
+  | { readonly kind: "usage"; readonly usage: Usage };
 
 // [LAW:types-are-the-program] The runtime witness of the Turn union. It lives
 // beside the type so the two cannot drift: add an arm above and the exhaustive
@@ -52,6 +73,20 @@ const isToolOutput = (v: unknown): v is ToolOutput => {
 
 const isRole = (v: unknown): v is Role =>
   typeof v === "string" && (ROLES as ReadonlyArray<string>).includes(v);
+
+const isCount = (v: unknown): v is number =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0;
+
+const isUsage = (v: unknown): v is Usage => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    isCount(o.input) &&
+    isCount(o.output) &&
+    isCount(o.cacheCreation) &&
+    isCount(o.cacheRead)
+  );
+};
 
 export const isTurn = (v: unknown): v is Turn => {
   if (!v || typeof v !== "object") return false;
@@ -74,6 +109,8 @@ export const isTurn = (v: unknown): v is Turn => {
       return typeof o.content === "string";
     case "turn-summary":
       return typeof o.text === "string";
+    case "usage":
+      return isUsage(o.usage);
     default:
       return false;
   }

@@ -7,7 +7,7 @@
 // the fields that kind carries. Illegal turns (a tool-call without a tool) are not
 // representable in the Turn union, so there are no defensive guards.
 
-import type { Role, Turn } from "./types";
+import type { Role, Turn, Usage } from "./types";
 import {
   escapeHtml,
   escapeAttr,
@@ -60,6 +60,31 @@ const turnSummaryHtml = (text: string, index: number): string =>
   `<aside class="bubble-turn-summary" data-kind="turn-summary" data-index="${index}">` +
   `<span>${escapeHtml(text)}</span>` +
   `</aside>`;
+
+const groupThousands = (n: number): string =>
+  String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+// [LAW:no-silent-failure] A usage line is rendered ONLY where the source gave
+// us a usage Turn — there is no zero-fallback bubble for messages or sources
+// without token data. `self` is this message's generated tokens; `cumulative`
+// is the running total of generated tokens up to and including it (the renderer
+// folds it — see renderTurnsHtml). The full breakdown rides in the title so the
+// inline line stays a single legible figure. No data-index: usage is metadata
+// attached to the message above it, not a navigable turn, so the minimap (which
+// selects `[data-index]`) correctly skips it.
+const usageHtml = (usage: Usage, cumulative: number): string => {
+  const breakdown =
+    `input ${groupThousands(usage.input)} · ` +
+    `cache read ${groupThousands(usage.cacheRead)} · ` +
+    `cache write ${groupThousands(usage.cacheCreation)} · ` +
+    `output ${groupThousands(usage.output)}`;
+  return (
+    `<aside class="bubble-usage" data-kind="usage" title="${escapeAttr(breakdown)}">` +
+    `<span class="usage-self">${groupThousands(usage.output)} tokens</span>` +
+    `<span class="usage-total">${groupThousands(cumulative)} total</span>` +
+    `</aside>`
+  );
+};
 
 const diffMarker = (kind: DiffLine["kind"]): string =>
   kind === "added" || kind === "cont-added"
@@ -162,7 +187,15 @@ const toolCallHtml = (
   );
 };
 
-const renderTurn = (turn: Turn, index: number): string => {
+// [LAW:dataflow-not-control-flow] Renders every turn kind EXCEPT usage, whose
+// display needs the running total the bare turn doesn't carry. Typing the
+// parameter to exclude usage keeps this switch exhaustive over content turns
+// while making "renderTurn never sees a usage turn" a compile-time fact rather
+// than a convention — renderTurnsHtml owns the usage arm.
+const renderTurn = (
+  turn: Exclude<Turn, { kind: "usage" }>,
+  index: number,
+): string => {
   switch (turn.kind) {
     case "message":
       return messageHtml(turn.role, turn.content, index);
@@ -177,5 +210,21 @@ const renderTurn = (turn: Turn, index: number): string => {
   }
 };
 
-export const renderTurnsHtml = (turns: ReadonlyArray<Turn>): string =>
-  turns.map(renderTurn).join("");
+// [LAW:dataflow-not-control-flow] A fold, not a map: the running token total is
+// a value threaded across the stream, accumulated on each usage turn. Content
+// turns keep their array-position index for data-index (usage turns leave gaps,
+// which is fine — the minimap reads the data-index values that exist, not a
+// contiguous range). Absence of usage turns ⇒ no token lines and a total that
+// stays 0 unrendered, never a fabricated count. [LAW:no-silent-failure]
+export const renderTurnsHtml = (turns: ReadonlyArray<Turn>): string => {
+  let cumulativeOutput = 0;
+  return turns
+    .map((turn, index) => {
+      if (turn.kind === "usage") {
+        cumulativeOutput += turn.usage.output;
+        return usageHtml(turn.usage, cumulativeOutput);
+      }
+      return renderTurn(turn, index);
+    })
+    .join("");
+};
