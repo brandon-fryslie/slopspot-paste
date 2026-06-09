@@ -51,13 +51,36 @@ const isChromeLine = (line: string): boolean => {
 // markers ❯⏺⎿★ — is outside the range and survives untouched.
 const PUA_RE = /[\u{E000}-\u{F8FF}]/gu;
 
+// [LAW:single-enforcer] A "lone backslash" line — whitespace plus a single
+// backslash and nothing else — is the markdown hard-break residue left behind
+// when Claude.ai's per-message action row is captured: the row scrapes as PUA
+// icon glyphs followed by a hard-break `\`, so once the glyphs above are gone
+// the bare `\` line remains. It carries no conversation content. A real hard
+// break is `text\` with content before the backslash; a backslash that means
+// something in code sits inside a fence, which the strip below never touches.
+const RESIDUE_LINE_RE = /^\s*\\\s*$/;
+
+// A code fence opens or closes on a line that begins (after optional indent)
+// with ``` or ~~~. Defined locally rather than imported from the renderer:
+// a parser must not depend on a downstream layer ([LAW:one-way-deps]).
+const FENCE_RE = /^\s*(?:```|~~~)/;
+
+// [LAW:dataflow-not-control-flow] One line classifier decides keep-vs-drop for
+// every line the same way; the fence state is the typed owner of "are we inside
+// code", so capture residue (chrome lines, lone-backslash hard-break residue)
+// is stripped only outside fences and verbatim code survives — the acceptance
+// criterion that backslashes inside code spans/fences are untouched.
 const cleanBody = (body: string): string => {
-  const kept = body
-    .split("\n")
-    .filter((line) => !isChromeLine(line))
-    .join("\n")
-    .replace(PUA_RE, "");
-  return kept.replace(/^\s+|\s+$/g, "");
+  const lines = body.replace(PUA_RE, "").split("\n");
+  const kept: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (FENCE_RE.test(line)) inFence = !inFence;
+    if (inFence || !(isChromeLine(line) || RESIDUE_LINE_RE.test(line))) {
+      kept.push(line);
+    }
+  }
+  return kept.join("\n").replace(/^\s+|\s+$/g, "");
 };
 
 interface HeadingMatch {
