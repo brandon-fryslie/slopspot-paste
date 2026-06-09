@@ -4,6 +4,7 @@ import Base from "../layouts/Base.astro";
 import { renderTurnsHtml } from "../renderTurns";
 import { getConversation } from "../storage";
 import { isValidSlug } from "../slug";
+import { viewLifetime } from "../types";
 
 export const prerender = false;
 
@@ -24,7 +25,14 @@ if (!conversation) {
 }
 
 const title = conversation.title ?? "Shared conversation";
-const expiresIn = Math.max(0, Math.ceil((conversation.expiresAt - Date.now()) / 86_400_000));
+// [LAW:dataflow-not-control-flow] Both lifetime cases produce a meta string
+// through one match — a pinned paste reads "Never disappears", never a forgotten
+// branch that lies "Disappears in 0 days".
+const life = viewLifetime(conversation.lifetime, Date.now());
+const lifetimeLabel =
+  life.kind === "pinned"
+    ? "Never disappears"
+    : `Disappears in ${life.days} ${life.days === 1 ? "day" : "days"}`;
 ---
 
 <Base title={`${title} · slopspot paste`}>
@@ -33,7 +41,7 @@ const expiresIn = Math.max(0, Math.ceil((conversation.expiresAt - Date.now()) / 
     <p class="conversation-meta">
       <span>{conversation.turns.length} turns</span>
       <span aria-hidden="true">·</span>
-      <span>Disappears in {expiresIn} {expiresIn === 1 ? "day" : "days"}</span>
+      <span>{lifetimeLabel}</span>
     </p>
   </section>
 

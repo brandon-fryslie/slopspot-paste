@@ -1,20 +1,32 @@
-import type { Conversation } from "./types";
+import type { Conversation, Lifetime } from "./types";
 import { TTL_SECONDS } from "./types";
 
-// [LAW:single-enforcer] expirationTtl is the ONLY place 30-day expiry is encoded.
-// No cron, no sweeper, no "isExpired" check anywhere else. The storage layer
-// removes the key at the deadline; readers see 404 by absence, not by check.
+// [LAW:single-enforcer] KV's expirationTtl is the ONLY mechanism that expires a
+// paste. No cron, no sweeper, no "isExpired" check anywhere else. The storage
+// layer removes the key at the deadline; readers see 404 by absence, not by
+// check. Refresh and pin route back through THIS put — they never add a parallel
+// expiry path; they re-state the record's lifetime and let this one enforcer act.
 
 // [LAW:one-way-deps] This module imports types only. Pages/API import storage.
 // Storage never imports rendering.
 
 const KEY_PREFIX = "paste:";
 
+// [LAW:dataflow-not-control-flow] The stored lifetime decides the KV call: the
+// `expires` arm passes a TTL so KV drops the key at the deadline; the `pinned`
+// arm omits it so KV keeps the key forever. Same put, the lifetime value selects
+// the option — not a separate "pin" code path. expirationTtl is reset to the
+// full TTL_SECONDS on every expires put, which is exactly what "refresh = reset
+// the clock" means: re-putting an expires record restarts its countdown.
 export const putConversation = async (
   kv: KVNamespace,
   c: Conversation,
 ): Promise<void> => {
-  await kv.put(KEY_PREFIX + c.slug, JSON.stringify(c), { expirationTtl: TTL_SECONDS });
+  const key = KEY_PREFIX + c.slug;
+  const body = JSON.stringify(c);
+  const options =
+    c.lifetime.kind === "pinned" ? undefined : { expirationTtl: TTL_SECONDS };
+  await kv.put(key, body, options);
 };
 
 // [LAW:types-are-the-program] KV is a trust boundary: records were written by
@@ -29,6 +41,21 @@ const normalizeTurn = (t: unknown): unknown => {
   return t;
 };
 
+// [LAW:types-are-the-program] Records written before `lifetime` landed carry a
+// bare `expiresAt: number` and no `lifetime`. Lift that flat field into the
+// `expires` arm on read, so every record above this boundary speaks the current
+// union. A record already on the new shape keeps its lifetime untouched — the
+// migration is idempotent.
+const normalizeLifetime = (raw: {
+  lifetime?: unknown;
+  expiresAt?: unknown;
+}): Lifetime => {
+  if (raw.lifetime && typeof raw.lifetime === "object") {
+    return raw.lifetime as Lifetime;
+  }
+  return { kind: "expires", expiresAt: raw.expiresAt as number };
+};
+
 export const getConversation = async (
   kv: KVNamespace,
   slug: string,
@@ -36,10 +63,15 @@ export const getConversation = async (
   const raw = await kv.get(KEY_PREFIX + slug, "text");
   if (raw === null) return null;
   try {
-    const parsed = JSON.parse(raw) as Conversation & {
+    const { expiresAt: _legacyExpiresAt, ...parsed } = JSON.parse(raw) as Conversation & {
       turns: ReadonlyArray<unknown>;
+      expiresAt?: unknown;
     };
-    return { ...parsed, turns: parsed.turns.map(normalizeTurn) } as Conversation;
+    return {
+      ...parsed,
+      lifetime: normalizeLifetime({ lifetime: parsed.lifetime, expiresAt: _legacyExpiresAt }),
+      turns: parsed.turns.map(normalizeTurn),
+    } as Conversation;
   } catch {
     return null;
   }

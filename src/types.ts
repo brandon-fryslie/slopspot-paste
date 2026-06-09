@@ -123,18 +123,63 @@ export const isTurn = (v: unknown): v is Turn => {
 export const isTurns = (v: unknown): v is Turn[] =>
   Array.isArray(v) && v.every(isTurn);
 
+// [LAW:types-are-the-program] A paste's lifetime has exactly two honest shapes:
+// it expires at a known instant, or it is pinned and never expires. "Never"
+// cannot be a number — a sentinel (0 / Infinity / null) on an `expiresAt: number`
+// would be a representation that lies, forcing every reader to special-case it.
+// The discriminated union makes "pinned" a first-class value: the `pinned` arm
+// carries no deadline because it has none, so an illegal "pinned but expiring"
+// state is unrepresentable.
+export type Lifetime =
+  | { readonly kind: "expires"; readonly expiresAt: number }
+  | { readonly kind: "pinned" };
+
 export interface Conversation {
   readonly slug: string;
   readonly createdAt: number;
-  readonly expiresAt: number;
+  readonly lifetime: Lifetime;
   readonly turns: ReadonlyArray<Turn>;
   readonly title: string | null;
 }
 
 // [LAW:single-enforcer] The single enforcer of expiry is KV's expirationTtl.
-// This constant is the one place the policy is stated.
+// This constant is the one place the 30-day duration is stated.
 export const TTL_DAYS = 30;
 export const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
+
+// [LAW:one-source-of-truth] "Expires a full TTL from now" is one policy, stated
+// once here and shared by paste creation and refresh. Both compute the deadline
+// from the same `now` + TTL_SECONDS, so a refreshed paste and a freshly created
+// one get an identical lifetime by construction — the clock cannot drift between
+// the two call sites. `now` is passed in (the clock is an effect owned by the
+// boundary), keeping this constructor pure.
+export const lifetimeFromChoice = (choice: LifetimeChoice, now: number): Lifetime =>
+  choice === "pinned"
+    ? { kind: "pinned" }
+    : { kind: "expires", expiresAt: now + TTL_SECONDS * 1000 };
+
+// [LAW:types-are-the-program] The wire-level *intent* a client may express is
+// narrower than a full Lifetime: a caller picks pin-or-expire, never an
+// arbitrary deadline. The expires intent carries no `expiresAt` — the server
+// stamps it via lifetimeFromChoice — so a client cannot forge a far-future
+// expiry. The tuple is the source; the type and the /api/refresh validator both
+// derive from it so the legal set cannot drift.
+export const LIFETIME_CHOICES = ["expires", "pinned"] as const;
+export type LifetimeChoice = (typeof LIFETIME_CHOICES)[number];
+
+// [LAW:dataflow-not-control-flow] The remaining-days math lives once. Views read
+// this projection and format their own words; neither view recomputes the
+// formula nor decides whether to render the column. The `pinned` case is a value
+// here, not a branch a caller might forget — so "Disappears in 0 days" for a
+// pinned paste is unrepresentable.
+export type LifetimeView =
+  | { readonly kind: "expires"; readonly days: number }
+  | { readonly kind: "pinned" };
+
+export const viewLifetime = (lifetime: Lifetime, now: number): LifetimeView =>
+  lifetime.kind === "pinned"
+    ? { kind: "pinned" }
+    : { kind: "expires", days: Math.max(0, Math.ceil((lifetime.expiresAt - now) / 86_400_000)) };
 
 // [LAW:one-source-of-truth] The size cap is stated once, as a byte count. The
 // API enforces MAX_PASTE_BYTES at the trust boundary; the index page shows
