@@ -29,6 +29,7 @@ import {
 } from "../src/editor/blocks";
 import type { Kind } from "../src/editor/blocks";
 import { EditorStore, type EditorIo, type SubmitResult } from "../src/editor/store";
+import { persistDrafts } from "../src/editor/mount";
 import type { ParseResult, Turn } from "../src/types";
 import { readFileSync } from "node:fs";
 
@@ -1054,9 +1055,14 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
     io: EditorIo;
     submitted: Turn[][];
     navigated: string[];
+    draftCell: () => string | null;
   } => {
     const submitted: Turn[][] = [];
     const navigated: string[] = [];
+    // Mirror localStorage's single string cell: saveDraft writes JSON, loadDraft
+    // reads + isTurns-validates (so the test exercises the same gate mount ships),
+    // clearDraft removes it. draftCell() lets a test assert what was persisted.
+    let draft: string | null = null;
     const io: EditorIo = {
       fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
       submit: async (turns): Promise<SubmitResult> => {
@@ -1064,8 +1070,19 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
         return { ok: true, slug: "test-slug" };
       },
       navigate: (slug) => navigated.push(slug),
+      saveDraft: (turns) => {
+        draft = JSON.stringify(turns);
+      },
+      loadDraft: (): Turn[] => {
+        if (draft === null) return [];
+        const parsed = JSON.parse(draft) as unknown;
+        return isTurns(parsed) ? parsed : [];
+      },
+      clearDraft: () => {
+        draft = null;
+      },
     };
-    return { io, submitted, navigated };
+    return { io, submitted, navigated, draftCell: () => draft };
   };
 
   // --- importKind derivation (b48.5 fix: 'raw' is no longer sticky) ---
@@ -1134,6 +1151,9 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
     fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
     submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
     navigate: () => {},
+    saveDraft: () => {},
+    loadDraft: (): Turn[] => [],
+    clearDraft: () => {},
   };
 
   // --- splitBlock: one card becomes two in place; head keeps id, tail is fresh ---
@@ -1182,6 +1202,62 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
   const firstOnly = m.blocks[0]!.id;
   m.mergeBlocks(firstOnly);
   assert("mergeBlocks on the first block is a no-op", m.blocks.length === 1);
+}
+
+console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip):");
+{
+  // A fake IO modelling localStorage's string cell. The test wires persistDrafts
+  // — the SAME reaction mount ships — so it exercises the real persistence path,
+  // not a hand-rolled copy [LAW:behavior-not-structure].
+  const draftIo = (): { io: EditorIo; cell: () => string | null } => {
+    let draft: string | null = null;
+    const io: EditorIo = {
+      fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+      submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "saved-slug" }),
+      navigate: () => {},
+      saveDraft: (turns) => {
+        draft = JSON.stringify(turns);
+      },
+      loadDraft: (): Turn[] => {
+        if (draft === null) return [];
+        const parsed = JSON.parse(draft) as unknown;
+        return isTurns(parsed) ? parsed : [];
+      },
+      clearDraft: () => {
+        draft = null;
+      },
+    };
+    return { io, cell: () => draft };
+  };
+
+  // --- restoring with no draft yields the same empty, clean editor as a fresh
+  //     visit (loadDraft() returns [], restore is unconditional dataflow) ---
+  const a = draftIo();
+  const s = new EditorStore(a.io);
+  s.restoreDraft(a.io.loadDraft());
+  assert("empty draft restores to an empty, non-dirty editor", s.blocks.length === 0 && !s.isDirty);
+
+  // --- wire the real persistence path, then an edit persists the current turns ---
+  const dispose = persistDrafts(s, a.io);
+  s.setImport("## User\nhi\n\n## Assistant\nyo");
+  s.ingest();
+  const firstId = s.blocks[0]!.id;
+  s.replaceTurn(firstId, { kind: "message", role: "user", content: "EDITED DRAFT" });
+  assertEq("the reaction persisted the current turns", a.cell(), JSON.stringify(s.turns));
+
+  // --- a fresh editor restoring that draft reproduces the edits and is NOT
+  //     instantly dirty (restore sets pristineTurns via the shared loader) ---
+  const s2 = new EditorStore(a.io);
+  s2.restoreDraft(a.io.loadDraft());
+  assertEq("restored draft reproduces the edited blocks", JSON.stringify(s2.turns), JSON.stringify(s.turns));
+  assert("restored draft is not instantly dirty", !s2.isDirty);
+
+  // --- a successful submit clears the draft so the next visit starts clean ---
+  await s2.submit();
+  assert("successful submit clears the persisted draft", a.cell() === null);
+  assert("loadDraft after submit yields no draft", a.io.loadDraft().length === 0);
+
+  dispose();
 }
 
 console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } arm):");

@@ -9,7 +9,7 @@
 // b48.5 wires index.astro to call mountEditor and adds the mount-point markup +
 // CSS + no-JS fallback; this file only exposes the entry point.
 
-import { autorun } from "mobx";
+import { autorun, comparer, reaction, type IReactionDisposer } from "mobx";
 import { render } from "lit-html";
 import type { ParseResult, Turn } from "../types";
 import { isTurns } from "../types";
@@ -68,18 +68,83 @@ const submit = async (turns: ReadonlyArray<Turn>): Promise<SubmitResult> => {
 const errorText = (data: { error?: unknown } | null, fallback: string): string =>
   typeof data?.error === "string" ? data.error : fallback;
 
+// [LAW:effects-at-boundaries] localStorage draft persistence — the editor's only
+// durable client-side world. The store never touches it; it persists/restores
+// through these capabilities.
+//
+// [LAW:single-enforcer] loadDraft is the one gate between stored JSON and the
+// store: it validates with isTurns, so a corrupt or stale-schema draft becomes
+// "no draft" ([]) rather than a malformed Turn[] poisoning the editor.
+//
+// [LAW:no-silent-failure] exception: storage can be denied entirely (private
+// mode, quota, disabled). That failure has no downstream consumer — the
+// authoritative submit path through /api/paste is independent — so persistence
+// degrades to "no draft" instead of breaking editing. A swallow is justified
+// only because nothing reads the result; it never masks a failure in the real
+// save path.
+const DRAFT_KEY = "slopspot:editor-draft";
+
+const saveDraft = (turns: ReadonlyArray<Turn>): void => {
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(turns));
+  } catch {
+    /* storage unavailable — persistence degrades, editing is unaffected */
+  }
+};
+
+const loadDraft = (): Turn[] => {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (raw === null) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return isTurns(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const clearDraft = (): void => {
+  try {
+    localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    /* storage unavailable — nothing persisted, nothing to clear */
+  }
+};
+
+// [LAW:one-source-of-truth][LAW:no-ambient-temporal-coupling] The single owner of
+// WHEN the draft is persisted: a mobx reaction off the derived Turn[]. It fires
+// whenever the blocks change shape (structural compare — a fresh toTurns array
+// with identical content is not a write), so persistence is data-driven rather
+// than sprinkled across every mutation. Exported so the store test wires the
+// exact same persistence path that ships, not a hand-rolled copy of it.
+export const persistDrafts = (store: EditorStore, io: EditorIo): IReactionDisposer =>
+  reaction(
+    () => store.turns,
+    (turns) => io.saveDraft(turns),
+    { equals: comparer.structural },
+  );
+
 export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
   const root = must(rootSelector, HTMLElement);
   const io: EditorIo = {
     fetchShare,
     submit,
     navigate: (slug) => window.location.assign("/" + slug),
+    saveDraft,
+    loadDraft,
+    clearDraft,
   };
   const store = new EditorStore(io);
+  // Restore any persisted draft before the first render. An absent/corrupt draft
+  // loads as [] — the same empty editor a fresh visit gets — so this is one
+  // unconditional load, never an "is there a draft" branch. Done before persist
+  // is wired so restoring doesn't immediately re-save an identical draft.
+  store.restoreDraft(io.loadDraft());
   // [LAW:no-ambient-temporal-coupling] mobx's autorun is the single render
   // owner: it runs once now and again whenever any observable the template reads
   // changes. Render order is not folklore — it's whatever the reactive graph
   // dictates, with one explicit scheduler.
   autorun(() => render(appTemplate(store), root));
+  persistDrafts(store, io);
   return store;
 };

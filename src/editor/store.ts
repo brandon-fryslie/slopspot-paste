@@ -33,12 +33,19 @@ export type SubmitResult =
 
 // [LAW:effects-at-boundaries] The store's entire contact with the world, named
 // as capabilities. fetchShare hits /api/fetch (URL -> turns), submit hits
-// /api/paste ({ turns } -> slug), navigate changes the page. mount.ts is the one
-// place these are real.
+// /api/paste ({ turns } -> slug), navigate changes the page; saveDraft/loadDraft/
+// clearDraft persist the in-progress Turn[] to localStorage so an accidental
+// reload doesn't lose work. mount.ts is the one place these are real.
+//
+// loadDraft returns [] for "no draft" (absent or unparseable) — the same empty
+// editor a fresh visit gets, so restore is unconditional dataflow, not a branch.
 export interface EditorIo {
   readonly fetchShare: (url: string) => Promise<ParseResult>;
   readonly submit: (turns: ReadonlyArray<Turn>) => Promise<SubmitResult>;
   readonly navigate: (slug: string) => void;
+  readonly saveDraft: (turns: ReadonlyArray<Turn>) => void;
+  readonly loadDraft: () => Turn[];
+  readonly clearDraft: () => void;
 }
 
 const clamp = (n: number, lo: number, hi: number): number =>
@@ -216,6 +223,15 @@ export class EditorStore {
     this.pendingReparse = null;
   }
 
+  // [LAW:single-enforcer] Restoring a persisted draft reuses the one loader every
+  // parse/fetch passes through, so the dirty baseline (pristineTurns) is set to
+  // the restored turns and the draft is not instantly "dirty". Called once at
+  // mount before any edit; an empty draft ([]) loads to the same empty editor a
+  // fresh visit gets, so the caller never branches on "is there a draft".
+  restoreDraft(turns: ReadonlyArray<Turn>): void {
+    this.loadTurns(turns);
+  }
+
   // [LAW:single-enforcer] The only place parsed/fetched turns become editable
   // blocks. Replaces the list wholesale, resets the dirty baseline to the loaded
   // turns, clears any pending decision, and snaps to the blocks view.
@@ -303,8 +319,12 @@ export class EditorStore {
       this.busy = false;
       if (!result.ok) this.submitError = result.reason;
     });
-    // [LAW:effects-at-boundaries] Navigation is a world effect performed through
-    // the capability, outside the state transaction.
-    if (result.ok) this.io.navigate(result.slug);
+    // [LAW:effects-at-boundaries] On success the work is now permanently stored,
+    // so the local draft is obsolete: clear it, then navigate. Both world effects
+    // performed through capabilities, outside the state transaction.
+    if (result.ok) {
+      this.io.clearDraft();
+      this.io.navigate(result.slug);
+    }
   }
 }
