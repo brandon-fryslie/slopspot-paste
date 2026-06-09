@@ -100,6 +100,58 @@ export const emptyTurn = (kind: Kind): Turn => withText(kind, "");
 export const convertKind = (turn: Turn, newKind: Kind): Turn =>
   newKind === turn.kind ? turn : withText(newKind, textOf(turn));
 
+// [LAW:dataflow-not-control-flow] The caret's text field — the single editable
+// text a cursor lives in, read and written through the SAME field. Distinct from
+// textOf/withText, which FLATTEN a whole turn across kinds for kind-conversion
+// (deliberately lossy: a tool-call collapses tool+args+output, a message drops
+// its role). This lens PRESERVES every non-text field and touches only the text,
+// so split/merge operate on exactly what the user sees under the caret.
+// Exhaustive over the union for the same compile-time reason as textOf.
+const primaryText = (turn: Turn): string => {
+  switch (turn.kind) {
+    case "message":
+      return turn.content;
+    case "insight":
+      return turn.content;
+    case "turn-summary":
+      return turn.text;
+    case "tool-call":
+      return turn.args;
+  }
+};
+
+const withPrimaryText = (turn: Turn, text: string): Turn => {
+  switch (turn.kind) {
+    case "message":
+      return { ...turn, content: text };
+    case "insight":
+      return { ...turn, content: text };
+    case "turn-summary":
+      return { ...turn, text };
+    case "tool-call":
+      return { ...turn, args: text };
+  }
+};
+
+// Split a turn's primary text at `offset` into [head, tail]; both keep the
+// original kind and non-text fields (a message's role rides onto both halves).
+// A pure cut: head.text + tail.text reconstructs the original, nothing inserted
+// or dropped. offset is clamped, so a caret at either edge yields one empty half
+// — a legal block, exactly what addBlock seeds — rather than an out-of-range slice.
+export const splitTurn = (turn: Turn, offset: number): readonly [Turn, Turn] => {
+  const text = primaryText(turn);
+  const at = Math.max(0, Math.min(offset, text.length));
+  return [withPrimaryText(turn, text.slice(0, at)), withPrimaryText(turn, text.slice(at))];
+};
+
+// Merge `next` into `prev`: the result keeps prev's kind and non-text shape; its
+// primary text is the two texts joined by a blank line. Distinct from split at
+// the level of intent — joining two authored blocks inserts a paragraph break,
+// where split is a byte-exact cut. next's non-text fields (a second role or tool
+// name) are dropped: one merged block keeps exactly one shape.
+export const mergeTurns = (prev: Turn, next: Turn): Turn =>
+  withPrimaryText(prev, [primaryText(prev), primaryText(next)].join("\n\n"));
+
 // [LAW:single-enforcer] The only seam between the stored Turn[] and the editing
 // Block[]. Parse/fetch produce Turn[]; toBlocks attaches identity for editing;
 // toTurns strips it before store/preview. Round-trip is exact by construction:

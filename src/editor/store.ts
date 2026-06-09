@@ -18,7 +18,7 @@ import { makeAutoObservable, runInAction } from "mobx";
 import type { ParseResult, SourceKind, Turn } from "../types";
 import { textArmInput } from "../types";
 import type { Block, Kind } from "./blocks";
-import { emptyTurn, newId, toBlocks, toTurns } from "./blocks";
+import { emptyTurn, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
 import { renderTurnsHtml } from "../renderTurns";
 
@@ -260,6 +260,32 @@ export class EditorStore {
     const moved = this.blocks.splice(from, 1)[0];
     if (moved === undefined) return;
     this.blocks.splice(to, 0, moved);
+  }
+
+  // [LAW:single-enforcer] Split funnels through the same blocks array every other
+  // mutation owns. The head reuses the original id so its DOM node + caret survive
+  // the re-render; the tail gets a fresh id. splice(i, 1, head, tail) is the atomic
+  // "one card becomes two, in place". A pure cut — splitTurn owns the text math.
+  splitBlock(id: string, offset: number): void {
+    const i = this.blocks.findIndex((b) => b.id === id);
+    // A concurrent delete can remove the card between render and click; with it
+    // gone there is nothing to split. Genuine absence, not a swallowed bug.
+    const block = this.blocks[i];
+    if (block === undefined) return;
+    const [head, tail] = splitTurn(block.turn, offset);
+    this.blocks.splice(i, 1, { id, turn: head }, { id: newId(), turn: tail });
+  }
+
+  // Merge a block into the one above it: the previous block keeps its id, kind
+  // and shape; this block's text appends and the block is consumed (two cards
+  // become one, in place). The first block has nothing above it, so merging it
+  // is a no-op the view disables — kept total here so a stale click cannot throw.
+  mergeBlocks(id: string): void {
+    const i = this.blocks.findIndex((b) => b.id === id);
+    const prev = this.blocks[i - 1];
+    const cur = this.blocks[i];
+    if (prev === undefined || cur === undefined) return;
+    this.blocks.splice(i - 1, 2, { id: prev.id, turn: mergeTurns(prev.turn, cur.turn) });
   }
 
   // ── View + submit ───────────────────────────────────────────────────────
