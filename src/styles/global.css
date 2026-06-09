@@ -452,6 +452,47 @@ pre.code-block code {
   text-transform: lowercase;
   color: var(--fg-muted);
   user-select: none;
+  transition: opacity 0.12s ease;
+}
+
+/* Copy-to-clipboard affordance. Hidden until the client confirms clipboard
+   support and wires the effect (body.code-copy-ready); a no-JS viewer never
+   sees a button that can't act. Revealed on hover — same corner as the lang
+   label, which fades out so the two never collide. */
+.copy-code {
+  display: none;
+}
+body.code-copy-ready .copy-code {
+  display: inline-block;
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 2px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+body.code-copy-ready pre.code-block:hover .copy-code,
+body.code-copy-ready .copy-code:focus-visible {
+  opacity: 1;
+}
+body.code-copy-ready pre.code-block:hover .code-lang {
+  opacity: 0;
+}
+.copy-code:hover {
+  color: var(--fg);
+}
+.copy-code.copied {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ─── Tool-call bubbles ──────────────────────────────────────────────── */
