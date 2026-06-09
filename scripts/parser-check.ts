@@ -486,8 +486,8 @@ console.log("\nclaude-jsonl parser (T4):");
 {
   // Synthetic transcript exercising every block type the parser handles.
   // Two user prompts, one assistant text + tool_use + paired tool_result,
-  // a thinking block (must be dropped), and a system-reminder envelope
-  // (must be stripped from the user message body).
+  // a thinking block (now KEPT as a thinking Turn), and a system-reminder
+  // envelope (must be stripped from the user message body).
   const JSONL_SAMPLE = [
     { type: "user", message: { role: "user", content: "what's in the repo?" } },
     {
@@ -495,7 +495,7 @@ console.log("\nclaude-jsonl parser (T4):");
       message: {
         role: "assistant",
         content: [
-          { type: "thinking", thinking: "internal reasoning, should be filtered" },
+          { type: "thinking", thinking: "internal reasoning, now surfaced" },
           { type: "text", text: "Let me look around." },
           { type: "tool_use", id: "tool_abc", name: "Bash", input: { command: "ls", description: "List files" } },
         ],
@@ -523,32 +523,47 @@ console.log("\nclaude-jsonl parser (T4):");
   const r = parseInput({ kind: "claude-jsonl", content: JSONL_SAMPLE });
   assert("claude-jsonl arm ok", r.ok);
   if (r.ok) {
+    // Thinking block is now KEPT as a thinking Turn, ahead of the assistant text.
     assertEq(
       "kinds sequence",
       kinds(r.turns),
-      ["message", "message", "tool-call", "message", "message"],
+      ["message", "thinking", "message", "tool-call", "message", "message"],
     );
     const t0 = r.turns[0]!;
     assert("turn[0] is user 'what's in the repo?'",
       t0.kind === "message" && t0.role === "user" && t0.content === "what's in the repo?");
-    const t1 = r.turns[1]!;
-    assert("turn[1] is assistant 'Let me look around.'",
+    const tk = r.turns[1]!;
+    assert("turn[1] is the thinking block with its text",
+      tk.kind === "thinking" && tk.content === "internal reasoning, now surfaced");
+    const t1 = r.turns[2]!;
+    assert("turn[2] is assistant 'Let me look around.'",
       t1.kind === "message" && t1.role === "assistant" && t1.content === "Let me look around.");
-    // Thinking block MUST be filtered — verify it's not in the output.
-    assert("no turn contains 'internal reasoning'",
-      r.turns.every((t) => t.kind !== "message" || !t.content.includes("internal reasoning")));
-    const t2 = r.turns[2]!;
-    assert("turn[2] is Bash tool-call",
+    const t2 = r.turns[3]!;
+    assert("turn[3] is Bash tool-call",
       t2.kind === "tool-call" && t2.tool === "Bash");
-    assert("turn[2] args contain the command (JSON-serialized)",
+    assert("turn[3] args contain the command (JSON-serialized)",
       t2.kind === "tool-call" && t2.args.includes('"command": "ls"'));
-    assert("turn[2] output paired from tool_result",
+    assert("turn[3] output paired from tool_result",
       t2.kind === "tool-call" && t2.output?.text === "src\nREADME.md");
-    assert("turn[2] output kind classified as terminal (Bash)",
+    assert("turn[3] output kind classified as terminal (Bash)",
       t2.kind === "tool-call" && t2.output?.kind === "terminal");
-    const t4 = r.turns[4]!;
-    assert("turn[4] is user 'thanks!' (system-reminder envelope stripped)",
+    const t4 = r.turns[5]!;
+    assert("turn[5] is user 'thanks!' (system-reminder envelope stripped)",
       t4.kind === "message" && t4.role === "user" && t4.content === "thanks!");
+
+    // A thinking block whose text is blank/whitespace emits no Turn (no empty
+    // toggle) — the "when available" guarantee at the parser boundary.
+    const EMPTY_THINK = [
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "thinking", thinking: "   \n  " },
+        { type: "text", text: "answer" },
+      ] } },
+    ].map((e) => JSON.stringify(e)).join("\n");
+    const rEmpty = parseInput({ kind: "claude-jsonl", content: EMPTY_THINK });
+    assert("blank thinking emits no turn", rEmpty.ok);
+    if (rEmpty.ok) {
+      assertEq("blank thinking → only the text message", kinds(rEmpty.turns), ["message"]);
+    }
   }
 
   // Detector picks up the new kind on JSONL input.
@@ -844,6 +859,7 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
     { kind: "message", role: "assistant", content: "hi there" },
     { kind: "message", role: "system", content: "you are helpful" },
     { kind: "insight", content: "a key realization" },
+    { kind: "thinking", content: "let me reason about this" },
     { kind: "turn-summary", text: "Sautéed for 53s" },
     { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
     { kind: "tool-call", tool: "Update", args: "src/x.ts", output: { kind: "diff", text: DIFF_OUTPUT } },
@@ -861,6 +877,16 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
   has("role label rendered", '<span class="role-name">Assistant</span>');
   has("insight star", '<span class="role-dot role-dot-insight" aria-hidden="true">★</span>');
   has("insight name", '<span class="role-name">Insight</span>');
+  // Thinking renders as a native <details> WITHOUT `open` → collapsed by default,
+  // with a <summary> the browser makes the toggle. No client script involved.
+  has("thinking details (collapsed: no open attr)", '<details class="bubble bubble-thinking" data-kind="thinking"');
+  has("thinking summary toggle", '<summary class="bubble-role thinking-summary">');
+  has("thinking name", '<span class="role-name">Thinking</span>');
+  assert("thinking <details> is collapsed (no open attribute)",
+    !/<details class="bubble bubble-thinking"[^>]*\bopen\b/.test(html));
+  // A turn set with NO thinking emits NO <details> — no empty toggle.
+  const noThink = renderTurnsHtml([{ kind: "message", role: "user", content: "hi" }]);
+  assert("sources without thinking render no <details> toggle", !noThink.includes("<details"));
   has("turn-summary aside", '<aside class="bubble-turn-summary" data-kind="turn-summary"');
   has("tool-call article + data-tool", '<article class="bubble bubble-tool-call" data-kind="tool-call" data-tool="Bash"');
   has("terminal frame", 'data-output-kind="terminal"');
@@ -937,7 +963,7 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
   assert("newId is unique across calls", new Set(ids).size === 3);
 
   // emptyTurn seeds an empty turn of each kind.
-  const allKinds: Kind[] = ["message", "insight", "turn-summary", "tool-call"];
+  const allKinds: Kind[] = ["message", "insight", "thinking", "turn-summary", "tool-call"];
   allKinds.forEach((k) => assertEq(`emptyTurn(${k}).kind`, emptyTurn(k).kind, k));
   const em = emptyTurn("message");
   assert(
@@ -960,6 +986,17 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
   assert(
     "insight -> turn-summary preserves text",
     sum.kind === "turn-summary" && sum.text === "carry me",
+  );
+  // thinking shares insight's single content field — conversion is lossless both ways.
+  const think = convertKind({ kind: "insight", content: "carry me" }, "thinking");
+  assert(
+    "insight -> thinking preserves text",
+    think.kind === "thinking" && think.content === "carry me",
+  );
+  const backToMsg = convertKind({ kind: "thinking", content: "carry me" }, "message");
+  assert(
+    "thinking -> message preserves text",
+    backToMsg.kind === "message" && backToMsg.content === "carry me",
   );
 
   // convertKind TO tool-call — prior text seeds args, tool name empty.
@@ -1285,6 +1322,8 @@ console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } 
     { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "x" } },
   ]));
   assert("accepts insight", isTurns([{ kind: "insight", content: "aha" }]));
+  assert("accepts thinking", isTurns([{ kind: "thinking", content: "reasoning" }]));
+  assert("rejects thinking missing content", !isTurns([{ kind: "thinking" }]));
   assert("accepts turn-summary", isTurns([{ kind: "turn-summary", text: "Sautéed for 53s" }]));
   // Empty array IS a Turn[] — isTurns stays honest to its name; the API
   // boundary rejects empty separately as "Empty paste".

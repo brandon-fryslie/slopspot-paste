@@ -22,6 +22,7 @@ const KIND_LABEL: Record<Kind, string> = {
   "message": "Message",
   "tool-call": "Tool call",
   "insight": "Insight",
+  "thinking": "Thinking",
   "turn-summary": "Turn summary",
 };
 
@@ -90,10 +91,13 @@ const messageBody = (
   </div>
 `;
 
-const insightBody = (
+// [LAW:one-type-per-behavior] insight and thinking edit identically — a single
+// textarea over their shared `content` field. One body serves both; the kind
+// rides through `...turn` so the new Turn keeps its own discriminator.
+const contentBody = (
   store: EditorStore,
   id: string,
-  turn: Extract<Turn, { kind: "insight" }>,
+  turn: Extract<Turn, { kind: "insight" | "thinking" }>,
 ): TemplateResult => html`
   <div class="block-fields">
     <textarea
@@ -187,7 +191,9 @@ const cardBody = (store: EditorStore, id: string, turn: Turn): TemplateResult =>
     case "message":
       return messageBody(store, id, turn);
     case "insight":
-      return insightBody(store, id, turn);
+      return contentBody(store, id, turn);
+    case "thinking":
+      return contentBody(store, id, turn);
     case "turn-summary":
       return turnSummaryBody(store, id, turn);
     case "tool-call":

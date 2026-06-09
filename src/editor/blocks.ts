@@ -23,7 +23,7 @@ export interface Block {
 // kind dropdown and per-kind counts iterate this tuple, so the list the UI
 // offers cannot drift from the kinds the model supports. Order is the dropdown
 // order (message first: the common case).
-export const KINDS = ["message", "tool-call", "insight", "turn-summary"] as const;
+export const KINDS = ["message", "tool-call", "insight", "thinking", "turn-summary"] as const;
 export type Kind = (typeof KINDS)[number];
 
 // [LAW:types-are-the-program] KINDS must be *exactly* the Turn discriminator
@@ -60,6 +60,8 @@ const textOf = (turn: Turn): string => {
       return turn.content;
     case "insight":
       return turn.content;
+    case "thinking":
+      return turn.content;
     case "turn-summary":
       return turn.text;
     case "tool-call":
@@ -79,6 +81,8 @@ const withText = (kind: Kind, text: string): Turn => {
     case "message":
       return { kind, role: DEFAULT_ROLE, content: text };
     case "insight":
+      return { kind, content: text };
+    case "thinking":
       return { kind, content: text };
     case "turn-summary":
       return { kind, text };
@@ -113,6 +117,8 @@ const primaryText = (turn: Turn): string => {
       return turn.content;
     case "insight":
       return turn.content;
+    case "thinking":
+      return turn.content;
     case "turn-summary":
       return turn.text;
     case "tool-call":
@@ -125,6 +131,8 @@ const withPrimaryText = (turn: Turn, text: string): Turn => {
     case "message":
       return { ...turn, content: text };
     case "insight":
+      return { ...turn, content: text };
+    case "thinking":
       return { ...turn, content: text };
     case "turn-summary":
       return { ...turn, text };

@@ -114,6 +114,7 @@ export class EditorStore {
       "message": 0,
       "tool-call": 0,
       "insight": 0,
+      "thinking": 0,
       "turn-summary": 0,
     };
     for (const block of this.blocks) acc[block.turn.kind] += 1;

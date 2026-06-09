@@ -42,6 +42,20 @@ const insightHtml = (content: string, index: number): string =>
   `<div class="bubble-body">${renderMarkdown(content)}</div>` +
   `</article>`;
 
+// [LAW:no-ambient-temporal-coupling] The browser's native <details>/<summary>
+// owns the open/closed lifecycle — no client script, no timing authority.
+// Collapsed-by-default is the absence of the `open` attribute. A source without
+// thinking emits no thinking Turn, so no <details> renders and there is no empty
+// toggle — the "when available" of the ticket is a value transition, not a flag.
+const thinkingHtml = (content: string, index: number): string =>
+  `<details class="bubble bubble-thinking" data-kind="thinking" data-index="${index}">` +
+  `<summary class="bubble-role thinking-summary">` +
+  `<span class="role-dot role-dot-thinking" aria-hidden="true">✻</span>` +
+  `<span class="role-name">Thinking</span>` +
+  `</summary>` +
+  `<div class="bubble-body">${renderMarkdown(content)}</div>` +
+  `</details>`;
+
 const turnSummaryHtml = (text: string, index: number): string =>
   `<aside class="bubble-turn-summary" data-kind="turn-summary" data-index="${index}">` +
   `<span>${escapeHtml(text)}</span>` +
@@ -154,6 +168,8 @@ const renderTurn = (turn: Turn, index: number): string => {
       return messageHtml(turn.role, turn.content, index);
     case "insight":
       return insightHtml(turn.content, index);
+    case "thinking":
+      return thinkingHtml(turn.content, index);
     case "turn-summary":
       return turnSummaryHtml(turn.text, index);
     case "tool-call":

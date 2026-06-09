@@ -29,7 +29,7 @@ const outputKindFor = (tool: string): ToolOutputKind =>
 // Minimal structural types for the JSONL events we actually read. Anything
 // not represented here is ignored at the boundary; we don't carry it through.
 interface TextBlock { readonly type: "text"; readonly text: string }
-interface ThinkingBlock { readonly type: "thinking" }
+interface ThinkingBlock { readonly type: "thinking"; readonly thinking: string }
 interface ToolUseBlock {
   readonly type: "tool_use";
   readonly id: string;
@@ -144,6 +144,15 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
         const cleaned = role === "user" ? stripEnvelope(text) : text.trim();
         if (cleaned.length === 0) continue;
         turns.push({ kind: "message", role, content: cleaned });
+      } else if (block.type === "thinking") {
+        // [LAW:dataflow-not-control-flow] A thinking block is a content-only Turn,
+        // emitted like any other; the renderer (not this parser) decides it folds
+        // collapsed. The text lives in the `thinking` field, not `text`.
+        const text = (block as ThinkingBlock).thinking;
+        if (typeof text !== "string") continue;
+        const cleaned = text.trim();
+        if (cleaned.length === 0) continue;
+        turns.push({ kind: "thinking", content: cleaned });
       } else if (block.type === "tool_use") {
         const tu = block as ToolUseBlock;
         // id keys the pending-pairing map; a non-string id from untrusted input
@@ -168,7 +177,6 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
         turns[idx] = { ...existing, output };
         pendingToolIndex.delete(tr.tool_use_id);
       }
-      // thinking blocks: deliberately skipped — private model reasoning.
       // unknown block types: ignored at the trust boundary.
     }
   }
