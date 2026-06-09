@@ -149,7 +149,14 @@ const lifetimeLabel =
         "pre.code-block > .copy-code",
       )) {
         const code = btn.parentElement?.querySelector("code");
-        if (!code) continue;
+        // [LAW:no-silent-failure] render.ts always emits <code> inside the <pre>,
+        // so a missing sibling here is a broken template invariant, not a normal
+        // empty case — fail loudly rather than skip this button into silence.
+        if (!code) throw new Error("copy-code button has no sibling <code>");
+        // [LAW:one-source-of-truth] The revert text is read from the button the
+        // server rendered, never re-typed here, so the label can't drift from
+        // render.ts.
+        const label = btn.textContent;
         btn.addEventListener("click", async () => {
           await navigator.clipboard.writeText(code.textContent ?? "");
           btn.classList.add("copied");
@@ -157,7 +164,7 @@ const lifetimeLabel =
           // The button owns its own revert timer — no shared scheduler.
           window.setTimeout(() => {
             btn.classList.remove("copied");
-            btn.textContent = "Copy";
+            btn.textContent = label;
           }, 1200);
         });
       }
