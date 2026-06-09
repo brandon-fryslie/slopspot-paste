@@ -716,7 +716,44 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
         puaTurns[1]!.kind === "message" &&
         puaTurns[1]!.content.includes("IsoAcoustics stands decouple"),
     );
+    // Lone-backslash hard-break residue (the action-row `\` left after the PUA
+    // glyphs are stripped) must not survive — no parsed turn ends in a stray
+    // backslash, and no turn carries a whitespace-only `\` line.
+    assert(
+      "no trailing lone-backslash residue survives",
+      !puaTurns.some(
+        (t) => t.kind === "message" && /(?:^|\n)\s*\\\s*$/.test(t.content),
+      ),
+    );
+    // The fenced code block survives verbatim: a `\` line continuation and a
+    // lone `\` line *inside* the fence are conversation content, not residue.
+    assert(
+      "backslashes inside a code fence survive verbatim",
+      puaTurns[1]!.kind === "message" &&
+        puaTurns[1]!.content.includes("echo one \\\n  two") &&
+        /```bash\n[^]*\n\\\n```/.test(puaTurns[1]!.content),
+    );
   }
+
+  // [LAW:single-enforcer] Backslash-escaped punctuation is marked's job, not a
+  // second strip in render.ts — locking it here proves the renderer already
+  // unescapes `\_ \* \[ \. \(` to the bare character while leaving backslashes
+  // inside code spans and fences untouched (the other half of 5uo's acceptance).
+  const escHtml = renderMarkdown(
+    "esc \\_a\\_ \\* \\[ \\. \\( then `code \\_ x` and\n\n```\nfence \\_ y\n```",
+  );
+  assert(
+    "escaped punctuation renders as the bare character",
+    escHtml.includes("esc _a_ * [ . ("),
+  );
+  assert(
+    "backslash inside a code span survives",
+    escHtml.includes("code \\_ x"),
+  );
+  assert(
+    "backslash inside a fence survives",
+    escHtml.includes("fence \\_ y"),
+  );
 
   // parseClaudeShare fails cleanly on input with no headings.
   const noHeadings = parseClaudeShare("just some markdown with no\n## headings\nat all");

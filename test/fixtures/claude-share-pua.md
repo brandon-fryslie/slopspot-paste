@@ -9,6 +9,12 @@ May 18
 
 The IsoAcoustics stands decouple the speaker from the surface — that is the one mechanical idea everything else inherits from it.
 
+```bash
+echo one \
+  two
+\
+```
+
 \
 
 [Ask Claude your own question](https://claude.ai/new)
