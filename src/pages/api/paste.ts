@@ -5,7 +5,7 @@ import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
 import type { Conversation, ParseResult, PasteInput, SourceKind, Turn } from "../../types";
-import { inputText, isTurns, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput, TTL_SECONDS } from "../../types";
+import { inputText, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput } from "../../types";
 
 export const prerender = false;
 
@@ -141,7 +141,7 @@ export const POST: APIRoute = async ({ request }) => {
   const conversation: Conversation = {
     slug: generateSlug(),
     createdAt: now,
-    expiresAt: now + TTL_SECONDS * 1000,
+    lifetime: lifetimeFromChoice("expires", now),
     turns: parsed.turns,
     title: deriveTitle(parsed.turns),
   };
