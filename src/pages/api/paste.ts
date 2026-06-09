@@ -5,7 +5,7 @@ import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
 import type { Conversation, ParseResult, PasteInput, SourceKind, Turn } from "../../types";
-import { inputText, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, textArmInput } from "../../types";
+import { inputText, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
 
 export const prerender = false;
 
@@ -20,9 +20,6 @@ export const prerender = false;
 // source. 8 MiB gives honest headroom for JSON-encoding overhead on long CC
 // session JSONL (observed at 1.74 MB) while staying under KV's 25 MB ceiling.
 const MAX_TURNS = 10000;
-
-const isSourceKind = (v: unknown): v is SourceKind =>
-  typeof v === "string" && (SOURCE_KINDS as ReadonlyArray<string>).includes(v);
 
 // [LAW:types-are-the-program] The trust boundary classifies wire JSON into
 // one of the union arms. Each arm's required field is checked against its
@@ -41,7 +38,7 @@ const isPasteInput = (v: unknown): v is PasteInput => {
 // field?" scattered across the file.
 type DecodedRequest =
   | { ok: true; input: PasteInput }
-  | { ok: true; turns: ReadonlyArray<Turn> }
+  | { ok: true; turns: ReadonlyArray<Turn>; source: SourceKind | null }
   | { ok: true; legacy: string }
   | { ok: false; reason: string };
 
@@ -49,12 +46,20 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
   const ct = request.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
     const body = (await request.json().catch(() => null)) as
-      | { source?: unknown; content?: unknown; turns?: unknown }
+      | { source?: unknown; content?: unknown; turns?: unknown; sourceKind?: unknown }
       | null;
     // [LAW:single-enforcer] The editor arm: a pre-parsed, user-edited Turn[]
     // validated here at the one boundary, then stored without re-parsing.
     // isTurns rejects every illegal shape so downstream trusts the typed value.
-    if (body && isTurns(body.turns)) return { ok: true, turns: body.turns };
+    // `sourceKind` is the provenance the editor carried from its own parse; a
+    // missing or junk value reads as null (no provenance), never a guess.
+    if (body && isTurns(body.turns)) {
+      return {
+        ok: true,
+        turns: body.turns,
+        source: isSourceKind(body.sourceKind) ? body.sourceKind : null,
+      };
+    }
     if (body && isPasteInput(body.source)) return { ok: true, input: body.source };
     if (body && typeof body.content === "string") return { ok: true, legacy: body.content };
     return { ok: false, reason: "Missing 'turns', 'source' or 'content' field." };
@@ -125,7 +130,7 @@ export const POST: APIRoute = async ({ request }) => {
     "input" in decoded
       ? await ingestPaste(decoded.input, env)
       : "turns" in decoded
-        ? { ok: true, turns: decoded.turns }
+        ? { ok: true, turns: decoded.turns, source: decoded.source }
         : parseAuto(decoded.legacy);
   if (!parsed.ok) return json(400, { error: parsed.reason });
   // [LAW:dataflow-not-control-flow] Every arm flows through the same turn-count
@@ -144,6 +149,9 @@ export const POST: APIRoute = async ({ request }) => {
     lifetime: lifetimeFromChoice("expires", now),
     turns: parsed.turns,
     title: deriveTitle(parsed.turns),
+    // [LAW:one-source-of-truth] Provenance is stamped here, once, from the
+    // parse result — render never re-guesses the platform from content.
+    source: parsed.source,
   };
 
   await putConversation(env.PASTES, conversation);

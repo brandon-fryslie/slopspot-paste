@@ -4,7 +4,7 @@ import Base from "../layouts/Base.astro";
 import { renderTurnsHtml } from "../renderTurns";
 import { getConversation } from "../storage";
 import { isValidSlug } from "../slug";
-import { viewLifetime } from "../types";
+import { PLATFORM_LABEL, platformOf, viewLifetime } from "../types";
 
 export const prerender = false;
 
@@ -33,12 +33,20 @@ const lifetimeLabel =
   life.kind === "pinned"
     ? "Never disappears"
     : `Disappears in ${life.days} ${life.days === 1 ? "day" : "days"}`;
+// [LAW:one-source-of-truth] Platform is a projection of the stored source —
+// derived here once, then carried as data: the body attribute themes the page
+// via CSS variables; the label names the platform in the meta line. A generic
+// platform has a null label, so absence of provenance renders as absence.
+const platform = platformOf(conversation.source);
+const platformLabel = PLATFORM_LABEL[platform];
 ---
 
-<Base title={`${title} · slopspot paste`}>
+<Base title={`${title} · slopspot paste`} platform={platform}>
   <section class="conversation-header">
     <h1>{title}</h1>
     <p class="conversation-meta">
+      {platformLabel && <span class="platform-badge">{platformLabel}</span>}
+      {platformLabel && <span aria-hidden="true">·</span>}
       <span>{conversation.turns.length} turns</span>
       <span aria-hidden="true">·</span>
       <span>{lifetimeLabel}</span>

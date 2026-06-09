@@ -18,6 +18,11 @@
   --assistant-border: #e7e5e4;
   --system-bg: #fefce8;
   --system-border: #fde68a;
+  /* [LAW:one-source-of-truth] Role hues stated once; role dots and minimap
+     markers both read these, and platform themes re-tint them in one place. */
+  --role-user: #6366f1;
+  --role-assistant: #10b981;
+  --role-system: #f59e0b;
   --diff-add-bg: rgba(34, 197, 94, 0.12);
   --diff-add-fg: #166534;
   --diff-add-gutter: #22c55e;
@@ -58,6 +63,97 @@
     --terminal-bg: #07090c;
     --terminal-fg: #d6deeb;
     --terminal-prompt: #c792ea;
+  }
+}
+
+/* ─── Platform themes ───────────────────────────────────────────────────
+   [LAW:dataflow-not-control-flow] The body carries data-platform (derived from
+   the stored ingest source via platformOf); each theme is a variable override
+   block, nothing more. Bubbles, dots, links, and the minimap read the same
+   variables they always read — no platform-specific selectors on components.
+   The "generic" platform is the absence of an override: default vars apply. */
+
+body[data-platform="claude-web"] {
+  --bg: #faf9f5;
+  --bg-elev: #ffffff;
+  --bg-code: #f0eee6;
+  --border: #e8e4d9;
+  --accent: #c15f3c;
+  --accent-fg: #ffffff;
+  --user-bg: #f0eee6;
+  --user-border: #ddd9cb;
+  --assistant-bg: #ffffff;
+  --assistant-border: #e8e4d9;
+  --role-user: #8f7d68;
+  --role-assistant: #d97757;
+}
+
+body[data-platform="claude-code"] {
+  --accent: #c15f3c;
+  --accent-fg: #ffffff;
+  --user-bg: #fbf1e8;
+  --user-border: #f0d9c2;
+  --assistant-border: #ead9c8;
+  --role-user: #b07a4e;
+  --role-assistant: #d97757;
+}
+/* Claude Code is a terminal: its role labels speak monospace. */
+body[data-platform="claude-code"] .role-name { font-family: var(--font-mono); }
+
+body[data-platform="chatgpt"] {
+  --accent: #10a37f;
+  --accent-fg: #ffffff;
+  --user-bg: #f4f4f4;
+  --user-border: #e3e3e3;
+  --assistant-border: #ececec;
+  --role-user: #7d7d8a;
+  --role-assistant: #10a37f;
+}
+
+@media (prefers-color-scheme: dark) {
+  body[data-platform="claude-web"] {
+    --bg: #262624;
+    --bg-elev: #30302e;
+    --bg-code: #1f1e1b;
+    --border: #3f3e38;
+    --accent: #d97757;
+    --accent-fg: #1f1e1b;
+    --user-bg: #3a3a35;
+    --user-border: #4c4b43;
+    --assistant-bg: #30302e;
+    --assistant-border: #3f3e38;
+    --role-user: #b3a48d;
+    --role-assistant: #d97757;
+  }
+
+  body[data-platform="claude-code"] {
+    --bg: #141210;
+    --bg-elev: #1e1a16;
+    --bg-code: #26201a;
+    --border: #322a20;
+    --accent: #d97757;
+    --accent-fg: #141210;
+    --user-bg: #2e2218;
+    --user-border: #4a3623;
+    --assistant-bg: #1e1a16;
+    --assistant-border: #322a20;
+    --role-user: #c98e5f;
+    --role-assistant: #d97757;
+  }
+
+  body[data-platform="chatgpt"] {
+    --bg: #212121;
+    --bg-elev: #2a2a2a;
+    --bg-code: #181818;
+    --border: #3a3a3a;
+    --accent: #10a37f;
+    --accent-fg: #0d0d0d;
+    --user-bg: #303030;
+    --user-border: #424242;
+    --assistant-bg: #2a2a2a;
+    --assistant-border: #3a3a3a;
+    --role-user: #b4b4bf;
+    --role-assistant: #10a37f;
   }
 }
 
@@ -215,7 +311,16 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   font-size: 13px;
   margin: 0;
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+.platform-badge {
+  color: var(--accent);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
@@ -279,9 +384,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* [LAW:dataflow-not-control-flow] The marker carries its kind/role as data-*;
    CSS maps the value to a hue. Same colour vocabulary as the role dots, so the
    rail and the bubbles agree by construction. */
-.minimap-marker[data-kind="message"][data-role="user"] { --minimap-color: #6366f1; }
-.minimap-marker[data-kind="message"][data-role="assistant"] { --minimap-color: #10b981; }
-.minimap-marker[data-kind="message"][data-role="system"] { --minimap-color: #f59e0b; }
+.minimap-marker[data-kind="message"][data-role="user"] { --minimap-color: var(--role-user); }
+.minimap-marker[data-kind="message"][data-role="assistant"] { --minimap-color: var(--role-assistant); }
+.minimap-marker[data-kind="message"][data-role="system"] { --minimap-color: var(--role-system); }
 .minimap-marker[data-kind="insight"] { --minimap-color: var(--accent); }
 .minimap-marker[data-kind="tool-call"] { --minimap-color: #38bdf8; }
 .minimap-marker[data-kind="thinking"] { --minimap-color: var(--fg-muted); }
@@ -339,9 +444,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   border-radius: 999px;
   background: currentColor;
 }
-.role-dot-user { color: #6366f1; }
-.role-dot-assistant { color: #10b981; }
-.role-dot-system { color: #f59e0b; }
+.role-dot-user { color: var(--role-user); }
+.role-dot-assistant { color: var(--role-assistant); }
+.role-dot-system { color: var(--role-system); }
 
 /* Markdown body — message text */
 .bubble-body { font-size: 17px; line-height: 1.62; }

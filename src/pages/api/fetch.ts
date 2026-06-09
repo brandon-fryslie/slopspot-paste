@@ -26,5 +26,7 @@ export const POST: APIRoute = async ({ request }) => {
   const parsed: ParseResult = await ingestPaste({ kind: "claude-share", url }, env);
   if (!parsed.ok) return json(400, { error: parsed.reason });
 
-  return json(200, { turns: parsed.turns });
+  // [LAW:one-source-of-truth] The editor round-trips this provenance back to
+  // /api/paste at submit time — it never re-derives "this came from a share URL".
+  return json(200, { turns: parsed.turns, source: parsed.source });
 };

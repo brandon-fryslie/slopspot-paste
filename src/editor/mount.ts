@@ -11,9 +11,9 @@
 
 import { autorun, comparer, reaction, type IReactionDisposer } from "mobx";
 import { render } from "lit-html";
-import type { ParseResult, Turn } from "../types";
-import { isTurns } from "../types";
-import { EditorStore, type EditorIo, type SubmitResult } from "./store";
+import type { ParseResult } from "../types";
+import { isSourceKind, isTurns } from "../types";
+import { EditorStore, type Draft, type EditorIo, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
 
 // [LAW:no-defensive-null-guards] DOM lookup is a trust boundary — the page may
@@ -39,22 +39,24 @@ const fetchShare = async (url: string): Promise<ParseResult> => {
     body: JSON.stringify({ url }),
   });
   const data = (await res.json().catch(() => null)) as
-    | { turns?: unknown; error?: unknown }
+    | { turns?: unknown; source?: unknown; error?: unknown }
     | null;
   if (!res.ok || data === null) {
     return { ok: false, reason: errorText(data, "Failed to fetch the URL.") };
   }
-  if (!isTurns(data.turns)) {
+  // [LAW:no-silent-failure] source is part of the response contract; junk in it
+  // is a malformed response, not a value to quietly degrade to null.
+  if (!isTurns(data.turns) || !isSourceKind(data.source)) {
     return { ok: false, reason: "Malformed response from /api/fetch." };
   }
-  return { ok: true, turns: data.turns };
+  return { ok: true, turns: data.turns, source: data.source };
 };
 
-const submit = async (turns: ReadonlyArray<Turn>): Promise<SubmitResult> => {
+const submit = async (draft: Draft): Promise<SubmitResult> => {
   const res = await fetch("/api/paste", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ turns }),
+    body: JSON.stringify({ turns: draft.turns, sourceKind: draft.source }),
   });
   const data = (await res.json().catch(() => null)) as
     | { slug?: unknown; error?: unknown }
@@ -73,8 +75,11 @@ const errorText = (data: { error?: unknown } | null, fallback: string): string =
 // through these capabilities.
 //
 // [LAW:single-enforcer] loadDraft is the one gate between stored JSON and the
-// store: it validates with isTurns, so a corrupt or stale-schema draft becomes
-// "no draft" ([]) rather than a malformed Turn[] poisoning the editor.
+// store: it validates with isTurns/isSourceKind, so a corrupt or stale-schema
+// draft becomes "no draft" (the empty Draft) rather than a malformed value
+// poisoning the editor. Drafts saved before provenance landed are a bare
+// Turn[] — lifted to a Draft with null source on read, same idempotent
+// migration shape the KV layer uses.
 //
 // [LAW:no-silent-failure] exception: storage can be denied entirely (private
 // mode, quota, disabled). That failure has no downstream consumer — the
@@ -84,22 +89,29 @@ const errorText = (data: { error?: unknown } | null, fallback: string): string =
 // save path.
 const DRAFT_KEY = "slopspot:editor-draft";
 
-const saveDraft = (turns: ReadonlyArray<Turn>): void => {
+const EMPTY_DRAFT: Draft = { turns: [], source: null };
+
+const saveDraft = (draft: Draft): void => {
   try {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(turns));
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
   } catch {
     /* storage unavailable — persistence degrades, editing is unaffected */
   }
 };
 
-const loadDraft = (): Turn[] => {
+const loadDraft = (): Draft => {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
-    if (raw === null) return [];
+    if (raw === null) return EMPTY_DRAFT;
     const parsed = JSON.parse(raw) as unknown;
-    return isTurns(parsed) ? parsed : [];
+    if (isTurns(parsed)) return { turns: parsed, source: null };
+    const o = parsed as { turns?: unknown; source?: unknown } | null;
+    if (o && isTurns(o.turns)) {
+      return { turns: o.turns, source: isSourceKind(o.source) ? o.source : null };
+    }
+    return EMPTY_DRAFT;
   } catch {
-    return [];
+    return EMPTY_DRAFT;
   }
 };
 
@@ -112,15 +124,15 @@ const clearDraft = (): void => {
 };
 
 // [LAW:one-source-of-truth][LAW:no-ambient-temporal-coupling] The single owner of
-// WHEN the draft is persisted: a mobx reaction off the derived Turn[]. It fires
-// whenever the blocks change shape (structural compare — a fresh toTurns array
-// with identical content is not a write), so persistence is data-driven rather
-// than sprinkled across every mutation. Exported so the store test wires the
-// exact same persistence path that ships, not a hand-rolled copy of it.
+// WHEN the draft is persisted: a mobx reaction off the derived Draft. It fires
+// whenever the blocks or provenance change shape (structural compare — a fresh
+// toTurns array with identical content is not a write), so persistence is
+// data-driven rather than sprinkled across every mutation. Exported so the store
+// test wires the exact same persistence path that ships, not a hand-rolled copy.
 export const persistDrafts = (store: EditorStore, io: EditorIo): IReactionDisposer =>
   reaction(
-    () => store.turns,
-    (turns) => io.saveDraft(turns),
+    (): Draft => ({ turns: store.turns, source: store.source }),
+    (draft) => io.saveDraft(draft),
     { equals: comparer.structural },
   );
 
