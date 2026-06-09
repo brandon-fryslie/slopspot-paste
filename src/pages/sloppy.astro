@@ -19,7 +19,12 @@ const conversations = await listConversations(env.PASTES);
 // API order-agnostic; other callers can sort however they want.
 const rows = [...conversations].sort((a, b) => b.createdAt - a.createdAt);
 
-const fmtDate = (ms: number): string => {
+// [LAW:effects-at-boundaries] The viewer's timezone is a fact only the browser
+// holds; the Worker cannot know it. So the server emits the canonical epoch
+// (data-ms) and a UTC fallback for no-JS; the client script below derives the
+// local wall-clock string. This UTC string is the honest fallback only — with
+// JS it is replaced in place, so no fixed offset survives for real viewers.
+const fmtUtcFallback = (ms: number): string => {
   const d = new Date(ms);
   const yyyy = d.getUTCFullYear();
   const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
@@ -64,7 +69,7 @@ const previewOf = (c: (typeof rows)[number]): string => {
             <th scope="col">Slug</th>
             <th scope="col">Title</th>
             <th scope="col" class="num">Turns</th>
-            <th scope="col">Created (UTC)</th>
+            <th scope="col">Created</th>
             <th scope="col" class="num">Expires</th>
           </tr>
         </thead>
@@ -77,7 +82,7 @@ const previewOf = (c: (typeof rows)[number]): string => {
                 <div class="admin-preview">{previewOf(c)}</div>
               </td>
               <td class="num">{c.turns.length}</td>
-              <td class="ts">{fmtDate(c.createdAt)}</td>
+              <td class="ts"><time class="ts-local" data-ms={c.createdAt}>{fmtUtcFallback(c.createdAt)}</time></td>
               <td class="num">{fmtDaysLeft(c.expiresAt)}</td>
             </tr>
           ))}
@@ -85,4 +90,16 @@ const previewOf = (c: (typeof rows)[number]): string => {
       </table>
     </div>
   )}
+
+  <script>
+    // [LAW:effects-at-boundaries] The browser is the single authority for the
+    // viewer's timezone. Rewrite each canonical epoch (data-ms) into the
+    // viewer's local wall clock — same format shape as the server's UTC
+    // fallback, local getters instead of getUTC*.
+    const pad = (n: number) => String(n).padStart(2, "0");
+    for (const el of document.querySelectorAll<HTMLTimeElement>("time.ts-local[data-ms]")) {
+      const d = new Date(Number(el.dataset.ms));
+      el.textContent = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+  </script>
 </Base>
