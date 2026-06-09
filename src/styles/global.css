@@ -567,6 +567,41 @@ pre.code-block code {
   line-height: 1;
 }
 
+/* ─── Thinking disclosure — collapsed model reasoning ─────────────────── */
+/* Native <details>; the browser owns the toggle. Understated vs a message
+   bubble — secondary content the reader opts into. */
+.bubble-thinking {
+  background: color-mix(in srgb, var(--fg-muted) 5%, var(--bg-elev));
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+  padding: 12px 16px;
+}
+.thinking-summary {
+  margin-bottom: 0;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+/* Replace the default disclosure triangle with our own caret so the marker
+   sits with the role label and rotates on open. */
+.thinking-summary::-webkit-details-marker { display: none; }
+.thinking-summary::after {
+  content: "▸";
+  margin-left: auto;
+  font-size: 11px;
+  transition: transform 0.12s ease;
+}
+.bubble-thinking[open] .thinking-summary { margin-bottom: 8px; }
+.bubble-thinking[open] .thinking-summary::after { transform: rotate(90deg); }
+.role-dot-thinking {
+  width: auto;
+  height: auto;
+  background: transparent !important;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
 /* ─── Turn-summary footer chip ────────────────────────────────────────── */
 .bubble-turn-summary {
   margin: 0;
@@ -803,6 +838,7 @@ body:has(.admin-empty) main { max-width: 1100px; }
 .block-card[data-kind="message"] { border-left-color: #6366f1; }
 .block-card[data-kind="tool-call"] { border-left-color: var(--accent); }
 .block-card[data-kind="insight"] { border-left-color: #f59e0b; }
+.block-card[data-kind="thinking"] { border-left-color: color-mix(in srgb, var(--fg-muted) 60%, transparent); }
 .block-card[data-kind="turn-summary"] { border-left-color: var(--fg-muted); }
 
 .block-card-head {

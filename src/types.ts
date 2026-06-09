@@ -31,6 +31,7 @@ export type Turn =
       readonly output: ToolOutput | null;
     }
   | { readonly kind: "insight"; readonly content: string }
+  | { readonly kind: "thinking"; readonly content: string }
   | { readonly kind: "turn-summary"; readonly text: string };
 
 // [LAW:types-are-the-program] The runtime witness of the Turn union. It lives
@@ -68,6 +69,8 @@ export const isTurn = (v: unknown): v is Turn => {
         (o.output === null || isToolOutput(o.output))
       );
     case "insight":
+      return typeof o.content === "string";
+    case "thinking":
       return typeof o.content === "string";
     case "turn-summary":
       return typeof o.text === "string";
