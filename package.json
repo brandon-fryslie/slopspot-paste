@@ -12,7 +12,8 @@
     "preview": "wrangler dev --config dist/server/wrangler.json",
     "deploy": "npm run test && astro build && wrangler deploy --config dist/server/wrangler.json",
     "typecheck": "astro check",
-    "test": "tsx scripts/parser-check.ts"
+    "test": "tsx scripts/parser-check.ts",
+    "capture-fixture": "tsx scripts/capture-fixture.ts"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^13.5.1",

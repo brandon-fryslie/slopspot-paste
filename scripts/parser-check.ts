@@ -31,6 +31,7 @@ import type { Kind } from "../src/editor/blocks";
 import { EditorStore, type Draft, type EditorIo, type SubmitResult } from "../src/editor/store";
 import { persistDrafts } from "../src/editor/mount";
 import type { ParseResult, Turn } from "../src/types";
+import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
 import { readFileSync } from "node:fs";
 
 const CC_SAMPLE = `❯ deleted
@@ -1643,6 +1644,102 @@ console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } 
     { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
   ];
   assert("accepts editor toTurns output (round-trip)", isTurns(toTurns(toBlocks(fixture))));
+}
+
+console.log("\nFixture-capture credential scrub (single enforcer):");
+{
+  // Shape table for the scrub: each rule mirrors the exact produced shape of
+  // one AWS SigV4 credential param; reject rows perturb one invariant each.
+  // Key ids are assembled at runtime so no scanner-matchable literal ever
+  // sits in this repo — the literal in source IS the leak class under test.
+  const ASIA_ID = ["AS", "IA", "0123456789ABCDEF"].join("");
+  const AKIA_ID = ["AK", "IA", "ZYXWVU9876543210"].join("");
+  const SCRUBBED_ID = "ASIA" + "x".repeat(16);
+  const TOKEN = "IQoJb3JpZ2luX2VjEBA%2FaCWV1%2BLXdlc3QtMSJIMEYCIQD0%3D";
+  const SIG = "c76687ee7e2837015ff40472880094c4d7d67d2a60df5e31e9af3937af4c49f0";
+
+  // --- accepts (rewrites): each credential param, in produced context ---
+  assertEq(
+    "security token → REDACTED, stops at next param",
+    scrubCredentials(`X-Amz-Security-Token=${TOKEN}&X-Amz-Algorithm=AWS4-HMAC-SHA256`),
+    "X-Amz-Security-Token=REDACTED&X-Amz-Algorithm=AWS4-HMAC-SHA256",
+  );
+  assertEq(
+    "security token at end of input",
+    scrubCredentials(`X-Amz-Security-Token=${TOKEN}`),
+    "X-Amz-Security-Token=REDACTED",
+  );
+  assertEq(
+    "security token inside markdown link keeps closing paren",
+    scrubCredentials(`[img](https://x.com/a?X-Amz-Security-Token=${TOKEN})`),
+    "[img](https://x.com/a?X-Amz-Security-Token=REDACTED)",
+  );
+  assertEq(
+    "temporary key id in X-Amz-Credential → prefix + lowercase x",
+    scrubCredentials(`X-Amz-Credential=${ASIA_ID}%2F20260530%2Feu-west-1`),
+    `X-Amz-Credential=${SCRUBBED_ID}%2F20260530%2Feu-west-1`,
+  );
+  assertEq(
+    "bare key id in prose is scrubbed (scanners match bare ids)",
+    scrubCredentials(`the key ${AKIA_ID} leaked`),
+    `the key AKIA${"x".repeat(16)} leaked`,
+  );
+  assertEq(
+    "signature → 64 zeros, length-preserving",
+    scrubCredentials(`X-Amz-Signature=${SIG}`),
+    `X-Amz-Signature=${"0".repeat(64)}`,
+  );
+
+  // --- full produced line: params interact the way the share page emits them ---
+  const rawLine =
+    `Failed to fetch: https://blob.example.amazonaws.com/obj?x-key-id=BN5JZ` +
+    `&X-Amz-Security-Token=${TOKEN}&X-Amz-Date=20260530T080637Z` +
+    `&X-Amz-Credential=${ASIA_ID}%2F20260530%2Feu-west-1%2Fs3%2Faws4\\_request` +
+    `&X-Amz-Expires=14400&X-Amz-Signature=${SIG}`;
+  const scrubbedLine = scrubCredentials(rawLine);
+  assertEq(
+    "full pre-signed URL line scrubs all three params, keeps the rest",
+    scrubbedLine,
+    `Failed to fetch: https://blob.example.amazonaws.com/obj?x-key-id=BN5JZ` +
+      `&X-Amz-Security-Token=REDACTED&X-Amz-Date=20260530T080637Z` +
+      `&X-Amz-Credential=${SCRUBBED_ID}%2F20260530%2Feu-west-1%2Fs3%2Faws4\\_request` +
+      `&X-Amz-Expires=14400&X-Amz-Signature=${"0".repeat(64)}`,
+  );
+  assertEq("scrub is idempotent", scrubCredentials(scrubbedLine), scrubbedLine);
+  // The doubled-indicator fingerprint depends on byte-identical line pairs.
+  const pair = scrubCredentials(`${rawLine}\n\n${rawLine}`).split("\n");
+  assert("doubled pair stays byte-identical", pair[0] === pair[2]);
+
+  // --- rejects (left alone): near-misses, one invariant perturbed each ---
+  assertEq("prose ASIA + <16 chars untouched", scrubCredentials("ASIAN markets rallied"), "ASIAN markets rallied");
+  assertEq(
+    "lowercase placeholder untouched (already scrubbed)",
+    scrubCredentials(SCRUBBED_ID),
+    SCRUBBED_ID,
+  );
+  assertEq(
+    "non-credential X-Amz params untouched",
+    scrubCredentials("X-Amz-Date=20260530T080637Z&X-Amz-Expires=14400"),
+    "X-Amz-Date=20260530T080637Z&X-Amz-Expires=14400",
+  );
+
+  // --- leak checks assert output state, independent of the rules ---
+  assertEq("raw line trips all three leak checks", findCredentialLeaks(rawLine).length, 3);
+  assertEq("scrubbed line trips none", findCredentialLeaks(scrubbedLine).length, 0);
+  assert(
+    "truncated signature (rule can't fix it) still fails loud",
+    findCredentialLeaks("X-Amz-Signature=abc123").length > 0,
+  );
+
+  // --- structural truth: scrubbing must not flip indicator eligibility ---
+  assertEq("long line stays indicator-ineligible after scrub", compareLines(rawLine, scrubbedLine).flips.length, 0);
+  const shortRaw = `Failed to fetch https://e.co/a?X-Amz-Security-Token=${TOKEN}${TOKEN}${TOKEN}`;
+  const shortScrubbed = scrubCredentials(shortRaw);
+  assert(
+    "length-class flip (>160 → ≤160) is detected",
+    compareLines(shortRaw, shortScrubbed).flips.length === 1,
+  );
+  assertEq("changed-line count reports scrubbed lines", compareLines(rawLine, scrubbedLine).changedLines, 1);
 }
 
 if (process.exitCode) {

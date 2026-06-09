@@ -87,7 +87,10 @@ const INDICATOR_MAX_CHARS = 160;
 const MD_STRUCTURE_RE = /^(?:#|[-*+>|]|\d+[.)]\s|\[|!\[|`|~|_{3,})/;
 const TERMINAL_PUNCT_RE = /[.!?:;,…]$/;
 
-const isIndicatorEligible = (t: string): boolean =>
+// Exported for the fixture-capture script, which must verify its credential
+// scrub never flips a line's eligibility class — with this predicate, not a
+// copied threshold ([LAW:one-source-of-truth]).
+export const isIndicatorEligible = (t: string): boolean =>
   t.length > 0 &&
   t.length <= INDICATOR_MAX_CHARS &&
   !MD_STRUCTURE_RE.test(t) &&
