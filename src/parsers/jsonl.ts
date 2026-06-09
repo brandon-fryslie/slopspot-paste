@@ -1,4 +1,4 @@
-import type { Turn, ToolOutput, ToolOutputKind } from "../types";
+import type { Turn, ToolOutput, ToolOutputKind, Usage } from "../types";
 
 // [LAW:types-are-the-program] Input is a Claude Code session JSONL — one
 // typed event per line. Output is the same Turn[] union every other parser
@@ -46,8 +46,10 @@ type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock |
 interface MessageEvent {
   readonly type: "user" | "assistant";
   readonly message?: {
+    readonly id?: string;
     readonly role?: string;
     readonly content?: string | ReadonlyArray<ContentBlock>;
+    readonly usage?: unknown;
   };
 }
 
@@ -55,6 +57,27 @@ const isMessageEvent = (e: unknown): e is MessageEvent => {
   if (!e || typeof e !== "object") return false;
   const t = (e as { type?: unknown }).type;
   return t === "user" || t === "assistant";
+};
+
+const num = (v: unknown): number =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+
+// [LAW:no-silent-failure] Usage is read from the source or it is absent —
+// never invented. A line without an `output_tokens` count is not a usage
+// record (returns null); we do NOT default it to a zero-usage object, because
+// "this message generated 0 tokens" is a different, false claim from "this
+// source carries no token accounting". Sub-fields that the API genuinely omits
+// (no cache used) are a real 0, so those map through `num`.
+const parseUsage = (raw: unknown): Usage | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.output_tokens !== "number") return null;
+  return {
+    input: num(o.input_tokens),
+    output: num(o.output_tokens),
+    cacheCreation: num(o.cache_creation_input_tokens),
+    cacheRead: num(o.cache_read_input_tokens),
+  };
 };
 
 const argsAsText = (input: unknown): string => {
@@ -117,10 +140,66 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
   const turns: Turn[] = [];
   const pendingToolIndex = new Map<string, number>();
 
+  // [LAW:one-source-of-truth] A logical assistant message is split across
+  // several JSONL lines that each carry its usage. Those copies are not always
+  // identical: early lines are PARTIAL streaming flushes (a smaller
+  // output_tokens) and the settled line carries the complete count. So the
+  // authoritative usage for an id is the record with the greatest output — the
+  // complete generation, not a partial. This reduction owns the *value* of each
+  // message's usage, keyed by id, computed once before any turn is emitted; the
+  // build pass below owns only *where* the single usage Turn lands. A usage
+  // record without an id can't be deduped against its siblings, so — like the
+  // tool-block id guards — it is dropped at the trust boundary.
+  const usageByMsgId = new Map<string, Usage>();
+  for (const ev of messageEvents) {
+    if (ev.type !== "assistant") continue;
+    const msg = ev.message;
+    if (!msg || typeof msg.id !== "string") continue;
+    const usage = parseUsage(msg.usage);
+    if (!usage) continue;
+    const prev = usageByMsgId.get(msg.id);
+    if (!prev || usage.output > prev.output) usageByMsgId.set(msg.id, usage);
+  }
+
+  // [LAW:no-silent-failure] Each message's usage is emitted exactly once as a
+  // usage Turn, no matter how its lines are scattered — `emittedUsage` makes the
+  // dedup GLOBAL, not just over adjacent lines. (A multi-tool message's lines
+  // are interrupted by the tool_result user event between its tool calls, then
+  // the SAME id resumes; a streamed message repeats across lines.) The pending
+  // id is flushed at the first boundary after its content — a different message,
+  // a user turn, or end of stream — pulling its authoritative value from the map.
+  const emittedUsage = new Set<string>();
+  let pendingMsgId: string | null = null;
+  const flushUsage = (): void => {
+    if (pendingMsgId !== null && !emittedUsage.has(pendingMsgId)) {
+      const usage = usageByMsgId.get(pendingMsgId);
+      if (usage) {
+        turns.push({ kind: "usage", usage });
+        emittedUsage.add(pendingMsgId);
+      }
+    }
+    pendingMsgId = null;
+  };
+
   for (const ev of messageEvents) {
     const msg = ev.message;
-    if (!msg) continue;
+    if (!msg) {
+      flushUsage();
+      continue;
+    }
     const role = ev.type === "user" ? "user" : "assistant";
+    const msgId = typeof msg.id === "string" ? msg.id : null;
+
+    // Another line of the SAME pending message continues it; anything else (a
+    // new message, a user turn) closes the pending one out first. An id we have
+    // already counted never re-arms — its usage Turn is in the stream once.
+    const continuesMessage =
+      role === "assistant" && msgId !== null && msgId === pendingMsgId;
+    if (!continuesMessage) flushUsage();
+    if (role === "assistant" && msgId !== null && !emittedUsage.has(msgId)) {
+      pendingMsgId = msgId;
+    }
+
     const content = msg.content;
 
     if (typeof content === "string") {
@@ -180,6 +259,8 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
       // unknown block types: ignored at the trust boundary.
     }
   }
+
+  flushUsage();
 
   return turns.length >= 1 ? turns : null;
 };

@@ -14,9 +14,20 @@
 
 import type { Role, Turn } from "../types";
 
+// [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. A `usage`
+// turn is source-derived token accounting, not something a human types, splits,
+// or kind-converts — so it is excluded from the type the editor operates on.
+// This makes "a block never holds a usage turn" a compile-time fact (every
+// switch below stays exhaustive without a nonsensical usage case) rather than a
+// runtime convention; usage turns are filtered out at the single load seam
+// (store.loadTurns) before they could ever reach a Block.
+export type AuthorableTurn = Exclude<Turn, { kind: "usage" }>;
+export const isAuthorable = (turn: Turn): turn is AuthorableTurn =>
+  turn.kind !== "usage";
+
 export interface Block {
   readonly id: string;
-  readonly turn: Turn;
+  readonly turn: AuthorableTurn;
 }
 
 // [LAW:one-source-of-truth] The runtime witness of the kind set — the editor's
@@ -26,12 +37,14 @@ export interface Block {
 export const KINDS = ["message", "tool-call", "insight", "thinking", "turn-summary"] as const;
 export type Kind = (typeof KINDS)[number];
 
-// [LAW:types-are-the-program] KINDS must be *exactly* the Turn discriminator
-// set. If Turn gains a kind it's not listed here, or KINDS lists a non-kind,
-// one of these assignments stops compiling — the tuple can never silently
-// diverge from the union it claims to enumerate.
-type _KindsAreTurnKinds = Kind extends Turn["kind"] ? true : never;
-type _TurnKindsAreKinds = Turn["kind"] extends Kind ? true : never;
+// [LAW:types-are-the-program] KINDS must be *exactly* the AUTHOR-ABLE turn
+// discriminator set. If an author-able kind is added to the union but not here
+// (or vice-versa) one of these assignments stops compiling — the dropdown can
+// never silently diverge from the kinds the model supports. The non-author-able
+// `usage` kind is excluded by AuthorableTurn, so it is correctly NOT required
+// here, and equally cannot be smuggled in.
+type _KindsAreTurnKinds = Kind extends AuthorableTurn["kind"] ? true : never;
+type _TurnKindsAreKinds = AuthorableTurn["kind"] extends Kind ? true : never;
 const _kindsExact: [_KindsAreTurnKinds, _TurnKindsAreKinds] = [true, true];
 void _kindsExact;
 
@@ -54,7 +67,7 @@ const DEFAULT_ROLE: Role = "assistant";
 // single field, so its text is the join of its parts (the "convert FROM
 // tool-call" rule lives here, once). Exhaustive over the union — a new kind
 // fails to compile until it declares its projection.
-const textOf = (turn: Turn): string => {
+const textOf = (turn: AuthorableTurn): string => {
   switch (turn.kind) {
     case "message":
       return turn.content;
@@ -76,7 +89,7 @@ const textOf = (turn: Turn): string => {
 // tool-call has no content field, so the "convert TO tool-call" rule lives here
 // (text seeds `args`, tool name starts empty, no output). Exhaustive over the
 // union for the same reason as textOf.
-const withText = (kind: Kind, text: string): Turn => {
+const withText = (kind: Kind, text: string): AuthorableTurn => {
   switch (kind) {
     case "message":
       return { kind, role: DEFAULT_ROLE, content: text };
@@ -93,7 +106,7 @@ const withText = (kind: Kind, text: string): Turn => {
 
 // An empty turn of the given kind — the seed for an "add block" action. Falls
 // out of withText with empty text; no separate per-kind constructor to drift.
-export const emptyTurn = (kind: Kind): Turn => withText(kind, "");
+export const emptyTurn = (kind: Kind): AuthorableTurn => withText(kind, "");
 
 // Change a turn's kind, preserving its text content per the rules above.
 // [LAW:dataflow-not-control-flow] The 4x4 conversion matrix is not 16 branches;
@@ -101,7 +114,7 @@ export const emptyTurn = (kind: Kind): Turn => withText(kind, "");
 // returning the turn untouched is the only path that preserves fields the text
 // projection cannot carry (a message's role), so a no-op kind "change" is
 // genuinely lossless — the one honest branch.
-export const convertKind = (turn: Turn, newKind: Kind): Turn =>
+export const convertKind = (turn: AuthorableTurn, newKind: Kind): AuthorableTurn =>
   newKind === turn.kind ? turn : withText(newKind, textOf(turn));
 
 // [LAW:dataflow-not-control-flow] The caret's text field — the single editable
@@ -111,7 +124,7 @@ export const convertKind = (turn: Turn, newKind: Kind): Turn =>
 // its role). This lens PRESERVES every non-text field and touches only the text,
 // so split/merge operate on exactly what the user sees under the caret.
 // Exhaustive over the union for the same compile-time reason as textOf.
-const primaryText = (turn: Turn): string => {
+const primaryText = (turn: AuthorableTurn): string => {
   switch (turn.kind) {
     case "message":
       return turn.content;
@@ -126,7 +139,7 @@ const primaryText = (turn: Turn): string => {
   }
 };
 
-const withPrimaryText = (turn: Turn, text: string): Turn => {
+const withPrimaryText = (turn: AuthorableTurn, text: string): AuthorableTurn => {
   switch (turn.kind) {
     case "message":
       return { ...turn, content: text };
@@ -146,7 +159,10 @@ const withPrimaryText = (turn: Turn, text: string): Turn => {
 // A pure cut: head.text + tail.text reconstructs the original, nothing inserted
 // or dropped. offset is clamped, so a caret at either edge yields one empty half
 // — a legal block, exactly what addBlock seeds — rather than an out-of-range slice.
-export const splitTurn = (turn: Turn, offset: number): readonly [Turn, Turn] => {
+export const splitTurn = (
+  turn: AuthorableTurn,
+  offset: number,
+): readonly [AuthorableTurn, AuthorableTurn] => {
   const text = primaryText(turn);
   const at = Math.max(0, Math.min(offset, text.length));
   return [withPrimaryText(turn, text.slice(0, at)), withPrimaryText(turn, text.slice(at))];
@@ -157,15 +173,15 @@ export const splitTurn = (turn: Turn, offset: number): readonly [Turn, Turn] => 
 // the level of intent — joining two authored blocks inserts a paragraph break,
 // where split is a byte-exact cut. next's non-text fields (a second role or tool
 // name) are dropped: one merged block keeps exactly one shape.
-export const mergeTurns = (prev: Turn, next: Turn): Turn =>
+export const mergeTurns = (prev: AuthorableTurn, next: AuthorableTurn): AuthorableTurn =>
   withPrimaryText(prev, [primaryText(prev), primaryText(next)].join("\n\n"));
 
 // [LAW:single-enforcer] The only seam between the stored Turn[] and the editing
 // Block[]. Parse/fetch produce Turn[]; toBlocks attaches identity for editing;
 // toTurns strips it before store/preview. Round-trip is exact by construction:
 // the turn rides through unchanged, so toTurns(toBlocks(t)) deep-equals t.
-export const toBlocks = (turns: ReadonlyArray<Turn>): Block[] =>
+export const toBlocks = (turns: ReadonlyArray<AuthorableTurn>): Block[] =>
   turns.map((turn) => ({ id: newId(), turn }));
 
-export const toTurns = (blocks: ReadonlyArray<Block>): Turn[] =>
+export const toTurns = (blocks: ReadonlyArray<Block>): AuthorableTurn[] =>
   blocks.map((block) => block.turn);
