@@ -1,11 +1,11 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
-import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
+import { parseAuto, ingestPaste, deriveTitle, reprojectOrigin } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
 import type { Conversation, Origin, ParseResult, PasteInput, Turn } from "../../types";
-import { inputText, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
+import { inputText, isOrigin, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
 
 export const prerender = false;
 
@@ -46,22 +46,21 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
   const ct = request.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
     const body = (await request.json().catch(() => null)) as
-      | { source?: unknown; content?: unknown; turns?: unknown; sourceKind?: unknown }
+      | { source?: unknown; content?: unknown; turns?: unknown; origin?: unknown }
       | null;
-    // [LAW:single-enforcer] The editor arm: a pre-parsed, user-edited Turn[]
-    // validated here at the one boundary, then stored without re-parsing.
-    // isTurns rejects every illegal shape so downstream trusts the typed value.
-    // The captured origin is `editor` — its (possibly hand-edited) turns ARE the
-    // source, so there is no upstream input to replay. `sourceKind` is the
-    // provenance the editor carried from its own parse; it rides on the editor
-    // origin as the styling authority. A missing or junk value reads as null (no
-    // provenance), never a guess.
+    // [LAW:single-enforcer] The editor arm: a pre-parsed Turn[] plus the Origin
+    // the editor chose to stamp, validated here at the one boundary. isTurns and
+    // isOrigin reject every illegal shape so downstream trusts the typed values.
+    // The editor sends a replayable claude-share origin for a pristine share
+    // import (its turns are canonicalized below) or an `editor` origin otherwise
+    // (its turns ARE the source). A missing or junk origin reads as editor-with-
+    // no-provenance — the same leniency a bare {turns} POST always had — never a
+    // guess about where the turns came from.
     if (body && isTurns(body.turns)) {
-      return {
-        ok: true,
-        turns: body.turns,
-        origin: { kind: "editor", source: isSourceKind(body.sourceKind) ? body.sourceKind : null },
-      };
+      const origin: Origin = isOrigin(body.origin)
+        ? body.origin
+        : { kind: "editor", source: null };
+      return { ok: true, turns: body.turns, origin };
     }
     if (body && isPasteInput(body.source)) return { ok: true, input: body.source };
     if (body && typeof body.content === "string") return { ok: true, legacy: body.content };
@@ -97,6 +96,24 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
 
 const sizeOf = (s: string): number => new Blob([s]).size;
 
+// [LAW:one-source-of-truth] Turns are a derived cache of the origin. A replayable
+// origin (claude-share / text) regenerates its canonical turns via reprojectOrigin
+// HERE — so the stored cache cannot drift from the captured source, even if a
+// crafted request sent mismatched turns under that origin. The `editor` origin is
+// the one with no upstream input to replay (reprojectOrigin returns null for it
+// by construction): its submitted turns ARE the source, stored verbatim.
+// [LAW:no-silent-failure] A replayable origin that fails to reproduce a
+// conversation is real corruption, surfaced loudly — never a silent fallback to
+// the client turns under a claude-share label that would then lie about replay.
+const canonicalize = (turns: ReadonlyArray<Turn>, origin: Origin): ParseResult => {
+  if (origin.kind === "editor") return { ok: true, turns, origin };
+  const replayed = reprojectOrigin(origin);
+  if (replayed === null || replayed.length === 0) {
+    return { ok: false, reason: "Captured origin does not reproduce a conversation." };
+  }
+  return { ok: true, turns: replayed, origin };
+};
+
 export const POST: APIRoute = async ({ request }) => {
   // [LAW:dataflow-not-control-flow] The success response modality is data
   // derived from the request's content-type — the same predicate decodeRequest
@@ -126,14 +143,15 @@ export const POST: APIRoute = async ({ request }) => {
 
   // [LAW:single-enforcer] Every arm converges to one ParseResult before the
   // shared store tail. ingestPaste handles sync text parsing and async URL
-  // ingestion; the editor arm is already a validated Turn[] (isTurns ran at the
-  // decode boundary), so it becomes a ParseResult directly — the server never
-  // re-parses edited blocks. The kind discrimination stays inside the parser.
+  // ingestion; the editor arm runs through canonicalize, which regenerates turns
+  // from a replayable origin (so the cache can't drift) and keeps the submitted
+  // turns only for an `editor` origin (which has no upstream input to replay).
+  // The kind discrimination stays inside the parser.
   const parsed: ParseResult =
     "input" in decoded
       ? await ingestPaste(decoded.input, env)
       : "turns" in decoded
-        ? { ok: true, turns: decoded.turns, origin: decoded.origin }
+        ? canonicalize(decoded.turns, decoded.origin)
         : parseAuto(decoded.legacy);
   if (!parsed.ok) return json(400, { error: parsed.reason });
   // [LAW:dataflow-not-control-flow] Every arm flows through the same turn-count

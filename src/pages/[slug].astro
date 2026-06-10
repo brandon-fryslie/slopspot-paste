@@ -4,7 +4,7 @@ import Base from "../layouts/Base.astro";
 import { renderTurnsHtml } from "../renderTurns";
 import { getConversation } from "../storage";
 import { isValidSlug } from "../slug";
-import { PLATFORM_LABEL, platformOf, sourceOf, viewLifetime } from "../types";
+import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime } from "../types";
 
 export const prerender = false;
 
@@ -40,6 +40,13 @@ const lifetimeLabel =
 // of provenance renders as absence.
 const platform = platformOf(sourceOf(conversation.origin));
 const platformLabel = PLATFORM_LABEL[platform];
+// [LAW:one-source-of-truth] The original-source link is a projection of the
+// captured origin (sourceUrlOf), never a second stored field. null for every
+// origin without an upstream URL — text pastes, editor-authored, legacy — which
+// renders as nothing below, not a placeholder ([LAW:dataflow-not-control-flow]:
+// the absence is a value the template skips, not a branch that conditionally
+// builds a header). The URL was validated as a claude.ai/share link at ingest.
+const sourceUrl = sourceUrlOf(conversation.origin);
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -52,6 +59,13 @@ const platformLabel = PLATFORM_LABEL[platform];
       <span aria-hidden="true">·</span>
       <span>{lifetimeLabel}</span>
     </p>
+    {sourceUrl && (
+      <p class="source-origin">
+        <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
+          View original on claude.ai ↗
+        </a>
+      </p>
+    )}
   </section>
 
   <section class="conversation" aria-label="Conversation" set:html={renderTurnsHtml(conversation.turns)} />

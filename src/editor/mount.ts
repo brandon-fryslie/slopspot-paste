@@ -11,7 +11,7 @@
 
 import { autorun, comparer, reaction, type IReactionDisposer } from "mobx";
 import { render } from "lit-html";
-import { isSourceKind, isTurns } from "../types";
+import { isOrigin, isTurns } from "../types";
 import { EditorStore, type Draft, type EditorIo, type ImportResult, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
 
@@ -38,24 +38,24 @@ const fetchShare = async (url: string): Promise<ImportResult> => {
     body: JSON.stringify({ url }),
   });
   const data = (await res.json().catch(() => null)) as
-    | { turns?: unknown; source?: unknown; error?: unknown }
+    | { turns?: unknown; origin?: unknown; error?: unknown }
     | null;
   if (!res.ok || data === null) {
     return { ok: false, reason: errorText(data, "Failed to fetch the URL.") };
   }
-  // [LAW:no-silent-failure] source is part of the response contract; junk in it
-  // is a malformed response, not a value to quietly degrade to null.
-  if (!isTurns(data.turns) || !isSourceKind(data.source)) {
+  // [LAW:no-silent-failure] The captured origin is part of the response contract;
+  // junk in it is a malformed response, not a value to quietly degrade to null.
+  if (!isTurns(data.turns) || !isOrigin(data.origin)) {
     return { ok: false, reason: "Malformed response from /api/fetch." };
   }
-  return { ok: true, turns: data.turns, source: data.source };
+  return { ok: true, turns: data.turns, origin: data.origin };
 };
 
 const submit = async (draft: Draft): Promise<SubmitResult> => {
   const res = await fetch("/api/paste", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ turns: draft.turns, sourceKind: draft.source }),
+    body: JSON.stringify({ turns: draft.turns, origin: draft.origin }),
   });
   const data = (await res.json().catch(() => null)) as
     | { slug?: unknown; error?: unknown }
@@ -74,11 +74,11 @@ const errorText = (data: { error?: unknown } | null, fallback: string): string =
 // through these capabilities.
 //
 // [LAW:single-enforcer] loadDraft is the one gate between stored JSON and the
-// store: it validates with isTurns/isSourceKind, so a corrupt or stale-schema
+// store: it validates with isTurns/isOrigin, so a corrupt or stale-schema
 // draft becomes "no draft" (the empty Draft) rather than a malformed value
-// poisoning the editor. Drafts saved before provenance landed are a bare
-// Turn[] — lifted to a Draft with null source on read, same idempotent
-// migration shape the KV layer uses.
+// poisoning the editor. Drafts saved before the origin shape landed are a bare
+// Turn[] (or carried a `source` string) — lifted to a Draft with null origin on
+// read, the same idempotent migration shape the KV layer uses.
 //
 // [LAW:no-silent-failure] exception: storage can be denied entirely (private
 // mode, quota, disabled). That failure has no downstream consumer — the
@@ -88,7 +88,7 @@ const errorText = (data: { error?: unknown } | null, fallback: string): string =
 // save path.
 const DRAFT_KEY = "slopspot:editor-draft";
 
-const EMPTY_DRAFT: Draft = { turns: [], source: null };
+const EMPTY_DRAFT: Draft = { turns: [], origin: null };
 
 const saveDraft = (draft: Draft): void => {
   try {
@@ -103,10 +103,10 @@ const loadDraft = (): Draft => {
     const raw = localStorage.getItem(DRAFT_KEY);
     if (raw === null) return EMPTY_DRAFT;
     const parsed = JSON.parse(raw) as unknown;
-    if (isTurns(parsed)) return { turns: parsed, source: null };
-    const o = parsed as { turns?: unknown; source?: unknown } | null;
+    if (isTurns(parsed)) return { turns: parsed, origin: null };
+    const o = parsed as { turns?: unknown; origin?: unknown } | null;
     if (o && isTurns(o.turns)) {
-      return { turns: o.turns, source: isSourceKind(o.source) ? o.source : null };
+      return { turns: o.turns, origin: isOrigin(o.origin) ? o.origin : null };
     }
     return EMPTY_DRAFT;
   } catch {
@@ -130,7 +130,10 @@ const clearDraft = (): void => {
 // test wires the exact same persistence path that ships, not a hand-rolled copy.
 export const persistDrafts = (store: EditorStore, io: EditorIo): IReactionDisposer =>
   reaction(
-    (): Draft => ({ turns: store.turns, source: store.source }),
+    // [LAW:one-source-of-truth] Persist the IMPORT origin (where the turns came
+    // from), not the stamp-time submitOrigin — so a restored draft re-establishes
+    // the same editable state, and isDirty is judged against the same baseline.
+    (): Draft => ({ turns: store.turns, origin: store.importOrigin }),
     (draft) => io.saveDraft(draft),
     { equals: comparer.structural },
   );

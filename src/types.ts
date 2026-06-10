@@ -308,6 +308,14 @@ export const isOrigin = (v: unknown): v is Origin => {
 export const sourceOf = (origin: Origin | null): SourceKind | null =>
   origin === null || origin.kind === "editor" ? (origin?.source ?? null) : origin.kind;
 
+// [LAW:one-source-of-truth] The single derivation of "where on the web this paste
+// came from" — the share link, or null for every origin without an upstream URL
+// (text arms carry verbatim content, editor authoring and legacy records have no
+// source URL). The paste page reads this projection of the canonical origin;
+// nothing re-guesses a URL from content or stores it as a second field.
+export const sourceUrlOf = (origin: Origin | null): string | null =>
+  origin?.kind === "claude-share" ? origin.url : null;
+
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
 // table, AND the T2 detector's iteration order are derived from this one
 // tuple. Order is detection-priority: most-specific markers first, raw last.

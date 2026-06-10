@@ -15,7 +15,7 @@
 // explosion). Variability lives in the turn value crossing one seam.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { SourceKind, Turn } from "../types";
+import type { Origin, ParseResult, SourceKind, Turn } from "../types";
 import { sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
@@ -31,33 +31,31 @@ export type SubmitResult =
   | { readonly ok: true; readonly slug: string }
   | { readonly ok: false; readonly reason: string };
 
-// [LAW:decomposition] An editor import yields turns plus the provenance kind —
-// NOT a full Origin. Origin is a server/storage concept that carries the verbatim
-// input needed to replay (for share, the fetched bytes), which the editor never
-// retains: it submits its possibly-edited turns, so those turns become the
-// `editor` origin server-side. This is the narrower result the editor's import
-// paths (sync parse, async /api/fetch) actually produce.
-export type ImportResult =
-  | { readonly ok: true; readonly turns: ReadonlyArray<Turn>; readonly source: SourceKind | null }
-  | { readonly ok: false; readonly reason: string };
+// [LAW:one-type-per-behavior] An editor import IS a parse result: turns plus the
+// captured Origin that produced them. Both the sync parse and the async
+// /api/fetch path now carry the FULL origin (for share, its url + fetched bytes),
+// so the editor holds the whole source of truth rather than a narrowed `source`.
+// It is the same outcome shape the parser returns; aliasing keeps the one type.
+export type ImportResult = ParseResult;
 
-// [LAW:one-type-per-behavior] The unit the editor authors: turns plus the
-// provenance they were parsed from (null = authored from scratch, no parser
-// ran). Submit and draft persistence both move this one shape — the source is
-// never separated from the turns it describes, so it cannot be dropped at one
-// seam and kept at another.
+// [LAW:one-type-per-behavior] The unit the editor authors: turns plus the Origin
+// they were imported from (null = authored from scratch, no parser ran). Submit
+// and draft persistence both move this one shape — the origin is never separated
+// from the turns it describes, so it cannot be dropped at one seam and kept at
+// another. The origin a Draft carries is the IMPORT origin (where the turns came
+// from); the store derives the origin to STAMP at submit time (see submitOrigin).
 export interface Draft {
   readonly turns: ReadonlyArray<Turn>;
-  readonly source: SourceKind | null;
+  readonly origin: Origin | null;
 }
 
 // [LAW:effects-at-boundaries] The store's entire contact with the world, named
-// as capabilities. fetchShare hits /api/fetch (URL -> turns + source), submit
+// as capabilities. fetchShare hits /api/fetch (URL -> turns + Origin), submit
 // hits /api/paste (Draft -> slug), navigate changes the page; saveDraft/loadDraft/
 // clearDraft persist the in-progress Draft to localStorage so an accidental
 // reload doesn't lose work. mount.ts is the one place these are real.
 //
-// loadDraft returns the empty Draft ({ turns: [], source: null }) for "no
+// loadDraft returns the empty Draft ({ turns: [], origin: null }) for "no
 // draft" (absent or unparseable) — the same empty editor a fresh visit gets,
 // so restore is unconditional dataflow, not a branch.
 export interface EditorIo {
@@ -81,11 +79,13 @@ export class EditorStore {
   // would drift from the text — "raw" is always detected, so a stored default
   // could never re-snap to a more-specific format once set.
   userKind: SourceKind | null = null;
-  // [LAW:one-source-of-truth] The provenance of the loaded turns — which kind
-  // parsed them, set only by loadTurns (the single loader every parse/fetch/
-  // draft-restore passes through). null = authored from scratch. Hand-edits
-  // don't change where the content came from, so edits never touch it.
-  source: SourceKind | null = null;
+  // [LAW:one-source-of-truth] The Origin the loaded turns were imported from —
+  // the captured source of truth (for share, its url + fetched bytes), set only
+  // by loadTurns (the single loader every parse/fetch/draft-restore passes
+  // through). null = authored from scratch. Hand-edits don't change where the
+  // content came from, so edits never touch it; `source` (styling) and
+  // `submitOrigin` (what to stamp) are both DERIVED from it, never stored apart.
+  importOrigin: Origin | null = null;
   view: View = "blocks";
   importError: string | null = null;
   submitError: string | null = null;
@@ -151,6 +151,31 @@ export class EditorStore {
     return this.importKind === "claude-share";
   }
 
+  // [LAW:one-source-of-truth] Styling provenance is DERIVED from the import
+  // origin, never stored beside it — the same derivation the rest of the app
+  // uses. The view reads this to theme the preview; it cannot drift from the
+  // origin the turns actually came from.
+  get source(): SourceKind | null {
+    return sourceOf(this.importOrigin);
+  }
+
+  // [LAW:one-source-of-truth] The origin to STAMP at submit. A pristine share
+  // import is the one replayable source of truth the editor carries verbatim
+  // (its url + fetched bytes survive), so it is stamped as a claude-share origin
+  // whose url the paste page links back to. Everything else — edited turns (the
+  // turns are now the source, not the upstream share), a text import (the epic
+  // captures text content on the direct submit paths, not this editor view), or
+  // authored-from-scratch (null) — stamps an `editor` origin that preserves the
+  // styling provenance. isDirty is the reliable signal: it compares same-source
+  // turns, and a claude-share import has no usage events to be stripped, so
+  // "not dirty" means the stored turns will equal reproject(origin).
+  get submitOrigin(): Origin {
+    const o = this.importOrigin;
+    return o !== null && o.kind === "claude-share" && !this.isDirty
+      ? o
+      : { kind: "editor", source: sourceOf(o) };
+  }
+
   get canSubmit(): boolean {
     return this.blocks.length > 0 && !this.busy;
   }
@@ -207,9 +232,7 @@ export class EditorStore {
       this.importError = result.reason;
       return;
     }
-    // [LAW:one-source-of-truth] The editor tracks provenance, not the full origin;
-    // derive the styling kind from the captured origin via the one derivation.
-    this.accept({ turns: result.turns, source: sourceOf(result.origin) });
+    this.accept({ turns: result.turns, origin: result.origin });
   }
 
   private async fetchShare(url: string): Promise<void> {
@@ -222,7 +245,7 @@ export class EditorStore {
         this.importError = result.reason;
         return;
       }
-      this.accept({ turns: result.turns, source: result.source });
+      this.accept({ turns: result.turns, origin: result.origin });
     });
   }
 
@@ -275,7 +298,7 @@ export class EditorStore {
     const editable = draft.turns.filter(isAuthorable);
     this.blocks = toBlocks(editable);
     this.pristineTurns = editable;
-    this.source = draft.source;
+    this.importOrigin = draft.origin;
     this.pendingReparse = null;
     this.view = "blocks";
   }
@@ -352,7 +375,7 @@ export class EditorStore {
     if (!this.canSubmit) return;
     this.busy = true;
     this.submitError = null;
-    const result = await this.io.submit({ turns: this.turns, source: this.source });
+    const result = await this.io.submit({ turns: this.turns, origin: this.submitOrigin });
     runInAction(() => {
       this.busy = false;
       if (!result.ok) this.submitError = result.reason;
