@@ -45,6 +45,14 @@ const fmtLifetime = (c: (typeof rows)[number]): string => {
 
 const isPinned = (c: (typeof rows)[number]): boolean => c.lifetime.kind === "pinned";
 
+// [LAW:one-source-of-truth] Re-projection only makes sense where the origin can
+// replay into turns: a text or share arm. An `editor` origin's turns ARE the
+// source (reprojectOrigin returns null for it — re-projecting is a no-op), and a
+// legacy null origin has nothing to replay. So the affordance's presence is a
+// projection of the origin, not a separate flag — null/editor rows show none.
+const canReproject = (c: (typeof rows)[number]): boolean =>
+  c.origin !== null && c.origin.kind !== "editor";
+
 const previewOf = (c: (typeof rows)[number]): string => {
   const first = c.turns.find((t) => t.kind === "message");
   if (!first) return "";
@@ -92,6 +100,12 @@ const previewOf = (c: (typeof rows)[number]): string => {
               <td class="ts"><time class="ts-local" data-ms={c.createdAt}>{fmtUtcFallback(c.createdAt)}</time></td>
               <td class="num">{fmtLifetime(c)}</td>
               <td class="lifetime-controls">
+                {canReproject(c) && (
+                  <form class="reproject-form" method="POST" action="/api/reproject">
+                    <input type="hidden" name="slug" value={c.slug} />
+                    <button type="submit" class="reproject-btn">Re-project</button>
+                  </form>
+                )}
                 <form class="refresh-form" method="POST" action="/api/refresh">
                   <input type="hidden" name="slug" value={c.slug} />
                   <input type="hidden" name="choice" value="expires" />
