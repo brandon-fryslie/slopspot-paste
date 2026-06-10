@@ -138,14 +138,20 @@ export interface Conversation {
   readonly slug: string;
   readonly createdAt: number;
   readonly lifetime: Lifetime;
+  // [LAW:one-source-of-truth] Turns are a DERIVED CACHE of parse(origin), not an
+  // authority. They are stored in KV for read-path speed, but they are
+  // regenerable: reprojectOrigin(origin) reproduces them (often *better*, once
+  // the parser improves). The authority is `origin` below — the exact input
+  // that, replayed through the parser, yields this projection.
   readonly turns: ReadonlyArray<Turn>;
   readonly title: string | null;
-  // [LAW:one-source-of-truth] Which SourceKind ingested this paste — captured
-  // once at the ingest boundary (the parser that matched) and carried on the
-  // record. Render derives styling from it via platformOf; nothing re-guesses
-  // the platform from content. null is genuine absence: turns authored in the
-  // editor without a parse, or records stored before this field existed.
-  readonly source: SourceKind | null;
+  // [LAW:one-source-of-truth] The captured source of truth: the verbatim input
+  // this paste was created from. `source` (which SourceKind ingested it, for
+  // styling) is DERIVED from origin via sourceOf — never stored independently,
+  // so the two cannot drift. null is genuine absence: records stored before
+  // origin capture landed (legacy), normalized on read. The backfill child
+  // reconstructs plausible origins for those.
+  readonly origin: Origin | null;
 }
 
 // [LAW:single-enforcer] The single enforcer of expiry is KV's expirationTtl.
@@ -198,12 +204,13 @@ export const MAX_PASTE_LABEL = `${MAX_PASTE_BYTES / (1024 * 1024)} MiB`;
 // [LAW:types-are-the-program] Discriminated result instead of throws/null
 // so callers must structurally handle both outcomes.
 //
-// [LAW:one-source-of-truth] `source` is the kind that produced the turns,
-// reported by the one code that knows it — the parser that matched. null is
-// the editor arm only: pre-authored turns that never passed through a parser.
-// Every function in src/parser.ts returns a concrete kind.
+// [LAW:one-source-of-truth] A successful parse carries the `origin` it consumed
+// — the verbatim source of truth, reported by the one code that knows it (the
+// parser that matched). `turns` is the projection; `origin` is what reproduces
+// it. Provenance for styling is derived from origin via sourceOf, never a
+// second field that could disagree with the input actually captured.
 export type ParseResult =
-  | { ok: true; turns: ReadonlyArray<Turn>; source: SourceKind | null }
+  | { ok: true; turns: ReadonlyArray<Turn>; origin: Origin }
   | { ok: false; reason: string };
 
 // [LAW:types-are-the-program] PasteInput IS the input to parsing — each arm
@@ -248,6 +255,58 @@ export const textArmInput = (kind: TextArmKind, content: string): PasteInput => 
   kind,
   content,
 });
+
+// [LAW:types-are-the-program] Origin is the captured source of truth — the exact
+// input a paste was created from, in the strongest shape that lets us replay it
+// without the network. It is PasteInput's storable twin: every text arm already
+// carries its verbatim `content`, so those collapse to one structural arm keyed
+// by kind ([LAW:one-type-per-behavior] — six text kinds, identical "carry the
+// content" behavior). The claude-share arm is the one that was lossy: it keeps
+// the link AND the original fetched markdown (HAR-spirit: the bytes, not just a
+// pointer), so re-projection parses stored bytes rather than re-hitting Firecrawl.
+//
+// The `editor` arm is in-editor authoring: there is no upstream input the parser
+// consumed — the (possibly hand-edited) Turns ARE the source, so reprojectOrigin
+// returns null for it. It is a distinct CASE, not a `null` ([LAW:types-are-the-
+// program]: absence-of-upstream-input modeled as a variant). It still carries
+// `source`: the editor is the universal submit path and knows which platform its
+// turns were imported from, and that provenance is the styling authority. Keeping
+// it on the variant is what lets `source` stay 100% derived from origin
+// ([LAW:one-source-of-truth]) without stripping platform styling from every
+// editor-submitted paste.
+export type Origin =
+  | { readonly kind: TextArmKind; readonly content: string }
+  | { readonly kind: "claude-share"; readonly url: string; readonly fetched: string }
+  | { readonly kind: "editor"; readonly source: SourceKind | null };
+
+const isTextArmKind = (v: unknown): v is TextArmKind =>
+  typeof v === "string" && (TEXT_ARM_KINDS as ReadonlyArray<string>).includes(v);
+
+// [LAW:types-are-the-program] KV is a trust boundary; a stored origin is unknown
+// JSON until classified. [LAW:dataflow-not-control-flow] One switch on the
+// discriminator, each arm checking exactly the fields its kind carries; the
+// default closes the enumeration gap — an unknown kind is rejected, never
+// silently accepted.
+export const isOrigin = (v: unknown): v is Origin => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; source?: unknown };
+  switch (o.kind) {
+    case "editor":
+      return o.source === null || isSourceKind(o.source);
+    case "claude-share":
+      return typeof o.url === "string" && typeof o.fetched === "string";
+    default:
+      return isTextArmKind(o.kind) && typeof o.content === "string";
+  }
+};
+
+// [LAW:one-source-of-truth] The single derivation of styling provenance from the
+// canonical origin. A text or share arm reports its own kind; the editor arm
+// reports the provenance it carried; legacy (null) origin and from-scratch
+// editor authoring both report null — honest absence, rendered as the generic
+// platform. Nothing re-guesses the platform from content.
+export const sourceOf = (origin: Origin | null): SourceKind | null =>
+  origin === null || origin.kind === "editor" ? (origin?.source ?? null) : origin.kind;
 
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
 // table, AND the T2 detector's iteration order are derived from this one

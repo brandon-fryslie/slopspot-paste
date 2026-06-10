@@ -11,9 +11,8 @@
 
 import { autorun, comparer, reaction, type IReactionDisposer } from "mobx";
 import { render } from "lit-html";
-import type { ParseResult } from "../types";
 import { isSourceKind, isTurns } from "../types";
-import { EditorStore, type Draft, type EditorIo, type SubmitResult } from "./store";
+import { EditorStore, type Draft, type EditorIo, type ImportResult, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
 
 // [LAW:no-defensive-null-guards] DOM lookup is a trust boundary — the page may
@@ -32,7 +31,7 @@ const must = <T,>(sel: string, ctor: new () => T): T => {
 // this boundary and surface a typed failure reason. /api/fetch and /api/paste
 // are our own endpoints, but a non-200, a parse failure, or a malformed body
 // becomes an explicit `{ ok: false }` the store renders — never a silent default.
-const fetchShare = async (url: string): Promise<ParseResult> => {
+const fetchShare = async (url: string): Promise<ImportResult> => {
   const res = await fetch("/api/fetch", {
     method: "POST",
     headers: { "content-type": "application/json" },

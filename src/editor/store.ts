@@ -15,8 +15,8 @@
 // explosion). Variability lives in the turn value crossing one seam.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { ParseResult, SourceKind, Turn } from "../types";
-import { textArmInput } from "../types";
+import type { SourceKind, Turn } from "../types";
+import { sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
@@ -29,6 +29,16 @@ export type View = "blocks" | "preview";
 // that might be undefined on failure.
 export type SubmitResult =
   | { readonly ok: true; readonly slug: string }
+  | { readonly ok: false; readonly reason: string };
+
+// [LAW:decomposition] An editor import yields turns plus the provenance kind —
+// NOT a full Origin. Origin is a server/storage concept that carries the verbatim
+// input needed to replay (for share, the fetched bytes), which the editor never
+// retains: it submits its possibly-edited turns, so those turns become the
+// `editor` origin server-side. This is the narrower result the editor's import
+// paths (sync parse, async /api/fetch) actually produce.
+export type ImportResult =
+  | { readonly ok: true; readonly turns: ReadonlyArray<Turn>; readonly source: SourceKind | null }
   | { readonly ok: false; readonly reason: string };
 
 // [LAW:one-type-per-behavior] The unit the editor authors: turns plus the
@@ -51,7 +61,7 @@ export interface Draft {
 // draft" (absent or unparseable) — the same empty editor a fresh visit gets,
 // so restore is unconditional dataflow, not a branch.
 export interface EditorIo {
-  readonly fetchShare: (url: string) => Promise<ParseResult>;
+  readonly fetchShare: (url: string) => Promise<ImportResult>;
   readonly submit: (draft: Draft) => Promise<SubmitResult>;
   readonly navigate: (slug: string) => void;
   readonly saveDraft: (draft: Draft) => void;
@@ -197,7 +207,9 @@ export class EditorStore {
       this.importError = result.reason;
       return;
     }
-    this.accept({ turns: result.turns, source: result.source });
+    // [LAW:one-source-of-truth] The editor tracks provenance, not the full origin;
+    // derive the styling kind from the captured origin via the one derivation.
+    this.accept({ turns: result.turns, source: sourceOf(result.origin) });
   }
 
   private async fetchShare(url: string): Promise<void> {
