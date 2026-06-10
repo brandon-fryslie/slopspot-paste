@@ -1,4 +1,4 @@
-import type { ParseResult, PasteInput, Role, SourceKind, TextArmKind, Turn } from "./types";
+import type { Origin, ParseResult, PasteInput, Role, SourceKind, TextArmKind, Turn } from "./types";
 import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, TEXT_ARM_KINDS, textArmInput } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
@@ -159,7 +159,10 @@ export const parseInput = (input: PasteInput): ParseResult => {
       reason: `Content does not parse as ${input.kind}.`,
     };
   }
-  return { ok: true, turns, source: input.kind };
+  // [LAW:one-source-of-truth] Capture the VERBATIM content the caller supplied,
+  // not the normalized text — re-projection re-normalizes when it re-parses, so
+  // the stored origin stays byte-identical to the user's input.
+  return { ok: true, turns, origin: { kind: input.kind, content: input.content } };
 };
 
 // [LAW:single-enforcer] The one entry point that does network I/O for
@@ -191,7 +194,15 @@ export const ingestPaste = async (
       reason: "Fetched the page, but could not extract a conversation.",
     };
   }
-  return { ok: true, turns, source: "claude-share" };
+  // [LAW:one-source-of-truth] The share arm was the lossy one: persist the
+  // ORIGINAL fetched markdown alongside the link, so re-projection parses these
+  // stored bytes and never has to re-hit the network (a refetch could 404, drift,
+  // or cost money — the captured bytes are the authority).
+  return {
+    ok: true,
+    turns,
+    origin: { kind: "claude-share", url: input.url, fetched: fetched.markdown },
+  };
 };
 
 // [LAW:one-source-of-truth] The URL shape claude-share accepts lives here,
@@ -247,11 +258,35 @@ export const parseAuto = (input: string): ParseResult => {
 
   for (const kind of TEXT_ARM_KINDS) {
     const turns = PARSER_BY_KIND[kind](text);
-    if (turns !== null && turns.length > 0) return { ok: true, turns, source: kind };
+    // [LAW:one-source-of-truth] The origin carries the verbatim input, not the
+    // normalized text — the winning kind names how to re-parse it.
+    if (turns !== null && turns.length > 0) return { ok: true, turns, origin: { kind, content: input } };
   }
   // [LAW:no-silent-failure] Unreachable while the raw parser is total; if that
   // invariant ever breaks, fail loudly instead of fabricating a result.
   throw new Error("parseAuto: no parser matched (raw must always parse)");
+};
+
+// [LAW:one-source-of-truth] Re-projection: regenerate Turn[] from a stored
+// Origin, PURELY — no network, no side effects. This is the function the
+// re-project-in-place child is built on, and the proof that Turns are a derived
+// cache: replaying the captured input through today's parser reproduces (or
+// improves) the projection.
+//
+// [LAW:dataflow-not-control-flow] One switch on the discriminator. The share arm
+// parses its STORED bytes (never refetches); the text arms re-normalize then
+// re-parse; the editor arm returns null because its turns are the source of
+// truth — there is no upstream input to replay. A null return means "the stored
+// turns ARE canonical", not a failure.
+export const reprojectOrigin = (origin: Origin): ReadonlyArray<Turn> | null => {
+  switch (origin.kind) {
+    case "editor":
+      return null;
+    case "claude-share":
+      return parseClaudeShare(origin.fetched);
+    default:
+      return PARSER_BY_KIND[origin.kind](normalize(origin.content));
+  }
 };
 
 // Aliased so imports that pre-date the per-kind API (parser-check tests, any

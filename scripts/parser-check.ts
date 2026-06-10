@@ -5,10 +5,10 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { detectSources, isClaudeShareUrl, parseInput, parsePaste } from "../src/parser";
+import { detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { isSourceKind, isTurns, SOURCE_KINDS, textArmInput } from "../src/types";
-import type { SourceKind } from "../src/types";
+import { isOrigin, isSourceKind, isTurns, SOURCE_KINDS, sourceOf, textArmInput } from "../src/types";
+import type { Origin, SourceKind } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -461,19 +461,120 @@ console.log("\nparseInput per-kind dispatch:");
       r.turns[0]!.kind === "message" && r.turns[0]!.role === "assistant");
   }
 }
-console.log("\nParse provenance (source rides the ParseResult):");
+console.log("\nParse provenance (origin rides the ParseResult):");
 {
-  // [LAW:one-source-of-truth] The kind that parsed is reported by the parser
-  // that matched — explicit picks echo the pick, the auto-race reports its
-  // winner, and the raw fallback names itself rather than hiding provenance.
+  // [LAW:one-source-of-truth] A successful parse captures the verbatim input as
+  // its origin; the styling kind is DERIVED from origin via sourceOf. Explicit
+  // picks echo the pick, the auto-race reports its winner, the raw fallback names
+  // itself — and the origin carries the exact content, byte-for-byte.
   const md = parseInput({ kind: "markdown", content: MARKDOWN_SAMPLE });
-  assert("parseInput echoes the requested kind", md.ok && md.source === "markdown");
+  assert("parseInput captures the requested kind in origin",
+    md.ok && md.origin.kind === "markdown");
+  assert("parseInput origin carries the verbatim content",
+    md.ok && md.origin.kind === "markdown" && md.origin.content === MARKDOWN_SAMPLE);
+  assert("sourceOf derives the styling kind from origin",
+    md.ok && sourceOf(md.origin) === "markdown");
+
   const autoCc = parsePaste(CC_SAMPLE);
-  assert("parseAuto reports the winning kind (claude-code)", autoCc.ok && autoCc.source === "claude-code");
+  assert("parseAuto origin names the winning kind (claude-code)",
+    autoCc.ok && autoCc.origin.kind === "claude-code");
+  assert("parseAuto origin carries the verbatim input (not normalized)",
+    autoCc.ok && autoCc.origin.kind === "claude-code" && autoCc.origin.content === CC_SAMPLE);
   const autoMd = parsePaste(MARKDOWN_SAMPLE);
-  assert("parseAuto reports the winning kind (markdown)", autoMd.ok && autoMd.source === "markdown");
+  assert("parseAuto origin names the winning kind (markdown)",
+    autoMd.ok && sourceOf(autoMd.origin) === "markdown");
   const autoRaw = parsePaste("just plain text with no markers at all");
-  assert("parseAuto raw fallback carries source raw", autoRaw.ok && autoRaw.source === "raw");
+  assert("parseAuto raw fallback origin is raw",
+    autoRaw.ok && sourceOf(autoRaw.origin) === "raw");
+}
+
+console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
+{
+  // [LAW:types-are-the-program] The accept/reject table IS the type. Origin is
+  // captured server-side and re-read from KV (a trust boundary), so every legal
+  // shape is accepted and every illegal one rejected by construction — the
+  // enumeration gap is closed, not left to a downstream crash.
+  const accepts: ReadonlyArray<[string, unknown]> = [
+    ["text arm with content", { kind: "markdown", content: "## User\nhi" }],
+    ["raw arm with empty content", { kind: "raw", content: "" }],
+    ["every text arm accepted", { kind: "claude-jsonl", content: "{}" }],
+    ["claude-share with url + fetched", { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "## You said: q" }],
+    ["editor with null source", { kind: "editor", source: null }],
+    ["editor with a SourceKind source", { kind: "editor", source: "claude-code" }],
+  ];
+  for (const [label, v] of accepts) assert(`accepts: ${label}`, isOrigin(v));
+
+  const rejects: ReadonlyArray<[string, unknown]> = [
+    ["null", null],
+    ["a bare string", "markdown"],
+    ["a number", 42],
+    ["an array", []],
+    ["empty object (no kind)", {}],
+    ["text arm missing content", { kind: "raw" }],
+    ["text arm with non-string content", { kind: "raw", content: 42 }],
+    ["unknown kind", { kind: "nonsense", content: "x" }],
+    ["claude-share kind is not a text arm", { kind: "claude-share", content: "x" }],
+    ["share missing fetched", { kind: "claude-share", url: "https://claude.ai/share/x" }],
+    ["share missing url", { kind: "claude-share", fetched: "body" }],
+    ["editor with a bogus source", { kind: "editor", source: "bogus" }],
+    ["editor missing source field", { kind: "editor" }],
+  ];
+  for (const [label, v] of rejects) assert(`rejects: ${label}`, !isOrigin(v));
+}
+
+console.log("\nOrigin → source derivation (sourceOf — shape table, provenance-kg4):");
+{
+  // [LAW:one-source-of-truth] sourceOf is the SINGLE derivation of styling
+  // provenance from the canonical origin. Every Origin shape (plus the legacy
+  // null) maps to exactly one SourceKind | null.
+  const cases: ReadonlyArray<[string, Origin | null, SourceKind | null]> = [
+    ["legacy null origin → null", null, null],
+    ["editor authored from scratch → null", { kind: "editor", source: null }, null],
+    ["editor carrying provenance → that kind", { kind: "editor", source: "chatgpt" }, "chatgpt"],
+    ["text arm → its own kind", { kind: "markdown", content: "x" }, "markdown"],
+    ["claude-share → claude-share", { kind: "claude-share", url: "u", fetched: "f" }, "claude-share"],
+  ];
+  for (const [label, origin, expected] of cases) assertEq(label, sourceOf(origin), expected);
+}
+
+console.log("\nReplay theorem (reprojectOrigin — purely re-derives turns, provenance-kg4):");
+{
+  // [LAW:one-source-of-truth] The proof that Turns are a derived cache: replaying
+  // a captured origin through the parser reproduces the projection. parseInput
+  // captures the origin; reprojectOrigin re-derives the turns from it; the two
+  // are identical (round-trip), with no network even for the share arm.
+  const captured = parseInput({ kind: "markdown", content: MARKDOWN_SAMPLE });
+  assert("text paste captures an origin", captured.ok);
+  if (captured.ok) {
+    const replayed = reprojectOrigin(captured.origin);
+    assertEq(
+      "text origin round-trips to identical turns",
+      JSON.stringify(replayed),
+      JSON.stringify(captured.turns),
+    );
+  }
+
+  // claude-share replay parses the STORED fetched bytes — never the network. A
+  // hand-built share origin (the only arm whose capture needs a live fetch) is
+  // re-projected from its bytes and matches a direct parse of those same bytes.
+  const fetched = readFileSync("test/fixtures/claude-share.md", "utf8");
+  const shareOrigin: Origin = {
+    kind: "claude-share",
+    url: "https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82",
+    fetched,
+  };
+  const shareTurns = reprojectOrigin(shareOrigin);
+  assertEq(
+    "share origin re-projects from stored bytes (no network)",
+    JSON.stringify(shareTurns),
+    JSON.stringify(parseClaudeShare(fetched)),
+  );
+
+  // The editor arm has no upstream input to replay — its turns ARE the source,
+  // so reprojectOrigin returns null (a signal "the stored turns are canonical",
+  // not a failure). The next child (re-project in place) keys on exactly this.
+  assert("editor origin re-projects to null (turns are the source)",
+    reprojectOrigin({ kind: "editor", source: "claude-code" }) === null);
 }
 
 {
