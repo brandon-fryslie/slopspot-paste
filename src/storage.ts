@@ -1,5 +1,5 @@
 import type { Conversation, Lifetime } from "./types";
-import { isSourceKind, TTL_SECONDS } from "./types";
+import { isOrigin, TTL_SECONDS } from "./types";
 
 // [LAW:single-enforcer] KV's expirationTtl is the ONLY mechanism that expires a
 // paste. No cron, no sweeper, no "isExpired" check anywhere else. The storage
@@ -63,18 +63,26 @@ export const getConversation = async (
   const raw = await kv.get(KEY_PREFIX + slug, "text");
   if (raw === null) return null;
   try {
-    const { expiresAt: _legacyExpiresAt, ...parsed } = JSON.parse(raw) as Conversation & {
+    // [LAW:one-source-of-truth] Legacy `expiresAt` and `source` are lifted out of
+    // the spread and re-derived below (into `lifetime` / `origin`), so a dropped
+    // field never lingers on the returned record alongside its replacement.
+    const { expiresAt: _legacyExpiresAt, source: _legacySource, ...parsed } = JSON.parse(raw) as Conversation & {
       turns: ReadonlyArray<unknown>;
       expiresAt?: unknown;
+      source?: unknown;
     };
     return {
       ...parsed,
       lifetime: normalizeLifetime({ lifetime: parsed.lifetime, expiresAt: _legacyExpiresAt }),
       turns: parsed.turns.map(normalizeTurn),
-      // [LAW:types-are-the-program] Records written before `source` landed (or
-      // hand-edited to junk) read as null — the same honest absence an
-      // editor-authored paste carries. isSourceKind closes the enumeration gap.
-      source: isSourceKind(parsed.source) ? parsed.source : null,
+      // [LAW:types-are-the-program] Records written before origin capture landed
+      // (or hand-edited to junk) read as null — honest absence of a captured
+      // source of truth, normalized here so the type above this boundary always
+      // sees Origin | null. isOrigin closes the enumeration gap; the backfill
+      // child reconstructs plausible origins for the legacy null records. The
+      // legacy `source` field, if present, is simply dropped: styling is derived
+      // from origin now, never from a second stored field.
+      origin: isOrigin(parsed.origin) ? parsed.origin : null,
     } as Conversation;
   } catch {
     return null;

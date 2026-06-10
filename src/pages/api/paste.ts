@@ -4,7 +4,7 @@ import { parseAuto, ingestPaste, deriveTitle } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
-import type { Conversation, ParseResult, PasteInput, SourceKind, Turn } from "../../types";
+import type { Conversation, Origin, ParseResult, PasteInput, Turn } from "../../types";
 import { inputText, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
 
 export const prerender = false;
@@ -38,7 +38,7 @@ const isPasteInput = (v: unknown): v is PasteInput => {
 // field?" scattered across the file.
 type DecodedRequest =
   | { ok: true; input: PasteInput }
-  | { ok: true; turns: ReadonlyArray<Turn>; source: SourceKind | null }
+  | { ok: true; turns: ReadonlyArray<Turn>; origin: Origin }
   | { ok: true; legacy: string }
   | { ok: false; reason: string };
 
@@ -51,13 +51,16 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
     // [LAW:single-enforcer] The editor arm: a pre-parsed, user-edited Turn[]
     // validated here at the one boundary, then stored without re-parsing.
     // isTurns rejects every illegal shape so downstream trusts the typed value.
-    // `sourceKind` is the provenance the editor carried from its own parse; a
-    // missing or junk value reads as null (no provenance), never a guess.
+    // The captured origin is `editor` — its (possibly hand-edited) turns ARE the
+    // source, so there is no upstream input to replay. `sourceKind` is the
+    // provenance the editor carried from its own parse; it rides on the editor
+    // origin as the styling authority. A missing or junk value reads as null (no
+    // provenance), never a guess.
     if (body && isTurns(body.turns)) {
       return {
         ok: true,
         turns: body.turns,
-        source: isSourceKind(body.sourceKind) ? body.sourceKind : null,
+        origin: { kind: "editor", source: isSourceKind(body.sourceKind) ? body.sourceKind : null },
       };
     }
     if (body && isPasteInput(body.source)) return { ok: true, input: body.source };
@@ -130,7 +133,7 @@ export const POST: APIRoute = async ({ request }) => {
     "input" in decoded
       ? await ingestPaste(decoded.input, env)
       : "turns" in decoded
-        ? { ok: true, turns: decoded.turns, source: decoded.source }
+        ? { ok: true, turns: decoded.turns, origin: decoded.origin }
         : parseAuto(decoded.legacy);
   if (!parsed.ok) return json(400, { error: parsed.reason });
   // [LAW:dataflow-not-control-flow] Every arm flows through the same turn-count
@@ -149,9 +152,10 @@ export const POST: APIRoute = async ({ request }) => {
     lifetime: lifetimeFromChoice("expires", now),
     turns: parsed.turns,
     title: deriveTitle(parsed.turns),
-    // [LAW:one-source-of-truth] Provenance is stamped here, once, from the
-    // parse result — render never re-guesses the platform from content.
-    source: parsed.source,
+    // [LAW:one-source-of-truth] The captured source of truth is stamped here,
+    // once, from the parse result. Styling provenance (`source`) is derived from
+    // it on read via sourceOf — never stored as a second field that could drift.
+    origin: parsed.origin,
   };
 
   await putConversation(env.PASTES, conversation);

@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { ingestPaste, isClaudeShareUrl } from "../../parser";
 import { json } from "../../http";
 import type { ParseResult } from "../../types";
+import { sourceOf } from "../../types";
 
 export const prerender = false;
 
@@ -28,5 +29,7 @@ export const POST: APIRoute = async ({ request }) => {
 
   // [LAW:one-source-of-truth] The editor round-trips this provenance back to
   // /api/paste at submit time — it never re-derives "this came from a share URL".
-  return json(200, { turns: parsed.turns, source: parsed.source });
+  // `source` is derived from the captured origin; the share `fetched` bytes stay
+  // server-side (the editor submits its edited turns, not the origin).
+  return json(200, { turns: parsed.turns, source: sourceOf(parsed.origin) });
 };
