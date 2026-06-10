@@ -5,7 +5,7 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { canonicalize, detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
 import type { Origin, SourceKind } from "../src/types";
@@ -592,6 +592,50 @@ console.log("\nReplay theorem (reprojectOrigin — purely re-derives turns, prov
   // not a failure). The next child (re-project in place) keys on exactly this.
   assert("editor origin re-projects to null (turns are the source)",
     reprojectOrigin({ kind: "editor", source: "claude-code" }) === null);
+}
+
+console.log("\nCanonicalize (shared by create + re-project-in-place, provenance-jdf):");
+{
+  // [LAW:single-enforcer] canonicalize is the one primitive POST /api/paste and
+  // POST /api/reproject share, so the two cannot derive different turns from the
+  // same origin. These assertions pin its three-way contract.
+
+  // A replayable origin regenerates its turns from the captured source — the
+  // turns argument is IGNORED, so a stale/mismatched cache cannot survive.
+  const md = parseInput({ kind: "markdown", content: MARKDOWN_SAMPLE });
+  assert("markdown captures an origin", md.ok);
+  if (md.ok) {
+    const stale = [{ kind: "message", role: "user", content: "STALE — must be discarded" } as const];
+    const canon = canonicalize(stale, md.origin);
+    assert("replayable origin canonicalizes ok", canon.ok);
+    if (canon.ok) {
+      assertEq(
+        "replayable origin replaces given turns with replayed turns",
+        JSON.stringify(canon.turns),
+        JSON.stringify(md.turns),
+      );
+    }
+  }
+
+  // An editor origin keeps the given turns verbatim — there is no upstream input
+  // to replay, so the turns ARE the source. Re-projection of such a paste is a
+  // no-op by construction.
+  const editorTurns = [{ kind: "message", role: "user", content: "authored in editor" } as const];
+  const editorCanon = canonicalize(editorTurns, { kind: "editor", source: null });
+  assert("editor origin canonicalizes ok", editorCanon.ok);
+  if (editorCanon.ok) {
+    assertEq(
+      "editor origin keeps the given turns verbatim",
+      JSON.stringify(editorCanon.turns),
+      JSON.stringify(editorTurns),
+    );
+  }
+
+  // [LAW:no-silent-failure] A replayable origin whose captured source reproduces
+  // nothing is corruption, rejected loudly — never a silent fallback to the
+  // given turns under an origin label that would then lie about replay.
+  const corrupt = canonicalize(editorTurns, { kind: "markdown", content: "" });
+  assert("replayable origin that reproduces nothing is rejected", !corrupt.ok);
 }
 
 {

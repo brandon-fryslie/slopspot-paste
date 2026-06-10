@@ -961,8 +961,10 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   gap: 12px;
   white-space: nowrap;
 }
+.admin-table .reproject-form,
 .admin-table .refresh-form,
 .admin-table .pin-form { margin: 0; }
+.admin-table .reproject-btn,
 .admin-table .refresh-btn {
   font: inherit;
   font-size: 12.5px;
@@ -973,6 +975,7 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   color: var(--fg);
   cursor: pointer;
 }
+.admin-table .reproject-btn:hover,
 .admin-table .refresh-btn:hover { border-color: var(--fg-muted); }
 .admin-table .pin-label {
   display: inline-flex;
