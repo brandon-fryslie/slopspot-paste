@@ -1,6 +1,6 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
-import { parseAuto, ingestPaste, deriveTitle, reprojectOrigin } from "../../parser";
+import { parseAuto, ingestPaste, deriveTitle, canonicalize } from "../../parser";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
@@ -95,24 +95,6 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
 };
 
 const sizeOf = (s: string): number => new Blob([s]).size;
-
-// [LAW:one-source-of-truth] Turns are a derived cache of the origin. A replayable
-// origin (claude-share / text) regenerates its canonical turns via reprojectOrigin
-// HERE — so the stored cache cannot drift from the captured source, even if a
-// crafted request sent mismatched turns under that origin. The `editor` origin is
-// the one with no upstream input to replay (reprojectOrigin returns null for it
-// by construction): its submitted turns ARE the source, stored verbatim.
-// [LAW:no-silent-failure] A replayable origin that fails to reproduce a
-// conversation is real corruption, surfaced loudly — never a silent fallback to
-// the client turns under a claude-share label that would then lie about replay.
-const canonicalize = (turns: ReadonlyArray<Turn>, origin: Origin): ParseResult => {
-  if (origin.kind === "editor") return { ok: true, turns, origin };
-  const replayed = reprojectOrigin(origin);
-  if (replayed === null || replayed.length === 0) {
-    return { ok: false, reason: "Captured origin does not reproduce a conversation." };
-  }
-  return { ok: true, turns: replayed, origin };
-};
 
 export const POST: APIRoute = async ({ request }) => {
   // [LAW:dataflow-not-control-flow] The success response modality is data

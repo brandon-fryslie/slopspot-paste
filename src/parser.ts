@@ -289,6 +289,34 @@ export const reprojectOrigin = (origin: Origin): ReadonlyArray<Turn> | null => {
   }
 };
 
+// [LAW:single-enforcer] The one canonicalization of "turns are the derived cache
+// of origin", shared by the create path (POST /api/paste) and in-place
+// re-projection (POST /api/reproject) so the two cannot derive different turns
+// from the same origin. A replayable origin (text/share) regenerates its turns
+// from the captured source via reprojectOrigin — submitted/stored turns are
+// ignored, so the cache cannot disagree with the origin it claims to come from.
+//
+// The editor arm is discriminated by KIND, not by a null reproject result,
+// because reprojectOrigin's null is overloaded: it means "no upstream input to
+// replay" for editor, but a replayable origin whose stored content reproduces
+// nothing (corruption / a hand-edited record) ALSO yields null. Only the editor
+// case is "keep the given turns"; the other is failure.
+//
+// [LAW:no-silent-failure] A replayable origin that reproduces nothing is real
+// corruption, surfaced loudly — never a silent fallback to the given turns under
+// an origin label that would then lie about replay.
+export const canonicalize = (
+  turns: ReadonlyArray<Turn>,
+  origin: Origin,
+): ParseResult => {
+  if (origin.kind === "editor") return { ok: true, turns, origin };
+  const replayed = reprojectOrigin(origin);
+  if (replayed === null || replayed.length === 0) {
+    return { ok: false, reason: "Captured origin does not reproduce a conversation." };
+  }
+  return { ok: true, turns: replayed, origin };
+};
+
 // Aliased so imports that pre-date the per-kind API (parser-check tests, any
 // in-flight branches) keep compiling. New callers use parseInput / parseAuto.
 export const parsePaste = parseAuto;
