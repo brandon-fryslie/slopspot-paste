@@ -7,7 +7,7 @@
 
 import { detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { isOrigin, isSourceKind, isTurns, SOURCE_KINDS, sourceOf, textArmInput } from "../src/types";
+import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
 import type { Origin, SourceKind } from "../src/types";
 import {
   parseDiff,
@@ -535,6 +535,23 @@ console.log("\nOrigin → source derivation (sourceOf — shape table, provenanc
     ["claude-share → claude-share", { kind: "claude-share", url: "u", fetched: "f" }, "claude-share"],
   ];
   for (const [label, origin, expected] of cases) assertEq(label, sourceOf(origin), expected);
+}
+
+console.log("\nOrigin → source URL derivation (sourceUrlOf — shape table, provenance-2my):");
+{
+  // [LAW:one-source-of-truth] sourceUrlOf is the SINGLE derivation of the
+  // original-source link from the canonical origin. ONLY a claude-share origin
+  // carries an upstream URL; every other shape (text arms carry content, editor
+  // authoring + legacy carry no link) maps to null — honest absence the paste
+  // page renders as nothing, never a placeholder.
+  const cases: ReadonlyArray<[string, Origin | null, string | null]> = [
+    ["legacy null origin → null", null, null],
+    ["editor authored from scratch → null", { kind: "editor", source: null }, null],
+    ["editor carrying share provenance → still null (no url retained)", { kind: "editor", source: "claude-share" }, null],
+    ["text arm → null", { kind: "markdown", content: "x" }, null],
+    ["claude-share → its url", { kind: "claude-share", url: "https://claude.ai/share/abc", fetched: "f" }, "https://claude.ai/share/abc"],
+  ];
+  for (const [label, origin, expected] of cases) assertEq(label, sourceUrlOf(origin), expected);
 }
 
 console.log("\nReplay theorem (reprojectOrigin — purely re-derives turns, provenance-kg4):");
@@ -1470,11 +1487,11 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
         cell = JSON.stringify(draft);
       },
       loadDraft: (): Draft => {
-        if (cell === null) return { turns: [], source: null };
-        const o = JSON.parse(cell) as { turns?: unknown; source?: unknown } | null;
+        if (cell === null) return { turns: [], origin: null };
+        const o = JSON.parse(cell) as { turns?: unknown; origin?: unknown } | null;
         return o && isTurns(o.turns)
-          ? { turns: o.turns, source: isSourceKind(o.source) ? o.source : null }
-          : { turns: [], source: null };
+          ? { turns: o.turns, origin: isOrigin(o.origin) ? o.origin : null }
+          : { turns: [], origin: null };
       },
       clearDraft: () => {
         cell = null;
@@ -1532,9 +1549,15 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
     confirmedFirst.kind === "message" && confirmedFirst.content === "brand",
   );
 
-  // --- submit moves the Draft (turns + provenance) across the boundary ---
+  // --- submit moves the Draft (turns + stamped origin) across the boundary ---
+  // A markdown import is not a share, so submit stamps an `editor` origin that
+  // preserves the styling provenance (sourceOf → markdown).
   await s2.submit();
-  assertEq("submit carries the provenance with the turns", f2.submitted[0]?.source, "markdown");
+  const s2Origin = f2.submitted[0]?.origin;
+  assert(
+    "submit stamps an editor origin for a text import",
+    s2Origin?.kind === "editor" && sourceOf(s2Origin) === "markdown",
+  );
   assertEq("submit navigates on success", f2.navigated[0], "test-slug");
 
   // --- editing the import box invalidates a staged reparse ---
@@ -1556,7 +1579,7 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
     submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
     navigate: () => {},
     saveDraft: () => {},
-    loadDraft: (): Draft => ({ turns: [], source: null }),
+    loadDraft: (): Draft => ({ turns: [], origin: null }),
     clearDraft: () => {},
   };
 
@@ -1623,11 +1646,11 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
         cell = JSON.stringify(draft);
       },
       loadDraft: (): Draft => {
-        if (cell === null) return { turns: [], source: null };
-        const o = JSON.parse(cell) as { turns?: unknown; source?: unknown } | null;
+        if (cell === null) return { turns: [], origin: null };
+        const o = JSON.parse(cell) as { turns?: unknown; origin?: unknown } | null;
         return o && isTurns(o.turns)
-          ? { turns: o.turns, source: isSourceKind(o.source) ? o.source : null }
-          : { turns: [], source: null };
+          ? { turns: o.turns, origin: isOrigin(o.origin) ? o.origin : null }
+          : { turns: [], origin: null };
       },
       clearDraft: () => {
         cell = null;
@@ -1651,9 +1674,9 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
   const firstId = s.blocks[0]!.id;
   s.replaceTurn(firstId, { kind: "message", role: "user", content: "EDITED DRAFT" });
   assertEq(
-    "the reaction persisted the current draft (turns + source)",
+    "the reaction persisted the current draft (turns + import origin)",
     a.cell(),
-    JSON.stringify({ turns: s.turns, source: s.source }),
+    JSON.stringify({ turns: s.turns, origin: s.importOrigin }),
   );
 
   // --- a fresh editor restoring that draft reproduces the edits and is NOT
@@ -1670,6 +1693,61 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
   assert("loadDraft after submit yields no draft", a.io.loadDraft().turns.length === 0);
 
   dispose();
+}
+
+console.log("\nEditorStore submitOrigin (provenance-2my — share carries its origin, edits collapse to editor):");
+{
+  const shareUrl = "https://claude.ai/share/abc-def-123";
+  const shareFetched = "## You said:\nq\n\n## Claude said:\na";
+  const shareTurns: Turn[] = [
+    { kind: "message", role: "user", content: "q" },
+    { kind: "message", role: "assistant", content: "a" },
+  ];
+  const shareOrigin: Origin = { kind: "claude-share", url: shareUrl, fetched: shareFetched };
+  // fetchShare stands in for /api/fetch returning the FULL captured origin (url +
+  // fetched bytes), which the editor now carries through to submit.
+  const io: EditorIo = {
+    fetchShare: async (): Promise<ParseResult> => ({ ok: true, turns: shareTurns, origin: shareOrigin }),
+    submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
+    navigate: () => {},
+    saveDraft: () => {},
+    loadDraft: (): Draft => ({ turns: [], origin: null }),
+    clearDraft: () => {},
+  };
+
+  // --- a pristine share import stamps the replayable claude-share origin: its
+  //     url is displayed and its bytes re-projectable [the whole point of 2my] ---
+  const s = new EditorStore(io);
+  s.setImport(shareUrl);
+  await s.ingest();
+  assertEq("share import detects the URL arm", s.importKind, "claude-share");
+  assert("share import loads its turns and is not dirty", s.blocks.length === 2 && !s.isDirty);
+  const pristine = s.submitOrigin;
+  assert(
+    "a pristine share stamps a claude-share origin carrying url + fetched bytes",
+    pristine.kind === "claude-share" && pristine.url === shareUrl && pristine.fetched === shareFetched,
+  );
+  assertEq("styling derives from the share origin", s.source, "claude-share");
+
+  // --- editing the imported turns collapses to an editor origin: the turns are
+  //     now the source (claiming the share URL would lie about replay), but the
+  //     claude-share styling provenance is preserved ---
+  s.replaceTurn(s.blocks[0]!.id, { kind: "message", role: "user", content: "EDITED" });
+  assert("editing a share import marks it dirty", s.isDirty);
+  const edited = s.submitOrigin;
+  assert(
+    "an edited share collapses to editor while keeping claude-share styling",
+    edited.kind === "editor" && edited.source === "claude-share",
+  );
+
+  // --- authored from scratch (no import) stamps editor with no provenance ---
+  const blank = new EditorStore(io);
+  blank.addBlock("message");
+  const scratch = blank.submitOrigin;
+  assert(
+    "from-scratch authoring stamps an editor origin with null provenance",
+    scratch.kind === "editor" && scratch.source === null,
+  );
 }
 
 console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } arm):");
