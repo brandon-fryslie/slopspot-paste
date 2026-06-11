@@ -128,15 +128,18 @@ const main = async (): Promise<void> => {
   // --- build the reconstructed record (pure transform) ---
   const origin: Origin = { kind: "claude-share", url, fetched: fetched.markdown };
   const reprojected = canonicalize(existing.turns, origin);
-  if (!reprojected.ok) fail(1, `canonicalize failed: ${reprojected.reason}`);
+  // [LAW:no-silent-failure] Past this guard, `fail`'s `never` return narrows
+  // reprojected to the ok-variant — the turns below are the replayed ones, never a
+  // silent fallback to the stored cache under a reconstructed label.
+  if (!reprojected.ok) return fail(1, `canonicalize failed: ${reprojected.reason}`);
 
   // [LAW:one-source-of-truth] Replace only the derived values (turns + title) and
   // stamp the reconstructed origin. slug, createdAt, lifetime are preserved.
   const { expiresAt: _legacyExpiresAt, source: _legacySource, ...rest } = existing as Record<string, unknown>;
   const healed = {
     ...rest,
-    turns: reprojected.ok ? reprojected.turns : existing.turns,
-    title: deriveTitle(reprojected.ok ? reprojected.turns : existing.turns),
+    turns: reprojected.turns,
+    title: deriveTitle(reprojected.turns),
     origin: { status: "reconstructed" as const, origin },
   };
 
