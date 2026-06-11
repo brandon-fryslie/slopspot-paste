@@ -571,6 +571,8 @@ console.log("\nStoredOrigin wrapper (toStoredOrigin / originOf / isReconstructed
     ["reconstructed wrapper → reconstructed", { status: "reconstructed", origin: share }, { status: "reconstructed", origin: share }, share, true],
     ["absent wrapper → absent", { status: "absent" }, { status: "absent" }, null, false],
     ["malformed wrapper (bad inner origin) → absent", { status: "captured", origin: { kind: "nope" } }, { status: "absent" }, null, false],
+    ["captured wrapper missing origin → absent", { status: "captured" }, { status: "absent" }, null, false],
+    ["unknown status string → absent", { status: "pending", origin: share }, { status: "absent" }, null, false],
   ];
   for (const [label, raw, expectStored, expectOrigin, expectRecon] of cases) {
     const stored = toStoredOrigin(raw);
