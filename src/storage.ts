@@ -1,5 +1,5 @@
 import type { Conversation, Lifetime } from "./types";
-import { isOrigin, TTL_SECONDS } from "./types";
+import { toStoredOrigin, TTL_SECONDS } from "./types";
 
 // [LAW:single-enforcer] KV's expirationTtl is the ONLY mechanism that expires a
 // paste. No cron, no sweeper, no "isExpired" check anywhere else. The storage
@@ -76,13 +76,14 @@ export const getConversation = async (
       lifetime: normalizeLifetime({ lifetime: parsed.lifetime, expiresAt: _legacyExpiresAt }),
       turns: parsed.turns.map(normalizeTurn),
       // [LAW:types-are-the-program] Records written before origin capture landed
-      // (or hand-edited to junk) read as null — honest absence of a captured
+      // (or hand-edited to junk) read as `absent` — honest absence of a captured
       // source of truth, normalized here so the type above this boundary always
-      // sees Origin | null. isOrigin closes the enumeration gap; the backfill
-      // child reconstructs plausible origins for the legacy null records. The
-      // legacy `source` field, if present, is simply dropped: styling is derived
-      // from origin now, never from a second stored field.
-      origin: isOrigin(parsed.origin) ? parsed.origin : null,
+      // sees a StoredOrigin. toStoredOrigin closes the enumeration gap and folds
+      // the three historical shapes (wrapper / bare Origin / junk) into one; the
+      // backfill child writes `reconstructed` origins for the legacy absent
+      // records. The legacy `source` field, if present, is simply dropped:
+      // styling is derived from origin now, never from a second stored field.
+      origin: toStoredOrigin(parsed.origin),
     } as Conversation;
   } catch {
     return null;

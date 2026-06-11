@@ -7,8 +7,8 @@
 
 import { canonicalize, detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
-import type { Origin, SourceKind } from "../src/types";
+import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput, toStoredOrigin, originOf, isReconstructed } from "../src/types";
+import type { Origin, SourceKind, StoredOrigin } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -552,6 +552,38 @@ console.log("\nOrigin → source URL derivation (sourceUrlOf — shape table, pr
     ["claude-share → its url", { kind: "claude-share", url: "https://claude.ai/share/abc", fetched: "f" }, "https://claude.ai/share/abc"],
   ];
   for (const [label, origin, expected] of cases) assertEq(label, sourceUrlOf(origin), expected);
+}
+
+console.log("\nStoredOrigin wrapper (toStoredOrigin / originOf / isReconstructed — shape table, provenance-o2q.1):");
+{
+  // [LAW:types-are-the-program] toStoredOrigin classifies the KV trust boundary's
+  // three historical shapes into one StoredOrigin. originOf projects back to the
+  // replayable origin (or null); isReconstructed reports authenticity. The pair
+  // round-trips a captured origin and folds every malformed shape to honest absence.
+  const share: Origin = { kind: "claude-share", url: "https://claude.ai/share/abc", fetched: "f" };
+  const text: Origin = { kind: "markdown", content: "x" };
+  const cases: ReadonlyArray<[string, unknown, StoredOrigin, Origin | null, boolean]> = [
+    ["null → absent", null, { status: "absent" }, null, false],
+    ["missing/undefined → absent", undefined, { status: "absent" }, null, false],
+    ["junk object → absent", { kind: "nope" }, { status: "absent" }, null, false],
+    ["bare Origin (pre-wrapper) → captured", text, { status: "captured", origin: text }, text, false],
+    ["captured wrapper → captured", { status: "captured", origin: share }, { status: "captured", origin: share }, share, false],
+    ["reconstructed wrapper → reconstructed", { status: "reconstructed", origin: share }, { status: "reconstructed", origin: share }, share, true],
+    ["absent wrapper → absent", { status: "absent" }, { status: "absent" }, null, false],
+    ["malformed wrapper (bad inner origin) → absent", { status: "captured", origin: { kind: "nope" } }, { status: "absent" }, null, false],
+  ];
+  for (const [label, raw, expectStored, expectOrigin, expectRecon] of cases) {
+    const stored = toStoredOrigin(raw);
+    assertEq(`${label} (toStoredOrigin)`, JSON.stringify(stored), JSON.stringify(expectStored));
+    assertEq(`${label} (originOf)`, JSON.stringify(originOf(stored)), JSON.stringify(expectOrigin));
+    assertEq(`${label} (isReconstructed)`, isReconstructed(stored), expectRecon);
+  }
+  // [LAW:types-are-the-program] toStoredOrigin is idempotent: re-classifying its own
+  // output yields the same wrapper, so a record read-then-written-then-read is stable.
+  for (const seed of [share, text]) {
+    const once = toStoredOrigin(seed);
+    assertEq(`idempotent re-classification (${seed.kind})`, JSON.stringify(toStoredOrigin(once)), JSON.stringify(once));
+  }
 }
 
 console.log("\nReplay theorem (reprojectOrigin — purely re-derives turns, provenance-kg4):");

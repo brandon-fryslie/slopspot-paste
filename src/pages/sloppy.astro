@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
 import { listConversations } from "../storage";
-import { viewLifetime } from "../types";
+import { originOf, viewLifetime } from "../types";
 
 export const prerender = false;
 
@@ -47,11 +47,15 @@ const isPinned = (c: (typeof rows)[number]): boolean => c.lifetime.kind === "pin
 
 // [LAW:one-source-of-truth] Re-projection only makes sense where the origin can
 // replay into turns: a text or share arm. An `editor` origin's turns ARE the
-// source (reprojectOrigin returns null for it — re-projecting is a no-op), and a
-// legacy null origin has nothing to replay. So the affordance's presence is a
-// projection of the origin, not a separate flag — null/editor rows show none.
-const canReproject = (c: (typeof rows)[number]): boolean =>
-  c.origin !== null && c.origin.kind !== "editor";
+// source (reprojectOrigin returns null for it — re-projecting is a no-op), and an
+// absent origin has nothing to replay. So the affordance's presence is a
+// projection of the origin, not a separate flag — absent/editor rows show none.
+// A reconstructed origin replays like any captured one, so it gains the affordance
+// the moment the backfill child gives it a non-absent origin.
+const canReproject = (c: (typeof rows)[number]): boolean => {
+  const o = originOf(c.origin);
+  return o !== null && o.kind !== "editor";
+};
 
 const previewOf = (c: (typeof rows)[number]): string => {
   const first = c.turns.find((t) => t.kind === "message");
