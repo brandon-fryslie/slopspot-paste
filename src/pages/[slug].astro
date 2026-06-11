@@ -4,7 +4,7 @@ import Base from "../layouts/Base.astro";
 import { renderTurnsHtml } from "../renderTurns";
 import { getConversation } from "../storage";
 import { isValidSlug } from "../slug";
-import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime } from "../types";
+import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, originOf, isReconstructed, viewLifetime } from "../types";
 
 export const prerender = false;
 
@@ -38,7 +38,11 @@ const lifetimeLabel =
 // as data: the body attribute themes the page via CSS variables; the label names
 // the platform in the meta line. A generic platform has a null label, so absence
 // of provenance renders as absence.
-const platform = platformOf(sourceOf(conversation.origin));
+// [LAW:one-source-of-truth] The replayable origin is read once via originOf;
+// everything below (styling, source link) projects from it, never from the
+// wrapper directly.
+const origin = originOf(conversation.origin);
+const platform = platformOf(sourceOf(origin));
 const platformLabel = PLATFORM_LABEL[platform];
 // [LAW:one-source-of-truth] The original-source link is a projection of the
 // captured origin (sourceUrlOf), never a second stored field. null for every
@@ -46,7 +50,13 @@ const platformLabel = PLATFORM_LABEL[platform];
 // renders as nothing below, not a placeholder ([LAW:dataflow-not-control-flow]:
 // the absence is a value the template skips, not a branch that conditionally
 // builds a header). The URL was validated as a claude.ai/share link at ingest.
-const sourceUrl = sourceUrlOf(conversation.origin);
+const sourceUrl = sourceUrlOf(origin);
+// [LAW:no-silent-failure] A reconstructed origin's URL was paired AFTER the fact
+// (recovered from transcripts, re-fetched), not captured at ingest. The link is
+// our best guess at the source, so it must be qualified as such — never presented
+// as the authentic original. The flag is read from the canonical wrapper status,
+// not re-derived, so the page cannot claim authenticity the record doesn't hold.
+const sourceReconstructed = isReconstructed(conversation.origin);
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -62,8 +72,13 @@ const sourceUrl = sourceUrlOf(conversation.origin);
     {sourceUrl && (
       <p class="source-origin">
         <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
-          View original on claude.ai ↗
+          {sourceReconstructed ? "View likely original on claude.ai ↗" : "View original on claude.ai ↗"}
         </a>
+        {sourceReconstructed && (
+          <span class="source-reconstructed" title="This paste predates source capture. The link was recovered after the fact and re-fetched — it is our best guess at the original, not the captured source of truth.">
+            reconstructed
+          </span>
+        )}
       </p>
     )}
   </section>

@@ -145,13 +145,14 @@ export interface Conversation {
   // that, replayed through the parser, yields this projection.
   readonly turns: ReadonlyArray<Turn>;
   readonly title: string | null;
-  // [LAW:one-source-of-truth] The captured source of truth: the verbatim input
-  // this paste was created from. `source` (which SourceKind ingested it, for
-  // styling) is DERIVED from origin via sourceOf — never stored independently,
-  // so the two cannot drift. null is genuine absence: records stored before
-  // origin capture landed (legacy), normalized on read. The backfill child
-  // reconstructs plausible origins for those.
-  readonly origin: Origin | null;
+  // [LAW:one-source-of-truth] The captured source of truth, wrapped with its
+  // provenance: the verbatim input this paste was created from (`captured`), a
+  // best-effort reconstruction of it (`reconstructed`), or honest absence
+  // (`absent`, for legacy pre-capture records). `source` (which SourceKind
+  // ingested it, for styling) is DERIVED via sourceOf(originOf(...)) — never
+  // stored independently, so the two cannot drift. The backfill child writes
+  // `reconstructed` origins so they are never presented as authentic captures.
+  readonly origin: StoredOrigin;
 }
 
 // [LAW:single-enforcer] The single enforcer of expiry is KV's expirationTtl.
@@ -315,6 +316,59 @@ export const sourceOf = (origin: Origin | null): SourceKind | null =>
 // nothing re-guesses a URL from content or stores it as a second field.
 export const sourceUrlOf = (origin: Origin | null): string | null =>
   origin?.kind === "claude-share" ? origin.url : null;
+
+// [LAW:types-are-the-program] How a paste came to hold its origin is a fact
+// ORTHOGONAL to which KIND of origin it is: an authentic share captured at ingest
+// and a share reconstructed long after (URL guessed from transcripts, bytes
+// re-fetched today) have the IDENTICAL `claude-share` shape but are not the same
+// trust. StoredOrigin makes that the discriminator. Three honest states:
+//   absent        — never captured (legacy / pre-capture). Replaces the old
+//                   `origin: Origin | null` null: absence is a CASE, not a
+//                   sentinel ([LAW:one-source-of-truth] — no null to special-case).
+//   captured      — the verbatim input seen AT INGEST. The source of truth.
+//   reconstructed — best-effort, paired after the fact. Replays like a captured
+//                   origin, but must never be PRESENTED as authentic
+//                   ([LAW:no-silent-failure] — the backfill child writes this so a
+//                   re-projection from it is not mistaken for the real source).
+// A `reconstructed` with no `origin` is unrepresentable: authenticity rides WITH
+// the origin it qualifies, so "reconstructed nothing" cannot be written.
+export type StoredOrigin =
+  | { readonly status: "absent" }
+  | { readonly status: "captured"; readonly origin: Origin }
+  | { readonly status: "reconstructed"; readonly origin: Origin };
+
+// [LAW:one-source-of-truth] The single projection from the stored wrapper to the
+// replayable origin (or its honest absence). sourceOf / sourceUrlOf / reproject
+// all read THIS, never the wrapper directly, so the absent↔present distinction
+// lives in one place.
+export const originOf = (stored: StoredOrigin): Origin | null =>
+  stored.status === "absent" ? null : stored.origin;
+
+// [LAW:one-source-of-truth] The single test for "this origin was reconstructed,
+// not captured" — the display reads it to qualify the source link, never a second
+// stored flag that could disagree with the wrapper's status.
+export const isReconstructed = (stored: StoredOrigin): boolean =>
+  stored.status === "reconstructed";
+
+// [LAW:types-are-the-program] KV is a trust boundary; a stored origin field is
+// unknown JSON until classified. THREE historical shapes converge here:
+//   - a StoredOrigin wrapper (has `status`)        → validated as-is
+//   - a bare Origin written before this wrapper     → it was a real ingest capture,
+//     existed (isOrigin passes, no `status`)          so it reads as `captured`
+//   - null / missing / junk                         → `absent` (honest)
+// [LAW:dataflow-not-control-flow] One classification, no fallback that changes
+// meaning: a malformed wrapper degrades to `absent`, never to a fabricated origin.
+export const toStoredOrigin = (raw: unknown): StoredOrigin => {
+  if (raw && typeof raw === "object" && "status" in raw) {
+    const o = raw as { status?: unknown; origin?: unknown };
+    if (o.status === "absent") return { status: "absent" };
+    if ((o.status === "captured" || o.status === "reconstructed") && isOrigin(o.origin)) {
+      return { status: o.status, origin: o.origin };
+    }
+    return { status: "absent" };
+  }
+  return isOrigin(raw) ? { status: "captured", origin: raw } : { status: "absent" };
+};
 
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
 // table, AND the T2 detector's iteration order are derived from this one
