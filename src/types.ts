@@ -313,10 +313,16 @@ export const textArmInput = (kind: TextArmKind, content: string): PasteInput => 
 // it on the variant is what lets `source` stay 100% derived from origin
 // ([LAW:one-source-of-truth]) without stripping platform styling from every
 // editor-submitted paste.
+//
+// The optional `input` field captures the original submitted input when the user
+// EDITS an imported paste before submitting. In that case the stored turns diverge
+// from parse(input) — turns are the authority — but input preserves the provenance
+// so it is never silently discarded ([LAW:no-silent-failure]). Absent = authored
+// from scratch or edited from an editor-origin draft (no upstream text to replay).
 export type Origin =
   | { readonly kind: TextArmKind; readonly content: string }
   | { readonly kind: "claude-share"; readonly url: string; readonly fetched: string }
-  | { readonly kind: "editor"; readonly source: SourceKind | null };
+  | { readonly kind: "editor"; readonly source: SourceKind | null; readonly input?: Origin };
 
 const isTextArmKind = (v: unknown): v is TextArmKind =>
   typeof v === "string" && (TEXT_ARM_KINDS as ReadonlyArray<string>).includes(v);
@@ -328,10 +334,11 @@ const isTextArmKind = (v: unknown): v is TextArmKind =>
 // silently accepted.
 export const isOrigin = (v: unknown): v is Origin => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; source?: unknown };
+  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; source?: unknown; input?: unknown };
   switch (o.kind) {
     case "editor":
-      return o.source === null || isSourceKind(o.source);
+      if (o.source !== null && !isSourceKind(o.source)) return false;
+      return o.input === undefined || isOrigin(o.input);
     case "claude-share":
       return typeof o.url === "string" && typeof o.fetched === "string";
     default:
