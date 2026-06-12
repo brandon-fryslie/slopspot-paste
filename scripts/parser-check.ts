@@ -521,7 +521,7 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["editor with a bogus source", { kind: "editor", source: "bogus" }],
     ["editor missing source field", { kind: "editor" }],
     ["editor with invalid input (bogus kind)", { kind: "editor", source: null, input: { kind: "bogus" } }],
-    ["editor with invalid input (missing source)", { kind: "editor", source: null, input: { kind: "editor" } }],
+    ["editor with invalid input (editor arm — not replayable)", { kind: "editor", source: null, input: { kind: "editor", source: null } }],
   ];
   for (const [label, v] of rejects) assert(`rejects: ${label}`, !isOrigin(v));
 }

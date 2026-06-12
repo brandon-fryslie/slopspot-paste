@@ -319,34 +319,40 @@ export const textArmInput = (kind: TextArmKind, content: string): PasteInput => 
 // from parse(input) — turns are the authority — but input preserves the provenance
 // so it is never silently discarded ([LAW:no-silent-failure]). Absent = authored
 // from scratch or edited from an editor-origin draft (no upstream text to replay).
-export type Origin =
+// [LAW:types-are-the-program] `input` is scoped to the replayable arms (text/share)
+// — an editor arm has no upstream text and can never be a valid provenance source,
+// so that state is unrepresentable. This also keeps isOrigin non-recursive.
+export type ReplayableOrigin =
   | { readonly kind: TextArmKind; readonly content: string }
-  | { readonly kind: "claude-share"; readonly url: string; readonly fetched: string }
-  | { readonly kind: "editor"; readonly source: SourceKind | null; readonly input?: Origin };
+  | { readonly kind: "claude-share"; readonly url: string; readonly fetched: string };
+
+export type Origin =
+  | ReplayableOrigin
+  | { readonly kind: "editor"; readonly source: SourceKind | null; readonly input?: ReplayableOrigin };
 
 const isTextArmKind = (v: unknown): v is TextArmKind =>
   typeof v === "string" && (TEXT_ARM_KINDS as ReadonlyArray<string>).includes(v);
+
+const isReplayableOrigin = (v: unknown): v is ReplayableOrigin => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown };
+  if (o.kind === "claude-share") return typeof o.url === "string" && typeof o.fetched === "string";
+  return isTextArmKind(o.kind) && typeof o.content === "string";
+};
 
 // [LAW:types-are-the-program] KV is a trust boundary; a stored origin is unknown
 // JSON until classified. [LAW:dataflow-not-control-flow] One switch on the
 // discriminator, each arm checking exactly the fields its kind carries; the
 // default closes the enumeration gap — an unknown kind is rejected, never
-// silently accepted. [LAW:no-silent-failure] The depth cap on the recursive
-// input check ensures a malformed deeply-nested payload returns false rather
-// than exhausting the call stack — max legitimate nesting depth is 1.
-export const isOrigin = (v: unknown, _depth = 0): v is Origin => {
-  if (_depth > 3) return false;
+// silently accepted.
+export const isOrigin = (v: unknown): v is Origin => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; source?: unknown; input?: unknown };
-  switch (o.kind) {
-    case "editor":
-      if (o.source !== null && !isSourceKind(o.source)) return false;
-      return o.input === undefined || isOrigin(o.input, _depth + 1);
-    case "claude-share":
-      return typeof o.url === "string" && typeof o.fetched === "string";
-    default:
-      return isTextArmKind(o.kind) && typeof o.content === "string";
+  const o = v as { kind?: unknown; source?: unknown; input?: unknown };
+  if (o.kind === "editor") {
+    if (o.source !== null && !isSourceKind(o.source)) return false;
+    return o.input === undefined || isReplayableOrigin(o.input);
   }
+  return isReplayableOrigin(v);
 };
 
 // [LAW:one-source-of-truth] The single derivation of styling provenance from the
