@@ -355,6 +355,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
     right: 24px;
     transform: translateY(-50%);
     flex-direction: column;
+    align-items: flex-end;
     gap: 5px;
     max-height: 80vh;
     overflow-y: auto;
@@ -365,28 +366,47 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 }
 .minimap::-webkit-scrollbar { display: none; }
 .minimap-marker {
-  /* The bar IS the marker; its colour is the turn's kind. Idle bars are
-     understated so the rail reads as a faint spine until hovered/active. */
+  /* A marker is a turn rendered as wrapped text: a column of full-width line
+     slots plus a partial final line, so the turn's length reads the way text
+     length reads — by how many lines it fills. The line WIDTH is constant for
+     every turn (--minimap-line-w); only the count and the final partial vary.
+     Idle markers are understated so the rail reads as a faint spine. */
   appearance: none;
   border: none;
   padding: 0;
-  width: 20px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--minimap-color, var(--fg-muted));
+  margin: 0;
+  background: none;
+  width: var(--minimap-line-w, 34px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
   opacity: 0.32;
   cursor: pointer;
-  transition: opacity 0.12s ease, width 0.12s ease;
+  /* The "genie" emphasis is a scaleX *multiplier* on the whole stack, anchored
+     at the rail's right edge so the lines lengthen toward the content. transform
+     doesn't reflow. */
+  transform-origin: right center;
+  transition: opacity 0.12s ease, transform 0.12s ease;
 }
 .minimap-marker:hover,
 .minimap-marker:focus-visible {
   opacity: 0.85;
-  width: 28px;
+  transform: scaleX(1.16);
   outline: none;
 }
 .minimap-marker.is-active {
   opacity: 1;
-  width: 32px;
+  transform: scaleX(1.24);
+}
+.minimap-line {
+  /* One line of the wrapped-text representation. Its colour is the turn's kind
+     (inherited from the marker's --minimap-color). Width is set inline by the
+     page script as a percentage of the full line; an unused slot is set to
+     display:none so it adds neither height nor gap. */
+  height: 3.5px;
+  border-radius: 999px;
+  background: var(--minimap-color, var(--fg-muted));
 }
 /* [LAW:dataflow-not-control-flow] The marker carries its kind/role as data-*;
    CSS maps the value to a hue. Same colour vocabulary as the role dots, so the
@@ -399,7 +419,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .minimap-marker[data-kind="thinking"] { --minimap-color: var(--fg-muted); }
 .minimap-marker[data-kind="turn-summary"] {
   --minimap-color: var(--fg-muted);
-  width: 12px;
 }
 
 /* [LAW:one-source-of-truth] The conversation-list layout (column + gap) is one
