@@ -501,6 +501,8 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["claude-share with url + fetched", { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "## You said: q" }],
     ["editor with null source", { kind: "editor", source: null }],
     ["editor with a SourceKind source", { kind: "editor", source: "claude-code" }],
+    ["editor with input (edited text import)", { kind: "editor", source: "claude-code", input: { kind: "claude-code", content: "original content" } }],
+    ["editor with share input (edited share import)", { kind: "editor", source: "claude-share", input: { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "original" } }],
   ];
   for (const [label, v] of accepts) assert(`accepts: ${label}`, isOrigin(v));
 
@@ -518,6 +520,8 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["share missing url", { kind: "claude-share", fetched: "body" }],
     ["editor with a bogus source", { kind: "editor", source: "bogus" }],
     ["editor missing source field", { kind: "editor" }],
+    ["editor with invalid input (bogus kind)", { kind: "editor", source: null, input: { kind: "bogus" } }],
+    ["editor with invalid input (editor arm — not replayable)", { kind: "editor", source: null, input: { kind: "editor", source: null } }],
   ];
   for (const [label, v] of rejects) assert(`rejects: ${label}`, !isOrigin(v));
 }
