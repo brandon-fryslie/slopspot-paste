@@ -153,12 +153,10 @@ export const POST: APIRoute = async ({ request }) => {
     deletedAt: null,
     turns: parsed.turns,
     title: deriveTitle(parsed.turns),
-    // [LAW:one-source-of-truth] The captured source of truth is stamped here,
-    // once, from the parse result, wrapped as `captured`: a paste created through
-    // this path saw its origin AT INGEST, so it is authentic by construction (only
-    // the backfill child writes `reconstructed`). Styling provenance (`source`) is
-    // derived on read via sourceOf — never stored as a second field that could drift.
-    origin: { status: "captured", origin: parsed.origin },
+    // [LAW:one-source-of-truth] The captured source of truth is stamped here once,
+    // directly from the parse result. Styling provenance (`source`) is derived on
+    // read via sourceOf — never stored as a second field that could drift.
+    origin: parsed.origin,
   };
 
   await putConversation(env.PASTES, conversation);
