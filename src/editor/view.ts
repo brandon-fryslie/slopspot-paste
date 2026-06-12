@@ -13,7 +13,7 @@ import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
 import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
 import type { Role, SourceKind, ToolOutputKind, Turn } from "../types";
-import { ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
+import { platformOf, ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { convertKind, KINDS } from "./blocks";
 import type { EditorStore } from "./store";
@@ -371,10 +371,13 @@ const toolbar = (store: EditorStore): TemplateResult => html`
 `;
 
 // [LAW:one-source-of-truth] previewHtml comes from renderTurnsHtml — the SAME
-// renderer the permalink uses. unsafeHTML is correct here because that string is
-// the renderer's own escaped output, not raw user input.
+// renderer the permalink uses. data-platform mirrors the same derivation
+// ([slug].astro:46-47) so the palette matches the permalink exactly.
+// unsafeHTML is correct: that string is the renderer's own escaped output.
 const previewPane = (store: EditorStore): TemplateResult => html`
-  <section class="preview-pane bubbles">${unsafeHTML(store.previewHtml)}</section>
+  <section class="preview-pane bubbles" data-platform=${platformOf(store.source)}>
+    ${unsafeHTML(store.previewHtml)}
+  </section>
 `;
 
 export const appTemplate = (store: EditorStore): TemplateResult => html`

@@ -67,13 +67,13 @@
 }
 
 /* ─── Platform themes ───────────────────────────────────────────────────
-   [LAW:dataflow-not-control-flow] The body carries data-platform (derived from
-   the stored ingest source via platformOf); each theme is a variable override
-   block, nothing more. Bubbles, dots, links, and the minimap read the same
-   variables they always read — no platform-specific selectors on components.
+   [LAW:dataflow-not-control-flow] Any element bearing data-platform becomes a
+   theme root; CSS variable overrides cascade into its subtree. The permalink
+   sets it on <body> (themes the whole page); the editor sets it on the preview
+   pane (scopes only that surface). No platform-specific selectors on components.
    The "generic" platform is the absence of an override: default vars apply. */
 
-body[data-platform="claude-web"] {
+[data-platform="claude-web"] {
   --bg: #faf9f5;
   --bg-elev: #ffffff;
   --bg-code: #f0eee6;
@@ -88,7 +88,7 @@ body[data-platform="claude-web"] {
   --role-assistant: #d97757;
 }
 
-body[data-platform="claude-code"] {
+[data-platform="claude-code"] {
   --accent: #c15f3c;
   --accent-fg: #ffffff;
   --user-bg: #fbf1e8;
@@ -98,9 +98,9 @@ body[data-platform="claude-code"] {
   --role-assistant: #d97757;
 }
 /* Claude Code is a terminal: its role labels speak monospace. */
-body[data-platform="claude-code"] .role-name { font-family: var(--font-mono); }
+[data-platform="claude-code"] .role-name { font-family: var(--font-mono); }
 
-body[data-platform="chatgpt"] {
+[data-platform="chatgpt"] {
   --accent: #10a37f;
   --accent-fg: #ffffff;
   --user-bg: #f4f4f4;
@@ -111,7 +111,7 @@ body[data-platform="chatgpt"] {
 }
 
 @media (prefers-color-scheme: dark) {
-  body[data-platform="claude-web"] {
+  [data-platform="claude-web"] {
     --bg: #262624;
     --bg-elev: #30302e;
     --bg-code: #1f1e1b;
@@ -126,7 +126,7 @@ body[data-platform="chatgpt"] {
     --role-assistant: #d97757;
   }
 
-  body[data-platform="claude-code"] {
+  [data-platform="claude-code"] {
     --bg: #141210;
     --bg-elev: #1e1a16;
     --bg-code: #26201a;
@@ -141,7 +141,7 @@ body[data-platform="chatgpt"] {
     --role-assistant: #d97757;
   }
 
-  body[data-platform="chatgpt"] {
+  [data-platform="chatgpt"] {
     --bg: #212121;
     --bg-elev: #2a2a2a;
     --bg-code: #181818;
