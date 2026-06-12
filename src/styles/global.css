@@ -1047,6 +1047,16 @@ body.code-copy-ready pre.code-block:hover .code-lang {
 }
 .purge-btn:hover { background: #c0392b; color: #fff; }
 
+.admin-warning {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid #c0392b;
+  border-radius: 6px;
+  background: rgba(192, 57, 43, 0.06);
+  color: #c0392b;
+  font-size: 13.5px;
+}
+
 /* The admin route earns more horizontal room than the 820px reading column. */
 body:has(.admin-table-wrap) main,
 body:has(.admin-empty) main { max-width: 1100px; }

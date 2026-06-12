@@ -39,7 +39,13 @@ export const POST: APIRoute = async ({ request }) => {
     }
   }
 
-  return wantsRedirect
-    ? seeOther("/sloppy")
-    : json(failed.length > 0 ? 207 : 200, { purged, count: purged.length, failed });
+  if (wantsRedirect) {
+    // [LAW:no-silent-failure] Carry the failure count in the redirect URL so
+    // the admin view can render a visible warning. A clean purge redirects to
+    // /sloppy; a partial failure redirects to /sloppy?purge_errors=N — the
+    // count is what the browser path shows, not opaque "something went wrong".
+    const location = failed.length > 0 ? `/sloppy?purge_errors=${failed.length}` : "/sloppy";
+    return seeOther(location);
+  }
+  return json(failed.length > 0 ? 207 : 200, { purged, count: purged.length, failed });
 };

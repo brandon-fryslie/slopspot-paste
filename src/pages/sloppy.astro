@@ -16,6 +16,9 @@ export const prerender = false;
 
 const conversations = await listConversations(env.PASTES);
 const now = Date.now();
+// [LAW:no-silent-failure] /api/purge redirects here with ?purge_errors=N on
+// a partial KV failure. Read it once; the banner below surfaces it.
+const purgeErrors = Number(Astro.url.searchParams.get("purge_errors") ?? 0);
 
 // Newest first. Sorting in the page (not the storage layer) keeps the storage
 // API order-agnostic; other callers can sort however they want.
@@ -78,6 +81,13 @@ const previewOf = (c: (typeof rows)[number]): string => {
   <Fragment slot="head">
     <meta name="robots" content="noindex, nofollow" />
   </Fragment>
+
+  {purgeErrors > 0 && (
+    <p class="admin-warning">
+      Purge partially failed: {purgeErrors} record{purgeErrors === 1 ? "" : "s"} could not be removed from KV.
+      The records still appear below — retry when the issue is resolved.
+    </p>
+  )}
 
   <section class="admin-header">
     <h1>All pastes</h1>
