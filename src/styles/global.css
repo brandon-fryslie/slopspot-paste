@@ -331,7 +331,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .source-origin a:hover { border-bottom-color: currentColor; }
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
-   A fixed vertical rail of one marker per turn, sitting in the right gutter
+   A fixed vertical rail of one marker per turn, sitting in the left gutter
    beside the centred conversation column. Built client-side from the rendered
    turn elements (see [slug].astro).
 
@@ -352,10 +352,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
     display: flex;
     position: fixed;
     top: 50%;
-    right: 24px;
+    left: 24px;
     transform: translateY(-50%);
     flex-direction: column;
-    align-items: flex-end;
+    align-items: flex-start;
     gap: 5px;
     max-height: 80vh;
     overflow-y: auto;
@@ -379,25 +379,28 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   width: var(--minimap-line-w, 34px);
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 2px;
   opacity: 0.32;
   cursor: pointer;
-  /* The "genie" emphasis is a scaleX *multiplier* on the whole stack, anchored
-     at the rail's right edge so the lines lengthen toward the content. transform
-     doesn't reflow. */
-  transform-origin: right center;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  /* [LAW:single-enforcer] --genie is the ONE channel for a marker's horizontal
+     scale. The page script owns it: a dock-style magnification lens writes each
+     marker's scale as a pure function of its distance from the pointer, so the
+     rail bulges toward the cursor and tapers off — the "genie". Anchored at the
+     rail's LEFT edge so the lines lengthen rightward toward the conversation.
+     scaleX doesn't reflow, so the lens is cheap to drive per frame. Hover and
+     active state below touch opacity only — they never write the scale. */
+  transform-origin: left center;
+  transform: scaleX(var(--genie, 1));
+  transition: opacity 0.12s ease, transform 0.1s ease;
 }
 .minimap-marker:hover,
 .minimap-marker:focus-visible {
   opacity: 0.85;
-  transform: scaleX(1.16);
   outline: none;
 }
 .minimap-marker.is-active {
   opacity: 1;
-  transform: scaleX(1.24);
 }
 .minimap-line {
   /* One line of the wrapped-text representation. Its colour is the turn's kind
