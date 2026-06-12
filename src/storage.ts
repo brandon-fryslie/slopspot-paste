@@ -1,12 +1,13 @@
 import type { Conversation, Lifetime } from "./types";
-import { toStoredOrigin, TTL_SECONDS, GRACE_SECONDS } from "./types";
+import { toStoredOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
-// to KV's expirationTtl. Expiry (auto) and soft-delete (explicit) both set
-// deletedAt and hide the record from public reads. The KV backstop TTL
-// (TTL_SECONDS + GRACE_SECONDS) is a safety net — it keeps the bytes alive
-// through the grace window so the purge step, not KV auto-evict, makes the
-// final call. [LAW:no-silent-failure]: the purge path logs every hard-deletion.
+// to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
+// (7 days) is what gives the purge a real window to run BEFORE KV auto-evicts.
+// Without the buffer, isPurgeable and KV fire at the same instant for naturally-
+// expired records and KV always wins, making the purge audit log unreachable.
+// [LAW:no-silent-failure]: the buffer is what makes the purge's audit record
+// the authoritative deletion record rather than silent KV eviction.
 
 // [LAW:one-way-deps] This module imports types only. Pages/API import storage.
 // Storage never imports rendering.
@@ -27,7 +28,7 @@ export const putConversation = async (
   const options =
     c.lifetime.kind === "pinned"
       ? undefined
-      : { expirationTtl: TTL_SECONDS + GRACE_SECONDS };
+      : { expirationTtl: TTL_SECONDS + GRACE_SECONDS + PURGE_BUFFER_SECONDS };
   await kv.put(key, body, options);
 };
 

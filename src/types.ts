@@ -162,14 +162,22 @@ export interface Conversation {
   readonly origin: StoredOrigin;
 }
 
-// [LAW:single-enforcer] The paste's active lifetime (30 days). The KV backstop
-// TTL is GRACE_DAYS beyond the active lifetime — it is a safety net that keeps
-// the bytes alive while the purge step owns final deletion. These constants are
-// stated once; storage and the purge endpoint both derive from them.
+// [LAW:single-enforcer] Three distinct time windows, stated once:
+//   TTL_SECONDS     — active lifetime; paste hides from public reads at W+30d
+//   GRACE_SECONDS   — grace window; isPurgeable fires at W+60d (TTL+GRACE)
+//   PURGE_BUFFER_SECONDS — gap between isPurgeable and KV backstop eviction
+// The KV expirationTtl is TTL+GRACE+BUFFER, so KV fires at W+67d — AFTER
+// isPurgeable, giving the purge a 7-day window to run and log the deletion
+// before KV auto-evicts silently. Without the buffer, both thresholds fire at
+// the same instant; KV always wins and the audit trail is empty for natural
+// expiry. [LAW:no-silent-failure]: the buffer is the only thing that lets the
+// purge's audit log be the authoritative deletion record.
 export const TTL_DAYS = 30;
 export const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
 export const GRACE_DAYS = 30;
 export const GRACE_SECONDS = GRACE_DAYS * 24 * 60 * 60;
+export const PURGE_BUFFER_DAYS = 7;
+export const PURGE_BUFFER_SECONDS = PURGE_BUFFER_DAYS * 24 * 60 * 60;
 
 // [LAW:one-source-of-truth] "Expires a full TTL from now" is one policy, stated
 // once here and shared by paste creation and refresh. Both compute the deadline
