@@ -46,11 +46,14 @@ export const onRequest = defineMiddleware(async ({ request, url }, next) => {
   if (!isAdminPath(url.pathname)) return next();
 
   const secret = env.ADMIN_SECRET;
-  // [LAW:no-silent-failure] No secret configured = no enforcement. This is
-  // intentional for local dev (wrangler dev doesn't require secrets). A
-  // production deploy without ADMIN_SECRET is no worse than current unprotected
-  // state — it does not silently degrade a working auth gate.
-  if (!secret) return next();
+  if (!secret) {
+    // [LAW:no-silent-failure] Log when an admin route is reached without a
+    // configured secret so the operator can see the misconfiguration. Passthrough
+    // is dev-ergonomic (no secret required in local dev) but silence is the
+    // defect — once a secret has ever been set, its removal must be observable.
+    console.error("[admin-auth] ADMIN_SECRET not configured — admin route unprotected:", url.pathname);
+    return next();
+  }
 
   const auth = request.headers.get("authorization") ?? "";
   const spaceIdx = auth.indexOf(" ");
@@ -58,7 +61,10 @@ export const onRequest = defineMiddleware(async ({ request, url }, next) => {
 
   let password: string;
   try {
-    const decoded = atob(auth.slice(spaceIdx + 1));
+    // atob() returns a binary/Latin-1 string; treat each char as a raw byte and
+    // decode the resulting buffer as UTF-8 to honor the charset=UTF-8 challenge.
+    const bytes = Uint8Array.from(atob(auth.slice(spaceIdx + 1)), (c) => c.charCodeAt(0));
+    const decoded = new TextDecoder().decode(bytes);
     const colonIdx = decoded.indexOf(":");
     password = colonIdx === -1 ? decoded : decoded.slice(colonIdx + 1);
   } catch {
