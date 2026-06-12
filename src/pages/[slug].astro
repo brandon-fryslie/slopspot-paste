@@ -4,7 +4,7 @@ import Base from "../layouts/Base.astro";
 import { renderTurnsHtml } from "../renderTurns";
 import { getConversation } from "../storage";
 import { isValidSlug } from "../slug";
-import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, originOf, isReconstructed, viewLifetime } from "../types";
+import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, originOf, isReconstructed, viewLifetime, isHiddenFromPublic } from "../types";
 
 export const prerender = false;
 
@@ -19,9 +19,14 @@ if (!slug || !isValidSlug(slug)) {
 const conversation = await getConversation(env.PASTES, slug);
 
 if (!conversation) {
-  // [LAW:single-enforcer] Expiry shows up here as plain absence, because the
-  // KV layer already removed the key. No "isExpired" check anywhere.
   return new Response("This paste has expired or never existed.", { status: 404 });
+}
+
+// [LAW:single-enforcer] isHiddenFromPublic is the one gate for soft-deleted and
+// naturally-expired pastes. 410 Gone distinguishes "it existed but is gone" from
+// 404 "never existed" — HTTP semantics for the tombstone state.
+if (isHiddenFromPublic(conversation, Date.now())) {
+  return new Response("This paste has expired or been deleted.", { status: 410 });
 }
 
 const title = conversation.title ?? "Shared conversation";
