@@ -836,7 +836,8 @@ body.code-copy-ready pre.code-block:hover .code-lang {
 details.bubble[open] > .bubble-summary { margin-bottom: 8px; }
 details.bubble[open] > .bubble-summary::after { transform: rotate(90deg); }
 
-/* Tool-call: the existing .tool-arrow is the collapse indicator; suppress ::after. */
+/* Tool-call: the existing .tool-arrow is the collapse indicator. .tool-summary
+   does not carry .bubble-summary, so no ::after caret is generated here. */
 .tool-summary {
   cursor: pointer;
   list-style: none;
@@ -844,7 +845,6 @@ details.bubble[open] > .bubble-summary::after { transform: rotate(90deg); }
   margin-bottom: 0;
 }
 .tool-summary::-webkit-details-marker { display: none; }
-.tool-summary::after { display: none; }
 .bubble-tool-call .tool-arrow { transition: transform 0.12s ease; }
 details.bubble-tool-call[open] .tool-arrow { transform: rotate(90deg); }
 details.bubble-tool-call[open] > .tool-summary { margin-bottom: 10px; }
