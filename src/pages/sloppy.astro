@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
 import { listConversations } from "../storage";
-import { originOf, viewLifetime, isHiddenFromPublic, isPurgeable, GRACE_DAYS } from "../types";
+import { viewLifetime, isHiddenFromPublic, isPurgeable, GRACE_DAYS } from "../types";
 
 export const prerender = false;
 
@@ -59,26 +59,19 @@ const isPinned = (c: (typeof rows)[number]): boolean => c.lifetime.kind === "pin
 
 // [LAW:one-source-of-truth] Re-projection only makes sense where the origin can
 // replay into turns: a text or share arm. An `editor` origin's turns ARE the
-// source (reprojectOrigin returns null for it — re-projecting is a no-op), and an
-// absent origin has nothing to replay. So the affordance's presence is a
-// projection of the origin, not a separate flag — absent/editor rows show none.
-// A reconstructed origin replays like any captured one, so it gains the affordance
-// the moment the backfill child gives it a non-absent origin.
-const canReproject = (c: (typeof rows)[number]): boolean => {
-  const o = originOf(c.origin);
-  return o !== null && o.kind !== "editor";
-};
+// source (reprojectOrigin returns null for it — re-projecting is a no-op), and a
+// null origin has nothing to replay. The affordance's presence is a projection of
+// the origin kind, not a separate flag — null/editor rows show none.
+const canReproject = (c: (typeof rows)[number]): boolean =>
+  c.origin !== null && c.origin.kind !== "editor";
 
 // [LAW:decomposition] Re-fetch is a separate affordance from re-project:
 // it hits the network to refresh the stored bytes, then re-derives turns.
 // Gate: only claude-share origins carry a URL to re-fetch against.
-// Both captured and reconstructed origins get the affordance — the endpoint
-// preserves the wrapper status regardless. [LAW:one-source-of-truth]: the
-// gate is a projection of the origin kind, not a second stored flag.
-const canRefetch = (c: (typeof rows)[number]): boolean => {
-  const o = originOf(c.origin);
-  return o !== null && o.kind === "claude-share";
-};
+// [LAW:one-source-of-truth]: the gate is a projection of the origin kind, not
+// a second stored flag.
+const canRefetch = (c: (typeof rows)[number]): boolean =>
+  c.origin !== null && c.origin.kind === "claude-share";
 
 const previewOf = (c: (typeof rows)[number]): string => {
   const first = c.turns.find((t) => t.kind === "message");
