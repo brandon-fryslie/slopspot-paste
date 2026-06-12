@@ -329,17 +329,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .source-origin a:hover { border-bottom-color: currentColor; }
-/* [LAW:no-silent-failure] A reconstructed source link is visibly qualified —
-   muted, uppercased, help-cursor on hover — so it never reads as the authentic
-   captured original. */
-.source-reconstructed {
-  margin-left: 8px;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--muted);
-  cursor: help;
-}
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A fixed vertical rail of one marker per turn, sitting in the right gutter

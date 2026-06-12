@@ -1,5 +1,5 @@
 import type { Conversation, Lifetime } from "./types";
-import { toStoredOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
+import { isOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
 // to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
@@ -11,6 +11,20 @@ import { toStoredOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from
 
 // [LAW:one-way-deps] This module imports types only. Pages/API import storage.
 // Storage never imports rendering.
+
+// [LAW:types-are-the-program] KV is a trust boundary. Two historical origin
+// shapes exist in the store: bare Origin (current format) and StoredOrigin
+// wrapper { status, origin } (written before this commit's simplification).
+// Both unwrap to the same Origin|null the type now declares.
+// [LAW:no-silent-failure] Wrapper records are extracted, not silently dropped.
+const normalizeOrigin = (raw: unknown): Conversation["origin"] => {
+  if (isOrigin(raw)) return raw;
+  if (raw && typeof raw === "object") {
+    const inner = (raw as { origin?: unknown }).origin;
+    if (isOrigin(inner)) return inner;
+  }
+  return null;
+};
 
 const KEY_PREFIX = "paste:";
 
@@ -84,14 +98,13 @@ export const getConversation = async (
       deletedAt: typeof parsed.deletedAt === "number" ? parsed.deletedAt : null,
       turns: parsed.turns.map(normalizeTurn),
       // [LAW:types-are-the-program] Records written before origin capture landed
-      // (or hand-edited to junk) read as `absent` — honest absence of a captured
-      // source of truth, normalized here so the type above this boundary always
-      // sees a StoredOrigin. toStoredOrigin closes the enumeration gap and folds
-      // the three historical shapes (wrapper / bare Origin / junk) into one; the
-      // backfill child writes `reconstructed` origins for the legacy absent
-      // records. The legacy `source` field, if present, is simply dropped:
-      // styling is derived from origin now, never from a second stored field.
-      origin: toStoredOrigin(parsed.origin),
+      // (or hand-edited to junk) read as null — honest absence. Two historical
+      // shapes converge here: a bare Origin (written by this code and later) and
+      // a StoredOrigin wrapper { status, origin } (written before this commit).
+      // normalizeOrigin unwraps both to Origin|null so no existing record silently
+      // loses its captured source. The legacy `source` field is dropped: styling
+      // is derived from origin on read. [LAW:no-silent-failure]
+      origin: normalizeOrigin(parsed.origin),
     } as Conversation;
   } catch {
     return null;

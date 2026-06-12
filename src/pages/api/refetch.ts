@@ -2,7 +2,6 @@ import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
 import { ingestPaste, deriveTitle } from "../../parser";
-import { originOf } from "../../types";
 import { json, seeOther } from "../../http";
 
 export const prerender = false;
@@ -45,7 +44,7 @@ export const POST: APIRoute = async ({ request }) => {
   // All other origins (text arms, editor, absent) are rejected loudly; the
   // /sloppy affordance is hidden for them, but a directly-crafted request
   // still fails here instead of no-op'ing.
-  const origin = originOf(existing.origin);
+  const origin = existing.origin;
   if (origin === null || origin.kind !== "claude-share") {
     return json(409, { error: "This paste does not have a claude-share origin to re-fetch." });
   }
@@ -60,17 +59,13 @@ export const POST: APIRoute = async ({ request }) => {
 
   // [LAW:one-source-of-truth] Replace only the derived values — the fetched
   // bytes inside the origin, the turns re-parsed from them, and the derived
-  // title. Spread ...existing.origin to PRESERVE the wrapper status:
-  // `reconstructed` stays `reconstructed` (re-fetching a guessed URL is not
-  // the same as capturing it at ingest; authenticity cannot be promoted
-  // retroactively). [LAW:no-silent-failure] The authenticity qualifier is
-  // never silently upgraded — it is always whatever the backfill originally wrote.
-  const updatedStoredOrigin = { ...existing.origin, origin: fresh.origin };
+  // title. The origin field is now bare Origin|null, so fresh.origin replaces
+  // existing.origin directly. slug/createdAt/lifetime are preserved by spread.
   const updated = {
     ...existing,
     turns: fresh.turns,
     title: deriveTitle(fresh.turns),
-    origin: updatedStoredOrigin,
+    origin: fresh.origin,
   };
   await putConversation(env.PASTES, updated);
 

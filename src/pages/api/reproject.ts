@@ -2,7 +2,6 @@ import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
 import { canonicalize, deriveTitle } from "../../parser";
-import { originOf } from "../../types";
 import { json, seeOther } from "../../http";
 
 export const prerender = false;
@@ -51,7 +50,7 @@ export const POST: APIRoute = async ({ request }) => {
   // affordance is hidden for it, but a directly-crafted request still fails loudly
   // here rather than no-op'ing — the backfill child (slopspot-provenance-o2q.1) is
   // what gives these records an origin to replay.
-  const origin = originOf(existing.origin);
+  const origin = existing.origin;
   if (origin === null) {
     return json(409, { error: "This paste has no captured origin to re-project from." });
   }
@@ -65,11 +64,8 @@ export const POST: APIRoute = async ({ request }) => {
   if (!reprojected.ok) return json(422, { error: reprojected.reason });
 
   // [LAW:one-source-of-truth] Replace only the derived values — the turns and the
-  // title computed from them. slug, createdAt, lifetime, and the stored origin
-  // wrapper are preserved by the spread — including its authenticity status, so
-  // re-projecting a `reconstructed` paste keeps it reconstructed, never silently
-  // promoting it to `captured`. Existing links keep working; putConversation owns
-  // the TTL as always.
+  // title computed from them. slug, createdAt, lifetime, and origin are preserved
+  // by the spread. Existing links keep working; putConversation owns the TTL.
   const updated = {
     ...existing,
     turns: reprojected.turns,
