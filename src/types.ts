@@ -138,6 +138,13 @@ export interface Conversation {
   readonly slug: string;
   readonly createdAt: number;
   readonly lifetime: Lifetime;
+  // [LAW:types-are-the-program] Deletion is orthogonal to Lifetime — a paste can
+  // be soft-deleted before it expires, or it can expire with no explicit delete.
+  // null = live; a timestamp = tombstoned at that instant. The KV record survives
+  // the tombstone; only the purge step hard-deletes it after the grace window.
+  // ([LAW:no-silent-failure]: absence of this field on legacy records normalizes
+  // to null on read — never silently treated as "deleted".)
+  readonly deletedAt: number | null;
   // [LAW:one-source-of-truth] Turns are a DERIVED CACHE of parse(origin), not an
   // authority. They are stored in KV for read-path speed, but they are
   // regenerable: reprojectOrigin(origin) reproduces them (often *better*, once
@@ -155,10 +162,22 @@ export interface Conversation {
   readonly origin: StoredOrigin;
 }
 
-// [LAW:single-enforcer] The single enforcer of expiry is KV's expirationTtl.
-// This constant is the one place the 30-day duration is stated.
+// [LAW:single-enforcer] Three distinct time windows, stated once:
+//   TTL_SECONDS     — active lifetime; paste hides from public reads at W+30d
+//   GRACE_SECONDS   — grace window; isPurgeable fires at W+60d (TTL+GRACE)
+//   PURGE_BUFFER_SECONDS — gap between isPurgeable and KV backstop eviction
+// The KV expirationTtl is TTL+GRACE+BUFFER, so KV fires at W+67d — AFTER
+// isPurgeable, giving the purge a 7-day window to run and log the deletion
+// before KV auto-evicts silently. Without the buffer, both thresholds fire at
+// the same instant; KV always wins and the audit trail is empty for natural
+// expiry. [LAW:no-silent-failure]: the buffer is the only thing that lets the
+// purge's audit log be the authoritative deletion record.
 export const TTL_DAYS = 30;
 export const TTL_SECONDS = TTL_DAYS * 24 * 60 * 60;
+export const GRACE_DAYS = 30;
+export const GRACE_SECONDS = GRACE_DAYS * 24 * 60 * 60;
+export const PURGE_BUFFER_DAYS = 7;
+export const PURGE_BUFFER_SECONDS = PURGE_BUFFER_DAYS * 24 * 60 * 60;
 
 // [LAW:one-source-of-truth] "Expires a full TTL from now" is one policy, stated
 // once here and shared by paste creation and refresh. Both compute the deadline
@@ -193,6 +212,28 @@ export const viewLifetime = (lifetime: Lifetime, now: number): LifetimeView =>
   lifetime.kind === "pinned"
     ? { kind: "pinned" }
     : { kind: "expires", days: Math.max(0, Math.ceil((lifetime.expiresAt - now) / 86_400_000)) };
+
+// [LAW:types-are-the-program] A paste is hidden from public reads when it has
+// been explicitly soft-deleted (deletedAt set) OR when its expiry has passed
+// (lifetime expired). Both are separate axes: a paste can expire while pinned
+// is unrepresentable (pinned has no expiresAt), but an expires paste can be
+// deleted before its natural deadline. This is the single gate for all callers
+// ([LAW:single-enforcer]: one place, not scattered "isExpired" checks).
+export const isHiddenFromPublic = (c: Conversation, now: number): boolean =>
+  c.deletedAt !== null ||
+  (c.lifetime.kind === "expires" && c.lifetime.expiresAt < now);
+
+// [LAW:types-are-the-program] A paste is eligible for hard-deletion (purge)
+// when it is hidden AND the grace window has elapsed since it was hidden.
+// The "hidden since" timestamp: explicit deletedAt takes precedence; expiry
+// falls back to expiresAt (the moment the paste became hidden via auto-expiry).
+// Pinned pastes that were never deleted are never purgeable.
+export const isPurgeable = (c: Conversation, now: number): boolean => {
+  if (!isHiddenFromPublic(c, now)) return false;
+  const hiddenSince = c.deletedAt ?? (c.lifetime.kind === "expires" ? c.lifetime.expiresAt : null);
+  if (hiddenSince === null) return false;
+  return now - hiddenSince > GRACE_SECONDS * 1000;
+};
 
 // [LAW:one-source-of-truth] The size cap is stated once, as a byte count. The
 // API enforces MAX_PASTE_BYTES at the trust boundary; the index page shows
