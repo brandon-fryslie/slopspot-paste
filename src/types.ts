@@ -331,14 +331,17 @@ const isTextArmKind = (v: unknown): v is TextArmKind =>
 // JSON until classified. [LAW:dataflow-not-control-flow] One switch on the
 // discriminator, each arm checking exactly the fields its kind carries; the
 // default closes the enumeration gap — an unknown kind is rejected, never
-// silently accepted.
-export const isOrigin = (v: unknown): v is Origin => {
+// silently accepted. [LAW:no-silent-failure] The depth cap on the recursive
+// input check ensures a malformed deeply-nested payload returns false rather
+// than exhausting the call stack — max legitimate nesting depth is 1.
+export const isOrigin = (v: unknown, _depth = 0): v is Origin => {
+  if (_depth > 3) return false;
   if (!v || typeof v !== "object") return false;
   const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; source?: unknown; input?: unknown };
   switch (o.kind) {
     case "editor":
       if (o.source !== null && !isSourceKind(o.source)) return false;
-      return o.input === undefined || isOrigin(o.input);
+      return o.input === undefined || isOrigin(o.input, _depth + 1);
     case "claude-share":
       return typeof o.url === "string" && typeof o.fetched === "string";
     default:

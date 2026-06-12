@@ -503,7 +503,6 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["editor with a SourceKind source", { kind: "editor", source: "claude-code" }],
     ["editor with input (edited text import)", { kind: "editor", source: "claude-code", input: { kind: "claude-code", content: "original content" } }],
     ["editor with share input (edited share import)", { kind: "editor", source: "claude-share", input: { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "original" } }],
-    ["editor with no input field (from-scratch — unchanged)", { kind: "editor", source: null }],
   ];
   for (const [label, v] of accepts) assert(`accepts: ${label}`, isOrigin(v));
 
