@@ -15,6 +15,7 @@ const ADMIN_ROUTES = new Set([
   "/api/purge",
   "/api/refresh",
   "/api/reproject",
+  "/api/refetch",
 ]);
 
 // Timing-safe compare: always runs max(a.length, b.length) iterations.

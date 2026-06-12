@@ -992,9 +992,11 @@ details.bubble-tool-call[open] > .tool-summary { margin-bottom: 10px; }
   white-space: nowrap;
 }
 .admin-table .reproject-form,
+.admin-table .refetch-form,
 .admin-table .refresh-form,
 .admin-table .pin-form { margin: 0; }
 .admin-table .reproject-btn,
+.admin-table .refetch-btn,
 .admin-table .refresh-btn {
   font: inherit;
   font-size: 12.5px;
@@ -1006,6 +1008,7 @@ details.bubble-tool-call[open] > .tool-summary { margin-bottom: 10px; }
   cursor: pointer;
 }
 .admin-table .reproject-btn:hover,
+.admin-table .refetch-btn:hover,
 .admin-table .refresh-btn:hover { border-color: var(--fg-muted); }
 .admin-table .pin-label {
   display: inline-flex;
