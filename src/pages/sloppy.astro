@@ -69,6 +69,17 @@ const canReproject = (c: (typeof rows)[number]): boolean => {
   return o !== null && o.kind !== "editor";
 };
 
+// [LAW:decomposition] Re-fetch is a separate affordance from re-project:
+// it hits the network to refresh the stored bytes, then re-derives turns.
+// Gate: only claude-share origins carry a URL to re-fetch against.
+// Both captured and reconstructed origins get the affordance — the endpoint
+// preserves the wrapper status regardless. [LAW:one-source-of-truth]: the
+// gate is a projection of the origin kind, not a second stored flag.
+const canRefetch = (c: (typeof rows)[number]): boolean => {
+  const o = originOf(c.origin);
+  return o !== null && o.kind === "claude-share";
+};
+
 const previewOf = (c: (typeof rows)[number]): string => {
   const first = c.turns.find((t) => t.kind === "message");
   if (!first) return "";
@@ -144,6 +155,12 @@ const previewOf = (c: (typeof rows)[number]): string => {
                     <form class="reproject-form" method="POST" action="/api/reproject">
                       <input type="hidden" name="slug" value={c.slug} />
                       <button type="submit" class="reproject-btn">Re-project</button>
+                    </form>
+                  )}
+                  {!hidden && canRefetch(c) && (
+                    <form class="refetch-form" method="POST" action="/api/refetch">
+                      <input type="hidden" name="slug" value={c.slug} />
+                      <button type="submit" class="refetch-btn">Re-fetch</button>
                     </form>
                   )}
                   {!hidden && (
