@@ -36,11 +36,14 @@ const challenge = () =>
     headers: { "WWW-Authenticate": 'Basic realm="slopspot admin", charset="UTF-8"' },
   });
 
+// Pre-computed prefix list: ADMIN_ROUTES is a module-level constant so the
+// array and concatenation happen once, not on every request.
+const ADMIN_PREFIXES = Array.from(ADMIN_ROUTES).map((r) => r + "/");
+
 // Exact match OR sub-path: protects both "/api/delete" and any future
 // "/api/delete/<id>" variant. [LAW:single-enforcer]: the check lives here only.
 const isAdminPath = (pathname: string): boolean =>
-  ADMIN_ROUTES.has(pathname) ||
-  Array.from(ADMIN_ROUTES).some((r) => pathname.startsWith(r + "/"));
+  ADMIN_ROUTES.has(pathname) || ADMIN_PREFIXES.some((p) => pathname.startsWith(p));
 
 export const onRequest = defineMiddleware(async ({ request, url }, next) => {
   if (!isAdminPath(url.pathname)) return next();
@@ -63,7 +66,8 @@ export const onRequest = defineMiddleware(async ({ request, url }, next) => {
   try {
     // atob() returns a binary/Latin-1 string; treat each char as a raw byte and
     // decode the resulting buffer as UTF-8 to honor the charset=UTF-8 challenge.
-    const bytes = Uint8Array.from(atob(auth.slice(spaceIdx + 1)), (c) => c.charCodeAt(0));
+    // RFC 7235 §4.2 permits 1*SP between scheme and token; trim to handle extra spaces.
+    const bytes = Uint8Array.from(atob(auth.slice(spaceIdx + 1).trim()), (c) => c.charCodeAt(0));
     const decoded = new TextDecoder().decode(bytes);
     const colonIdx = decoded.indexOf(":");
     password = colonIdx === -1 ? decoded : decoded.slice(colonIdx + 1);
