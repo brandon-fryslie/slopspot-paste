@@ -55,7 +55,7 @@ const submit = async (draft: Draft): Promise<SubmitResult> => {
   const res = await fetch("/api/paste", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ turns: draft.turns, origin: draft.origin }),
+    body: JSON.stringify({ turns: draft.turns, origin: draft.origin, platformOverride: draft.platformOverride }),
   });
   const data = (await res.json().catch(() => null)) as
     | { slug?: unknown; error?: unknown }

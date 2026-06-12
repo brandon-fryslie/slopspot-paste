@@ -4,8 +4,8 @@ import { parseAuto, ingestPaste, deriveTitle, canonicalize } from "../../parser"
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
-import type { Conversation, Origin, ParseResult, PasteInput, Turn } from "../../types";
-import { inputText, isOrigin, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
+import type { Conversation, Origin, ParseResult, PasteInput, Platform, Turn } from "../../types";
+import { inputText, isOrigin, isPlatform, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
 
 export const prerender = false;
 
@@ -38,7 +38,7 @@ const isPasteInput = (v: unknown): v is PasteInput => {
 // field?" scattered across the file.
 type DecodedRequest =
   | { ok: true; input: PasteInput }
-  | { ok: true; turns: ReadonlyArray<Turn>; origin: Origin }
+  | { ok: true; turns: ReadonlyArray<Turn>; origin: Origin; platformOverride?: Platform }
   | { ok: true; legacy: string }
   | { ok: false; reason: string };
 
@@ -46,7 +46,7 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
   const ct = request.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
     const body = (await request.json().catch(() => null)) as
-      | { source?: unknown; content?: unknown; turns?: unknown; origin?: unknown }
+      | { source?: unknown; content?: unknown; turns?: unknown; origin?: unknown; platformOverride?: unknown }
       | null;
     // [LAW:single-enforcer] The editor arm: a pre-parsed Turn[] plus the Origin
     // the editor chose to stamp, validated here at the one boundary. isTurns and
@@ -60,7 +60,8 @@ const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
       const origin: Origin = isOrigin(body.origin)
         ? body.origin
         : { kind: "editor", source: null };
-      return { ok: true, turns: body.turns, origin };
+      const platformOverride = isPlatform(body.platformOverride) ? body.platformOverride : undefined;
+      return { ok: true, turns: body.turns, origin, platformOverride };
     }
     if (body && isPasteInput(body.source)) return { ok: true, input: body.source };
     if (body && typeof body.content === "string") return { ok: true, legacy: body.content };
@@ -157,6 +158,9 @@ export const POST: APIRoute = async ({ request }) => {
     // directly from the parse result. Styling provenance (`source`) is derived on
     // read via sourceOf — never stored as a second field that could drift.
     origin: parsed.origin,
+    // Only the editor arm can supply an explicit override; text/form/legacy paths
+    // always derive platform from source ([LAW:one-source-of-truth]).
+    platformOverride: "turns" in decoded ? decoded.platformOverride : undefined,
   };
 
   await putConversation(env.PASTES, conversation);
