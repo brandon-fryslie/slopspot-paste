@@ -17,15 +17,16 @@ const ADMIN_ROUTES = new Set([
   "/api/reproject",
 ]);
 
-// Timing-safe compare: accumulate XOR differences so the loop runs a fixed
-// number of iterations regardless of where a mismatch occurs.
+// Timing-safe compare: always runs max(a.length, b.length) iterations.
+// Seeding diff with the XOR of the lengths means unequal-length strings produce
+// a nonzero diff without an early return — no length oracle via timing.
 const timingSafeEqual = (a: string, b: string): boolean => {
   const enc = new TextEncoder();
   const ab = enc.encode(a);
   const bb = enc.encode(b);
-  if (ab.length !== bb.length) return false;
-  let diff = 0;
-  for (let i = 0; i < ab.length; i++) diff |= ab[i]! ^ bb[i]!;
+  const len = Math.max(ab.length, bb.length);
+  let diff = ab.length ^ bb.length;
+  for (let i = 0; i < len; i++) diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
   return diff === 0;
 };
 
@@ -35,8 +36,14 @@ const challenge = () =>
     headers: { "WWW-Authenticate": 'Basic realm="slopspot admin", charset="UTF-8"' },
   });
 
+// Exact match OR sub-path: protects both "/api/delete" and any future
+// "/api/delete/<id>" variant. [LAW:single-enforcer]: the check lives here only.
+const isAdminPath = (pathname: string): boolean =>
+  ADMIN_ROUTES.has(pathname) ||
+  Array.from(ADMIN_ROUTES).some((r) => pathname.startsWith(r + "/"));
+
 export const onRequest = defineMiddleware(async ({ request, url }, next) => {
-  if (!ADMIN_ROUTES.has(url.pathname)) return next();
+  if (!isAdminPath(url.pathname)) return next();
 
   const secret = env.ADMIN_SECRET;
   // [LAW:no-silent-failure] No secret configured = no enforcement. This is
