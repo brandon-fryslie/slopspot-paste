@@ -132,7 +132,14 @@ const sourceUrl = sourceUrlOf(origin);
           : KNEE + (MAX_LINES - KNEE) * (1 - Math.exp(-(u - KNEE) / SIGMA));
       const count = Math.min(MAX_LINES, Math.max(MIN_FILL, real));
       const full = Math.floor(count);
-      const partial = count - full;
+      // [LAW:single-enforcer] MIN_FILL is the one floor for *every* visible
+      // line, not just the first stub: a line slot is either absent (0) or at
+      // least MIN_FILL wide — never an invisible sub-pixel sliver that still
+      // claims a height slot and jumps the marker at integer boundaries. The
+      // fraction a slot can hold is thus 0 ∪ [MIN_FILL, 1], with the open gap
+      // unrepresentable.
+      const raw = count - full;
+      const partial = raw > 0 && raw < MIN_FILL ? MIN_FILL : raw;
       return Array.from({ length: MAX_LINES }, (_, i) =>
         i < full ? 1 : i === full ? partial : 0,
       );
