@@ -85,7 +85,7 @@ const previewOf = (c: (typeof rows)[number]): string => {
       <span>{liveCount} live · {deletedCount} deleted · {expiredCount} expired · {purgeableCount} purgeable</span>
       {purgeableCount > 0 && (
         <form class="purge-form" method="POST" action="/api/purge">
-          <button type="submit" class="purge-btn">Purge {purgeableCount} expired</button>
+          <button type="submit" class="purge-btn">Purge {purgeableCount} records</button>
         </form>
       )}
     </p>

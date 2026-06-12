@@ -2,6 +2,7 @@ import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
 import { isValidSlug } from "../../slug";
+import { isHiddenFromPublic } from "../../types";
 import { json, seeOther } from "../../http";
 
 export const prerender = false;
@@ -34,8 +35,12 @@ export const POST: APIRoute = async ({ request }) => {
     return json(404, { error: "Paste not found." });
   }
 
-  if (conversation.deletedAt !== null) {
-    // Already tombstoned — idempotent.
+  // [LAW:dataflow-not-control-flow] Gate on the full hidden state, not just the
+  // explicit-delete axis. A naturally expired record (expiresAt < now,
+  // deletedAt null) is already hidden; stamping a new deletedAt would reset
+  // hiddenSince and push the purge window forward. Any hidden record — whatever
+  // the cause — is already the state we're trying to reach; treat as idempotent.
+  if (isHiddenFromPublic(conversation, Date.now())) {
     return wantsRedirect ? seeOther("/sloppy") : json(200, { slug });
   }
 

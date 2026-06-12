@@ -9,8 +9,10 @@ export const prerender = false;
 // [LAW:single-enforcer] This endpoint is the ONE path that hard-deletes KV
 // records. It only removes records whose deletedAt (or expiresAt for auto-
 // expired pastes) has exceeded the grace window. Nothing else hard-deletes.
-// [LAW:no-silent-failure] Every purged slug is returned in the response body
-// so the caller knows exactly what was removed.
+// [LAW:no-silent-failure] Every purged slug is returned in the response body.
+// Promise.allSettled ensures partial failures are surfaced rather than
+// silently dropping the audit trail — a partial purge is worse than any single
+// delete failure because it's irreversible and the caller may not know it happened.
 
 export const POST: APIRoute = async ({ request }) => {
   const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
@@ -19,11 +21,25 @@ export const POST: APIRoute = async ({ request }) => {
 
   const toDelete = conversations.filter((c) => isPurgeable(c, now));
 
-  await Promise.all(toDelete.map((c) => deleteConversation(env.PASTES, c.slug)));
+  // [LAW:no-silent-failure] allSettled: a single KV rejection does not abort
+  // the response. Fulfilled slugs are the audit record; failed slugs are
+  // surfaced so the caller knows what wasn't removed.
+  const results = await Promise.allSettled(
+    toDelete.map((c) => deleteConversation(env.PASTES, c.slug).then(() => c.slug)),
+  );
 
-  const purged = toDelete.map((c) => c.slug);
+  const purged: string[] = [];
+  const failed: Array<{ slug: string; reason: string }> = [];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]!;
+    if (r.status === "fulfilled") {
+      purged.push(r.value);
+    } else {
+      failed.push({ slug: toDelete[i]!.slug, reason: String(r.reason) });
+    }
+  }
 
   return wantsRedirect
     ? seeOther("/sloppy")
-    : json(200, { purged, count: purged.length });
+    : json(failed.length > 0 ? 207 : 200, { purged, count: purged.length, failed });
 };
