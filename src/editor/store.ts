@@ -159,20 +159,26 @@ export class EditorStore {
     return sourceOf(this.importOrigin);
   }
 
-  // [LAW:one-source-of-truth] The origin to STAMP at submit. A pristine import
-  // (importOrigin non-null, turns not hand-edited) carries its verbatim source —
-  // text arms their `content`, share its `url + fetched` — so stamp it directly:
-  // the stored paste reproduces the same turns via reproject(origin). From-scratch
-  // authoring (importOrigin === null) or dirty turns stamp `{kind:'editor'}` — the
-  // Turns ARE the source, so reprojectOrigin returns null and canonicalize preserves
-  // them verbatim. isDirty is the reliable signal: it compares same-source turns,
-  // and text / share imports have no usage events to be stripped, so "not dirty"
-  // means stored turns will equal reproject(origin).
+  // [LAW:one-source-of-truth] The origin to STAMP at submit. Three cases, keyed on
+  // import state and dirty flag:
+  //   1. Pristine import (!isDirty, importOrigin set): stamp origin directly — stored
+  //      turns are a pure projection of parse(origin), reproject is safe.
+  //   2. Edited import (isDirty, importOrigin is a text/share arm): stamp editor arm
+  //      carrying the import origin as `input`, so the original submitted content is
+  //      preserved as provenance ([LAW:no-silent-failure]). Turns are authoritative;
+  //      canonicalize/reproject see the editor arm and keep them verbatim.
+  //   3. From-scratch authoring or edited editor-origin draft: bare editor arm with
+  //      source for styling — no upstream text to preserve.
+  // isDirty is the reliable signal: it compares same-source turns, and text/share
+  // imports have no usage events to be stripped, so "not dirty" guarantees turns
+  // equal reproject(origin).
   get submitOrigin(): Origin {
     const o = this.importOrigin;
-    return o !== null && !this.isDirty
-      ? o
-      : { kind: "editor", source: sourceOf(o) };
+    if (o !== null && !this.isDirty) return o;
+    if (o !== null && o.kind !== "editor") {
+      return { kind: "editor", source: sourceOf(o), input: o };
+    }
+    return { kind: "editor", source: sourceOf(o) };
   }
 
   get canSubmit(): boolean {
