@@ -191,10 +191,95 @@ const sourceUrl = sourceUrlOf(origin);
         }
         const active = visible.size ? Math.min(...visible) : -1;
         for (const [i, btn] of markers) btn.classList.toggle("is-active", i === active);
+        // The active marker's resting scale is part of the genie channel, so a
+        // change in which turn is active must re-derive scales.
+        kick();
       },
       { rootMargin: "-12% 0px -78% 0px" },
     );
     for (const el of turns) io.observe(el);
+
+    // [LAW:dataflow-not-control-flow] The genie is a dock-style magnification
+    // lens: every marker's horizontal scale is a pure function of its distance
+    // from the pointer. On each move EVERY marker is rescaled — the value
+    // (distance) varies, never *whether* a marker is touched, so there is no
+    // "which one is hovered" branch. "No pointer" is the value -Infinity, for
+    // which the same bell returns 1, so absence needs no guard.
+    // [LAW:effects-at-boundaries] Pointer position is browser-only; the lens is
+    // driven here and writes the one --genie channel CSS reads.
+    const GENIE_PEAK = 1.7; // scaleX of the marker directly under the pointer
+    const GENIE_SIGMA = 44; // px spread of the lens (≈ how many neighbours bulge)
+    const ACTIVE_REST = 1.24; // scaleX the in-view marker holds with no pointer
+    let pointerY = -Infinity;
+    const genieScale = (centerY: number): number => {
+      const d = centerY - pointerY;
+      const bell = Math.exp(-(d * d) / (2 * GENIE_SIGMA * GENIE_SIGMA));
+      return 1 + (GENIE_PEAK - 1) * bell;
+    };
+
+    // [LAW:no-ambient-temporal-coupling] Marker centres are read once per layout
+    // change (the rail is position:fixed, so scaleX never moves them vertically),
+    // not in the hot pointer path. The lens then writes from this cache, keeping
+    // reads and writes unbatched-free: measure on layout, write on frame. `cur`
+    // is the marker's *displayed* scale, carried across re-measures (read back
+    // from the channel it owns) so a layout change never snaps the lens.
+    type Center = { btn: HTMLButtonElement; y: number; cur: number };
+    let centers: Center[] = [];
+    const measureCenters = (): void => {
+      centers = [...markers.values()].map((btn) => {
+        const r = btn.getBoundingClientRect();
+        return { btn, y: r.top + r.height / 2, cur: Number(btn.style.getPropertyValue("--genie")) || 1 };
+      });
+    };
+
+    // [LAW:no-ambient-temporal-coupling] rAF is the SINGLE timing authority for
+    // the lens — there is no CSS transition on the scale. Each frame eases every
+    // marker's displayed scale toward its target (max of its resting scale and
+    // the pointer bell), and the loop keeps running until every marker has
+    // settled. One owner animates both the grab (toward the pointer) and the
+    // release (pointer gone → target falls back to rest): a CSS transition would
+    // be a second clock fighting these per-frame writes and lagging fast sweeps.
+    const EASE = 0.35; // per-frame approach fraction toward target
+    const SETTLED = 0.002; // |target − cur| below which the marker is at rest
+    let raf = 0;
+    const tick = (): void => {
+      let moving = false;
+      for (const c of centers) {
+        const rest = c.btn.classList.contains("is-active") ? ACTIVE_REST : 1;
+        const target = Math.max(rest, genieScale(c.y));
+        const next = c.cur + (target - c.cur) * EASE;
+        c.cur = Math.abs(target - next) < SETTLED ? target : next;
+        c.btn.style.setProperty("--genie", c.cur.toFixed(3));
+        if (c.cur !== target) moving = true;
+      }
+      raf = moving ? requestAnimationFrame(tick) : 0;
+    };
+    const kick = (): void => {
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+
+    // [LAW:effects-at-boundaries] Pointer position is browser-only; the listeners
+    // only record it (or its absence) and wake the loop. pointercancel covers the
+    // touch/stylus case where the browser steals the gesture and never fires
+    // pointerleave — without it the lens would freeze mid-bulge.
+    nav.addEventListener("pointermove", (e) => {
+      pointerY = e.clientY;
+      kick();
+    });
+    const release = (): void => {
+      pointerY = -Infinity;
+      kick();
+    };
+    nav.addEventListener("pointerleave", release);
+    nav.addEventListener("pointercancel", release);
+    // The rail itself scrolls when it overflows; that moves marker centres.
+    nav.addEventListener("scroll", () => {
+      measureCenters();
+      kick();
+    });
+    // Prime the cache synchronously so the lens is live on the very first
+    // pointer event, not coupled to the first async layout callback.
+    measureCenters();
 
     // [LAW:dataflow-not-control-flow] Degradation is a value transition, not a
     // branch that skips building the rail: the timeline is shown iff the page
@@ -224,6 +309,10 @@ const sourceUrl = sourceUrlOf(origin);
           line.style.width = `${(f * 100).toFixed(1)}%`;
         });
       });
+      // Line widths just changed marker heights → centres moved; re-measure and
+      // wake the lens to ease toward the new geometry from the same layout pass.
+      measureCenters();
+      kick();
     };
     new ResizeObserver(recompute).observe(document.documentElement);
     window.addEventListener("resize", recompute);
