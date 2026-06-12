@@ -392,7 +392,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
      active state below touch opacity only — they never write the scale. */
   transform-origin: left center;
   transform: scaleX(var(--genie, 1));
-  transition: opacity 0.12s ease, transform 0.1s ease;
+  /* No transition on transform: the page script's rAF loop is the single timing
+     authority for the scale and eases it per frame. A CSS transition here would
+     be a second clock restarting every ~16ms write, lagging the lens behind the
+     pointer on fast sweeps. Opacity (hover/active) is CSS's to animate. */
+  transition: opacity 0.12s ease;
 }
 .minimap-marker:hover,
 .minimap-marker:focus-visible {
