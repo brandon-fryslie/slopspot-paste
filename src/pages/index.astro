@@ -17,7 +17,7 @@ const fallbackKinds = SOURCE_KINDS.filter((k) => k !== "claude-share");
     <h1>Share an LLM conversation, readably.</h1>
     <p class="hero-sub">
       Paste a transcript, edit it into clean blocks, and get a link. We render it
-      as a chat — bubbles, code blocks, markdown. Anonymous. Auto-deletes after
+      as a chat — bubbles, code blocks, markdown. Anonymous. Expires after
       30 days.
     </p>
   </section>
@@ -63,7 +63,7 @@ Average O(n log n), worst-case O(n²).
       ></textarea>
       <div class="form-row">
         <button type="submit" class="btn-primary">Share it</button>
-        <span class="form-hint">Up to {MAX_PASTE_LABEL}. No edit, no delete — disappears in 30 days.</span>
+        <span class="form-hint">Up to {MAX_PASTE_LABEL}. No edit — expires in 30 days.</span>
       </div>
     </form>
   </noscript>

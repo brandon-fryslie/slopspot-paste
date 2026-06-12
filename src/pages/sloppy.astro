@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
 import { listConversations } from "../storage";
-import { originOf, viewLifetime } from "../types";
+import { originOf, viewLifetime, isHiddenFromPublic, isPurgeable, GRACE_DAYS } from "../types";
 
 export const prerender = false;
 
@@ -15,10 +15,15 @@ export const prerender = false;
 // that skips the table.
 
 const conversations = await listConversations(env.PASTES);
+const now = Date.now();
 
 // Newest first. Sorting in the page (not the storage layer) keeps the storage
 // API order-agnostic; other callers can sort however they want.
 const rows = [...conversations].sort((a, b) => b.createdAt - a.createdAt);
+
+const liveCount = rows.filter((c) => !isHiddenFromPublic(c, now)).length;
+const tombstonedCount = rows.filter((c) => isHiddenFromPublic(c, now)).length;
+const purgeableCount = rows.filter((c) => isPurgeable(c, now)).length;
 
 // [LAW:effects-at-boundaries] The viewer's timezone is a fact only the browser
 // holds; the Worker cannot know it. So the server emits the canonical epoch
@@ -39,7 +44,7 @@ const fmtUtcFallback = (ms: number): string => {
 // shows "∞", expires shows the day count. The pinned arm produces a value, not a
 // skipped column.
 const fmtLifetime = (c: (typeof rows)[number]): string => {
-  const life = viewLifetime(c.lifetime, Date.now());
+  const life = viewLifetime(c.lifetime, now);
   return life.kind === "pinned" ? "∞" : `${life.days}d`;
 };
 
@@ -73,7 +78,12 @@ const previewOf = (c: (typeof rows)[number]): string => {
   <section class="admin-header">
     <h1>All pastes</h1>
     <p class="admin-meta">
-      <span>{rows.length} {rows.length === 1 ? "paste" : "pastes"}</span>
+      <span>{liveCount} live · {tombstonedCount} tombstoned · {purgeableCount} purgeable</span>
+      {purgeableCount > 0 && (
+        <form class="purge-form" method="POST" action="/api/purge">
+          <button type="submit" class="purge-btn">Purge {purgeableCount} expired</button>
+        </form>
+      )}
     </p>
   </section>
 
@@ -93,39 +103,66 @@ const previewOf = (c: (typeof rows)[number]): string => {
           </tr>
         </thead>
         <tbody>
-          {rows.map((c) => (
-            <tr>
-              <td><a class="admin-slug" href={`/${c.slug}`}>{c.slug}</a></td>
-              <td>
-                <div class="admin-title">{c.title ?? "(untitled)"}</div>
-                <div class="admin-preview">{previewOf(c)}</div>
-              </td>
-              <td class="num">{c.turns.length}</td>
-              <td class="ts"><time class="ts-local" data-ms={c.createdAt}>{fmtUtcFallback(c.createdAt)}</time></td>
-              <td class="num">{fmtLifetime(c)}</td>
-              <td class="lifetime-controls">
-                {canReproject(c) && (
-                  <form class="reproject-form" method="POST" action="/api/reproject">
-                    <input type="hidden" name="slug" value={c.slug} />
-                    <button type="submit" class="reproject-btn">Re-project</button>
-                  </form>
-                )}
-                <form class="refresh-form" method="POST" action="/api/refresh">
-                  <input type="hidden" name="slug" value={c.slug} />
-                  <input type="hidden" name="choice" value="expires" />
-                  <button type="submit" class="refresh-btn">Refresh</button>
-                </form>
-                <form class="pin-form" method="POST" action="/api/refresh">
-                  <input type="hidden" name="slug" value={c.slug} />
-                  <input type="hidden" name="choice" value={isPinned(c) ? "expires" : "pinned"} />
-                  <label class="pin-label">
-                    <input type="checkbox" class="pin-toggle" checked={isPinned(c)} />
-                    <span>auto-refresh</span>
-                  </label>
-                </form>
-              </td>
-            </tr>
-          ))}
+          {rows.map((c) => {
+            const hidden = isHiddenFromPublic(c, now);
+            return (
+              <tr class={hidden ? "row-tombstoned" : ""}>
+                <td>
+                  {hidden
+                    ? <span class="admin-slug admin-slug--dead">{c.slug}</span>
+                    : <a class="admin-slug" href={`/${c.slug}`}>{c.slug}</a>
+                  }
+                  {c.deletedAt !== null && (
+                    <div class="tombstone-label">
+                      deleted <time class="ts-local" data-ms={c.deletedAt}>{fmtUtcFallback(c.deletedAt)}</time>
+                    </div>
+                  )}
+                </td>
+                <td>
+                  <div class="admin-title">{c.title ?? "(untitled)"}</div>
+                  <div class="admin-preview">{previewOf(c)}</div>
+                </td>
+                <td class="num">{c.turns.length}</td>
+                <td class="ts"><time class="ts-local" data-ms={c.createdAt}>{fmtUtcFallback(c.createdAt)}</time></td>
+                <td class="num">{fmtLifetime(c)}</td>
+                <td class="lifetime-controls">
+                  {!hidden && canReproject(c) && (
+                    <form class="reproject-form" method="POST" action="/api/reproject">
+                      <input type="hidden" name="slug" value={c.slug} />
+                      <button type="submit" class="reproject-btn">Re-project</button>
+                    </form>
+                  )}
+                  {!hidden && (
+                    <>
+                      <form class="refresh-form" method="POST" action="/api/refresh">
+                        <input type="hidden" name="slug" value={c.slug} />
+                        <input type="hidden" name="choice" value="expires" />
+                        <button type="submit" class="refresh-btn">Refresh</button>
+                      </form>
+                      <form class="pin-form" method="POST" action="/api/refresh">
+                        <input type="hidden" name="slug" value={c.slug} />
+                        <input type="hidden" name="choice" value={isPinned(c) ? "expires" : "pinned"} />
+                        <label class="pin-label">
+                          <input type="checkbox" class="pin-toggle" checked={isPinned(c)} />
+                          <span>auto-refresh</span>
+                        </label>
+                      </form>
+                      <form class="delete-form" method="POST" action="/api/delete">
+                        <input type="hidden" name="slug" value={c.slug} />
+                        <button type="submit" class="delete-btn">Delete</button>
+                      </form>
+                    </>
+                  )}
+                  {hidden && isPurgeable(c, now) && (
+                    <span class="purgeable-label">purgeable</span>
+                  )}
+                  {hidden && !isPurgeable(c, now) && c.deletedAt !== null && (
+                    <span class="grace-label">grace {GRACE_DAYS}d</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

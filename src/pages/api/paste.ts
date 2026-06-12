@@ -150,6 +150,7 @@ export const POST: APIRoute = async ({ request }) => {
     slug: generateSlug(),
     createdAt: now,
     lifetime: lifetimeFromChoice("expires", now),
+    deletedAt: null,
     turns: parsed.turns,
     title: deriveTitle(parsed.turns),
     // [LAW:one-source-of-truth] The captured source of truth is stamped here,

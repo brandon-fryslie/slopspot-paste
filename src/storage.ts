@@ -1,23 +1,23 @@
 import type { Conversation, Lifetime } from "./types";
-import { toStoredOrigin, TTL_SECONDS } from "./types";
+import { toStoredOrigin, TTL_SECONDS, GRACE_SECONDS } from "./types";
 
-// [LAW:single-enforcer] KV's expirationTtl is the ONLY mechanism that expires a
-// paste. No cron, no sweeper, no "isExpired" check anywhere else. The storage
-// layer removes the key at the deadline; readers see 404 by absence, not by
-// check. Refresh and pin route back through THIS put — they never add a parallel
-// expiry path; they re-state the record's lifetime and let this one enforcer act.
+// [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
+// to KV's expirationTtl. Expiry (auto) and soft-delete (explicit) both set
+// deletedAt and hide the record from public reads. The KV backstop TTL
+// (TTL_SECONDS + GRACE_SECONDS) is a safety net — it keeps the bytes alive
+// through the grace window so the purge step, not KV auto-evict, makes the
+// final call. [LAW:no-silent-failure]: the purge path logs every hard-deletion.
 
 // [LAW:one-way-deps] This module imports types only. Pages/API import storage.
 // Storage never imports rendering.
 
 const KEY_PREFIX = "paste:";
 
-// [LAW:dataflow-not-control-flow] The stored lifetime decides the KV call: the
-// `expires` arm passes a TTL so KV drops the key at the deadline; the `pinned`
-// arm omits it so KV keeps the key forever. Same put, the lifetime value selects
-// the option — not a separate "pin" code path. expirationTtl is reset to the
-// full TTL_SECONDS on every expires put, which is exactly what "refresh = reset
-// the clock" means: re-putting an expires record restarts its countdown.
+// [LAW:dataflow-not-control-flow] The stored lifetime decides the KV backstop
+// TTL: `expires` arm gets a backstop long enough to survive the active lifetime
+// PLUS the full grace window before KV would auto-evict; `pinned` has no TTL
+// (lives forever). The backstop is not the expiry mechanism — it is a failsafe
+// in case the purge step never runs.
 export const putConversation = async (
   kv: KVNamespace,
   c: Conversation,
@@ -25,7 +25,9 @@ export const putConversation = async (
   const key = KEY_PREFIX + c.slug;
   const body = JSON.stringify(c);
   const options =
-    c.lifetime.kind === "pinned" ? undefined : { expirationTtl: TTL_SECONDS };
+    c.lifetime.kind === "pinned"
+      ? undefined
+      : { expirationTtl: TTL_SECONDS + GRACE_SECONDS };
   await kv.put(key, body, options);
 };
 
@@ -70,10 +72,15 @@ export const getConversation = async (
       turns: ReadonlyArray<unknown>;
       expiresAt?: unknown;
       source?: unknown;
+      deletedAt?: unknown;
     };
     return {
       ...parsed,
       lifetime: normalizeLifetime({ lifetime: parsed.lifetime, expiresAt: _legacyExpiresAt }),
+      // [LAW:types-are-the-program] Records written before deletedAt landed have
+      // no such field; normalize to null (live) — absence of a tombstone IS live,
+      // never silently treated as deleted. ([LAW:no-silent-failure])
+      deletedAt: typeof parsed.deletedAt === "number" ? parsed.deletedAt : null,
       turns: parsed.turns.map(normalizeTurn),
       // [LAW:types-are-the-program] Records written before origin capture landed
       // (or hand-edited to junk) read as `absent` — honest absence of a captured
@@ -88,6 +95,15 @@ export const getConversation = async (
   } catch {
     return null;
   }
+};
+
+// Permanently remove a KV record — called only by the purge path after the
+// grace window. [LAW:no-silent-failure]: callers log what they delete.
+export const deleteConversation = async (
+  kv: KVNamespace,
+  slug: string,
+): Promise<void> => {
+  await kv.delete(KEY_PREFIX + slug);
 };
 
 // [LAW:one-source-of-truth] Admin listing derives from the same KV records

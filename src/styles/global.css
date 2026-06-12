@@ -997,6 +997,55 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   cursor: pointer;
 }
 .admin-table .pin-toggle { cursor: pointer; }
+.admin-table .delete-form { margin: 0; }
+.admin-table .delete-btn {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.admin-table .delete-btn:hover { border-color: #c0392b; color: #c0392b; }
+
+/* Tombstoned row — visually dimmed, controls hidden. */
+.admin-table .row-tombstoned td { opacity: 0.45; }
+.admin-table .row-tombstoned:hover td { opacity: 0.65; }
+.admin-table .admin-slug--dead {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+.admin-table .tombstone-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+.admin-table .purgeable-label,
+.admin-table .grace-label {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.admin-table .purgeable-label { color: #c0392b; }
+
+/* Purge button in admin header */
+.admin-meta { display: flex; align-items: center; gap: 12px; }
+.admin-table .purge-form,
+.purge-form { margin: 0; }
+.purge-btn {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 10px;
+  border: 1px solid #c0392b;
+  border-radius: 6px;
+  background: transparent;
+  color: #c0392b;
+  cursor: pointer;
+}
+.purge-btn:hover { background: #c0392b; color: #fff; }
 
 /* The admin route earns more horizontal room than the 820px reading column. */
 body:has(.admin-table-wrap) main,
