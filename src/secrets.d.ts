@@ -6,5 +6,8 @@
 declare namespace Cloudflare {
   interface Env {
     readonly FIRECRAWL_API_KEY?: string;
+    // [LAW:single-enforcer] Auth gate password for the admin surface. Absent in
+    // dev (passthrough); set via `wrangler secret put ADMIN_SECRET` in production.
+    readonly ADMIN_SECRET?: string;
   }
 }
