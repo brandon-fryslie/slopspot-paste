@@ -24,32 +24,39 @@ const roleLabel: Record<Role, string> = {
   system: "System",
 };
 
+// [LAW:dataflow-not-control-flow] Collapsed-by-default is a VALUE, not a branch.
+// Adding a kind here is a data change; no renderer changes. [LAW:one-type-per-behavior]
+const COLLAPSED_BY_DEFAULT = new Set(["thinking"]);
+
+// Returns "" for collapsed-by-default (no open attribute), " open" for others.
+const openAttr = (kind: string): string =>
+  COLLAPSED_BY_DEFAULT.has(kind) ? "" : " open";
+
 const messageHtml = (role: Role, content: string, index: number): string =>
-  `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}">` +
-  `<header class="bubble-role">` +
+  `<details class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}"${openAttr("message")}>` +
+  `<summary class="bubble-role bubble-summary">` +
   `<span class="role-dot role-dot-${role}" aria-hidden="true"></span>` +
   `<span class="role-name">${roleLabel[role]}</span>` +
-  `</header>` +
+  `</summary>` +
   `<div class="bubble-body">${renderMarkdown(content)}</div>` +
-  `</article>`;
+  `</details>`;
 
 const insightHtml = (content: string, index: number): string =>
-  `<article class="bubble bubble-insight" data-kind="insight" data-index="${index}">` +
-  `<header class="bubble-role">` +
+  `<details class="bubble bubble-insight" data-kind="insight" data-index="${index}"${openAttr("insight")}>` +
+  `<summary class="bubble-role bubble-summary">` +
   `<span class="role-dot role-dot-insight" aria-hidden="true">★</span>` +
   `<span class="role-name">Insight</span>` +
-  `</header>` +
+  `</summary>` +
   `<div class="bubble-body">${renderMarkdown(content)}</div>` +
-  `</article>`;
+  `</details>`;
 
 // [LAW:no-ambient-temporal-coupling] The browser's native <details>/<summary>
 // owns the open/closed lifecycle — no client script, no timing authority.
-// Collapsed-by-default is the absence of the `open` attribute. A source without
-// thinking emits no thinking Turn, so no <details> renders and there is no empty
-// toggle — the "when available" of the ticket is a value transition, not a flag.
+// Collapsed-by-default is the absence of the `open` attribute, driven by
+// COLLAPSED_BY_DEFAULT above. [LAW:dataflow-not-control-flow]
 const thinkingHtml = (content: string, index: number): string =>
-  `<details class="bubble bubble-thinking" data-kind="thinking" data-index="${index}">` +
-  `<summary class="bubble-role thinking-summary">` +
+  `<details class="bubble bubble-thinking" data-kind="thinking" data-index="${index}"${openAttr("thinking")}>` +
+  `<summary class="bubble-role bubble-summary thinking-summary">` +
   `<span class="role-dot role-dot-thinking" aria-hidden="true">✻</span>` +
   `<span class="role-name">Thinking</span>` +
   `</summary>` +
@@ -154,13 +161,6 @@ const toolCallHtml = (
   const hasArgs = args.trim().length > 0;
   const showHeaderArgs = (kind === "diff" || kind === "file-read") && hasArgs;
 
-  const header =
-    `<header class="tool-header">` +
-    `<span class="tool-arrow" aria-hidden="true">▸</span>` +
-    `<span class="tool-name">${escapeHtml(tool)}</span>` +
-    (showHeaderArgs ? `<span class="tool-path">${escapeHtml(args.trim())}</span>` : "") +
-    `</header>`;
-
   // [LAW:dataflow-not-control-flow] The body is the output value's shape: each
   // ToolOutputKind maps to exactly one frame. generic-with-args is the only
   // case that emits two frames (an args block + the output block).
@@ -179,11 +179,15 @@ const toolCallHtml = (
             : codeFrame("generic", "output", output.text);
 
   return (
-    `<article class="bubble bubble-tool-call" data-kind="tool-call" data-tool="${escapeAttr(tool)}" data-index="${index}">` +
-    header +
+    `<details class="bubble bubble-tool-call" data-kind="tool-call" data-tool="${escapeAttr(tool)}" data-index="${index}"${openAttr("tool-call")}>` +
+    `<summary class="tool-header tool-summary">` +
+    `<span class="tool-arrow" aria-hidden="true">▸</span>` +
+    `<span class="tool-name">${escapeHtml(tool)}</span>` +
+    (showHeaderArgs ? `<span class="tool-path">${escapeHtml(args.trim())}</span>` : "") +
+    `</summary>` +
     body +
     outputFrame +
-    `</article>`
+    `</details>`
   );
 };
 

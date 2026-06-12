@@ -1325,7 +1325,9 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
 
   const has = (label: string, needle: string) => assert(label, html.includes(needle));
 
-  has("message user bubble", '<article class="bubble bubble-user" data-kind="message" data-role="user"');
+  // All collapsible turns use <details>/<summary>; open attribute = expanded-by-default.
+  has("message user bubble", '<details class="bubble bubble-user" data-kind="message" data-role="user"');
+  has("message user bubble open", 'class="bubble bubble-user" data-kind="message" data-role="user" data-index="0" open>');
   has("message assistant bubble", 'class="bubble bubble-assistant"');
   has("message system bubble", 'class="bubble bubble-system"');
   has("role label rendered", '<span class="role-name">Assistant</span>');
@@ -1334,15 +1336,14 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
   // Thinking renders as a native <details> WITHOUT `open` → collapsed by default,
   // with a <summary> the browser makes the toggle. No client script involved.
   has("thinking details (collapsed: no open attr)", '<details class="bubble bubble-thinking" data-kind="thinking"');
-  has("thinking summary toggle", '<summary class="bubble-role thinking-summary">');
+  has("thinking summary toggle", '<summary class="bubble-role bubble-summary thinking-summary">');
   has("thinking name", '<span class="role-name">Thinking</span>');
   assert("thinking <details> is collapsed (no open attribute)",
     !/<details class="bubble bubble-thinking"[^>]*\bopen\b/.test(html));
-  // A turn set with NO thinking emits NO <details> — no empty toggle.
-  const noThink = renderTurnsHtml([{ kind: "message", role: "user", content: "hi" }]);
-  assert("sources without thinking render no <details> toggle", !noThink.includes("<details"));
+  // Messages default to open (expanded); thinking defaults to closed (collapsed).
+  assert("message turns default open (expanded)", /<details class="bubble bubble-user"[^>]*\bopen\b/.test(html));
   has("turn-summary aside", '<aside class="bubble-turn-summary" data-kind="turn-summary"');
-  has("tool-call article + data-tool", '<article class="bubble bubble-tool-call" data-kind="tool-call" data-tool="Bash"');
+  has("tool-call details + data-tool", '<details class="bubble bubble-tool-call" data-kind="tool-call" data-tool="Bash"');
   has("terminal frame", 'data-output-kind="terminal"');
   has("terminal $-prefix", '$ ls -la');
   has("diff frame", 'data-output-kind="diff"');
