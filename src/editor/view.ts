@@ -399,9 +399,10 @@ const toolbar = (store: EditorStore): TemplateResult => html`
 `;
 
 // [LAW:one-source-of-truth] previewHtml comes from renderTurnsHtml — the SAME
-// renderer the permalink uses. data-platform reads store.activePlatform (the
-// single resolved value: userPlatform override or derived from source) so the
-// preview reflects the same theme the permalink will apply on share.
+// renderer the permalink uses. data-platform reads store.activePlatform:
+// - Override: userPlatform === conversation.platformOverride by construction.
+// - Auto: all three submitOrigin arms preserve source: sourceOf(importOrigin),
+//   so sourceOf(submitOrigin) === sourceOf(importOrigin) and platformOf is equal.
 // unsafeHTML is correct: that string is the renderer's own escaped output.
 const previewPane = (store: EditorStore): TemplateResult => html`
   <section class="preview-pane bubbles" data-platform=${store.activePlatform}>
