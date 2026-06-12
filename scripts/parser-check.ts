@@ -1628,13 +1628,13 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
   );
 
   // --- submit moves the Draft (turns + stamped origin) across the boundary ---
-  // A markdown import is not a share, so submit stamps an `editor` origin that
-  // preserves the styling provenance (sourceOf → markdown).
+  // A pristine confirmed reparse stamps the verbatim text origin (markdown here),
+  // preserving the source of truth rather than collapsing to an editor origin.
   await s2.submit();
   const s2Origin = f2.submitted[0]?.origin;
   assert(
-    "submit stamps an editor origin for a text import",
-    s2Origin?.kind === "editor" && sourceOf(s2Origin) === "markdown",
+    "submit stamps the verbatim text origin for a pristine text import",
+    s2Origin?.kind === "markdown" && "content" in s2Origin,
   );
   assertEq("submit navigates on success", f2.navigated[0], "test-slug");
 
@@ -1816,6 +1816,23 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   assert(
     "an edited share collapses to editor while keeping claude-share styling",
     edited.kind === "editor" && edited.source === "claude-share",
+  );
+
+  // --- a pristine text import stamps the verbatim content origin (o2q.4) ---
+  //     The turns ARE parse(content), so the stored paste is replayable without
+  //     collapsing to the editor arm. isDirty=false is the discriminator.
+  const textIo: EditorIo = {
+    ...io,
+    submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
+  };
+  const text = new EditorStore(textIo);
+  text.setImport("## User\nhello\n\n## Assistant\nworld");
+  text.ingest();
+  assert("text import loads turns and is not dirty", text.blocks.length === 2 && !text.isDirty);
+  const pristineText = text.submitOrigin;
+  assert(
+    "a pristine text import stamps its verbatim content origin, not an editor arm",
+    pristineText.kind === "markdown" && "content" in pristineText,
   );
 
   // --- authored from scratch (no import) stamps editor with no provenance ---

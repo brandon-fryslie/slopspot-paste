@@ -159,19 +159,18 @@ export class EditorStore {
     return sourceOf(this.importOrigin);
   }
 
-  // [LAW:one-source-of-truth] The origin to STAMP at submit. A pristine share
-  // import is the one replayable source of truth the editor carries verbatim
-  // (its url + fetched bytes survive), so it is stamped as a claude-share origin
-  // whose url the paste page links back to. Everything else — edited turns (the
-  // turns are now the source, not the upstream share), a text import (the epic
-  // captures text content on the direct submit paths, not this editor view), or
-  // authored-from-scratch (null) — stamps an `editor` origin that preserves the
-  // styling provenance. isDirty is the reliable signal: it compares same-source
-  // turns, and a claude-share import has no usage events to be stripped, so
-  // "not dirty" means the stored turns will equal reproject(origin).
+  // [LAW:one-source-of-truth] The origin to STAMP at submit. A pristine import
+  // (importOrigin non-null, turns not hand-edited) carries its verbatim source —
+  // text arms their `content`, share its `url + fetched` — so stamp it directly:
+  // the stored paste reproduces the same turns via reproject(origin). From-scratch
+  // authoring (importOrigin === null) or dirty turns stamp `{kind:'editor'}` — the
+  // Turns ARE the source, so reprojectOrigin returns null and canonicalize preserves
+  // them verbatim. isDirty is the reliable signal: it compares same-source turns,
+  // and text / share imports have no usage events to be stripped, so "not dirty"
+  // means stored turns will equal reproject(origin).
   get submitOrigin(): Origin {
     const o = this.importOrigin;
-    return o !== null && o.kind === "claude-share" && !this.isDirty
+    return o !== null && !this.isDirty
       ? o
       : { kind: "editor", source: sourceOf(o) };
   }
