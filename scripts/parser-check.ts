@@ -1634,7 +1634,7 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
   const s2Origin = f2.submitted[0]?.origin;
   assert(
     "submit stamps the verbatim text origin for a pristine text import",
-    s2Origin?.kind === "markdown" && "content" in s2Origin,
+    s2Origin?.kind === "markdown" && s2Origin.content === "## User\nbrand\n\n## Assistant\nnew",
   );
   assertEq("submit navigates on success", f2.navigated[0], "test-slug");
 
@@ -1832,7 +1832,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   const pristineText = text.submitOrigin;
   assert(
     "a pristine text import stamps its verbatim content origin, not an editor arm",
-    pristineText.kind === "markdown" && "content" in pristineText,
+    pristineText.kind === "markdown" && pristineText.content === "## User\nhello\n\n## Assistant\nworld",
   );
 
   // --- authored from scratch (no import) stamps editor with no provenance ---
