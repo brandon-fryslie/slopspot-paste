@@ -111,7 +111,40 @@ const sourceUrl = sourceUrlOf(origin);
     // One marker per turn, in order. Colour is carried as data-* and mapped to a
     // hue by CSS — no colour logic in JS. The button is the correct interactive
     // semantic, so keyboard activation and focus come for free.
+    // [LAW:types-are-the-program] MAX_LINES line-slots exist per marker — the
+    // cap is structural, so "more than 5 lines" is unrepresentable rather than
+    // defended against. lineFractions is a total function of one value (the
+    // turn's rendered height) → a fixed-length array of per-line width fractions
+    // in [0,1]. Length is proportional up to KNEE lines, then bends strongly and
+    // asymptotically toward MAX_LINES (a real cap the curve never exceeds). The
+    // last non-zero entry is the partial final line; the rest are full (1) or
+    // unused (0). MIN_FILL keeps the shortest turn a legible stub.
+    const MAX_LINES = 5;
+    const L_LINE = 130; // rendered px that fills one minimap line
+    const KNEE = 3; // lines below which length is proportional
+    const SIGMA = 1.25; // bend strength of the approach to MAX_LINES
+    const MIN_FILL = 0.22; // shortest turn still shows this fraction of a line
+    const lineFractions = (h: number): number[] => {
+      const u = h / L_LINE; // proportional line count, unbounded
+      const real =
+        u <= KNEE
+          ? u
+          : KNEE + (MAX_LINES - KNEE) * (1 - Math.exp(-(u - KNEE) / SIGMA));
+      const count = Math.min(MAX_LINES, Math.max(MIN_FILL, real));
+      const full = Math.floor(count);
+      const partial = count - full;
+      return Array.from({ length: MAX_LINES }, (_, i) =>
+        i < full ? 1 : i === full ? partial : 0,
+      );
+    };
+
     const markers = new Map<number, HTMLButtonElement>();
+    // [LAW:decomposition] The marker and the turn it projects are one part with
+    // two faces; keeping the pair lets the geometry pass measure the turn and
+    // size its lines without a Map lookup + null guard the construction makes
+    // impossible. Each marker owns exactly MAX_LINES line slots, created once;
+    // recompute only sets their widths.
+    const bars: { el: HTMLElement; lines: HTMLSpanElement[] }[] = [];
     for (const el of turns) {
       const index = Number(el.dataset.index);
       const btn = document.createElement("button");
@@ -125,8 +158,15 @@ const sourceUrl = sourceUrlOf(origin);
       btn.addEventListener("click", () =>
         el.scrollIntoView({ behavior: "smooth", block: "start" }),
       );
+      const lines = Array.from({ length: MAX_LINES }, () => {
+        const line = document.createElement("span");
+        line.className = "minimap-line";
+        btn.appendChild(line);
+        return line;
+      });
       nav.appendChild(btn);
       markers.set(index, btn);
+      bars.push({ el, lines });
     }
     document.body.appendChild(nav);
 
@@ -155,14 +195,32 @@ const sourceUrl = sourceUrlOf(origin);
     // off-screen turns has any value. No magic turn-count threshold. ResizeObserver
     // owns content-size changes (images, fonts, reflow); window resize owns
     // viewport changes; both feed the one derived boolean.
-    const recomputeOverflow = (): void => {
+    // [LAW:no-ambient-temporal-coupling] One owner recomputes everything that
+    // depends on layout: the overflow boolean and the length-derived bar sizes.
+    // [LAW:effects-at-boundaries] measuring rendered height is browser-only —
+    // all reads happen first, then all writes, so we never interleave a read
+    // after a write and force a synchronous reflow per bar.
+    const recompute = (): void => {
       const overflows =
         document.documentElement.scrollHeight > window.innerHeight + 4;
       document.body.classList.toggle("has-timeline", overflows);
+
+      const fractions = bars.map(({ el }) =>
+        lineFractions(el.getBoundingClientRect().height),
+      );
+      bars.forEach(({ lines }, i) => {
+        lines.forEach((line, j) => {
+          const f = fractions[i]![j]!;
+          // A zero-width slot is removed from the flow so it adds neither height
+          // nor gap; otherwise the line shows its fraction of the full width.
+          line.style.display = f > 0 ? "block" : "none";
+          line.style.width = `${(f * 100).toFixed(1)}%`;
+        });
+      });
     };
-    new ResizeObserver(recomputeOverflow).observe(document.documentElement);
-    window.addEventListener("resize", recomputeOverflow);
-    recomputeOverflow();
+    new ResizeObserver(recompute).observe(document.documentElement);
+    window.addEventListener("resize", recompute);
+    recompute();
 
     // [LAW:effects-at-boundaries] The clipboard is browser-only state; the copy
     // affordance is wired here, not on the server. [LAW:one-source-of-truth] each
