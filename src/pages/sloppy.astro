@@ -22,7 +22,11 @@ const now = Date.now();
 const rows = [...conversations].sort((a, b) => b.createdAt - a.createdAt);
 
 const liveCount = rows.filter((c) => !isHiddenFromPublic(c, now)).length;
-const tombstonedCount = rows.filter((c) => isHiddenFromPublic(c, now)).length;
+// [LAW:one-source-of-truth] Split by cause of hiding so the admin stats are honest:
+// explicitly soft-deleted (deletedAt set) vs. naturally expired (expiresAt past,
+// deletedAt null). A fused "tombstoned" count would be a representation that lies.
+const deletedCount = rows.filter((c) => c.deletedAt !== null).length;
+const expiredCount = rows.filter((c) => c.deletedAt === null && isHiddenFromPublic(c, now)).length;
 const purgeableCount = rows.filter((c) => isPurgeable(c, now)).length;
 
 // [LAW:effects-at-boundaries] The viewer's timezone is a fact only the browser
@@ -78,7 +82,7 @@ const previewOf = (c: (typeof rows)[number]): string => {
   <section class="admin-header">
     <h1>All pastes</h1>
     <p class="admin-meta">
-      <span>{liveCount} live · {tombstonedCount} tombstoned · {purgeableCount} purgeable</span>
+      <span>{liveCount} live · {deletedCount} deleted · {expiredCount} expired · {purgeableCount} purgeable</span>
       {purgeableCount > 0 && (
         <form class="purge-form" method="POST" action="/api/purge">
           <button type="submit" class="purge-btn">Purge {purgeableCount} expired</button>
@@ -156,7 +160,7 @@ const previewOf = (c: (typeof rows)[number]): string => {
                   {hidden && isPurgeable(c, now) && (
                     <span class="purgeable-label">purgeable</span>
                   )}
-                  {hidden && !isPurgeable(c, now) && c.deletedAt !== null && (
+                  {hidden && !isPurgeable(c, now) && (
                     <span class="grace-label">grace {GRACE_DAYS}d</span>
                   )}
                 </td>
