@@ -157,6 +157,11 @@ export interface Conversation {
   // stored). `source` (which SourceKind ingested it, for styling) is DERIVED via
   // sourceOf(origin) — never stored independently, so the two cannot drift.
   readonly origin: Origin | null;
+  // [LAW:one-source-of-truth] Optional user-chosen platform override. When set,
+  // the permalink uses this instead of deriving from source — makes the editor's
+  // theme choice meaningful on the shared link. Absent = derive from source as
+  // always. `source` remains authoritative; this is a display override only.
+  readonly platformOverride?: Platform;
 }
 
 // [LAW:single-enforcer] Three distinct time windows, stated once:
@@ -397,6 +402,9 @@ export const TEXT_ARM_KINDS: ReadonlyArray<TextArmKind> = SOURCE_KINDS.filter(
 
 export const isSourceKind = (v: unknown): v is SourceKind =>
   typeof v === "string" && (SOURCE_KINDS as ReadonlyArray<string>).includes(v);
+
+export const isPlatform = (v: unknown): v is Platform =>
+  typeof v === "string" && (PLATFORMS as ReadonlyArray<string>).includes(v);
 
 // [LAW:one-type-per-behavior] Several source kinds style identically — they are
 // instances of one Platform, not seven independent themes. The grouping is

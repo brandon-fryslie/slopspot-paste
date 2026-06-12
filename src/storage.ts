@@ -1,5 +1,5 @@
 import type { Conversation, Lifetime } from "./types";
-import { isOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
+import { isOrigin, isPlatform, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
 // to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
@@ -105,6 +105,7 @@ export const getConversation = async (
       // loses its captured source. The legacy `source` field is dropped: styling
       // is derived from origin on read. [LAW:no-silent-failure]
       origin: normalizeOrigin(parsed.origin),
+      platformOverride: isPlatform(parsed.platformOverride) ? parsed.platformOverride : undefined,
     } as Conversation;
   } catch {
     return null;
