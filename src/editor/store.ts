@@ -15,8 +15,8 @@
 // explosion). Variability lives in the turn value crossing one seam.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { Origin, ParseResult, SourceKind, Turn } from "../types";
-import { sourceOf, textArmInput } from "../types";
+import type { Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
+import { platformOf, sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
@@ -44,9 +44,12 @@ export type ImportResult = ParseResult;
 // from the turns it describes, so it cannot be dropped at one seam and kept at
 // another. The origin a Draft carries is the IMPORT origin (where the turns came
 // from); the store derives the origin to STAMP at submit time (see submitOrigin).
+// platformOverride carries the user's explicit theme pick to the paste API so
+// the permalink honors it instead of re-deriving from source.
 export interface Draft {
   readonly turns: ReadonlyArray<Turn>;
   readonly origin: Origin | null;
+  readonly platformOverride?: Platform;
 }
 
 // [LAW:effects-at-boundaries] The store's entire contact with the world, named
@@ -79,6 +82,10 @@ export class EditorStore {
   // would drift from the text — "raw" is always detected, so a stored default
   // could never re-snap to a more-specific format once set.
   userKind: SourceKind | null = null;
+  // [LAW:one-source-of-truth] Explicit platform override; null = auto-derive from
+  // source. Cleared on every loadTurns so new content re-snaps to detection.
+  // activePlatform = userPlatform ?? platformOf(source) is the single resolution.
+  userPlatform: Platform | null = null;
   // [LAW:one-source-of-truth] The Origin the loaded turns were imported from —
   // the captured source of truth (for share, its url + fetched bytes), set only
   // by loadTurns (the single loader every parse/fetch/draft-restore passes
@@ -159,6 +166,12 @@ export class EditorStore {
     return sourceOf(this.importOrigin);
   }
 
+  // [LAW:one-source-of-truth] userPlatform ?? derived — mirrors the userKind /
+  // importKind seam. The view reads this one getter; it never inspects both.
+  get activePlatform(): Platform {
+    return this.userPlatform ?? platformOf(this.source);
+  }
+
   // [LAW:one-source-of-truth] The origin to STAMP at submit. Three cases, keyed on
   // import state and dirty flag:
   //   1. Pristine import (!isDirty, importOrigin set): stamp origin directly — stored
@@ -219,6 +232,10 @@ export class EditorStore {
     this.userKind = kind;
     this.importError = null;
     this.pendingReparse = null;
+  }
+
+  setPlatform(platform: Platform | null): void {
+    this.userPlatform = platform;
   }
 
   // The single import action. claude-share is the async URL arm (delegates to
@@ -306,6 +323,9 @@ export class EditorStore {
     this.importOrigin = draft.origin;
     this.pendingReparse = null;
     this.view = "blocks";
+    // [LAW:no-mode-explosion] New content snaps theme back to auto-detection;
+    // a stale override silently diverging from new content is a hidden mode.
+    this.userPlatform = null;
   }
 
   // [LAW:dataflow-not-control-flow] The one card mutation. The view computes the
@@ -380,7 +400,11 @@ export class EditorStore {
     if (!this.canSubmit) return;
     this.busy = true;
     this.submitError = null;
-    const result = await this.io.submit({ turns: this.turns, origin: this.submitOrigin });
+    const result = await this.io.submit({
+      turns: this.turns,
+      origin: this.submitOrigin,
+      platformOverride: this.userPlatform ?? undefined,
+    });
     runInAction(() => {
       this.busy = false;
       if (!result.ok) this.submitError = result.reason;

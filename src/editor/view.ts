@@ -12,8 +12,8 @@
 import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
 import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
-import type { Role, SourceKind, ToolOutputKind, Turn } from "../types";
-import { platformOf, ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
+import type { Platform, Role, SourceKind, ToolOutputKind, Turn } from "../types";
+import { PLATFORMS, ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { convertKind, KINDS } from "./blocks";
 import type { EditorStore } from "./store";
@@ -283,6 +283,22 @@ const asSourceKind = (store: EditorStore, v: string): SourceKind => {
   return found;
 };
 
+// [LAW:no-silent-failure] Re-narrow a platform <select> value back to Platform.
+// "" represents "Auto" (null override); any other value must be a Platform.
+const parsePlatformSelect = (v: string): Platform | null => {
+  if (v === "") return null;
+  const found = PLATFORMS.find((p) => p === v);
+  if (found === undefined) throw new Error(`unknown platform: ${v}`);
+  return found;
+};
+
+const PLATFORM_DISPLAY: Record<Platform, string> = {
+  "claude-web": "Claude",
+  "claude-code": "Claude Code",
+  "chatgpt": "ChatGPT",
+  "generic": "Generic",
+};
+
 const importBox = (store: EditorStore): TemplateResult => html`
   <div class="import-box">
     <label class="visually-hidden" for="import-text">Conversation to import</label>
@@ -344,6 +360,17 @@ const countsLabel = (counts: Record<Kind, number>): string => {
   return parts.length === 0 ? "No blocks yet" : parts.join(" · ");
 };
 
+const platformSelect = (store: EditorStore): TemplateResult => html`
+  <select
+    class="source-select"
+    .value=${store.userPlatform ?? ""}
+    @change=${(e: Event) => store.setPlatform(parsePlatformSelect(valueOf(e)))}
+  >
+    <option value="">Theme: Auto</option>
+    ${PLATFORMS.map((p) => html`<option value=${p}>${PLATFORM_DISPLAY[p]}</option>`)}
+  </select>
+`;
+
 const toolbar = (store: EditorStore): TemplateResult => html`
   <div class="editor-toolbar">
     <div class="view-toggle" role="tablist">
@@ -361,6 +388,7 @@ const toolbar = (store: EditorStore): TemplateResult => html`
       </button>
     </div>
     <span class="block-counts">${countsLabel(store.counts)}</span>
+    ${platformSelect(store)}
     <button class="btn-primary" ?disabled=${!store.canSubmit} @click=${() => store.submit()}>
       ${store.busy ? "Sharing…" : "Share it"}
     </button>
@@ -371,11 +399,13 @@ const toolbar = (store: EditorStore): TemplateResult => html`
 `;
 
 // [LAW:one-source-of-truth] previewHtml comes from renderTurnsHtml — the SAME
-// renderer the permalink uses. data-platform mirrors the same derivation
-// ([slug].astro:46-47) so the palette matches the permalink exactly.
+// renderer the permalink uses. data-platform reads store.activePlatform:
+// - Override: userPlatform === conversation.platformOverride by construction.
+// - Auto: all three submitOrigin arms preserve source: sourceOf(importOrigin),
+//   so sourceOf(submitOrigin) === sourceOf(importOrigin) and platformOf is equal.
 // unsafeHTML is correct: that string is the renderer's own escaped output.
 const previewPane = (store: EditorStore): TemplateResult => html`
-  <section class="preview-pane bubbles" data-platform=${platformOf(store.source)}>
+  <section class="preview-pane bubbles" data-platform=${store.activePlatform}>
     ${unsafeHTML(store.previewHtml)}
   </section>
 `;
