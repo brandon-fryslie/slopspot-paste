@@ -14,13 +14,13 @@
 //
 // Deriving from Turn[] (not directly from JSONL) is deliberate: every parser —
 // jsonl, claude-code, chatgpt, markdown, and the editor's authored turns — converges
-// to Turn[], so this one projection serves all sources uniformly. The richer
-// JSONL-only linkage (parentUuid / isSidechain for subagents) is a later concern:
-// cbm.4 adds a `subagent` AssistantBlock arm carrying a nested `Dialogue`, which is
-// why Dialogue is named and recursive-ready below — but that arm is out of scope
-// here and not yet representable, so no source can produce one.
+// to Turn[], so this one projection serves all sources uniformly. The subagent
+// linkage the jsonl parser reattaches rides on the Turn stream too: a `subagent`
+// Turn carries the nested run as a Turn[], and deriveDialogue recurses on it to
+// produce a nested `Dialogue` — which is why Dialogue is named and recursive-ready
+// below, and why the same renderer can draw any depth.
 
-import type { Role, Turn, ToolOutput, Usage } from "./types";
+import type { Role, Turn, ToolOutput, Usage, SubagentTranscript } from "./types";
 
 // [LAW:types-are-the-program] A block of agent activity inside one assistant turn.
 // Each arm carries exactly the fields its kind needs — a tool-call's result lives
@@ -41,7 +41,29 @@ export type AssistantBlock =
     }
   | { readonly kind: "insight"; readonly content: string }
   | { readonly kind: "turn-summary"; readonly text: string }
-  | { readonly kind: "usage"; readonly usage: Usage };
+  | { readonly kind: "usage"; readonly usage: Usage }
+  | {
+      // [LAW:types-are-the-program] The recursion point. A subagent block carries
+      // its run as a nested `Dialogue` (captured) — the SAME type the outer
+      // conversation is, so the SAME renderer draws it one level in. The body is
+      // the display projection of the source's two capture outcomes (see
+      // SubagentTranscript): a full nested dialogue, or the degraded prompt+result
+      // when the transcript was never captured. agentType/description/stepCount
+      // identify the run on the condensed summary line.
+      readonly kind: "subagent";
+      readonly agentType: string | null;
+      readonly description: string | null;
+      readonly stepCount: number;
+      readonly body: SubagentBody;
+    };
+
+// [LAW:types-are-the-program] The display twin of SubagentTranscript: `captured`
+// holds a nested `Dialogue` (already derived, ready to recurse through the
+// renderer); `summary-only` holds the degraded prompt+result. The mapping from
+// the stored SubagentTranscript happens once, in deriveDialogue.
+export type SubagentBody =
+  | { readonly kind: "captured"; readonly transcript: Dialogue }
+  | { readonly kind: "summary-only"; readonly prompt: string; readonly result: string };
 
 // [LAW:types-are-the-program] A spine node is the always-visible outer layer: a
 // human/system message, or an assistant turn. The asymmetry IS the disclosure
@@ -82,6 +104,7 @@ export const BLOCK_VISIBILITY: { readonly [K in AssistantBlock["kind"]]: Visibil
   insight: "spine",
   thinking: "detail",
   "tool-call": "detail",
+  subagent: "detail",
   "turn-summary": "meta",
   usage: "meta",
 };
@@ -113,6 +136,16 @@ const assertNever = (turn: never): never => {
 // control flow lives HERE, at the projection, so the OUTPUT type carries the whole
 // grouping. Downstream rendering maps the model and never reconstructs grouping
 // with positional heuristics. The model shape IS the disclosure spec.
+// [LAW:dataflow-not-control-flow] Map the stored transcript's two arms to the
+// display body's two arms — one switch, no branch that skips work. The captured
+// arm recurses through deriveDialogue (the nested run becomes a nested Dialogue);
+// the degraded arm carries its prompt+result verbatim. Forward reference to
+// deriveDialogue is sound: both are module consts, invoked only at call time.
+const deriveSubagentBody = (transcript: SubagentTranscript): SubagentBody =>
+  transcript.kind === "captured"
+    ? { kind: "captured", transcript: deriveDialogue(transcript.turns) }
+    : { kind: "summary-only", prompt: transcript.prompt, result: transcript.result };
+
 export const deriveDialogue = (turns: ReadonlyArray<Turn>): Dialogue => {
   const spine: SpineNode[] = [];
   // The open assistant node's blocks, or null when the spine is between assistant
@@ -161,6 +194,19 @@ export const deriveDialogue = (turns: ReadonlyArray<Turn>): Dialogue => {
         break;
       case "usage":
         openAssistant().push({ kind: "usage", usage: turn.usage });
+        break;
+      case "subagent":
+        // [LAW:one-type-per-behavior] The nested run is the same kind of thing as
+        // the outer conversation, so it is derived by the SAME function — recursion,
+        // not a parallel subagent projection. The captured arm re-runs deriveDialogue
+        // on its Turn[]; the degraded arm passes its prompt+result straight through.
+        openAssistant().push({
+          kind: "subagent",
+          agentType: turn.agentType,
+          description: turn.description,
+          stepCount: turn.stepCount,
+          body: deriveSubagentBody(turn.transcript),
+        });
         break;
       default:
         return assertNever(turn);

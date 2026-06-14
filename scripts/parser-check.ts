@@ -25,6 +25,7 @@ import { condenseToolCall, primaryArgValue, TOOL_PRIMARY_ARG } from "../src/tool
 import {
   convertKind,
   emptyTurn,
+  isAuthorable,
   mergeTurns,
   newId,
   splitTurn,
@@ -2329,6 +2330,168 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   // reprojected origin (proven for deriveDialogue in cbm.1; here for the renderer).
   const empty = renderDialogueHtml(deriveDialogue([]));
   assertEq("empty dialogue → empty render", empty, "");
+}
+
+console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
+{
+  // [LAW:no-silent-failure] Mirrors the VERIFIED real-CC shape: the main blob has
+  // an `Agent` tool_use; its tool_result event carries a TOP-LEVEL `toolUseResult`
+  // whose `agentId` joins to a subagent group of lines (isSidechain:true, agentId)
+  // — the subagent's own transcript, concatenated onto the main blob by the
+  // uploader. Reattachment is by that id, never positionally.
+  const MAIN = [
+    { type: "user", message: { role: "user", content: "analyze the repo" } },
+    {
+      type: "assistant",
+      message: {
+        role: "assistant", id: "m1",
+        content: [
+          { type: "text", text: "I'll delegate." },
+          { type: "tool_use", id: "tu1", name: "Agent",
+            input: { subagent_type: "Explore", description: "Scout the repo", prompt: "Find the config files" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      // Top-level toolUseResult is the join: agentId -> subagent group; plus the
+      // final result text + the source's own step count.
+      toolUseResult: {
+        agentId: "a1", agentType: "Explore", status: "completed",
+        prompt: "Find the config files", content: "Found 2 configs", totalToolUseCount: 2,
+      },
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "Found 2 configs" }] },
+    },
+    { type: "assistant", message: { role: "assistant", id: "m2", content: [{ type: "text", text: "Thanks, done." }] } },
+  ];
+  const SIDECHAIN = [
+    { type: "user", isSidechain: true, agentId: "a1", message: { role: "user", content: "Find the config files" } },
+    {
+      type: "assistant", isSidechain: true, agentId: "a1",
+      message: {
+        role: "assistant", id: "s1",
+        content: [
+          { type: "text", text: "Looking." },
+          { type: "tool_use", id: "st1", name: "Read", input: { file_path: "wrangler.toml" } },
+        ],
+      },
+    },
+    {
+      type: "user", isSidechain: true, agentId: "a1",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "st1", content: "name = x" }] },
+    },
+    { type: "assistant", isSidechain: true, agentId: "a1", message: { role: "assistant", id: "s2", content: [{ type: "text", text: "Found 2 configs" }] } },
+  ];
+  const lines = (evs: unknown[]) => evs.map((e) => JSON.stringify(e)).join("\n");
+
+  // ── Captured: main + concatenated subagent group → full nested transcript.
+  const bundle = lines([...MAIN, ...SIDECHAIN]);
+  const r = parseInput({ kind: "claude-jsonl", content: bundle });
+  assert("bundle parses", r.ok);
+  if (r.ok) {
+    assertEq("main kinds: the Agent call became a subagent turn",
+      kinds(r.turns), ["message", "message", "subagent", "message"]);
+    const sub = r.turns[2]!;
+    assert("subagent carries agentType from input.subagent_type",
+      sub.kind === "subagent" && sub.agentType === "Explore");
+    assert("subagent carries the short description",
+      sub.kind === "subagent" && sub.description === "Scout the repo");
+    assert("subagent stepCount is the source's totalToolUseCount",
+      sub.kind === "subagent" && sub.stepCount === 2);
+    assert("transcript is CAPTURED (group present)",
+      sub.kind === "subagent" && sub.transcript.kind === "captured");
+    if (sub.kind === "subagent" && sub.transcript.kind === "captured") {
+      assertEq("nested transcript is the subagent's own run",
+        kinds(sub.transcript.turns), ["message", "message", "tool-call", "message"]);
+      const readCall = sub.transcript.turns[2]!;
+      assert("nested Read tool-call paired its result",
+        readCall.kind === "tool-call" && readCall.tool === "Read" && readCall.output?.text === "name = x");
+      assert("nested run's first turn is the spawn prompt",
+        sub.transcript.turns[0]!.kind === "message" && (sub.transcript.turns[0] as { content: string }).content === "Find the config files");
+    }
+
+    // Render: the subagent is a collapsed detail row that expands to the nested run.
+    const html = renderDialogueHtml(deriveDialogue(r.turns));
+    assert("subagent renders as a condensed detail row",
+      html.includes('<details class="condensed condensed-subagent" data-kind="subagent"'));
+    assert("subagent collapsed by default (no open attribute)",
+      !/<details class="condensed condensed-subagent"[^>]*\bopen\b/.test(html));
+    assert("condensed line shows the agent type chip", html.includes('<span class="subagent-type">Explore</span>'));
+    assert("condensed line shows the source step count", html.includes('<span class="subagent-steps">2 steps</span>'));
+    assert("expanded body nests the subagent transcript", html.includes('<div class="subagent-transcript">'));
+    assert("nested transcript renders the Read tool-call recursively",
+      html.includes('<span class="condensed-label tool-name">Read</span>'));
+
+    // [LAW:one-source-of-truth] Re-projecting the captured origin reproduces an
+    // identical dialogue — subagent nesting is derived, never stored separately.
+    if (r.origin) {
+      const replayed = reprojectOrigin(r.origin);
+      assert("captured bundle re-projects", replayed !== null);
+      if (replayed) {
+        assertEq("reprojected dialogue is identical",
+          JSON.stringify(deriveDialogue(r.turns)), JSON.stringify(deriveDialogue(replayed)));
+      }
+    }
+  }
+
+  // ── Graceful degradation: main only, no subagent group → summary-only.
+  const mainOnly = lines(MAIN);
+  const rg = parseInput({ kind: "claude-jsonl", content: mainOnly });
+  assert("main-only bundle parses", rg.ok);
+  if (rg.ok) {
+    const sub = rg.turns[2]!;
+    assert("transcript degrades to SUMMARY-ONLY (group absent)",
+      sub.kind === "subagent" && sub.transcript.kind === "summary-only");
+    if (sub.kind === "subagent" && sub.transcript.kind === "summary-only") {
+      assertEq("summary-only keeps the spawn prompt", sub.transcript.prompt, "Find the config files");
+      assertEq("summary-only keeps the final result", sub.transcript.result, "Found 2 configs");
+    }
+    assert("step count survives without the transcript",
+      sub.kind === "subagent" && sub.stepCount === 2);
+    const html = renderDialogueHtml(deriveDialogue(rg.turns));
+    assert("degraded body names the gap honestly", html.includes("Nested transcript not captured"));
+    assert("degraded body is the cbm.7 backfill seam", html.includes('data-subagent-degraded="true"'));
+    assert("degraded body still shows the final result", html.includes("Found 2 configs"));
+  }
+
+  // ── A blob that is ALL sidechain (no main transcript) is not a conversation.
+  const r0 = parseInput({ kind: "claude-jsonl", content: lines(SIDECHAIN) });
+  assert("all-sidechain blob (no main) fails cleanly", !r0.ok);
+
+  // ── [LAW:no-silent-failure] Orphaned subagent: a group spawned by a slash
+  // command / skill leaves NO Agent tool_use and NO toolUseResult.agentId in the
+  // main stream (verified against real sessions). It must still SURFACE — as a
+  // top-level subagent turn — not vanish. Here the main has only a plain message;
+  // the sidechain group "a1" is referenced nowhere.
+  const MAIN_NO_AGENT = [
+    { type: "user", message: { role: "user", content: "do the recap" } },
+    { type: "assistant", message: { role: "assistant", id: "m9", content: [{ type: "text", text: "Working on it." }] } },
+  ];
+  const ro = parseInput({ kind: "claude-jsonl", content: lines([...MAIN_NO_AGENT, ...SIDECHAIN]) });
+  assert("orphan bundle parses", ro.ok);
+  if (ro.ok) {
+    assertEq("orphan surfaces as a trailing subagent turn (not dropped)",
+      kinds(ro.turns), ["message", "message", "subagent"]);
+    const orphan = ro.turns[2]!;
+    assert("orphan transcript is captured from its group",
+      orphan.kind === "subagent" && orphan.transcript.kind === "captured");
+    assert("orphan carries honest null type/description (no spawning tool-call)",
+      orphan.kind === "subagent" && orphan.agentType === null && orphan.description === null);
+    const html = renderDialogueHtml(deriveDialogue(ro.turns));
+    assert("orphan renders as a condensed subagent row",
+      html.includes('condensed condensed-subagent'));
+  }
+
+  // ── The subagent kind is detail (collapses by default) and is NOT author-able.
+  assertEq("subagent block classifies as detail", blockVisibility({
+    kind: "subagent", agentType: null, description: null, stepCount: 0,
+    body: { kind: "summary-only", prompt: "", result: "" },
+  } as AssistantBlock), "detail");
+  assert("a subagent turn is not editable (excluded from AuthorableTurn)",
+    !isAuthorable({
+      kind: "subagent", agentType: null, description: null, stepCount: 0,
+      transcript: { kind: "summary-only", prompt: "", result: "" },
+    } as Turn));
 }
 
 if (process.exitCode) {

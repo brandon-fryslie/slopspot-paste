@@ -62,7 +62,40 @@ export type Turn =
   | { readonly kind: "insight"; readonly content: string }
   | { readonly kind: "thinking"; readonly content: string }
   | { readonly kind: "turn-summary"; readonly text: string }
-  | { readonly kind: "usage"; readonly usage: Usage };
+  | { readonly kind: "usage"; readonly usage: Usage }
+  | {
+      // [LAW:types-are-the-program] A subagent run owned by the spawning Agent
+      // tool-call. It is recursive: a captured transcript is itself a Turn[],
+      // rendered by the same recursive renderer one level nested. Like `usage`,
+      // it is source-DERIVED, never hand-authored (the editor excludes it via
+      // AuthorableTurn). agentType/description identify the run on the condensed
+      // line; stepCount is the source's own tool-use count (0 when the source
+      // carried none — honest absence, never invented). [LAW:no-silent-failure]
+      readonly kind: "subagent";
+      readonly agentType: string | null;
+      readonly description: string | null;
+      readonly stepCount: number;
+      readonly transcript: SubagentTranscript;
+    };
+
+// [LAW:types-are-the-program] A captured transcript always has at least the
+// subagent's spawn prompt, so it is a NON-EMPTY list of turns. Encoding that as a
+// tuple type makes "captured but empty" — a captured run that captured nothing,
+// indistinguishable from summary-only — unrepresentable, rather than a state the
+// producers merely promise to avoid.
+export type NonEmptyTurns = readonly [Turn, ...ReadonlyArray<Turn>];
+
+// [LAW:types-are-the-program] The two — and only two — honest outcomes of
+// capturing a subagent's run. `captured` carries the full nested transcript (the
+// run reattached from the stored original); `summary-only` is graceful
+// degradation when that transcript was never captured (uploaded before the
+// subagent files were bundled, or the file was absent) — all the source still
+// holds is the spawn prompt and the final returned result. A "captured but
+// empty" or "both" state is unrepresentable. The prompt of a captured run is its
+// transcript's first user turn, so it is not duplicated here.
+export type SubagentTranscript =
+  | { readonly kind: "captured"; readonly turns: NonEmptyTurns }
+  | { readonly kind: "summary-only"; readonly prompt: string; readonly result: string };
 
 // [LAW:types-are-the-program] The runtime witness of the Turn union. It lives
 // beside the type so the two cannot drift: add an arm above and the exhaustive
@@ -121,10 +154,43 @@ export const isTurn = (v: unknown): v is Turn => {
       return typeof o.text === "string";
     case "usage":
       return isUsage(o.usage);
+    case "subagent":
+      return (
+        (o.agentType === null || typeof o.agentType === "string") &&
+        (o.description === null || typeof o.description === "string") &&
+        isCount(o.stepCount) &&
+        isSubagentTranscript(o.transcript)
+      );
     default:
       return false;
   }
 };
+
+// [LAW:types-are-the-program] The runtime witness for the recursive transcript.
+// `captured` validates its nested turns through isTurns (mutual recursion with
+// isTurn — sound because both are only invoked at call time, never module-init).
+// [LAW:dataflow-not-control-flow] One switch on the discriminator; the default
+// closes the enumeration gap so an unknown transcript kind is rejected.
+const isSubagentTranscript = (v: unknown): v is SubagentTranscript => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; turns?: unknown; prompt?: unknown; result?: unknown };
+  switch (o.kind) {
+    case "captured":
+      // Non-empty: a captured transcript with zero turns is the unrepresentable
+      // "captured but empty" state, rejected here at the KV trust boundary too.
+      return isTurns(o.turns) && o.turns.length > 0;
+    case "summary-only":
+      return typeof o.prompt === "string" && typeof o.result === "string";
+    default:
+      return false;
+  }
+};
+
+// [LAW:types-are-the-program] Refine a list to NonEmptyTurns by its length — the
+// one checked narrowing the parser uses so a `captured` transcript is non-empty
+// by construction, never an unchecked cast.
+export const isNonEmptyTurns = (turns: ReadonlyArray<Turn>): turns is NonEmptyTurns =>
+  turns.length > 0;
 
 // [LAW:types-are-the-program] An empty array IS a Turn[]; this guard answers
 // only "is every element a Turn". The "a paste must have ≥1 turn" rule is a

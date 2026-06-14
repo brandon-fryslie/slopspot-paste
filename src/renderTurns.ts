@@ -118,7 +118,7 @@ const toolCallHtml = (
 // while making "renderTurn never sees a usage turn" a compile-time fact rather
 // than a convention — renderTurnsHtml owns the usage arm.
 const renderTurn = (
-  turn: Exclude<Turn, { kind: "usage" }>,
+  turn: Exclude<Turn, { kind: "usage" | "subagent" }>,
   index: number,
 ): string => {
   switch (turn.kind) {
@@ -135,6 +135,37 @@ const renderTurn = (
   }
 };
 
+// [LAW:no-silent-failure] This flat renderer (which cbm.5 retires in favour of
+// the disclosure renderer) must not DROP a subagent turn. The editor — its only
+// consumer — filters subagents out via AuthorableTurn, so this path is for
+// honesty/completeness only: render the run as a nested block, recursing for a
+// captured transcript or showing the degraded result. The disclosure renderer
+// (renderDialogue.ts) owns the real progressive-disclosure presentation.
+const subagentHtml = (
+  turn: Extract<Turn, { kind: "subagent" }>,
+  index: number,
+): string => {
+  const label = turn.agentType ? `Subagent · ${escapeHtml(turn.agentType)}` : "Subagent";
+  const desc = turn.description ? ` — ${escapeHtml(turn.description)}` : "";
+  // [LAW:no-silent-failure] The degraded body carries BOTH the spawn prompt and
+  // the final result — dropping the prompt would render the run result-only and
+  // misrepresent the source. Mirrors the disclosure renderer's degraded body.
+  const body =
+    turn.transcript.kind === "captured"
+      ? renderTurnsHtml(turn.transcript.turns)
+      : `<div class="bubble-body">` +
+        `<p class="subagent-degraded-note">Nested transcript not captured.</p>` +
+        `<p><strong>Prompt</strong></p>${renderMarkdown(turn.transcript.prompt)}` +
+        `<p><strong>Result</strong></p>${renderMarkdown(turn.transcript.result)}` +
+        `</div>`;
+  return (
+    `<details class="bubble bubble-assistant" data-kind="subagent" data-index="${index}">` +
+    `<summary class="bubble-role bubble-summary"><span class="role-name">${label}${desc}</span></summary>` +
+    `<div class="bubble-body">${body}</div>` +
+    `</details>`
+  );
+};
+
 // [LAW:dataflow-not-control-flow] A fold, not a map: the running token total is
 // a value threaded across the stream, accumulated on each usage turn. Content
 // turns keep their array-position index for data-index (usage turns leave gaps,
@@ -148,6 +179,9 @@ export const renderTurnsHtml = (turns: ReadonlyArray<Turn>): string => {
       if (turn.kind === "usage") {
         cumulativeOutput += turn.usage.output;
         return usageHtml(turn.usage, cumulativeOutput);
+      }
+      if (turn.kind === "subagent") {
+        return subagentHtml(turn, index);
       }
       return renderTurn(turn, index);
     })
