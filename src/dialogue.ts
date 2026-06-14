@@ -89,6 +89,18 @@ export const BLOCK_VISIBILITY: { readonly [K in AssistantBlock["kind"]]: Visibil
 export const blockVisibility = (block: AssistantBlock): Visibility =>
   BLOCK_VISIBILITY[block.kind];
 
+// [LAW:types-are-the-program] Exhaustiveness witness: callable only with a value
+// the type system has narrowed to `never`. In the deriveDialogue switch below it
+// is reached only after every Turn kind has its own case, so `turn` is `never`
+// there; add a Turn kind without handling it and this call stops compiling — the
+// projection can never silently drop a kind, the same compile-time guarantee the
+// BLOCK_VISIBILITY mapped type gives the output side.
+// [LAW:no-silent-failure] If a value somehow slips past the type system at runtime,
+// it throws loudly rather than returning a quietly-incomplete Dialogue.
+const assertNever = (turn: never): never => {
+  throw new Error(`deriveDialogue: unhandled turn kind: ${(turn as { kind?: unknown }).kind}`);
+};
+
 // [LAW:dataflow-not-control-flow] A fold over the flat stream, in source order.
 // The spine splits ONLY on a user/system message — every other turn is agent
 // activity and accumulates into the current assistant node, so interleaving is
@@ -150,6 +162,8 @@ export const deriveDialogue = (turns: ReadonlyArray<Turn>): Dialogue => {
       case "usage":
         openAssistant().push({ kind: "usage", usage: turn.usage });
         break;
+      default:
+        return assertNever(turn);
     }
   }
   closeAssistant();
