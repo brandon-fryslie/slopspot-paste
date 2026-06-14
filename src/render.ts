@@ -1,4 +1,5 @@
 import { Marked } from "marked";
+import type { ToolOutput } from "./types";
 
 // [LAW:one-source-of-truth] Source markdown stays in storage. HTML is derived
 // per request. Since pastes are write-once, the derived form cannot go stale.
@@ -340,4 +341,97 @@ export const formatBashTerminal = (command: string, output: string): string => {
   if (output.length === 0) return formattedCmd;
   if (formattedCmd.length === 0) return output;
   return `${formattedCmd}\n${output}`;
+};
+
+// ─── Tool-output body frames ─────────────────────────────────────────
+// [LAW:single-enforcer] The markup for "what a tool's output looks like" — diff,
+// file-read, terminal, generic — lives here once. Both the flat Turn renderer
+// (renderTurns.ts) and the disclosure renderer (renderDialogue.ts) emit the SAME
+// expanded body by calling toolOutputHtml, so the two surfaces cannot drift.
+// These are pure (text → HTML), so they share the parser-check harness.
+
+const diffMarker = (kind: DiffLine["kind"]): string =>
+  kind === "added" || kind === "cont-added"
+    ? "+"
+    : kind === "removed" || kind === "cont-removed"
+      ? "-"
+      : " ";
+
+export const diffRows = (text: string): string => {
+  const { summary, lines } = parseDiff(text);
+  const pill = summary
+    ? `<span class="output-kind-pill" aria-hidden="true">${escapeHtml(summary)}</span>`
+    : "";
+  const rows = lines
+    .map(
+      (line) =>
+        `<div class="diff-line diff-${line.kind}">` +
+        `<span class="diff-lineno">${line.lineNo ?? ""}</span>` +
+        `<span class="diff-marker" aria-hidden="true">${diffMarker(line.kind)}</span>` +
+        `<span class="diff-content">${escapeHtml(line.content)}</span>` +
+        `</div>`,
+    )
+    .join("");
+  return (
+    `<figure class="tool-output-frame" data-output-kind="diff">` +
+    pill +
+    `<div class="diff-block">${rows}</div>` +
+    `</figure>`
+  );
+};
+
+export const fileRows = (text: string): string => {
+  const { summary, lines } = parseFileRead(text);
+  const pill = summary
+    ? `<span class="output-kind-pill" aria-hidden="true">${escapeHtml(summary)}</span>`
+    : "";
+  const rows = lines
+    .map(
+      (line) =>
+        `<div class="file-line">` +
+        `<span class="file-lineno">${line.lineNo ?? ""}</span>` +
+        `<span class="file-content">${escapeHtml(line.content)}</span>` +
+        `</div>`,
+    )
+    .join("");
+  return (
+    `<figure class="tool-output-frame" data-output-kind="file-read">` +
+    pill +
+    `<div class="file-block">${rows}</div>` +
+    `</figure>`
+  );
+};
+
+export const codeFrame = (
+  outputKind: string,
+  pill: string,
+  text: string,
+): string =>
+  `<figure class="tool-output-frame" data-output-kind="${outputKind}">` +
+  `<span class="output-kind-pill" aria-hidden="true">${pill}</span>` +
+  `<pre class="code-block tool-output"><code>${escapeHtml(text)}</code></pre>` +
+  `</figure>`;
+
+// [LAW:dataflow-not-control-flow] The body is the output value's shape: each
+// ToolOutputKind maps to exactly one frame. The optional args block (generic
+// calls with args) and the absent-output case (null → no frame) are values that
+// select which frames render, not modes the caller flips.
+export const toolOutputHtml = (
+  args: string,
+  output: ToolOutput | null,
+): string => {
+  const kind = output?.kind ?? "generic";
+  const hasArgs = args.trim().length > 0;
+  const body = kind === "generic" && hasArgs ? codeFrame("args", "args", args) : "";
+  const outputFrame =
+    output === null
+      ? ""
+      : kind === "terminal"
+        ? codeFrame("terminal", "terminal", formatBashTerminal(args, output.text))
+        : kind === "diff"
+          ? diffRows(output.text)
+          : kind === "file-read"
+            ? fileRows(output.text)
+            : codeFrame("generic", "output", output.text);
+  return body + outputFrame;
 };

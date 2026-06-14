@@ -12,10 +12,7 @@ import {
   escapeHtml,
   escapeAttr,
   renderMarkdown,
-  parseDiff,
-  parseFileRead,
-  formatBashTerminal,
-  type DiffLine,
+  toolOutputHtml,
 } from "./render";
 
 const roleLabel: Record<Role, string> = {
@@ -93,64 +90,6 @@ const usageHtml = (usage: Usage, cumulative: number): string => {
   );
 };
 
-const diffMarker = (kind: DiffLine["kind"]): string =>
-  kind === "added" || kind === "cont-added"
-    ? "+"
-    : kind === "removed" || kind === "cont-removed"
-      ? "-"
-      : " ";
-
-const diffRows = (text: string): string => {
-  const { summary, lines } = parseDiff(text);
-  const pill = summary
-    ? `<span class="output-kind-pill" aria-hidden="true">${escapeHtml(summary)}</span>`
-    : "";
-  const rows = lines
-    .map(
-      (line) =>
-        `<div class="diff-line diff-${line.kind}">` +
-        `<span class="diff-lineno">${line.lineNo ?? ""}</span>` +
-        `<span class="diff-marker" aria-hidden="true">${diffMarker(line.kind)}</span>` +
-        `<span class="diff-content">${escapeHtml(line.content)}</span>` +
-        `</div>`,
-    )
-    .join("");
-  return (
-    `<figure class="tool-output-frame" data-output-kind="diff">` +
-    pill +
-    `<div class="diff-block">${rows}</div>` +
-    `</figure>`
-  );
-};
-
-const fileRows = (text: string): string => {
-  const { summary, lines } = parseFileRead(text);
-  const pill = summary
-    ? `<span class="output-kind-pill" aria-hidden="true">${escapeHtml(summary)}</span>`
-    : "";
-  const rows = lines
-    .map(
-      (line) =>
-        `<div class="file-line">` +
-        `<span class="file-lineno">${line.lineNo ?? ""}</span>` +
-        `<span class="file-content">${escapeHtml(line.content)}</span>` +
-        `</div>`,
-    )
-    .join("");
-  return (
-    `<figure class="tool-output-frame" data-output-kind="file-read">` +
-    pill +
-    `<div class="file-block">${rows}</div>` +
-    `</figure>`
-  );
-};
-
-const codeFrame = (outputKind: string, pill: string, text: string): string =>
-  `<figure class="tool-output-frame" data-output-kind="${outputKind}">` +
-  `<span class="output-kind-pill" aria-hidden="true">${pill}</span>` +
-  `<pre class="code-block tool-output"><code>${escapeHtml(text)}</code></pre>` +
-  `</figure>`;
-
 const toolCallHtml = (
   tool: string,
   args: string,
@@ -161,23 +100,6 @@ const toolCallHtml = (
   const hasArgs = args.trim().length > 0;
   const showHeaderArgs = (kind === "diff" || kind === "file-read") && hasArgs;
 
-  // [LAW:dataflow-not-control-flow] The body is the output value's shape: each
-  // ToolOutputKind maps to exactly one frame. generic-with-args is the only
-  // case that emits two frames (an args block + the output block).
-  const body =
-    kind === "generic" && hasArgs ? codeFrame("args", "args", args) : "";
-
-  const outputFrame =
-    output === null
-      ? ""
-      : kind === "terminal"
-        ? codeFrame("terminal", "terminal", formatBashTerminal(args, output.text))
-        : kind === "diff"
-          ? diffRows(output.text)
-          : kind === "file-read"
-            ? fileRows(output.text)
-            : codeFrame("generic", "output", output.text);
-
   return (
     `<details class="bubble bubble-tool-call" data-kind="tool-call" data-tool="${escapeAttr(tool)}" data-index="${index}"${openAttr("tool-call")}>` +
     `<summary class="tool-header tool-summary">` +
@@ -185,8 +107,7 @@ const toolCallHtml = (
     `<span class="tool-name">${escapeHtml(tool)}</span>` +
     (showHeaderArgs ? `<span class="tool-path">${escapeHtml(args.trim())}</span>` : "") +
     `</summary>` +
-    body +
-    outputFrame +
+    toolOutputHtml(args, output) +
     `</details>`
   );
 };

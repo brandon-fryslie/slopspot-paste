@@ -1,7 +1,8 @@
 ---
 import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
-import { renderTurnsHtml } from "../renderTurns";
+import { renderDialogueHtml } from "../renderDialogue";
+import { deriveDialogue } from "../dialogue";
 import { getConversation } from "../storage";
 import { isValidSlug } from "../slug";
 import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime, isHiddenFromPublic } from "../types";
@@ -75,7 +76,7 @@ const sourceUrl = sourceUrlOf(origin);
     )}
   </section>
 
-  <section class="conversation" aria-label="Conversation" set:html={renderTurnsHtml(conversation.turns)} />
+  <section class="conversation" aria-label="Conversation" set:html={renderDialogueHtml(deriveDialogue(conversation.turns))} />
 
   <script>
     // [LAW:one-source-of-truth] The timeline is a *projection of the rendered
