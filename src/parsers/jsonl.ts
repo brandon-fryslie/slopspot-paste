@@ -1,4 +1,5 @@
 import type { Turn, ToolOutput, ToolOutputKind, Usage, SubagentTranscript } from "../types";
+import { isNonEmptyTurns } from "../types";
 
 // [LAW:types-are-the-program] Input is a Claude Code session JSONL — one
 // typed event per line. Output is the same Turn[] union every other parser
@@ -191,7 +192,7 @@ const subagentTurnFromResult = (
     const childEvents = groups.get(agentId);
     if (childEvents && childEvents.length > 0) {
       const childTurns = buildTurns(childEvents, groups, new Set([...visited, agentId]));
-      if (childTurns.length > 0) transcript = { kind: "captured", turns: childTurns };
+      if (isNonEmptyTurns(childTurns)) transcript = { kind: "captured", turns: childTurns };
     }
   }
   return { kind: "subagent", agentType, description, stepCount, transcript };
@@ -427,7 +428,7 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
   for (const [key, evs] of groups) {
     if (key === MAIN || referenced.has(key)) continue;
     const orphan = buildTurns(evs, groups, new Set([key]));
-    if (orphan.length === 0) continue;
+    if (!isNonEmptyTurns(orphan)) continue;
     turns.push({
       // No spawning tool-call, so no input to read type/description from, and the
       // bundle's subagent lines carry neither — honest nulls, not invented labels.
