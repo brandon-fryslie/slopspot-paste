@@ -147,10 +147,17 @@ const subagentHtml = (
 ): string => {
   const label = turn.agentType ? `Subagent · ${escapeHtml(turn.agentType)}` : "Subagent";
   const desc = turn.description ? ` — ${escapeHtml(turn.description)}` : "";
+  // [LAW:no-silent-failure] The degraded body carries BOTH the spawn prompt and
+  // the final result — dropping the prompt would render the run result-only and
+  // misrepresent the source. Mirrors the disclosure renderer's degraded body.
   const body =
     turn.transcript.kind === "captured"
       ? renderTurnsHtml(turn.transcript.turns)
-      : `<div class="bubble-body">${renderMarkdown(turn.transcript.result)}</div>`;
+      : `<div class="bubble-body">` +
+        `<p class="subagent-degraded-note">Nested transcript not captured.</p>` +
+        `<p><strong>Prompt</strong></p>${renderMarkdown(turn.transcript.prompt)}` +
+        `<p><strong>Result</strong></p>${renderMarkdown(turn.transcript.result)}` +
+        `</div>`;
   return (
     `<details class="bubble bubble-assistant" data-kind="subagent" data-index="${index}">` +
     `<summary class="bubble-role bubble-summary"><span class="role-name">${label}${desc}</span></summary>` +
