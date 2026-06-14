@@ -165,9 +165,12 @@ const collectToolCall = (
     break;
   }
 
+  // [LAW:no-silent-failure] The CC terminal transcript carries no structured
+  // error marker, so `isError` is honest `false` — the absence of a captured
+  // error, never a guess inferred from the output text.
   const output =
     chunks.length > 0
-      ? { kind: outputKindFor(toolName), text: chunks.join("\n") }
+      ? { kind: outputKindFor(toolName), text: chunks.join("\n"), isError: false }
       : null;
 
   return {

@@ -17,9 +17,18 @@ export type Role = (typeof ROLES)[number];
 export const TOOL_OUTPUT_KINDS = ["terminal", "file-read", "diff", "generic"] as const;
 export type ToolOutputKind = (typeof TOOL_OUTPUT_KINDS)[number];
 
+// [LAW:types-are-the-program] A tool result carries its rendered text AND whether
+// it errored. `isError` is real source structure (the Claude tool_result block's
+// `is_error`), not a heuristic over `text` — a pass/fail badge derived from a
+// substring search would be a synthesized summary that drifts ([LAW:no-silent-
+// failure]). Formats with no structured error marker (cc transcripts, claude-share)
+// report `false`: honest absence of a captured error, never a guess. The absence
+// of a *result* is modeled one level up by `output: ToolOutput | null` — so the
+// three honest display states (no result / ok / error) are all representable.
 export interface ToolOutput {
   readonly kind: ToolOutputKind;
   readonly text: string;
+  readonly isError: boolean;
 }
 
 // [LAW:types-are-the-program] Token usage is a property of one *logical
@@ -64,9 +73,10 @@ export type Turn =
 // construction rather than crashing downstream render/store.
 const isToolOutput = (v: unknown): v is ToolOutput => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; text?: unknown };
+  const o = v as { kind?: unknown; text?: unknown; isError?: unknown };
   return (
     typeof o.text === "string" &&
+    typeof o.isError === "boolean" &&
     (TOOL_OUTPUT_KINDS as ReadonlyArray<string>).includes(o.kind as string)
   );
 };
