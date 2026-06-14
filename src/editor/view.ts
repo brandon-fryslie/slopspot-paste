@@ -133,7 +133,9 @@ const setOutputKind = (
   if (raw === "none") return { ...turn, output: null };
   const kind = TOOL_OUTPUT_KINDS.find((k) => k === raw);
   if (kind === undefined) throw new Error(`unknown output kind: ${raw}`);
-  return { ...turn, output: { kind, text: turn.output?.text ?? "" } };
+  // Authoring carries no error UI (out of scope); preserve an existing flag,
+  // default false. [LAW:no-silent-failure] never fabricates an error state.
+  return { ...turn, output: { kind, text: turn.output?.text ?? "", isError: turn.output?.isError ?? false } };
 };
 
 const OUTPUT_KIND_LABEL: Record<ToolOutputKind, string> = {
@@ -180,7 +182,7 @@ const toolCallBody = (
             placeholder="output"
             .value=${output.text}
             @input=${(e: Event) =>
-              store.replaceTurn(id, { ...turn, output: { kind: output.kind, text: valueOf(e) } })}
+              store.replaceTurn(id, { ...turn, output: { ...output, text: valueOf(e) } })}
           ></textarea>`}
     </div>
   `;

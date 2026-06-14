@@ -40,6 +40,9 @@ interface ToolResultBlock {
   readonly type: "tool_result";
   readonly tool_use_id: string;
   readonly content: string | ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+  // The source's structured pass/fail signal. Absent on success in many records,
+  // so it is optional; `=== true` below is the single point that reads it.
+  readonly is_error?: boolean;
 }
 type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | { readonly type: string };
 
@@ -252,7 +255,13 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
         const existing = turns[idx];
         if (!existing || existing.kind !== "tool-call") continue;
         const text = resultText(tr.content);
-        const output: ToolOutput = { kind: outputKindFor(existing.tool), text };
+        // [LAW:no-silent-failure] The pass/fail badge is the source's own
+        // `is_error`, captured verbatim — not inferred from the result text.
+        const output: ToolOutput = {
+          kind: outputKindFor(existing.tool),
+          text,
+          isError: tr.is_error === true,
+        };
         turns[idx] = { ...existing, output };
         pendingToolIndex.delete(tr.tool_use_id);
       }

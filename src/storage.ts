@@ -55,6 +55,20 @@ const normalizeTurn = (t: unknown): unknown => {
     const old = t as { role: string; content: string };
     return { kind: "message", role: old.role, content: old.content };
   }
+  // [LAW:types-are-the-program] Records cached before `isError` landed carry a
+  // tool result with no such field. Lift it to `false` (no captured error — the
+  // authoritative truth is recoverable by reprojecting the origin), so every
+  // ToolOutput above this boundary speaks the current shape. ([LAW:no-silent-
+  // failure] absence of a flag is normalized to not-error, never silently
+  // treated as a failure.)
+  if (
+    t && typeof t === "object" && (t as { kind?: unknown }).kind === "tool-call"
+  ) {
+    const tc = t as { output?: unknown };
+    if (tc.output && typeof tc.output === "object" && !("isError" in tc.output)) {
+      return { ...t, output: { ...tc.output, isError: false } };
+    }
+  }
   return t;
 };
 
