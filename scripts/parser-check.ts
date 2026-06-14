@@ -2135,6 +2135,17 @@ console.log("\nDerived nested dialogue (deriveDialogue — cbm.1):");
   assertEq("system message splits the spine",
     withSystem.map((n) => (n.kind === "spoken" ? `spoken:${n.role}` : "assistant")),
     ["assistant", "spoken:system", "assistant"]);
+
+  // [LAW:no-silent-failure] The exhaustiveness guard is compile-time (a new Turn
+  // kind fails to compile in the switch) AND loud at runtime: a kind that slipped
+  // past the type system throws rather than dropping out of the projection.
+  let threw = false;
+  try {
+    deriveDialogue([{ kind: "not-a-real-kind" } as unknown as Turn]);
+  } catch {
+    threw = true;
+  }
+  assert("unhandled turn kind throws (never silently dropped)", threw);
 }
 
 if (process.exitCode) {
