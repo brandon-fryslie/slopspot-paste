@@ -18,6 +18,7 @@ import {
   sanitizeUrl,
 } from "../src/render";
 import { renderTurnsHtml } from "../src/renderTurns";
+import { renderDialogueHtml } from "../src/renderDialogue";
 import { deriveDialogue, blockVisibility } from "../src/dialogue";
 import type { AssistantBlock, SpineNode } from "../src/dialogue";
 import { condenseToolCall, primaryArgValue, TOOL_PRIMARY_ARG } from "../src/toolCall";
@@ -2217,6 +2218,117 @@ console.log("\nCondensed tool-call model (cbm.2 — per-tool primary-arg table):
       output: { kind: "diff", text: "...", isError: false },
     }),
     { tool: "Edit", primaryArg: "src/x.ts", status: "ok" });
+}
+
+console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
+{
+  // [LAW:behavior-not-structure] These assert the four acceptance criteria as
+  // invariants over the rendered HTML — what the renderer PROMISES (spine always
+  // visible, detail collapsed-by-default, condensed rows scannable, no JS for
+  // expand/collapse) — not the private shape of the renderer's helpers.
+
+  const DIFF_OUTPUT = `Added 1 line
+      162 +new line of code
+      163  context line`;
+
+  // One transcript exercising every block kind, interleaving, the usage fold,
+  // the three tool statuses, name-only fallback, and XSS-bearing content. The
+  // first Bash carries cc-shape RAW args (the terminal body formats the command);
+  // the Edit carries jsonl-shape JSON args (the primary arg is extracted from it).
+  // The run derives a single assistant node (no human turn between the agent
+  // blocks) closed by a trailing system message.
+  const turns: Turn[] = [
+    { kind: "message", role: "user", content: "build it" },
+    { kind: "thinking", content: "let me plan the <work>" },
+    { kind: "message", role: "assistant", content: "On it." },
+    { kind: "tool-call", tool: "Bash", args: "ls -la",
+      output: { kind: "terminal", text: "total 0", isError: false } },
+    { kind: "tool-call", tool: "Edit", args: JSON.stringify({ file_path: "src/x.ts", old_string: "a", new_string: "b" }),
+      output: { kind: "diff", text: DIFF_OUTPUT, isError: false } },
+    { kind: "tool-call", tool: "Bash", args: JSON.stringify({ command: "boom" }),
+      output: { kind: "terminal", text: "kaboom", isError: true } },
+    { kind: "tool-call", tool: 'evil" onload="x', args: "", output: null },
+    { kind: "tool-call", tool: "TodoWrite", args: "{}", output: { kind: "generic", text: "ok", isError: false } },
+    { kind: "insight", content: "the key point" },
+    { kind: "turn-summary", text: "<b>not bold</b>" },
+    { kind: "usage", usage: { input: 10, output: 100, cacheCreation: 0, cacheRead: 0 } },
+    { kind: "message", role: "assistant", content: "Done." },
+    { kind: "usage", usage: { input: 1, output: 50, cacheCreation: 0, cacheRead: 0 } },
+    { kind: "message", role: "system", content: "system note" },
+  ];
+  const html = renderDialogueHtml(deriveDialogue(turns));
+  const has = (label: string, needle: string) => assert(label, html.includes(needle));
+
+  // ── Acceptance 1: collapsed by default = thinking, tool-call; always visible =
+  // user + assistant text. Spine nodes are NOT <details>, so they cannot collapse.
+  has("user message is an always-visible article (not a details)",
+    '<article class="bubble bubble-user" data-kind="message" data-role="user" data-index="0">');
+  has("assistant turn is an always-visible article",
+    '<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="1">');
+  has("assistant TEXT renders always-visible (no details wrapper)",
+    '<div class="assistant-text bubble-body">');
+  assert("no spine bubble is a <details> (user/assistant text never collapse)",
+    !/<details[^>]*class="[^"]*bubble-(user|assistant)/.test(html));
+  has("thinking is a condensed <details>", '<details class="condensed condensed-thinking" data-kind="thinking">');
+  has("tool-call is a condensed <details>", '<details class="condensed condensed-tool-call" data-kind="tool-call"');
+  assert("thinking collapsed by default (no open attribute)",
+    !/<details class="condensed condensed-thinking"[^>]*\bopen\b/.test(html));
+  assert("tool-call collapsed by default (no open attribute)",
+    !/<details class="condensed condensed-tool-call"[^>]*\bopen\b/.test(html));
+
+  // ── Acceptance 2: expanding any node reveals its FULL original content. The
+  // body is present in the markup (the browser reveals it on toggle, no fetch).
+  has("thinking body carries the full reasoning text", "let me plan the &lt;work&gt;");
+  has("tool-call expands to the shared terminal frame", 'data-output-kind="terminal"');
+  has("terminal body shows the $-prefixed command", "$ ls -la");
+  has("tool-call expands to the shared diff frame", 'data-output-kind="diff"');
+  has("diff body shows an added row", '<div class="diff-line diff-added">');
+
+  // ── Acceptance 3: condensed rows are scannable as a column — icon + label +
+  // primary arg + badge, read straight from the cbm.2 condensed model.
+  has("condensed row carries a kind icon", '<span class="condensed-icon');
+  has("tool row label is the tool name", '<span class="condensed-label tool-name">Bash</span>');
+  has("tool row primary arg is the cbm.2 value", '<span class="condensed-arg">ls -la</span>');
+  has("Edit row primary arg is the file path", '<span class="condensed-arg">src/x.ts</span>');
+  // Status badges map from the source error bit: ok→✓, error→✕, null→none.
+  has("ok status renders a pass badge", '<span class="tool-badge tool-badge-ok"');
+  has("error status renders a fail badge", '<span class="tool-badge tool-badge-error"');
+  // null-output (evil) and the name-only fallback (TodoWrite, not in the table)
+  // render NO arg span and NO badge — never a raw JSON blob, never a guessed value.
+  {
+    const todoIdx = html.indexOf('data-tool="TodoWrite"');
+    const todoRow = html.slice(todoIdx, html.indexOf("</summary>", todoIdx));
+    assert("TodoWrite row is name-only: no condensed-arg", !todoRow.includes("condensed-arg"));
+    const evilIdx = html.indexOf("evil&quot; onload=");
+    const evilRow = html.slice(html.lastIndexOf("<details", evilIdx), html.indexOf("</summary>", evilIdx));
+    assert("null-output tool row carries no status badge", !evilRow.includes("tool-badge"));
+  }
+
+  // ── Acceptance 4: no JavaScript for expand/collapse — native <details>/<summary>.
+  has("collapse affordance is a native <summary>", '<summary class="condensed-summary">');
+
+  // ── Usage fold: running output total across the dialogue, in source order.
+  has("first usage shows its own output and running total", "100 tokens");
+  has("second usage folds the running total (100 + 50)", "150 total");
+
+  // ── Spine grouping: the two assistant message.ids merge into ONE assistant
+  // node (index 1); the trailing system message is its own spine node (index 2).
+  has("trailing system message is its own spine node",
+    '<article class="bubble bubble-system" data-kind="message" data-role="system" data-index="2">');
+  assert("the merged run yields exactly one assistant turn",
+    (html.match(/class="bubble bubble-assistant assistant-turn"/g) ?? []).length === 1);
+
+  // ── [LAW:single-enforcer] The escaping the flat renderer guaranteed survives in
+  // the disclosure renderer — same XSS vectors closed (attribute + text + output).
+  assert("tool name attribute escaped (no quote breakout)", !html.includes('data-tool="evil" onload='));
+  has("tool name attribute escaped form present", "evil&quot; onload=");
+  has("turn-summary text escaped", "&lt;b&gt;not bold&lt;/b&gt;");
+
+  // ── [LAW:one-source-of-truth] The render is a pure projection of the original:
+  // dialogue from stored turns renders identically to dialogue re-derived from a
+  // reprojected origin (proven for deriveDialogue in cbm.1; here for the renderer).
+  const empty = renderDialogueHtml(deriveDialogue([]));
+  assertEq("empty dialogue → empty render", empty, "");
 }
 
 if (process.exitCode) {
