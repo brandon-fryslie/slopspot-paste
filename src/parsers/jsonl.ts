@@ -1,4 +1,5 @@
-import type { Turn, ToolOutput, ToolOutputKind, Usage } from "../types";
+import type { Turn, ToolOutput, ToolOutputKind, Usage, SubagentTranscript } from "../types";
+import { isNonEmptyTurns } from "../types";
 
 // [LAW:types-are-the-program] Input is a Claude Code session JSONL — one
 // typed event per line. Output is the same Turn[] union every other parser
@@ -9,6 +10,17 @@ import type { Turn, ToolOutput, ToolOutputKind, Usage } from "../types";
 // [LAW:single-enforcer] The JSONL schema lives in exactly one place — this
 // file. The skill that uploads the JSONL knows zero about its shape; if
 // Claude Code changes the schema, only this parser changes.
+//
+// Subagent (Agent/Task) runs: the current CC format stores each subagent's
+// transcript in a SEPARATE sibling file (subagents/agent-<agentId>.jsonl), not
+// inline. The uploader concatenates those files onto the main JSONL, so the
+// stored original is one blob where subagent lines self-identify by a top-level
+// `agentId` (and `isSidechain:true`). This parser groups lines by `agentId`,
+// then reattaches each subagent group to its spawning Agent tool-call via the
+// tool_result's top-level `toolUseResult.agentId` — an explicit id join, never
+// positional [LAW:no-silent-failure]. A blob with no subagent lines (an old
+// upload, or a session with no subagents) parses exactly as before, and an
+// Agent call whose group is absent degrades to a summary-only subagent turn.
 
 // Mirror the cc.ts mapping so tool outputs render identically across kinds.
 // Kept local rather than imported so jsonl.ts doesn't fan-out to cc.ts.
@@ -48,6 +60,13 @@ type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock |
 
 interface MessageEvent {
   readonly type: "user" | "assistant";
+  // Top-level linkage the subagent reattachment reads. Subagent lines carry
+  // `agentId` (and `isSidechain:true`); the Agent tool_result event carries a
+  // top-level `toolUseResult` whose `agentId` joins back to the subagent group.
+  // All optional: a plain main-transcript line carries none of them.
+  readonly agentId?: string;
+  readonly isSidechain?: boolean;
+  readonly toolUseResult?: unknown;
   readonly message?: {
     readonly id?: string;
     readonly role?: string;
@@ -61,6 +80,14 @@ const isMessageEvent = (e: unknown): e is MessageEvent => {
   const t = (e as { type?: unknown }).type;
   return t === "user" || t === "assistant";
 };
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
+// A non-empty string, or null. Used for the subagent's optional identity fields
+// (agentType / description / prompt) — an empty string is treated as absent.
+const strOrNull = (v: unknown): string | null =>
+  typeof v === "string" && v.length > 0 ? v : null;
 
 const num = (v: unknown): number =>
   typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
@@ -89,6 +116,19 @@ const argsAsText = (input: unknown): string => {
   try { return JSON.stringify(input, null, 2); } catch { return String(input); }
 };
 
+// Coerce an unknown `toolUseResult.content` (a string, or an array of
+// {type,text} blocks) into plain text at the trust boundary — mirrors
+// resultText's contract for the structured-result field that lives one level up
+// from the tool_result block.
+const contentText = (v: unknown): string => {
+  if (typeof v === "string") return v;
+  if (!Array.isArray(v)) return "";
+  return v
+    .map((b) => (isRecord(b) && b.type === "text" && typeof b.text === "string" ? b.text : ""))
+    .filter((s) => s.length > 0)
+    .join("\n");
+};
+
 const resultText = (content: ToolResultBlock["content"]): string => {
   if (typeof content === "string") return content;
   // Array of content blocks — concat text fields. Non-text blocks are dropped
@@ -112,36 +152,67 @@ const stripEnvelope = (raw: string): string => {
   return s.trim();
 };
 
-// [LAW:dataflow-not-control-flow] Two-pass: parse lines → emit Turns. Tool-
-// call pairing rewrites the Turn in place (the array is mutable internally;
-// the readonly Turn type applies to consumers, not the builder).
-export const parseClaudeJsonl = (input: string): Turn[] | null => {
-  const lines = input.split("\n").filter((l) => l.trim().length > 0);
-  if (lines.length === 0) return null;
+// [LAW:types-are-the-program] A subagent run reattached to its spawning Agent
+// tool-call. Detection is by the explicit id link — the tool_result event's
+// `toolUseResult.agentId` — NOT the tool's NAME (it is "Agent" now, was "Task"
+// before; the id link is version-stable). Returns null when this result is a
+// plain tool result (no agentId), so the caller keeps its normal tool-call.
+//
+// The transcript resolves to one of SubagentTranscript's two honest arms:
+//   captured     — the subagent's group of lines exists in the blob and parses
+//                  to a non-empty Turn[] (recursion through buildTurns).
+//   summary-only — the group is absent (an old upload, or files not bundled);
+//                  all the source holds is the spawn prompt and final result.
+// `visited` breaks any pathological self/cyclic agentId reference so recursion
+// always terminates. [LAW:no-silent-failure]
+const subagentTurnFromResult = (
+  toolUseResult: unknown,
+  resultContent: string,
+  input: unknown,
+  groups: ReadonlyMap<string, MessageEvent[]>,
+  visited: ReadonlySet<string>,
+): Turn | null => {
+  if (!isRecord(toolUseResult)) return null;
+  const agentId = strOrNull(toolUseResult.agentId);
+  if (agentId === null) return null;
 
-  // Parse pass — if the first non-blank line doesn't deserialize as JSON,
-  // this is not JSONL at all and we bail. Subsequent malformed lines are
-  // skipped (real transcripts sometimes have partial writes at the tail).
-  const events: unknown[] = [];
-  let parsedAny = false;
-  for (const line of lines) {
-    try {
-      events.push(JSON.parse(line));
-      parsedAny = true;
-    } catch {
-      if (!parsedAny) return null; // first line failed → not JSONL
-      // mid-file parse error — skip the line
+  const inObj = isRecord(input) ? input : {};
+  const agentType = strOrNull(inObj.subagent_type) ?? strOrNull(toolUseResult.agentType);
+  const description = strOrNull(inObj.description);
+  const prompt = strOrNull(inObj.prompt) ?? strOrNull(toolUseResult.prompt) ?? "";
+  const stepCount = num(toolUseResult.totalToolUseCount);
+
+  // The degraded result prefers the main tool_result block's text; when that is
+  // empty it falls back to the source's own `toolUseResult.content` (the final
+  // returned text), which carries the same value through a different field.
+  const result =
+    resultContent.length > 0 ? resultContent : contentText(toolUseResult.content);
+  let transcript: SubagentTranscript = { kind: "summary-only", prompt, result };
+  if (!visited.has(agentId)) {
+    const childEvents = groups.get(agentId);
+    if (childEvents && childEvents.length > 0) {
+      const childTurns = buildTurns(childEvents, groups, new Set([...visited, agentId]));
+      if (isNonEmptyTurns(childTurns)) transcript = { kind: "captured", turns: childTurns };
     }
   }
-  if (!parsedAny) return null;
+  return { kind: "subagent", agentType, description, stepCount, transcript };
+};
 
-  // Need at least one message event; non-message events alone (permission-
-  // mode, bridge-session, etc.) don't constitute a parseable transcript.
-  const messageEvents = events.filter(isMessageEvent);
-  if (messageEvents.length === 0) return null;
-
+// [LAW:dataflow-not-control-flow] Build one group's events into Turns, in source
+// order. This is the whole per-transcript loop (content blocks, tool pairing,
+// usage dedup) — factored out so a subagent group runs through the SAME logic as
+// the main transcript [LAW:one-type-per-behavior]. Recursion happens at the Agent
+// tool_result: the spawned subagent's group is built here and nested.
+function buildTurns(
+  events: ReadonlyArray<MessageEvent>,
+  groups: ReadonlyMap<string, MessageEvent[]>,
+  visited: ReadonlySet<string>,
+): Turn[] {
   const turns: Turn[] = [];
   const pendingToolIndex = new Map<string, number>();
+  // The raw input of each pending tool_use, kept so the tool_result can read the
+  // Agent call's subagent_type/description/prompt when it converts to a subagent.
+  const pendingToolInput = new Map<string, unknown>();
 
   // [LAW:one-source-of-truth] A logical assistant message is split across
   // several JSONL lines that each carry its usage. Those copies are not always
@@ -154,7 +225,7 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
   // record without an id can't be deduped against its siblings, so — like the
   // tool-block id guards — it is dropped at the trust boundary.
   const usageByMsgId = new Map<string, Usage>();
-  for (const ev of messageEvents) {
+  for (const ev of events) {
     if (ev.type !== "assistant") continue;
     const msg = ev.message;
     if (!msg || typeof msg.id !== "string") continue;
@@ -184,7 +255,7 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
     pendingMsgId = null;
   };
 
-  for (const ev of messageEvents) {
+  for (const ev of events) {
     const msg = ev.message;
     if (!msg) {
       flushUsage();
@@ -247,6 +318,7 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
           output: null,
         });
         pendingToolIndex.set(tu.id, turns.length - 1);
+        pendingToolInput.set(tu.id, tu.input);
       } else if (block.type === "tool_result") {
         const tr = block as ToolResultBlock;
         if (typeof tr.tool_use_id !== "string") continue;
@@ -255,21 +327,118 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
         const existing = turns[idx];
         if (!existing || existing.kind !== "tool-call") continue;
         const text = resultText(tr.content);
-        // [LAW:no-silent-failure] The pass/fail badge is the source's own
-        // `is_error`, captured verbatim — not inferred from the result text.
-        const output: ToolOutput = {
-          kind: outputKindFor(existing.tool),
+        // [LAW:dataflow-not-control-flow] An Agent tool_result carries a top-level
+        // `toolUseResult.agentId`; that — not the result text or the tool name —
+        // is what turns this tool-call into a subagent. When present, the call
+        // BECOMES a subagent turn (replacing the tool-call in place); otherwise it
+        // is a normal result paired into the call's `output`.
+        const subagent = subagentTurnFromResult(
+          ev.toolUseResult,
           text,
-          isError: tr.is_error === true,
-        };
-        turns[idx] = { ...existing, output };
+          pendingToolInput.get(tr.tool_use_id),
+          groups,
+          visited,
+        );
+        if (subagent !== null) {
+          turns[idx] = subagent;
+        } else {
+          // [LAW:no-silent-failure] The pass/fail badge is the source's own
+          // `is_error`, captured verbatim — not inferred from the result text.
+          const output: ToolOutput = {
+            kind: outputKindFor(existing.tool),
+            text,
+            isError: tr.is_error === true,
+          };
+          turns[idx] = { ...existing, output };
+        }
         pendingToolIndex.delete(tr.tool_use_id);
+        pendingToolInput.delete(tr.tool_use_id);
       }
       // unknown block types: ignored at the trust boundary.
     }
   }
 
   flushUsage();
+  return turns;
+}
+
+// [LAW:dataflow-not-control-flow] Two-pass: parse lines → emit Turns. Tool-
+// call pairing rewrites the Turn in place (the array is mutable internally;
+// the readonly Turn type applies to consumers, not the builder).
+export const parseClaudeJsonl = (input: string): Turn[] | null => {
+  const lines = input.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return null;
+
+  // Parse pass — if the first non-blank line doesn't deserialize as JSON,
+  // this is not JSONL at all and we bail. Subsequent malformed lines are
+  // skipped (real transcripts sometimes have partial writes at the tail).
+  const events: unknown[] = [];
+  let parsedAny = false;
+  for (const line of lines) {
+    try {
+      events.push(JSON.parse(line));
+      parsedAny = true;
+    } catch {
+      if (!parsedAny) return null; // first line failed → not JSONL
+      // mid-file parse error — skip the line
+    }
+  }
+  if (!parsedAny) return null;
+
+  // Need at least one message event; non-message events alone (permission-
+  // mode, bridge-session, etc.) don't constitute a parseable transcript.
+  const messageEvents = events.filter(isMessageEvent);
+  if (messageEvents.length === 0) return null;
+
+  // [LAW:decomposition] Partition lines into the main transcript and each
+  // subagent group by the top-level `agentId` (main lines carry none). Grouping
+  // is by id, so the concatenation ORDER of the bundled files is irrelevant —
+  // reattachment never depends on position. The main group is the one we build
+  // from; subagent groups are pulled in by recursion when their Agent call is
+  // reattached. A blob that is all sidechain (no main) is not a transcript.
+  const MAIN = " main";
+  const groups = new Map<string, MessageEvent[]>();
+  for (const ev of messageEvents) {
+    const key = typeof ev.agentId === "string" ? ev.agentId : MAIN;
+    let group = groups.get(key);
+    if (!group) { group = []; groups.set(key, group); }
+    group.push(ev);
+  }
+  const mainEvents = groups.get(MAIN);
+  if (!mainEvents || mainEvents.length === 0) return null;
+
+  const turns = buildTurns(mainEvents, groups, new Set());
+
+  // [LAW:no-silent-failure] Not every subagent is spawned by an Agent tool-call:
+  // slash-command / skill background runs leave a subagent group with NO
+  // toolUseResult.agentId pointing at it anywhere. Those groups must SURFACE, not
+  // vanish. [LAW:one-source-of-truth] `referenced` is derived once from every
+  // toolUseResult.agentId link across all groups; a group whose id is referenced
+  // nowhere is a true orphan. This cannot double-surface a nested child (a child
+  // is referenced by its parent's link, so it is never an orphan), so orphans are
+  // appended exactly once, as top-level subagent turns, in first-seen order.
+  const referenced = new Set<string>();
+  for (const evs of groups.values()) {
+    for (const ev of evs) {
+      if (!isRecord(ev.toolUseResult)) continue;
+      const a = strOrNull(ev.toolUseResult.agentId);
+      if (a !== null) referenced.add(a);
+    }
+  }
+  for (const [key, evs] of groups) {
+    if (key === MAIN || referenced.has(key)) continue;
+    const orphan = buildTurns(evs, groups, new Set([key]));
+    if (!isNonEmptyTurns(orphan)) continue;
+    turns.push({
+      // No spawning tool-call, so no input to read type/description from, and the
+      // bundle's subagent lines carry neither — honest nulls, not invented labels.
+      kind: "subagent",
+      agentType: null,
+      description: null,
+      stepCount: 0,
+      transcript: { kind: "captured", turns: orphan },
+    });
+  }
 
   return turns.length >= 1 ? turns : null;
 };

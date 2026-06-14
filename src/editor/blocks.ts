@@ -14,16 +14,18 @@
 
 import type { Role, Turn } from "../types";
 
-// [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. A `usage`
-// turn is source-derived token accounting, not something a human types, splits,
-// or kind-converts — so it is excluded from the type the editor operates on.
-// This makes "a block never holds a usage turn" a compile-time fact (every
-// switch below stays exhaustive without a nonsensical usage case) rather than a
-// runtime convention; usage turns are filtered out at the single load seam
-// (store.loadTurns) before they could ever reach a Block.
-export type AuthorableTurn = Exclude<Turn, { kind: "usage" }>;
+// [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. Both `usage`
+// (token accounting) and `subagent` (a reattached nested run) are source-DERIVED,
+// not something a human types, splits, or kind-converts — so both are excluded
+// from the type the editor operates on. This makes "a block never holds a usage
+// or subagent turn" a compile-time fact (every switch below stays exhaustive
+// without a nonsensical case) rather than a runtime convention; these turns are
+// filtered out at the single load seam (store.loadTurns) before they could ever
+// reach a Block. Hand-authoring nested subagent structure is out of scope —
+// editing content, not display, is unchanged.
+export type AuthorableTurn = Exclude<Turn, { kind: "usage" | "subagent" }>;
 export const isAuthorable = (turn: Turn): turn is AuthorableTurn =>
-  turn.kind !== "usage";
+  turn.kind !== "usage" && turn.kind !== "subagent";
 
 export interface Block {
   readonly id: string;
