@@ -18,6 +18,8 @@ import {
   sanitizeUrl,
 } from "../src/render";
 import { renderTurnsHtml } from "../src/renderTurns";
+import { deriveDialogue, blockVisibility } from "../src/dialogue";
+import type { AssistantBlock, SpineNode } from "../src/dialogue";
 import {
   convertKind,
   emptyTurn,
@@ -1986,6 +1988,153 @@ console.log("\nFixture-capture credential scrub (single enforcer):");
     compareLines(shortRaw, shortScrubbed).flips.length === 1,
   );
   assertEq("changed-line count reports scrubbed lines", compareLines(rawLine, scrubbedLine).changedLines, 1);
+}
+
+console.log("\nDerived nested dialogue (deriveDialogue — cbm.1):");
+{
+  // [LAW:types-are-the-program] The contract that survives a refactor: a Dialogue
+  // is an ordered spine of user/system "spoken" nodes and assistant nodes; an
+  // assistant node carries an ORDERED, INTERLEAVED block sequence in source order;
+  // each tool-call OWNS its result; illegal states (a detail block at a user spine,
+  // an orphaned result) are unrepresentable. These assert the CONTRACT (turns →
+  // dialogue), not the fold's mechanism.
+
+  // Helpers that read the model without leaning on its internal field order.
+  const blockKinds = (n: SpineNode): string[] =>
+    n.kind === "assistant" ? n.blocks.map((b) => b.kind) : [];
+  const spineKinds = (d: ReadonlyArray<SpineNode>): string[] =>
+    d.map((n) => (n.kind === "spoken" ? `spoken:${n.role}` : "assistant"));
+
+  // A transcript exercising interleaving (text → tool → text), a paired tool
+  // result, a thinking block, multiple assistant message.ids between two human
+  // turns (which MUST merge into one assistant node), and per-message usage.
+  const u = (out: number) => ({
+    input_tokens: 1, output_tokens: out, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+  });
+  const SAMPLE = [
+    { type: "user", message: { role: "user", content: "build it" } },
+    { type: "assistant", message: { id: "mA", role: "assistant", usage: u(40), content: [
+      { type: "thinking", thinking: "plan the work" },
+      { type: "text", text: "On it." },
+      { type: "tool_use", id: "t1", name: "Bash", input: { command: "make" } },
+    ] } },
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "built ok" }] } },
+    { type: "assistant", message: { id: "mB", role: "assistant", usage: u(12), content: [
+      { type: "text", text: "Done — it builds." },
+    ] } },
+    { type: "user", message: { role: "user", content: "thanks" } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+
+  const parsed = parseInput({ kind: "claude-jsonl", content: SAMPLE });
+  assert("dialogue sample parses", parsed.ok);
+  if (parsed.ok) {
+    const dialogue = deriveDialogue(parsed.turns);
+
+    // Spine: user → assistant (mA + mB merged, the tool_result event between them
+    // is NOT a human message) → user. Three nodes, not five.
+    assertEq("spine alternates user/assistant/user", spineKinds(dialogue),
+      ["spoken:user", "assistant", "spoken:user"]);
+
+    const first = dialogue[0]!;
+    assert("first spine node is the user message, content intact",
+      first.kind === "spoken" && first.role === "user" && first.content === "build it");
+
+    // Interleaving preserved in source order, and the two assistant messages merged
+    // into ONE assistant node carrying both messages' blocks.
+    const mid = dialogue[1]!;
+    assertEq("assistant blocks interleaved in source order across merged messages",
+      blockKinds(mid),
+      ["thinking", "text", "tool-call", "usage", "text", "usage"]);
+
+    // The tool-call OWNS its result — joined by tool_use_id, no orphaned result node.
+    if (mid.kind === "assistant") {
+      const tc = mid.blocks.find((b) => b.kind === "tool-call");
+      assert("tool-call carries its own paired result",
+        tc?.kind === "tool-call" && tc.output?.text === "built ok");
+      assert("tool-call result classified terminal (Bash)",
+        tc?.kind === "tool-call" && tc.output?.kind === "terminal");
+    }
+
+    const last = dialogue[2]!;
+    assert("trailing user message closes the spine",
+      last.kind === "spoken" && last.role === "user" && last.content === "thanks");
+
+    // [LAW:types-are-the-program] Illegal states are unrepresentable, asserted as
+    // structural invariants over ANY derived dialogue:
+    //   (1) no spoken node carries blocks (a detail block at a user/system spine
+    //       cannot exist — `spoken` has no `blocks` field);
+    //   (2) every tool-call lives inside an assistant node;
+    //   (3) there is no standalone "result" spine node — results live in output.
+    const spokenHaveNoBlocks = dialogue.every(
+      (n) => n.kind !== "spoken" || !("blocks" in n),
+    );
+    assert("no spoken node carries blocks (detail at user spine unrepresentable)",
+      spokenHaveNoBlocks);
+    // Every tool-call observed lands inside an assistant node — the type makes a
+    // tool-call elsewhere impossible, so this counts them where they legally live.
+    const toolCallsUnderAssistant = dialogue
+      .filter((n): n is Extract<SpineNode, { kind: "assistant" }> => n.kind === "assistant")
+      .flatMap((n) => n.blocks)
+      .filter((b) => b.kind === "tool-call").length;
+    assert("the one tool-call lands under an assistant node", toolCallsUnderAssistant === 1);
+  }
+
+  // [LAW:one-source-of-truth] The dialogue is a pure function of the ORIGINAL:
+  // deriving from the stored turns equals deriving from turns re-projected from the
+  // captured origin. No KV migration — existing pastes re-derive for free.
+  if (parsed.ok) {
+    const replayed = reprojectOrigin(parsed.origin);
+    assert("origin re-projects (replayable jsonl arm)", replayed !== null);
+    if (replayed) {
+      assertEq("dialogue(turns) === dialogue(reproject(origin))",
+        JSON.stringify(deriveDialogue(parsed.turns)),
+        JSON.stringify(deriveDialogue(replayed)));
+    }
+  }
+
+  // Multi-kind assistant annotations (insight, turn-summary) are preserved as
+  // assistant blocks in source order — the CC sample carries both.
+  if (cc.ok) {
+    const ccDialogue = deriveDialogue(cc.turns);
+    const ccBlockKinds = ccDialogue.flatMap((n) => (n.kind === "assistant" ? n.blocks.map((b) => b.kind) : []));
+    assert("insight preserved as an assistant block", ccBlockKinds.includes("insight"));
+    assert("turn-summary preserved as an assistant block", ccBlockKinds.includes("turn-summary"));
+    // The CC sample opens with a user message, then a long run of agent activity.
+    const ccHead = ccDialogue[0]!;
+    assert("CC dialogue opens with the user 'deleted' message",
+      ccHead.kind === "spoken" && ccHead.role === "user" && ccHead.content === "deleted");
+  }
+
+  // [LAW:dataflow-not-control-flow] Visibility is a total property of block KIND.
+  const visOf = (kind: AssistantBlock["kind"]): string => {
+    const sample: Record<AssistantBlock["kind"], AssistantBlock> = {
+      text: { kind: "text", content: "" },
+      thinking: { kind: "thinking", content: "" },
+      "tool-call": { kind: "tool-call", tool: "", args: "", output: null },
+      insight: { kind: "insight", content: "" },
+      "turn-summary": { kind: "turn-summary", text: "" },
+      usage: { kind: "usage", usage: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 } },
+    };
+    return blockVisibility(sample[kind]);
+  };
+  assertEq("text is spine", visOf("text"), "spine");
+  assertEq("insight is spine", visOf("insight"), "spine");
+  assertEq("thinking is detail", visOf("thinking"), "detail");
+  assertEq("tool-call is detail", visOf("tool-call"), "detail");
+  assertEq("turn-summary is meta", visOf("turn-summary"), "meta");
+  assertEq("usage is meta", visOf("usage"), "meta");
+
+  // Empty stream → empty dialogue. A system message becomes its own spoken node
+  // and breaks the assistant run.
+  assertEq("empty turns → empty dialogue", JSON.stringify(deriveDialogue([])), "[]");
+  const withSystem = deriveDialogue([
+    { kind: "message", role: "assistant", content: "a" },
+    { kind: "message", role: "system", content: "sys" },
+    { kind: "message", role: "assistant", content: "b" },
+  ]);
+  assertEq("system message splits the spine",
+    withSystem.map((n) => (n.kind === "spoken" ? `spoken:${n.role}` : "assistant")),
+    ["assistant", "spoken:system", "assistant"]);
 }
 
 if (process.exitCode) {
