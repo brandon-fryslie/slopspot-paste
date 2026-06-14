@@ -670,11 +670,11 @@ body.code-copy-ready pre.code-block:hover .code-lang {
    actual output element. We deliberately don't put the pill inside <pre>,
    so the pre can contain only <code> with no template whitespace bleeding
    into a `white-space: pre` context. */
-.bubble-tool-call .tool-output-frame {
+.tool-output-frame {
   position: relative;
   margin: 8px 0 0;
 }
-.bubble-tool-call .tool-output-frame .output-kind-pill {
+.tool-output-frame .output-kind-pill {
   position: absolute;
   top: 6px;
   right: 10px;
@@ -690,21 +690,21 @@ body.code-copy-ready pre.code-block:hover .code-lang {
 }
 
 /* ─── Terminal output (Bash/Shell): dark console, $-prompt color ─────── */
-.bubble-tool-call .tool-output-frame[data-output-kind="terminal"] pre.tool-output {
+.tool-output-frame[data-output-kind="terminal"] pre.tool-output {
   background: var(--terminal-bg);
   border-color: #1f2730;
   color: var(--terminal-fg);
   padding: 14px 16px;
 }
-.bubble-tool-call .tool-output-frame[data-output-kind="terminal"] pre.tool-output code {
+.tool-output-frame[data-output-kind="terminal"] pre.tool-output code {
   color: var(--terminal-fg);
 }
-.bubble-tool-call .tool-output-frame[data-output-kind="terminal"] .output-kind-pill {
+.tool-output-frame[data-output-kind="terminal"] .output-kind-pill {
   color: #5b6975;
 }
 
 /* ─── Diff output (Update/Edit/Write): line-numbered with +/- colors ──── */
-.bubble-tool-call .diff-block {
+.diff-block {
   margin: 0;
   padding: 0;
   font-family: var(--font-mono);
@@ -715,7 +715,7 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   border-radius: 10px;
   overflow-x: auto;
 }
-.bubble-tool-call .diff-line {
+.diff-line {
   display: grid;
   grid-template-columns: 56px 18px 1fr;
   align-items: baseline;
@@ -724,39 +724,39 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.bubble-tool-call .diff-lineno {
+.diff-lineno {
   color: var(--fg-muted);
   text-align: right;
   padding-right: 10px;
   user-select: none;
   font-variant-numeric: tabular-nums;
 }
-.bubble-tool-call .diff-marker {
+.diff-marker {
   color: var(--fg-muted);
   text-align: center;
   user-select: none;
 }
-.bubble-tool-call .diff-content {
+.diff-content {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.bubble-tool-call .diff-added,
-.bubble-tool-call .diff-cont-added {
+.diff-added,
+.diff-cont-added {
   background: var(--diff-add-bg);
 }
-.bubble-tool-call .diff-added .diff-marker,
-.bubble-tool-call .diff-cont-added .diff-marker { color: var(--diff-add-gutter); }
-.bubble-tool-call .diff-added .diff-content,
-.bubble-tool-call .diff-cont-added .diff-content { color: var(--diff-add-fg); }
-.bubble-tool-call .diff-removed,
-.bubble-tool-call .diff-cont-removed {
+.diff-added .diff-marker,
+.diff-cont-added .diff-marker { color: var(--diff-add-gutter); }
+.diff-added .diff-content,
+.diff-cont-added .diff-content { color: var(--diff-add-fg); }
+.diff-removed,
+.diff-cont-removed {
   background: var(--diff-del-bg);
 }
-.bubble-tool-call .diff-removed .diff-marker,
-.bubble-tool-call .diff-cont-removed .diff-marker { color: var(--diff-del-gutter); }
-.bubble-tool-call .diff-removed .diff-content,
-.bubble-tool-call .diff-cont-removed .diff-content { color: var(--diff-del-fg); }
-.bubble-tool-call .tool-output-frame[data-output-kind="diff"] .output-kind-pill {
+.diff-removed .diff-marker,
+.diff-cont-removed .diff-marker { color: var(--diff-del-gutter); }
+.diff-removed .diff-content,
+.diff-cont-removed .diff-content { color: var(--diff-del-fg); }
+.tool-output-frame[data-output-kind="diff"] .output-kind-pill {
   color: var(--diff-add-gutter);
   font-weight: 600;
   text-transform: none;
@@ -765,7 +765,7 @@ body.code-copy-ready pre.code-block:hover .code-lang {
 }
 
 /* ─── File-read output (Read/NotebookRead): line-number gutter ────────── */
-.bubble-tool-call .file-block {
+.file-block {
   margin: 0;
   padding: 8px 0;
   font-family: var(--font-mono);
@@ -777,25 +777,25 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   overflow-x: auto;
   border-left: 3px solid var(--accent);
 }
-.bubble-tool-call .file-line {
+.file-line {
   display: grid;
   grid-template-columns: 56px 1fr;
   align-items: baseline;
   padding: 0 12px;
   min-height: 1.55em;
 }
-.bubble-tool-call .file-lineno {
+.file-lineno {
   color: var(--fg-muted);
   text-align: right;
   padding-right: 14px;
   user-select: none;
   font-variant-numeric: tabular-nums;
 }
-.bubble-tool-call .file-content {
+.file-content {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.bubble-tool-call .tool-output-frame[data-output-kind="file-read"] .output-kind-pill {
+.tool-output-frame[data-output-kind="file-read"] .output-kind-pill {
   color: var(--accent);
   text-transform: none;
   letter-spacing: 0;
@@ -803,8 +803,8 @@ body.code-copy-ready pre.code-block:hover .code-lang {
 }
 
 /* Generic output / args block — neutral code block */
-.bubble-tool-call .tool-output-frame[data-output-kind="generic"] pre.tool-output,
-.bubble-tool-call .tool-output-frame[data-output-kind="args"] pre.tool-output {
+.tool-output-frame[data-output-kind="generic"] pre.tool-output,
+.tool-output-frame[data-output-kind="args"] pre.tool-output {
   background: var(--bg-code);
 }
 
@@ -922,6 +922,121 @@ details.bubble-tool-call[open] > .tool-summary { margin-bottom: 10px; }
 .bubble-usage .usage-total {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* ─── Disclosure renderer — spine + condensed detail rows ─────────────────
+   The progressive-disclosure layout (renderDialogue.ts). An assistant turn is
+   ONE always-visible card carrying its interleaved blocks: prose/insight render
+   in full (spine); thinking and tool calls render as condensed rows collapsed by
+   default (detail); usage/turn-summary ride along as meta. The reader scans the
+   shape of a long run as a column of one-line rows, then expands any one. */
+.assistant-turn .assistant-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.assistant-turn .assistant-text:first-child,
+.assistant-turn .assistant-blocks > :first-child { margin-top: 0; }
+
+/* Always-visible assistant insight, inline within the turn. */
+.assistant-insight {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: linear-gradient(
+    to bottom right,
+    color-mix(in srgb, var(--accent) 10%, var(--bg-elev)),
+    var(--bg-elev) 60%
+  );
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.assistant-insight .insight-mark {
+  color: var(--accent);
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.assistant-insight .bubble-body { font-size: 15px; }
+
+/* Condensed detail row: one collapsible <details> per thinking/tool-call block.
+   [LAW:no-ambient-temporal-coupling] native <details> owns open/closed — no JS. */
+.condensed {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 2.5%, transparent);
+}
+.condensed-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+}
+.condensed-summary::-webkit-details-marker { display: none; }
+.condensed-summary:hover {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border-radius: 8px;
+}
+.condensed-icon {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.condensed-tool-call .tool-icon { color: #38bdf8; }
+.condensed-label {
+  flex-shrink: 0;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+/* The primary arg is the one line that distinguishes a call; it truncates with an
+   ellipsis rather than wrapping, keeping every row one scannable line. */
+.condensed-arg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+.condensed-caret {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-muted);
+  transition: transform 0.12s ease;
+}
+details.condensed[open] .condensed-caret { transform: rotate(90deg); }
+.condensed-body {
+  padding: 0 10px 10px;
+}
+.condensed-thinking .condensed-body .bubble-body { font-size: 15px; }
+/* The shared tool-output frames already carry their own padding; pull them flush
+   to the row edges inside the condensed body. */
+.condensed-tool-call .condensed-body .tool-output-frame:first-child { margin-top: 2px; }
+
+/* Pass/fail badge on a tool-call row — the source's real error bit, not a guess. */
+.tool-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.tool-badge-ok { color: var(--diff-add-gutter); }
+.tool-badge-error {
+  color: var(--diff-del-gutter);
+  background: var(--diff-del-bg);
 }
 
 /* ─── Admin (/sloppy) — dense scannable list ─────────────────────────── */
