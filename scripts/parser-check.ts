@@ -2189,6 +2189,14 @@ console.log("\nCondensed tool-call model (cbm.2 — per-tool primary-arg table):
   assertEq("unknown tool with prose args → still null",
     primaryArgValue("MysteryTool", "some args"), null);
 
+  // [LAW:no-silent-failure] A table tool whose JSON args OMIT (or null) the
+  // primary key → null (name-only), NEVER the raw JSON blob dumped as a value.
+  assertEq("table tool, JSON missing primary key → null", primaryArgValue("Edit", "{}"), null);
+  assertEq("table tool, JSON with other keys but no primary key → null",
+    primaryArgValue("Bash", JSON.stringify({ description: "x" })), null);
+  assertEq("table tool, JSON primary key present but null → null",
+    primaryArgValue("Read", JSON.stringify({ file_path: null })), null);
+
   // Pass/fail status is the source's real error bit, exhaustive over the three
   // honest states. [LAW:no-silent-failure]
   assertEq("output null → no-result status",

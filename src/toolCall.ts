@@ -56,17 +56,27 @@ const stringifyValue = (v: unknown): string =>
 // value is line-SHAPED.
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim();
 
-// [LAW:dataflow-not-control-flow] The condensed value of a tool call's args, or
-// null when the tool is not in the table (the NAMED name-only fallback). For a
-// table tool: if args is JSON carrying the primary key, the value at that key;
-// otherwise the raw args string, which for cc/claude-share is ALREADY the
-// source's condensed form. Variability lives in the parsed value, not in a mode.
+// The condensed value of a tool call's args, or null to fall back to name-only.
+// A total function over the three honest shapes of `args`, each its own outcome —
+// not a mode flag, but the parsed data discriminating its own case:
+//   • tool absent from table        → null  (NAMED name-only fallback)
+//   • args is raw text (cc/share)   → the text verbatim, ALREADY the source's
+//                                     condensed form
+//   • args is JSON for a table tool → the primary key's value, or null when that
+//                                     key is absent/empty — NEVER the raw JSON
+//                                     blob, which is neither a real value nor the
+//                                     name-only fallback. [LAW:no-silent-failure]
+//                                     the shown value is real source data or it is
+//                                     nothing; a synthesized blob is the drift the
+//                                     ticket forbids.
 export const primaryArgValue = (tool: string, args: string): string | null => {
   const key = TOOL_PRIMARY_ARG[tool];
   if (key === undefined) return null;
   const obj = parseJsonObject(args);
-  const raw = obj !== null && key in obj ? stringifyValue(obj[key]) : args;
-  return oneLine(raw);
+  if (obj === null) return oneLine(args);
+  const value = obj[key];
+  if (value === undefined || value === null) return null;
+  return oneLine(stringifyValue(value));
 };
 
 // [LAW:types-are-the-program] The three honest display states of a tool call's
