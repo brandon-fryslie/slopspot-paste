@@ -1,0 +1,10 @@
+version: 1
+default: codex
+configs:
+  codex:
+    engine: codex
+    model: gpt-5.4-mini
+    endpoint:
+      kind: openai-responses
+      baseUrl: https://api.openai.com/v1
+      apiKeyEnv: OPENAI_API_KEY
