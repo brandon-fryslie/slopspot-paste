@@ -62,7 +62,33 @@ export type Turn =
   | { readonly kind: "insight"; readonly content: string }
   | { readonly kind: "thinking"; readonly content: string }
   | { readonly kind: "turn-summary"; readonly text: string }
-  | { readonly kind: "usage"; readonly usage: Usage };
+  | { readonly kind: "usage"; readonly usage: Usage }
+  | {
+      // [LAW:types-are-the-program] A subagent run owned by the spawning Agent
+      // tool-call. It is recursive: a captured transcript is itself a Turn[],
+      // rendered by the same recursive renderer one level nested. Like `usage`,
+      // it is source-DERIVED, never hand-authored (the editor excludes it via
+      // AuthorableTurn). agentType/description identify the run on the condensed
+      // line; stepCount is the source's own tool-use count (0 when the source
+      // carried none — honest absence, never invented). [LAW:no-silent-failure]
+      readonly kind: "subagent";
+      readonly agentType: string | null;
+      readonly description: string | null;
+      readonly stepCount: number;
+      readonly transcript: SubagentTranscript;
+    };
+
+// [LAW:types-are-the-program] The two — and only two — honest outcomes of
+// capturing a subagent's run. `captured` carries the full nested transcript (the
+// run reattached from the stored original); `summary-only` is graceful
+// degradation when that transcript was never captured (uploaded before the
+// subagent files were bundled, or the file was absent) — all the source still
+// holds is the spawn prompt and the final returned result. A "captured but
+// empty" or "both" state is unrepresentable. The prompt of a captured run is its
+// transcript's first user turn, so it is not duplicated here.
+export type SubagentTranscript =
+  | { readonly kind: "captured"; readonly turns: ReadonlyArray<Turn> }
+  | { readonly kind: "summary-only"; readonly prompt: string; readonly result: string };
 
 // [LAW:types-are-the-program] The runtime witness of the Turn union. It lives
 // beside the type so the two cannot drift: add an arm above and the exhaustive
@@ -121,6 +147,31 @@ export const isTurn = (v: unknown): v is Turn => {
       return typeof o.text === "string";
     case "usage":
       return isUsage(o.usage);
+    case "subagent":
+      return (
+        (o.agentType === null || typeof o.agentType === "string") &&
+        (o.description === null || typeof o.description === "string") &&
+        isCount(o.stepCount) &&
+        isSubagentTranscript(o.transcript)
+      );
+    default:
+      return false;
+  }
+};
+
+// [LAW:types-are-the-program] The runtime witness for the recursive transcript.
+// `captured` validates its nested turns through isTurns (mutual recursion with
+// isTurn — sound because both are only invoked at call time, never module-init).
+// [LAW:dataflow-not-control-flow] One switch on the discriminator; the default
+// closes the enumeration gap so an unknown transcript kind is rejected.
+const isSubagentTranscript = (v: unknown): v is SubagentTranscript => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; turns?: unknown; prompt?: unknown; result?: unknown };
+  switch (o.kind) {
+    case "captured":
+      return isTurns(o.turns);
+    case "summary-only":
+      return typeof o.prompt === "string" && typeof o.result === "string";
     default:
       return false;
   }

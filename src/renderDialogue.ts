@@ -126,6 +126,67 @@ const toolCallHtml = (
   );
 };
 
+// [LAW:one-type-per-behavior] A subagent is a detail row like any other — same
+// condensedRow shape as thinking/tool-call — differing only in its summary and
+// body. The summary is glanceable: agent type, the short description, and the
+// source's own step count. The body is the run itself.
+// [LAW:one-source-of-truth] The captured body renders through renderDialogueHtml
+// — the SAME function, one level nested — so a subagent transcript is drawn by
+// the exact renderer the outer conversation uses, at any depth.
+const subagentSummary = (
+  block: Extract<AssistantBlock, { kind: "subagent" }>,
+): string => {
+  const type = block.agentType
+    ? `<span class="subagent-type">${escapeHtml(block.agentType)}</span>`
+    : "";
+  const desc = block.description
+    ? `<span class="condensed-arg">${escapeHtml(block.description)}</span>`
+    : "";
+  // [LAW:dataflow-not-control-flow] The step count is a value gate, not a branch
+  // that builds a different row: 0 (source carried no count) renders no chip,
+  // any positive count renders one. Pluralization is a value too.
+  const steps =
+    block.stepCount > 0
+      ? `<span class="subagent-steps">${block.stepCount} ${block.stepCount === 1 ? "step" : "steps"}</span>`
+      : "";
+  return (
+    `<span class="condensed-icon subagent-icon" aria-hidden="true">↳</span>` +
+    `<span class="condensed-label">Subagent</span>` +
+    type +
+    desc +
+    steps
+  );
+};
+
+// [LAW:no-silent-failure] The degraded body is HONEST about the gap: it names
+// that the nested transcript was not captured and shows exactly what the source
+// still holds (the spawn prompt and the final result), rather than pretending the
+// run is empty. data-subagent-degraded is the seam cbm.7's backfill button reads
+// to offer "copy a prompt for an agent to send the missing files".
+const subagentDegradedHtml = (prompt: string, result: string): string =>
+  `<div class="subagent-degraded" data-subagent-degraded="true">` +
+  `<p class="subagent-degraded-note">Nested transcript not captured for this subagent.</p>` +
+  `<div class="subagent-field subagent-prompt">` +
+  `<div class="bubble-role"><span class="role-name">Prompt</span></div>` +
+  `<div class="bubble-body">${renderMarkdown(prompt)}</div>` +
+  `</div>` +
+  `<div class="subagent-field subagent-result">` +
+  `<div class="bubble-role"><span class="role-name">Result</span></div>` +
+  `<div class="bubble-body">${renderMarkdown(result)}</div>` +
+  `</div>` +
+  `</div>`;
+
+const subagentHtml = (
+  block: Extract<AssistantBlock, { kind: "subagent" }>,
+): string => {
+  const body =
+    block.body.kind === "captured"
+      ? `<div class="subagent-transcript">${renderDialogueHtml(block.body.transcript)}</div>`
+      : subagentDegradedHtml(block.body.prompt, block.body.result);
+  const attrs = block.agentType ? ` data-agent-type="${escapeAttr(block.agentType)}"` : "";
+  return condensedRow("subagent", attrs, subagentSummary(block), body);
+};
+
 const turnSummaryHtml = (text: string): string =>
   `<aside class="bubble-turn-summary" data-kind="turn-summary">` +
   `<span>${escapeHtml(text)}</span>` +
@@ -152,11 +213,12 @@ const usageHtml = (usage: Usage, cumulative: number): string => {
 };
 
 // [LAW:dataflow-not-control-flow] One dispatch on block.kind; each arm emits the
-// fields that kind carries. The switch is exhaustive over AssistantBlock — when
-// cbm.4 adds the `subagent` arm (carrying a nested Dialogue), this stops compiling
-// until the new arm renders `renderDialogueHtml(block.transcript)` one level
-// nested through the SAME function. The usage fold is threaded by closure so a
-// usage block reads the running total accumulated by the blocks before it.
+// fields that kind carries. The switch is exhaustive over AssistantBlock — adding
+// a block arm stops compiling until it is handled here. The `subagent` arm renders
+// one level nested through the SAME function (renderDialogueHtml). The usage fold
+// is threaded by closure so a usage block reads the running total accumulated by
+// the blocks before it; a nested subagent transcript folds its OWN total because
+// it renders through a fresh renderDialogueHtml call (cumulativeOutput resets).
 const renderDialogueHtml = (dialogue: Dialogue): string => {
   // Usage is a running fold scoped to THIS dialogue — a nested subagent transcript
   // (cbm.4) folds its own total, since it renders through a fresh call below.
@@ -172,6 +234,8 @@ const renderDialogueHtml = (dialogue: Dialogue): string => {
         return thinkingHtml(block.content);
       case "tool-call":
         return toolCallHtml(block);
+      case "subagent":
+        return subagentHtml(block);
       case "turn-summary":
         return turnSummaryHtml(block.text);
       case "usage":
