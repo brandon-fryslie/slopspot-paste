@@ -20,6 +20,7 @@ import {
 import { renderTurnsHtml } from "../src/renderTurns";
 import { deriveDialogue, blockVisibility } from "../src/dialogue";
 import type { AssistantBlock, SpineNode } from "../src/dialogue";
+import { condenseToolCall, primaryArgValue, TOOL_PRIMARY_ARG } from "../src/toolCall";
 import {
   convertKind,
   emptyTurn,
@@ -1288,10 +1289,10 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
     { kind: "insight", content: "a key realization" },
     { kind: "thinking", content: "let me reason about this" },
     { kind: "turn-summary", text: "Sautéed for 53s" },
-    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
-    { kind: "tool-call", tool: "Update", args: "src/x.ts", output: { kind: "diff", text: DIFF_OUTPUT } },
-    { kind: "tool-call", tool: "Read", args: "src/x.ts", output: { kind: "file-read", text: FILE_OUTPUT } },
-    { kind: "tool-call", tool: "WebFetch", args: "{json}", output: { kind: "generic", text: "some output" } },
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0", isError: false } },
+    { kind: "tool-call", tool: "Update", args: "src/x.ts", output: { kind: "diff", text: DIFF_OUTPUT, isError: false } },
+    { kind: "tool-call", tool: "Read", args: "src/x.ts", output: { kind: "file-read", text: FILE_OUTPUT, isError: false } },
+    { kind: "tool-call", tool: "WebFetch", args: "{json}", output: { kind: "generic", text: "some output", isError: false } },
     { kind: "tool-call", tool: "cherry-mcp", args: "", output: null },
   ];
   const html = renderTurnsHtml(fixture);
@@ -1341,7 +1342,7 @@ console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
   const xss: Turn[] = [
     { kind: "tool-call", tool: 'evil" onload="x', args: "", output: null },
     { kind: "turn-summary", text: "<b>not bold</b>" },
-    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "<i>raw</i>" } },
+    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "<i>raw</i>", isError: false } },
   ];
   const xssHtml = renderTurnsHtml(xss);
   assert("tool name attribute escaped (no quote breakout)", !xssHtml.includes('data-tool="evil" onload='));
@@ -1369,7 +1370,7 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
       kind: "tool-call",
       tool: "Bash",
       args: "ls -la",
-      output: { kind: "terminal", text: "total 0" },
+      output: { kind: "terminal", text: "total 0", isError: false },
     },
   ];
 
@@ -1439,7 +1440,7 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
 
   // convertKind FROM tool-call — tool/args/output joined into the content field.
   const fromTool = convertKind(
-    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0", isError: false } },
     "message",
   );
   assert(
@@ -1480,7 +1481,7 @@ console.log("\nBlock model (b48.2 — pure editor blocks):");
   assert("splitTurn clamps negative -> empty head", nh.kind === "turn-summary" && nh.text === "");
   // tool-call splits its primary field (args), preserving tool name + output.
   const [th, tt] = splitTurn(
-    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "out" } },
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "out", isError: false } },
     2,
   );
   assert(
@@ -1838,10 +1839,10 @@ console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } 
     { kind: "tool-call", tool: "Bash", args: "ls", output: null },
   ]));
   assert("accepts tool-call with every output kind", isTurns([
-    { kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", text: "x" } },
-    { kind: "tool-call", tool: "Update", args: "f", output: { kind: "diff", text: "x" } },
-    { kind: "tool-call", tool: "Read", args: "f", output: { kind: "file-read", text: "x" } },
-    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "x" } },
+    { kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", text: "x", isError: false } },
+    { kind: "tool-call", tool: "Update", args: "f", output: { kind: "diff", text: "x", isError: true } },
+    { kind: "tool-call", tool: "Read", args: "f", output: { kind: "file-read", text: "x", isError: false } },
+    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "x", isError: false } },
   ]));
   assert("accepts insight", isTurns([{ kind: "insight", content: "aha" }]));
   assert("accepts thinking", isTurns([{ kind: "thinking", content: "reasoning" }]));
@@ -1863,9 +1864,13 @@ console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } 
   assert("rejects tool-call non-string tool",
     !isTurns([{ kind: "tool-call", tool: 1, args: "ls", output: null }]));
   assert("rejects tool-call bad output kind",
-    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "bogus", text: "x" } }]));
+    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "bogus", text: "x", isError: false } }]));
   assert("rejects tool-call output missing text",
-    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal" } }]));
+    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", isError: false } }]));
+  assert("rejects tool-call output missing isError",
+    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", text: "x" } }]));
+  assert("rejects tool-call output non-boolean isError",
+    !isTurns([{ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", text: "x", isError: "yes" } }]));
 
   // --- rejects: malformed insight / turn-summary ---
   assert("rejects insight missing content", !isTurns([{ kind: "insight" }]));
@@ -1889,7 +1894,7 @@ console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } 
   const fixture: Turn[] = [
     { kind: "message", role: "user", content: "hello" },
     { kind: "insight", content: "a key realization" },
-    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0" } },
+    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0", isError: false } },
   ];
   assert("accepts editor toTurns output (round-trip)", isTurns(toTurns(toBlocks(fixture))));
 }
@@ -2146,6 +2151,64 @@ console.log("\nDerived nested dialogue (deriveDialogue — cbm.1):");
     threw = true;
   }
   assert("unhandled turn kind throws (never silently dropped)", threw);
+}
+
+console.log("\nCondensed tool-call model (cbm.2 — per-tool primary-arg table):");
+{
+  // jsonl shape: args is serialized JSON; the primary key's value is extracted.
+  assertEq("jsonl Bash → command value",
+    primaryArgValue("Bash", JSON.stringify({ command: "git status", description: "check" })),
+    "git status");
+  assertEq("jsonl Read → file_path value",
+    primaryArgValue("Read", JSON.stringify({ file_path: "/a/b.ts" })),
+    "/a/b.ts");
+  assertEq("jsonl WebSearch → query value",
+    primaryArgValue("WebSearch", JSON.stringify({ query: "lit html" })),
+    "lit html");
+
+  // [LAW:dataflow-not-control-flow] Adding a tool is ONE table row, no code path:
+  // Read and Bash route through the identical extractor with different keys, and a
+  // key added to the table is immediately extractable with no extraction change.
+  assert("table drives extraction, not per-tool code",
+    TOOL_PRIMARY_ARG["Read"] === "file_path" && TOOL_PRIMARY_ARG["Bash"] === "command" &&
+    primaryArgValue("Grep", JSON.stringify({ pattern: "foo", path: "src" })) === "foo");
+
+  // cc/claude-share shape: args is raw text (already the source's condensed form),
+  // not JSON — the raw string IS the value, no extraction lie.
+  assertEq("cc raw-text args used verbatim", primaryArgValue("Bash", "git status"), "git status");
+  assertEq("cc Read raw path used verbatim", primaryArgValue("Read", "src/foo.ts"), "src/foo.ts");
+
+  // Multi-line value (pretty JSON / multi-line command) collapses to one line.
+  assertEq("primary value collapsed to one line",
+    primaryArgValue("Bash", JSON.stringify({ command: "a\n  b\n  c" })),
+    "a b c");
+
+  // [LAW:no-mode-explosion] A tool ABSENT from the table → null (name-only), via
+  // the one NAMED fallback — never a crash, never a guessed value.
+  assertEq("unknown tool → null (name-only fallback)", primaryArgValue("TodoWrite", "{}"), null);
+  assertEq("unknown tool with prose args → still null",
+    primaryArgValue("MysteryTool", "some args"), null);
+
+  // Pass/fail status is the source's real error bit, exhaustive over the three
+  // honest states. [LAW:no-silent-failure]
+  assertEq("output null → no-result status",
+    condenseToolCall({ kind: "tool-call", tool: "Bash", args: "ls", output: null }).status,
+    "no-result");
+  assertEq("result isError false → ok status",
+    condenseToolCall({ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", text: "x", isError: false } }).status,
+    "ok");
+  assertEq("result isError true → error status",
+    condenseToolCall({ kind: "tool-call", tool: "Bash", args: "ls", output: { kind: "terminal", text: "boom", isError: true } }).status,
+    "error");
+
+  // End-to-end condensed line as data: name + extracted value + status.
+  assertEq("condenseToolCall produces the full row",
+    condenseToolCall({
+      kind: "tool-call", tool: "Edit",
+      args: JSON.stringify({ file_path: "src/x.ts", old_string: "a", new_string: "b" }),
+      output: { kind: "diff", text: "...", isError: false },
+    }),
+    { tool: "Edit", primaryArg: "src/x.ts", status: "ok" });
 }
 
 if (process.exitCode) {
