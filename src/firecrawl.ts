@@ -28,6 +28,17 @@ interface ScrapeResponse {
   readonly error?: string;
 }
 
+// [LAW:effects-at-boundaries] Pure request body — testable without mocking
+// fetch. [LAW:no-ambient-temporal-coupling] A selector wait rather than a
+// blind millisecond delay: claude.ai/share is a client-rendered SPA whose
+// user messages appear under [data-testid="user-message"]; waiting on that
+// selector guarantees hydration without racing the clock.
+export const scrapeRequestBody = (url: string) => ({
+  url,
+  formats: ["markdown"],
+  actions: [{ type: "wait" as const, selector: '[data-testid="user-message"]' }],
+});
+
 // [LAW:no-defensive-null-guards] This IS a trust boundary — Firecrawl is an
 // external service whose response shape we cannot prove. The guards below
 // classify the wire payload into the typed union and stop. Downstream code
@@ -55,7 +66,7 @@ export const firecrawlScrape = async (
       "content-type": "application/json",
       authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify({ url, formats: ["markdown"] }),
+    body: JSON.stringify(scrapeRequestBody(url)),
     signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
   }).catch((e: unknown): unknown => e);
 

@@ -39,6 +39,7 @@ import { persistDrafts } from "../src/editor/mount";
 import type { ParseResult, Turn } from "../src/types";
 import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
 import { readFileSync } from "node:fs";
+import { scrapeRequestBody } from "../src/firecrawl";
 
 const CC_SAMPLE = `❯ deleted
 
@@ -2623,6 +2624,21 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
       kind: "subagent", agentType: null, description: null, stepCount: 0,
       transcript: { kind: "summary-only", prompt: "", result: "" },
     } as Turn));
+}
+
+console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — SPA render-wait):");
+{
+  // [LAW:behavior-not-structure] Assert the CONTRACT: the request body for any
+  // URL must include a wait action targeting the SPA's hydration selector.
+  // A future edit that drops the action silently reverts the fix.
+  const body = scrapeRequestBody("https://claude.ai/share/test-123");
+  assert("scrapeRequestBody includes formats:markdown", body.formats.includes("markdown"));
+  const waitAction = body.actions.find((a) => a.type === "wait");
+  assert("scrapeRequestBody has a wait action", waitAction !== undefined);
+  assert(
+    "wait action targets [data-testid=\"user-message\"]",
+    waitAction !== undefined && waitAction.selector === '[data-testid="user-message"]',
+  );
 }
 
 if (process.exitCode) {
