@@ -18,6 +18,7 @@
   "dependencies": {
     "@astrojs/cloudflare": "^13.5.1",
     "astro": "^6.3.3",
+    "highlight.js": "^11.11.1",
     "lit-html": "^3.3.3",
     "marked": "^18.0.3",
     "mobx": "^6.16.1"
