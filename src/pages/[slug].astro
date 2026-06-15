@@ -397,7 +397,36 @@ const sourceUrl = sourceUrlOf(origin);
         'files = sorted(glob.glob(os.path.join(subdir, "agent-*.jsonl")))',
         'if not files:',
         '    sys.exit("no subagent transcripts found in " + subdir)',
-        'content = "\\n".join(open(p, encoding="utf-8", errors="replace").read() for p in files)',
+        // Fold each group's sibling agent-<id>.meta.json {agentType, description}
+        // onto its first real sidechain line, so an orphan subagent keeps its type
+        // through augment. setdefault never clobbers an existing field; the line
+        // already has agentId+isSidechain+sessionId, so it passes the validator.
+        "def fold_meta(text, meta_path):",
+        "    if not os.path.exists(meta_path):",
+        "        return text",
+        "    try:",
+        '        meta = json.load(open(meta_path, encoding="utf-8"))',
+        "    except Exception:",
+        "        return text",
+        '    fields = {k: meta[k] for k in ("agentType", "description") if isinstance(meta.get(k), str) and meta[k]}',
+        "    if not fields:",
+        "        return text",
+        '    out = text.split("\\n")',
+        "    for i, raw in enumerate(out):",
+        "        if not raw.strip():",
+        "            continue",
+        "        try:",
+        "            obj = json.loads(raw)",
+        "        except Exception:",
+        "            continue",
+        '        if isinstance(obj, dict) and obj.get("agentId") and obj.get("isSidechain") is True:',
+        "            for k, v in fields.items():",
+        "                obj.setdefault(k, v)",
+        "            out[i] = json.dumps(obj, ensure_ascii=False)",
+        "            break",
+        '    return "\\n".join(out)',
+        'parts = [fold_meta(open(p, encoding="utf-8", errors="replace").read(), p[:-len(".jsonl")] + ".meta.json") for p in files]',
+        'content = "\\n".join(parts)',
         "sys.stdout.write(json.dumps({\"slug\": " + JSON.stringify(slug) + ", \"content\": content}))",
         "' \"$subdir\" | curl -sS --fail-with-body -X POST " +
           JSON.stringify(apiOrigin + "/api/augment") +
