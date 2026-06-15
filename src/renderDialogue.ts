@@ -36,6 +36,22 @@ const roleHeader = (role: Role, label: string): string =>
   `<span class="role-name">${label}</span>` +
   `</div>`;
 
+// [LAW:dataflow-not-control-flow] Spine prose — spoken text, assistant text,
+// insight — is wrapped so its body can be clamped to a default height with a
+// bottom Expand toggle. The wrapper is INERT markup: the clamp class and the
+// toggle are added by enhanceClampBlocks (the client capability in clampBlocks.ts)
+// only for blocks that MEASURE as overflowing — a short block renders untouched,
+// a no-JS viewer sees the full prose. The renderer never guesses overflow from
+// text length; presence of the control is derived from rendered geometry at the
+// client boundary. [LAW:decomposition] Detail kinds (thinking, tool-call,
+// subagent) are deliberately NOT clampable: they already collapse behind the
+// disclosure model, so a second clamp would be redundant click-to-reveal — the
+// `.clampable` marker is the one seam that distinguishes the two.
+const clampableBody = (leadingClass: string, content: string): string =>
+  `<div class="${leadingClass} clampable">` +
+  `<div class="clamp-content">${renderMarkdown(content)}</div>` +
+  `</div>`;
+
 // [LAW:types-are-the-program] A spoken node is always visible — it is the readable
 // conversation, never collapsible. So it is a plain article, not a <details>: the
 // "collapsed" state it would carry is unrepresentable, not merely defaulted-off.
@@ -49,17 +65,17 @@ const spokenHtml = (
 ): string =>
   `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}">` +
   roleHeader(role, SPOKEN_LABEL[role]) +
-  `<div class="bubble-body">${renderMarkdown(content)}</div>` +
+  clampableBody("bubble-body", content) +
   `</article>`;
 
 // Assistant TEXT and INSIGHT are spine: always-visible prose inside the turn.
 const textHtml = (content: string): string =>
-  `<div class="assistant-text bubble-body">${renderMarkdown(content)}</div>`;
+  clampableBody("assistant-text bubble-body", content);
 
 const insightHtml = (content: string): string =>
   `<div class="assistant-insight" data-kind="insight">` +
   `<span class="insight-mark" aria-hidden="true">★</span>` +
-  `<div class="bubble-body">${renderMarkdown(content)}</div>` +
+  clampableBody("bubble-body", content) +
   `</div>`;
 
 // [LAW:no-ambient-temporal-coupling] Every detail block is a native <details>:
