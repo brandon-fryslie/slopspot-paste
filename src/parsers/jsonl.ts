@@ -21,6 +21,13 @@ import { isNonEmptyTurns } from "../types";
 // positional [LAW:no-silent-failure]. A blob with no subagent lines (an old
 // upload, or a session with no subagents) parses exactly as before, and an
 // Agent call whose group is absent degrades to a summary-only subagent turn.
+//
+// ORPHAN subagents (slash-command / skill background runs like /recap) have a
+// group but NO spawning Agent tool_result, so their type/description can't come
+// from the main stream. That identity lives in a sibling agent-<id>.meta.json the
+// uploader folds onto the group's OWN first sidechain line ({agentType,
+// description} as top-level fields). The orphan branch reads it from there; an
+// old upload predating the fold carries neither and yields honest nulls.
 
 // Mirror the cc.ts mapping so tool outputs render identically across kinds.
 // Kept local rather than imported so jsonl.ts doesn't fan-out to cc.ts.
@@ -67,6 +74,12 @@ interface MessageEvent {
   readonly agentId?: string;
   readonly isSidechain?: boolean;
   readonly toolUseResult?: unknown;
+  // The uploader folds a subagent group's sibling agent-<id>.meta.json onto the
+  // group's first sidechain line as these top-level fields. Only the orphan
+  // branch reads them (a tool-spawned group takes its type from the main-stream
+  // tool_result instead); a line that predates the fold carries neither.
+  readonly agentType?: string;
+  readonly description?: string;
   readonly message?: {
     readonly id?: string;
     readonly role?: string;
@@ -196,6 +209,26 @@ const subagentTurnFromResult = (
     }
   }
   return { kind: "subagent", agentType, description, stepCount, transcript };
+};
+
+// [LAW:one-source-of-truth] An orphan subagent's identity is not in any main-
+// stream tool_result (it has no spawning Agent call); it rides on the group's OWN
+// lines, where the uploader folds the sibling agent-<id>.meta.json's {agentType,
+// description}. First line carrying each field wins. A group from an upload that
+// predates the fold carries neither → honest nulls, never an invented label
+// [LAW:no-silent-failure]. Tool-spawned groups never reach here (their type comes
+// from the tool_result), so this is the orphan's single source of identity.
+const orphanIdentity = (
+  evs: ReadonlyArray<MessageEvent>,
+): { readonly agentType: string | null; readonly description: string | null } => {
+  let agentType: string | null = null;
+  let description: string | null = null;
+  for (const ev of evs) {
+    agentType ??= strOrNull(ev.agentType);
+    description ??= strOrNull(ev.description);
+    if (agentType !== null && description !== null) break;
+  }
+  return { agentType, description };
 };
 
 // [LAW:dataflow-not-control-flow] Build one group's events into Turns, in source
@@ -429,12 +462,13 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
     if (key === MAIN || referenced.has(key)) continue;
     const orphan = buildTurns(evs, groups, new Set([key]));
     if (!isNonEmptyTurns(orphan)) continue;
+    // No spawning tool-call, so type/description come from the meta the uploader
+    // folded onto the group's lines (null when the upload predates the fold).
+    const { agentType, description } = orphanIdentity(evs);
     turns.push({
-      // No spawning tool-call, so no input to read type/description from, and the
-      // bundle's subagent lines carry neither — honest nulls, not invented labels.
       kind: "subagent",
-      agentType: null,
-      description: null,
+      agentType,
+      description,
       stepCount: 0,
       transcript: { kind: "captured", turns: orphan },
     });
