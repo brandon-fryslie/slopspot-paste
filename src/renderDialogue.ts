@@ -174,6 +174,13 @@ const subagentDegradedHtml = (prompt: string, result: string): string =>
   `<div class="bubble-role"><span class="role-name">Result</span></div>` +
   `<div class="bubble-body">${renderMarkdown(result)}</div>` +
   `</div>` +
+  // [LAW:effects-at-boundaries] The button is inert markup; the page's client
+  // script (permalink only — degraded subagents never reach the editor preview)
+  // builds the slug-keyed backfill prompt from location and wires the clipboard.
+  // It stays hidden until that script confirms clipboard support, like copy-code.
+  `<button type="button" class="copy-agent-prompt" data-copy-agent-prompt>` +
+  `Copy a prompt to backfill this transcript` +
+  `</button>` +
   `</div>`;
 
 const subagentHtml = (

@@ -6,6 +6,7 @@
 // parser honest as we add new sources.
 
 import { canonicalize, detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
 import type { Origin, SourceKind } from "../src/types";
@@ -2413,6 +2414,75 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     assert("orphan renders as a condensed subagent row",
       html.includes('condensed condensed-subagent'));
   }
+
+  // ── [LAW:no-silent-failure] Backfill (cbm.7): augment a degraded main-only blob
+  // with its missing subagent transcript, then re-derive. The acceptance path:
+  // main-only (summary-only subagent) + supplied sidechain lines → captured.
+  // Membership is by sessionId, so the fixtures here carry one (the shared MAIN/
+  // SIDECHAIN above predate sessionId and exercise a different axis).
+  const SID = "sess-abc";
+  const stamp = (evs: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
+    evs.map((e) => ({ ...e, sessionId: SID }));
+  const mainStamped = lines(stamp(MAIN));
+  const sideStamped = stamp(SIDECHAIN);
+  const suppliedSub = lines(sideStamped);
+
+  // Happy path: append the subagent group, re-derive → the subagent is captured.
+  const aug = augmentJsonlWithSubagents(mainStamped, suppliedSub);
+  assert("augment of a matching-session subagent succeeds", aug.ok);
+  if (aug.ok) {
+    assertEq("augment reports the appended agent group", [...aug.addedAgentIds], ["a1"]);
+    const ra = parseInput({ kind: "claude-jsonl", content: aug.content });
+    assert("augmented blob re-parses", ra.ok);
+    if (ra.ok) {
+      const sub = ra.turns[2]!;
+      assert("the once-degraded subagent is now CAPTURED",
+        sub.kind === "subagent" && sub.transcript.kind === "captured");
+      const html = renderDialogueHtml(deriveDialogue(ra.turns));
+      assert("the backfill seam (button) is gone once captured",
+        !html.includes('data-subagent-degraded="true"'));
+      assert("captured nested transcript now renders", html.includes('<div class="subagent-transcript">'));
+    }
+  }
+
+  // Idempotent: re-augmenting an already-captured blob appends nothing (dedup by
+  // agentId), so the re-derived transcript is not doubled.
+  if (aug.ok) {
+    const again = augmentJsonlWithSubagents(aug.content, suppliedSub);
+    assert("re-augmenting an already-captured group succeeds", again.ok);
+    if (again.ok) {
+      assertEq("re-augment appends nothing new", [...again.addedAgentIds], []);
+      assertEq("re-augment reports the group as already present", [...again.skippedAgentIds], ["a1"]);
+      assertEq("re-augment is byte-identical (no duplicate lines)", again.content, aug.content);
+    }
+  }
+
+  // [LAW:no-silent-failure] Foreign session: a sidechain line whose sessionId is
+  // not the paste's session is rejected — the WHOLE request, not silently dropped.
+  const foreign = lines(SIDECHAIN.map((e) => ({ ...e, sessionId: "sess-OTHER" })));
+  const augForeign = augmentJsonlWithSubagents(mainStamped, foreign);
+  assert("augment rejects lines from a different session", !augForeign.ok);
+  assert("rejection names the foreign session loudly",
+    !augForeign.ok && augForeign.reason.includes("different session"));
+
+  // [LAW:no-silent-failure] Unlinkable: a well-formed line for the right session
+  // that is NOT a subagent sidechain (no agentId/isSidechain) is rejected too —
+  // it would otherwise corrupt the MAIN transcript.
+  const notSidechain = lines([{ type: "user", sessionId: SID, message: { role: "user", content: "stray main line" } }]);
+  const augStray = augmentJsonlWithSubagents(mainStamped, notSidechain);
+  assert("augment rejects a non-sidechain line", !augStray.ok);
+  assert("rejection names the unlinkable line",
+    !augStray.ok && augStray.reason.includes("not a subagent sidechain"));
+
+  // Empty / non-JSON supplied input fails cleanly, never silently.
+  assert("augment rejects empty supplied input",
+    !augmentJsonlWithSubagents(mainStamped, "   ").ok);
+  assert("augment rejects non-JSON supplied input",
+    !augmentJsonlWithSubagents(mainStamped, "not json at all").ok);
+
+  // A stored blob with no sessionId cannot validate membership → loud refusal.
+  assert("augment refuses when the stored blob has no session id",
+    !augmentJsonlWithSubagents(lines(MAIN), suppliedSub).ok);
 
   // ── The subagent kind is detail (collapses by default) and is NOT author-able.
   assertEq("subagent block classifies as detail", blockVisibility({
