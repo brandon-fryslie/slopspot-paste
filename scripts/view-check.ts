@@ -102,6 +102,47 @@ console.log("\nView first-render select bindings (editor-draft-cos — lit-html 
   );
 }
 
+console.log("\nDiscard draft control (slopspot-editor-draft-rp4):");
+{
+  // [LAW:verifiable-goals] Three assertions pin the canDiscard gate and the
+  // clearDraft side-effect — the exact acceptance criteria for this feature.
+  const findDiscardBtn = (c: Element): HTMLButtonElement | undefined =>
+    Array.from(c.querySelectorAll<HTMLButtonElement>("button")).find(
+      (b) => b.textContent?.trim() === "Discard draft",
+    );
+
+  // 1. Empty store — the button must NOT be present (canDiscard = false).
+  const storeEmpty = new EditorStore(fakeIo());
+  const cEmpty = jswindow.document.createElement("div");
+  render(appTemplate(storeEmpty), cEmpty);
+  assert('empty store: "Discard draft" control is absent', findDiscardBtn(cEmpty) === undefined);
+
+  // 2. Store with blocks — the button IS present (canDiscard = true).
+  storeEmpty.restoreDraft({
+    turns: [{ kind: "message", role: "user", content: "hello" } as const],
+    origin: null,
+  });
+  render(appTemplate(storeEmpty), cEmpty);
+  assert('store with blocks: "Discard draft" control IS present', findDiscardBtn(cEmpty) !== undefined);
+
+  // 3. After discard() + re-render — blocks empty AND clearDraft invoked.
+  let clearDraftCalled = false;
+  const trackIo: EditorIo = {
+    ...fakeIo(),
+    clearDraft: () => { clearDraftCalled = true; },
+  };
+  const store3 = new EditorStore(trackIo);
+  store3.restoreDraft({
+    turns: [{ kind: "message", role: "user", content: "content" } as const],
+    origin: null,
+  });
+  store3.discard();
+  const c3 = jswindow.document.createElement("div");
+  render(appTemplate(store3), c3);
+  assert("after discard(): store.blocks is empty", store3.blocks.length === 0);
+  assert("after discard(): clearDraft was invoked", clearDraftCalled);
+}
+
 if (process.exitCode) {
   console.error("\nFAILED");
 } else {

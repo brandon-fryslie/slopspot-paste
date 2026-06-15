@@ -1751,6 +1751,50 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
   dispose();
 }
 
+console.log("\nDiscard draft persistence round-trip (slopspot-editor-draft-rp4):");
+{
+  // [LAW:verifiable-goals] The ticket's core acceptance: after discard(), a fresh
+  // store restored from io.loadDraft() has empty blocks — reload starts clean.
+  // Wires persistDrafts (the SAME reaction mount ships) so the full real path runs.
+  let cell: string | null = null;
+  const discardIo: EditorIo = {
+    fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+    submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
+    navigate: () => {},
+    saveDraft: (draft) => { cell = JSON.stringify(draft); },
+    loadDraft: (): Draft => {
+      if (cell === null) return { turns: [], origin: null };
+      const o = JSON.parse(cell) as { turns?: unknown; origin?: unknown } | null;
+      return o && isTurns(o.turns)
+        ? { turns: o.turns, origin: isOrigin(o.origin) ? o.origin : null }
+        : { turns: [], origin: null };
+    },
+    clearDraft: () => { cell = null; },
+  };
+
+  const store = new EditorStore(discardIo);
+  const dispose = persistDrafts(store, discardIo);
+
+  store.setImport("## User\nhello\n\n## Assistant\nworld");
+  store.ingest();
+  assert("blocks built before discard", store.blocks.length === 2);
+  assert("draft persisted before discard", cell !== null);
+
+  store.discard();
+  assert("after discard(): store.blocks is empty", store.blocks.length === 0);
+
+  // The persist reaction fires after discard() and writes an empty draft; the
+  // fresh store that restores it gets the same empty editor a fresh visit gets.
+  const freshStore = new EditorStore(discardIo);
+  freshStore.restoreDraft(discardIo.loadDraft());
+  assert(
+    "fresh store from loadDraft() after discard has empty blocks — reload starts clean",
+    freshStore.blocks.length === 0,
+  );
+
+  dispose();
+}
+
 console.log("\nEditorStore submitOrigin (provenance-2my — share carries its origin, edits collapse to editor):");
 {
   const shareUrl = "https://claude.ai/share/abc-def-123";
