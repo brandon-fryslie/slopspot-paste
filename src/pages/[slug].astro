@@ -100,17 +100,23 @@ const sourceUrl = sourceUrlOf(origin);
     // [LAW:effects-at-boundaries] Scroll position, viewport overflow, and
     // "which turn is in view" are facts only the browser holds. The server
     // emitted the content; navigation over it is built here, client-side.
+    // [LAW:no-defensive-null-guards] The .conversation section is rendered
+    // unconditionally by this page, so its absence is a broken template
+    // invariant, not a normal empty case — assert it once, loudly (mirroring the
+    // editor mount's must() helper), rather than threading a silent skip through
+    // every consumer below. Downstream code gets a typed non-null root.
     const conversation = document.querySelector<HTMLElement>(".conversation");
-    const turns = conversation
-      ? [...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")]
-      : [];
+    if (!conversation) throw new Error("required .conversation section missing");
+    const turns = [
+      ...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]"),
+    ];
 
     // [LAW:effects-at-boundaries] Clamp long spine prose to a default height with
     // a bottom Expand toggle — a client capability over the rendered conversation,
     // measured here where layout (the only honest source of "does this overflow")
     // lives. The same enhancer runs on the editor preview, so the two surfaces
     // share one behaviour. No-JS leaves the prose fully expanded (this never runs).
-    if (conversation) enhanceClampBlocks(conversation);
+    enhanceClampBlocks(conversation);
 
     // aria-label text per role — a value→string map, not a behaviour branch.
     // Every spine node is a data-kind="message" with one of these three roles
