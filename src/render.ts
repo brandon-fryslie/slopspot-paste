@@ -345,9 +345,9 @@ export const formatBashTerminal = (command: string, output: string): string => {
 
 // ─── Tool-output body frames ─────────────────────────────────────────
 // [LAW:single-enforcer] The markup for "what a tool's output looks like" — diff,
-// file-read, terminal, generic — lives here once. Both the flat Turn renderer
-// (renderTurns.ts) and the disclosure renderer (renderDialogue.ts) emit the SAME
-// expanded body by calling toolOutputHtml, so the two surfaces cannot drift.
+// file-read, terminal, generic — lives here once. The disclosure renderer
+// (renderDialogue.ts) emits the expanded body by calling toolOutputHtml, so the
+// permalink and the editor preview (which share that renderer) cannot drift.
 // These are pure (text → HTML), so they share the parser-check harness.
 
 const diffMarker = (kind: DiffLine["kind"]): string =>

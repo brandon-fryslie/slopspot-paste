@@ -1,7 +1,8 @@
 // [LAW:single-enforcer] The progressive-disclosure renderer: the one path that
 // turns the derived nested model (a Dialogue — see dialogue.ts) into HTML. The
-// permalink page renders it via set:html; cbm.5 points the editor preview at the
-// same function, so the two surfaces render through one component and cannot drift.
+// permalink page renders it via set:html; the editor preview renders it through
+// the same function (store.previewHtml), so the two surfaces render through one
+// component and cannot drift. There is no second renderer.
 //
 // [LAW:dataflow-not-control-flow] Each node and block declares its own disclosure
 // behavior by KIND — visibility is read from blockVisibility (a value), never a
@@ -12,9 +13,8 @@
 //
 // [LAW:one-way-deps] renderDialogue depends on dialogue (the model), toolCall (the
 // condensed projection), and render (shared body frames + escaping). None depend
-// back on it. It does NOT depend on renderTurns — the shared tool-output body
-// lives in render.ts, so this renderer never reaches into the flat renderer that
-// cbm.5 retires.
+// back on it. The shared tool-output body lives in render.ts, so this is the sole
+// renderer — the flat Turn renderer it replaced (renderTurns.ts) is gone.
 
 import type { Dialogue, AssistantBlock } from "./dialogue";
 import type { Role, Usage } from "./types";
@@ -22,9 +22,9 @@ import { condenseToolCall, type ToolStatus } from "./toolCall";
 import { escapeHtml, escapeAttr, renderMarkdown, toolOutputHtml } from "./render";
 
 // The spine carries only the two non-assistant roles as spoken nodes (assistant
-// speech is the interleaved `assistant` arm, not a spoken node). A local label
-// map keeps this renderer free of a dependency on the flat renderer; cbm.5
-// unifies the role-label vocabulary when it deletes renderTurns.ts.
+// speech is the interleaved `assistant` arm, not a spoken node). This is the one
+// role-label vocabulary in the codebase — the flat renderer that once held a
+// second copy is gone.
 const SPOKEN_LABEL: { readonly [R in Exclude<Role, "assistant">]: string } = {
   user: "User",
   system: "System",

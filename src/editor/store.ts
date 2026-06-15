@@ -20,7 +20,8 @@ import { platformOf, sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
-import { renderTurnsHtml } from "../renderTurns";
+import { renderDialogueHtml } from "../renderDialogue";
+import { deriveDialogue } from "../dialogue";
 
 export type View = "blocks" | "preview";
 
@@ -117,7 +118,14 @@ export class EditorStore {
 
   // ── Derived (computed) ──────────────────────────────────────────────────
   // [LAW:one-source-of-truth] turns/previewHtml are derived from blocks, never
-  // stored alongside them. The preview calls the SAME renderer as the permalink.
+  // stored alongside them. The preview derives the nested Dialogue and renders it
+  // through renderDialogueHtml — the SAME path the permalink uses — so the two
+  // surfaces render through one component and cannot drift. The editor's block
+  // model never holds subagent or usage turns (loadTurns filters to AuthorableTurn),
+  // so this preview shows the editable content exactly; subagents that only the
+  // stored original carries appear on the permalink, not here, which is correct:
+  // authoring nested subagent structure is out of scope, so the preview mirrors
+  // what is editable, not what is stored.
 
   get detected(): ReadonlyArray<SourceKind> {
     return detectSources(this.importText);
@@ -139,7 +147,7 @@ export class EditorStore {
   }
 
   get previewHtml(): string {
-    return renderTurnsHtml(this.turns);
+    return renderDialogueHtml(deriveDialogue(this.turns));
   }
 
   get counts(): Record<Kind, number> {
