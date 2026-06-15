@@ -2271,9 +2271,24 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   has("assistant turn is an always-visible article",
     '<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="1">');
   has("assistant TEXT renders always-visible (no details wrapper)",
-    '<div class="assistant-text bubble-body">');
+    '<div class="assistant-text bubble-body clampable">');
   assert("no spine bubble is a <details> (user/assistant text never collapse)",
     !/<details[^>]*class="[^"]*bubble-(user|assistant)/.test(html));
+
+  // ── Spine prose is clampable; its body is wrapped in .clamp-content so the
+  // client capability can clamp it to a default height and reveal an Expand
+  // toggle only when it overflows. The clamp class/toggle are NEVER in the
+  // server markup — they are added by enhanceClampBlocks from measured geometry,
+  // so a no-JS viewer sees full prose ([LAW:no-silent-failure]). Detail kinds
+  // (thinking) stay un-clampable: they already collapse behind disclosure.
+  has("user spine body is a clampable wrapper", '<div class="bubble-body clampable">');
+  has("clampable body wraps its prose in .clamp-content", '<div class="clamp-content">');
+  assert("server markup never pre-collapses (no .is-collapsed)", !html.includes("is-collapsed"));
+  assert("server markup carries no clamp toggle (client-only)", !html.includes("clamp-toggle"));
+  // The thinking detail body keeps the bare (un-clampable) bubble-body — that
+  // exact class string appears ONLY for detail kinds now that every spine body
+  // carries `clampable`, so its presence proves thinking stayed a disclosure.
+  has("thinking body is the bare bubble-body (NOT clampable)", '<div class="bubble-body">');
   has("thinking is a condensed <details>", '<details class="condensed condensed-thinking" data-kind="thinking">');
   has("tool-call is a condensed <details>", '<details class="condensed condensed-tool-call" data-kind="tool-call"');
   assert("thinking collapsed by default (no open attribute)",
@@ -2427,6 +2442,19 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     assert("expanded body nests the subagent transcript", html.includes('<div class="subagent-transcript">'));
     assert("nested transcript renders the Read tool-call recursively",
       html.includes('<span class="condensed-label tool-name">Read</span>'));
+    // [LAW:no-silent-failure] Nested-subagent prose is NOT clampable: it lives in
+    // a collapsed <details>, where it would measure at zero height and cache as
+    // "fits" forever. The clamp marker must only land on always-visible top-level
+    // spine prose. The transcript's first turn is the spawn prompt — a spoken node
+    // whose body must therefore render as the bare (un-clampable) bubble-body.
+    {
+      const tx = html.indexOf('<div class="subagent-transcript">');
+      const window = tx >= 0 ? html.slice(tx, tx + 600) : "";
+      assert("nested subagent prose renders as bare bubble-body",
+        window.includes('<div class="bubble-body">'));
+      assert("nested subagent prose carries no clampable marker",
+        tx >= 0 && !window.includes("clampable"));
+    }
 
     // [LAW:one-source-of-truth] Re-projecting the captured origin reproduces an
     // identical dialogue — subagent nesting is derived, never stored separately.

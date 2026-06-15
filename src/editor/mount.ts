@@ -14,6 +14,7 @@ import { render } from "lit-html";
 import { isOrigin, isTurns } from "../types";
 import { EditorStore, type Draft, type EditorIo, type ImportResult, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
+import { enhanceClampBlocks } from "../clampBlocks";
 
 // [LAW:no-defensive-null-guards] DOM lookup is a trust boundary — the page may
 // not contain the element we expect. One loud guard here (with runtime
@@ -158,7 +159,15 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
   // owner: it runs once now and again whenever any observable the template reads
   // changes. Render order is not folklore — it's whatever the reactive graph
   // dictates, with one explicit scheduler.
-  autorun(() => render(appTemplate(store), root));
+  // [LAW:single-enforcer] The preview shows the SAME clamp affordance the
+  // permalink does: after each render, enhance any freshly-rendered spine prose.
+  // enhanceClampBlocks is idempotent (it marks what it measured), so re-running
+  // on every autorun only touches newly-rendered nodes; when the Blocks view is
+  // shown there are no `.clampable` elements and it returns before any reflow.
+  autorun(() => {
+    render(appTemplate(store), root);
+    enhanceClampBlocks(root);
+  });
   persistDrafts(store, io);
   return store;
 };
