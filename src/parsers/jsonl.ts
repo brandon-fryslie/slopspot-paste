@@ -442,3 +442,141 @@ export const parseClaudeJsonl = (input: string): Turn[] | null => {
 
   return turns.length >= 1 ? turns : null;
 };
+
+// [LAW:types-are-the-program] The two honest outcomes of trying to graft supplied
+// subagent transcript lines onto a stored claude-jsonl blob. `ok` carries the new
+// blob to store PLUS an honest accounting of which agent groups were appended vs
+// already present; the failure arm carries one human-readable reason. A "partly
+// applied" state is unrepresentable — augment is all-or-nothing.
+export type AugmentResult =
+  | {
+      readonly ok: true;
+      readonly content: string;
+      readonly addedAgentIds: ReadonlyArray<string>;
+      readonly skippedAgentIds: ReadonlyArray<string>;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+// The three top-level fields the subagent join reads, lifted from an untrusted
+// parsed line. [LAW:single-enforcer] They live here, the one owner of the JSONL
+// schema — the augment endpoint never names a field of the wire format.
+const lineSessionId = (v: unknown): string | null =>
+  isRecord(v) ? strOrNull(v.sessionId) : null;
+const lineAgentId = (v: unknown): string | null =>
+  isRecord(v) ? strOrNull(v.agentId) : null;
+const lineIsSidechain = (v: unknown): boolean =>
+  isRecord(v) && v.isSidechain === true;
+
+// [LAW:single-enforcer] Backfill capture: append supplied subagent transcript
+// lines to a stored claude-jsonl origin so the re-derive resolves its degraded
+// (summary-only) subagents to captured. This is additive capture of MORE of the
+// original — consistent with store-the-original — never a rewrite. All JSONL
+// schema knowledge (which session a line belongs to, which agent group it is)
+// lives here; the endpoint hands raw text in and gets a validated blob out.
+//
+// [LAW:no-silent-failure] Validation is total and all-or-nothing: every supplied
+// line must parse as JSON, carry a sessionId that matches the stored paste's
+// session, and be a subagent sidechain line (agentId + isSidechain:true). A
+// single foreign or unlinkable line fails the WHOLE request loudly — we never
+// silently drop the bad lines and append the rest, which would graft a half-
+// transcript under a paste it doesn't belong to.
+//
+// [LAW:one-source-of-truth] Reattachment is by agentId (the parser groups by it),
+// so an agent group already present in the stored blob is SKIPPED, not re-
+// appended — the capture recipe ships every subagent file including already-
+// captured ones, and re-appending a present group would duplicate its lines and
+// double its re-derived transcript. Dedup is id-based, never positional.
+export const augmentJsonlWithSubagents = (
+  existing: string,
+  supplied: string,
+): AugmentResult => {
+  // The stored blob defines what "belongs to this paste": the set of session ids
+  // it carries, and the agent groups already captured in it.
+  const sessions = new Set<string>();
+  const presentAgentIds = new Set<string>();
+  for (const raw of existing.split("\n")) {
+    if (raw.trim().length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    const sid = lineSessionId(parsed);
+    if (sid !== null) sessions.add(sid);
+    const aid = lineAgentId(parsed);
+    if (aid !== null) presentAgentIds.add(aid);
+  }
+  if (sessions.size === 0) {
+    return {
+      ok: false,
+      reason: "The stored paste carries no session id, so subagent membership cannot be verified.",
+    };
+  }
+
+  const suppliedLines = supplied.split("\n").filter((l) => l.trim().length > 0);
+  if (suppliedLines.length === 0) {
+    return { ok: false, reason: "No subagent transcript lines were supplied." };
+  }
+
+  // [LAW:no-silent-failure] Validate EVERY line before appending anything. Errors
+  // accumulate so the response names every problem at once, not just the first.
+  const errors: string[] = [];
+  const accepted: Array<{ readonly line: string; readonly agentId: string }> = [];
+  for (let i = 0; i < suppliedLines.length; i++) {
+    const raw = suppliedLines[i]!;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      errors.push(`line ${i + 1}: not valid JSON`);
+      continue;
+    }
+    const sid = lineSessionId(parsed);
+    if (sid === null || !sessions.has(sid)) {
+      errors.push(
+        `line ${i + 1}: belongs to a different session (${sid ?? "no sessionId"}) — this paste is session ${[...sessions].join(", ")}`,
+      );
+      continue;
+    }
+    const aid = lineAgentId(parsed);
+    if (aid === null || !lineIsSidechain(parsed)) {
+      errors.push(`line ${i + 1}: not a subagent sidechain line (needs agentId + isSidechain:true)`);
+      continue;
+    }
+    accepted.push({ line: raw, agentId: aid });
+  }
+  if (errors.length > 0) {
+    const shown = errors.slice(0, 10);
+    const more = errors.length > shown.length ? ` (+${errors.length - shown.length} more)` : "";
+    return { ok: false, reason: `Supplied transcript has unlinkable lines: ${shown.join("; ")}${more}` };
+  }
+
+  // [LAW:one-source-of-truth] Append only the agent groups not already captured.
+  const addLines: string[] = [];
+  const addedAgentIds = new Set<string>();
+  const skippedAgentIds = new Set<string>();
+  for (const { line, agentId } of accepted) {
+    if (presentAgentIds.has(agentId)) {
+      skippedAgentIds.add(agentId);
+      continue;
+    }
+    addLines.push(line);
+    addedAgentIds.add(agentId);
+  }
+
+  // Concatenation mirrors the uploader: one newline between the stored blob and
+  // each appended line. Nothing new to add (every group already present) is an
+  // idempotent success that re-stores byte-identical content.
+  const content =
+    addLines.length === 0
+      ? existing
+      : (existing.endsWith("\n") ? existing : existing + "\n") + addLines.join("\n");
+
+  return {
+    ok: true,
+    content,
+    addedAgentIds: [...addedAgentIds],
+    skippedAgentIds: [...skippedAgentIds],
+  };
+};

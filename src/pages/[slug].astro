@@ -363,6 +363,68 @@ const sourceUrl = sourceUrlOf(origin);
         });
       }
       document.body.classList.add("code-copy-ready");
+
+      // [LAW:effects-at-boundaries] A degraded subagent (data-subagent-degraded)
+      // renders a "Copy agent prompt" button; clicking it copies a slug-keyed
+      // prompt that tells a coding agent — running in the repo where THIS session
+      // ran — to send the missing subagents/agent-*.jsonl to /api/augment. The
+      // server validates session membership and rejects foreign lines loudly, so
+      // the recipe is safe to run blindly. [LAW:one-source-of-truth] slug and
+      // origin come from location (the page IS at /<slug>), never re-stored fields.
+      const slug = location.pathname.replace(/^\/+|\/+$/g, "");
+      const apiOrigin = location.origin;
+      const pasteUrl = apiOrigin + "/" + slug;
+      // Built as line strings (not a template literal) so the bash ${...} inside
+      // the recipe is literal, not JS interpolation. slug/origin are injected as
+      // JSON literals where they land inside the shell snippet.
+      const backfillPrompt = [
+        "The shared paste at " + pasteUrl + " is missing the nested transcripts",
+        "for one or more subagents from this Claude Code session. Send the missing",
+        "subagent transcripts so the paste can render them in full.",
+        "",
+        "Run this from the repo where the original session ran (resume that session",
+        "if needed so $CLAUDE_CODE_SESSION_ID points at it). It locates this",
+        "session's subagent files and POSTs them to the paste's augment endpoint:",
+        "",
+        "```bash",
+        "set -euo pipefail",
+        ': "${CLAUDE_CODE_SESSION_ID:?run inside the Claude Code session that produced the paste}"',
+        "proj=\"$(pwd | sed 's|[/.]|-|g')\"",
+        'subdir="$HOME/.claude/projects/$proj/$CLAUDE_CODE_SESSION_ID/subagents"',
+        "python3 -c '",
+        "import json, sys, glob, os",
+        "subdir = sys.argv[1]",
+        'files = sorted(glob.glob(os.path.join(subdir, "agent-*.jsonl")))',
+        'if not files:',
+        '    sys.exit("no subagent transcripts found in " + subdir)',
+        'content = "\\n".join(open(p, encoding="utf-8", errors="replace").read() for p in files)',
+        "sys.stdout.write(json.dumps({\"slug\": " + JSON.stringify(slug) + ", \"content\": content}))",
+        "' \"$subdir\" | curl -sS --fail-with-body -X POST " +
+          JSON.stringify(apiOrigin + "/api/augment") +
+          " -H 'content-type: application/json' --data-binary @-",
+        "```",
+        "",
+        "The endpoint rejects any line that doesn't belong to this paste's session,",
+        "so it is safe to run. When it succeeds, reload " + pasteUrl + " — the",
+        "subagents will show their full nested transcripts.",
+      ].join("\n");
+
+      for (const btn of document.querySelectorAll<HTMLButtonElement>(
+        ".subagent-degraded > .copy-agent-prompt",
+      )) {
+        // [LAW:one-source-of-truth] Revert label read from the rendered button.
+        const label = btn.textContent;
+        btn.addEventListener("click", async () => {
+          await navigator.clipboard.writeText(backfillPrompt);
+          btn.classList.add("copied");
+          btn.textContent = "Copied — paste into a coding agent";
+          window.setTimeout(() => {
+            btn.classList.remove("copied");
+            btn.textContent = label;
+          }, 1600);
+        });
+      }
+      document.body.classList.add("agent-prompt-ready");
     }
   </script>
 </Base>
