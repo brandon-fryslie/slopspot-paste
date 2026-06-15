@@ -1076,6 +1076,33 @@ details.condensed[open] .condensed-caret { transform: rotate(90deg); }
   font-style: italic;
 }
 .subagent-field .bubble-role { margin-bottom: 4px; }
+/* Backfill affordance on a degraded subagent. Hidden until the client confirms
+   clipboard support and wires it (body.agent-prompt-ready) — a no-JS viewer
+   never sees a button that can't act, mirroring .copy-code. */
+.copy-agent-prompt { display: none; }
+body.agent-prompt-ready .copy-agent-prompt {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 4px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+body.agent-prompt-ready .copy-agent-prompt:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg) 28%, transparent);
+}
+body.agent-prompt-ready .copy-agent-prompt.copied {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 
 /* ─── Admin (/sloppy) — dense scannable list ─────────────────────────── */
 .admin-header { margin-bottom: 16px; }
