@@ -77,10 +77,9 @@ const messageBody = (
   <div class="block-fields">
     <select
       class="block-role"
-      .value=${turn.role}
       @change=${(e: Event) => store.replaceTurn(id, { ...turn, role: asRole(valueOf(e)) })}
     >
-      ${ROLES.map((r) => html`<option value=${r}>${ROLE_LABEL[r]}</option>`)}
+      ${ROLES.map((r) => html`<option value=${r} ?selected=${r === turn.role}>${ROLE_LABEL[r]}</option>`)}
     </select>
     <textarea
       class="block-content primary-text"
@@ -168,11 +167,10 @@ const toolCallBody = (
       ></textarea>
       <select
         class="block-out-kind"
-        .value=${output?.kind ?? "none"}
         @change=${(e: Event) => store.replaceTurn(id, setOutputKind(turn, valueOf(e)))}
       >
-        <option value="none">No output</option>
-        ${TOOL_OUTPUT_KINDS.map((k) => html`<option value=${k}>${OUTPUT_KIND_LABEL[k]}</option>`)}
+        <option value="none" ?selected=${output === null}>No output</option>
+        ${TOOL_OUTPUT_KINDS.map((k) => html`<option value=${k} ?selected=${k === output?.kind}>${OUTPUT_KIND_LABEL[k]}</option>`)}
       </select>
       ${output === null
         ? nothing
@@ -206,10 +204,9 @@ const cardBody = (store: EditorStore, id: string, turn: AuthorableTurn): Templat
 const kindBadge = (store: EditorStore, id: string, turn: AuthorableTurn): TemplateResult => html`
   <select
     class="block-badge"
-    .value=${turn.kind}
     @change=${(e: Event) => store.replaceTurn(id, convertKind(turn, asKind(valueOf(e))))}
   >
-    ${KINDS.map((k) => html`<option value=${k}>${KIND_LABEL[k]}</option>`)}
+    ${KINDS.map((k) => html`<option value=${k} ?selected=${k === turn.kind}>${KIND_LABEL[k]}</option>`)}
   </select>
 `;
 
@@ -315,10 +312,9 @@ const importBox = (store: EditorStore): TemplateResult => html`
     <div class="import-row">
       <select
         class="source-select"
-        .value=${store.importKind}
         @change=${(e: Event) => store.setImportKind(asSourceKind(store, valueOf(e)))}
       >
-        ${store.detected.map((k) => html`<option value=${k}>${SOURCE_LABEL[k]}</option>`)}
+        ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${SOURCE_LABEL[k]}</option>`)}
       </select>
       <button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.ingest()}>
         ${store.isUrlImport
@@ -365,11 +361,10 @@ const countsLabel = (counts: Record<Kind, number>): string => {
 const platformSelect = (store: EditorStore): TemplateResult => html`
   <select
     class="source-select"
-    .value=${store.userPlatform ?? ""}
     @change=${(e: Event) => store.setPlatform(parsePlatformSelect(valueOf(e)))}
   >
-    <option value="">Theme: Auto</option>
-    ${PLATFORMS.map((p) => html`<option value=${p}>${PLATFORM_DISPLAY[p]}</option>`)}
+    <option value="" ?selected=${store.userPlatform === null}>Theme: Auto</option>
+    ${PLATFORMS.map((p) => html`<option value=${p} ?selected=${p === store.userPlatform}>${PLATFORM_DISPLAY[p]}</option>`)}
   </select>
 `;
 
