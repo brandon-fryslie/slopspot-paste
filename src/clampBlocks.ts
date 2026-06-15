@@ -121,14 +121,17 @@ const installWidthWatcher = (): void => {
 
 export const enhanceClampBlocks = (root: HTMLElement): void => {
   installWidthWatcher();
-  // Only blocks not already processed — re-running over a re-rendered preview
-  // (lit replaces the subtree on a content change, yielding fresh un-marked
-  // nodes) re-enhances the new nodes while skipping untouched ones, so this is
-  // safe to call after every render.
-  const fresh = [
-    ...root.querySelectorAll<HTMLElement>(`.clampable:not(.${MEASURED})`),
+  // [LAW:dataflow-not-control-flow] Re-evaluate EVERY non-pinned clampable block,
+  // not only freshly-rendered ones. The editor preview re-renders on each content
+  // change, and a block's clamp state is a function of its CURRENT prose — so the
+  // enhancer recomputes it from the live geometry rather than trusting a one-time
+  // measurement. The discriminator for "leave it alone" is `clamp-pinned` (the
+  // reader's explicit choice), never `clamp-measured`: re-measuring a pinned block
+  // would silently reset a deliberate expand/collapse. clamp-measured is kept only
+  // as the marker the width watcher reads to find enhanced blocks document-wide.
+  const blocks = [
+    ...root.querySelectorAll<HTMLElement>(`.clampable:not(.${PINNED})`),
   ];
-  if (fresh.length === 0) return;
-  for (const w of fresh) w.classList.add(MEASURED);
-  evaluate(fresh);
+  for (const w of blocks) w.classList.add(MEASURED);
+  evaluate(blocks);
 };
