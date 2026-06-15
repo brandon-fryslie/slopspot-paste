@@ -2442,6 +2442,19 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     assert("expanded body nests the subagent transcript", html.includes('<div class="subagent-transcript">'));
     assert("nested transcript renders the Read tool-call recursively",
       html.includes('<span class="condensed-label tool-name">Read</span>'));
+    // [LAW:no-silent-failure] Nested-subagent prose is NOT clampable: it lives in
+    // a collapsed <details>, where it would measure at zero height and cache as
+    // "fits" forever. The clamp marker must only land on always-visible top-level
+    // spine prose. The transcript's first turn is the spawn prompt — a spoken node
+    // whose body must therefore render as the bare (un-clampable) bubble-body.
+    {
+      const tx = html.indexOf('<div class="subagent-transcript">');
+      const window = tx >= 0 ? html.slice(tx, tx + 600) : "";
+      assert("nested subagent prose renders as bare bubble-body",
+        window.includes('<div class="bubble-body">'));
+      assert("nested subagent prose carries no clampable marker",
+        tx >= 0 && !window.includes("clampable"));
+    }
 
     // [LAW:one-source-of-truth] Re-projecting the captured origin reproduces an
     // identical dialogue — subagent nesting is derived, never stored separately.

@@ -43,14 +43,22 @@ const roleHeader = (role: Role, label: string): string =>
 // only for blocks that MEASURE as overflowing — a short block renders untouched,
 // a no-JS viewer sees the full prose. The renderer never guesses overflow from
 // text length; presence of the control is derived from rendered geometry at the
-// client boundary. [LAW:decomposition] Detail kinds (thinking, tool-call,
-// subagent) are deliberately NOT clampable: they already collapse behind the
-// disclosure model, so a second clamp would be redundant click-to-reveal — the
-// `.clampable` marker is the one seam that distinguishes the two.
-const clampableBody = (leadingClass: string, content: string): string =>
-  `<div class="${leadingClass} clampable">` +
-  `<div class="clamp-content">${renderMarkdown(content)}</div>` +
-  `</div>`;
+// client boundary.
+//
+// [LAW:no-silent-failure] The `clampable` flag is the seam that keeps the marker
+// HONEST: it is true only for top-level spine prose, which is always laid out.
+// A subagent transcript renders nested inside a collapsed <details>, so its prose
+// would measure at zero height (a closed <details> isn't laid out) and cache as
+// "fits" forever — the marker would claim a clamp it never delivers. Marking only
+// always-visible prose removes that case by construction rather than papering it
+// with a remeasure loop. [LAW:decomposition] Detail kinds (thinking, tool-call,
+// subagent) are NOT clampable anyway: they already collapse behind disclosure.
+const clampableBody = (leadingClass: string, content: string, clampable: boolean): string =>
+  clampable
+    ? `<div class="${leadingClass} clampable">` +
+      `<div class="clamp-content">${renderMarkdown(content)}</div>` +
+      `</div>`
+    : `<div class="${leadingClass}">${renderMarkdown(content)}</div>`;
 
 // [LAW:types-are-the-program] A spoken node is always visible — it is the readable
 // conversation, never collapsible. So it is a plain article, not a <details>: the
@@ -62,20 +70,21 @@ const spokenHtml = (
   role: Exclude<Role, "assistant">,
   content: string,
   index: number,
+  clampable: boolean,
 ): string =>
   `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}">` +
   roleHeader(role, SPOKEN_LABEL[role]) +
-  clampableBody("bubble-body", content) +
+  clampableBody("bubble-body", content, clampable) +
   `</article>`;
 
 // Assistant TEXT and INSIGHT are spine: always-visible prose inside the turn.
-const textHtml = (content: string): string =>
-  clampableBody("assistant-text bubble-body", content);
+const textHtml = (content: string, clampable: boolean): string =>
+  clampableBody("assistant-text bubble-body", content, clampable);
 
-const insightHtml = (content: string): string =>
+const insightHtml = (content: string, clampable: boolean): string =>
   `<div class="assistant-insight" data-kind="insight">` +
   `<span class="insight-mark" aria-hidden="true">★</span>` +
-  clampableBody("bubble-body", content) +
+  clampableBody("bubble-body", content, clampable) +
   `</div>`;
 
 // [LAW:no-ambient-temporal-coupling] Every detail block is a native <details>:
@@ -204,7 +213,11 @@ const subagentHtml = (
 ): string => {
   const body =
     block.body.kind === "captured"
-      ? `<div class="subagent-transcript">${renderDialogueHtml(block.body.transcript)}</div>`
+      ? // [LAW:no-silent-failure] clampable=false: the nested transcript lives in a
+        // collapsed <details>, so its prose must NOT be marked clampable (it would
+        // measure at zero height while hidden and never clamp). The seam is one
+        // level out, here, where we know this render is nested.
+        `<div class="subagent-transcript">${renderDialogueHtml(block.body.transcript, false)}</div>`
       : subagentDegradedHtml(block.body.prompt, block.body.result);
   const attrs = block.agentType ? ` data-agent-type="${escapeAttr(block.agentType)}"` : "";
   return condensedRow("subagent", attrs, subagentSummary(block), body);
@@ -242,7 +255,12 @@ const usageHtml = (usage: Usage, cumulative: number): string => {
 // is threaded by closure so a usage block reads the running total accumulated by
 // the blocks before it; a nested subagent transcript folds its OWN total because
 // it renders through a fresh renderDialogueHtml call (cumulativeOutput resets).
-const renderDialogueHtml = (dialogue: Dialogue): string => {
+// [LAW:one-source-of-truth] `clampable` defaults true for the top-level call (the
+// permalink page and the editor preview both render the outer conversation, whose
+// spine prose is always visible). subagentHtml re-enters with false, so depth is
+// not threaded as a number — the single fact that matters is "is this prose always
+// laid out," and the nested call is the one place that is false.
+const renderDialogueHtml = (dialogue: Dialogue, clampable: boolean = true): string => {
   // Usage is a running fold scoped to THIS dialogue — a nested subagent transcript
   // (cbm.4) folds its own total, since it renders through a fresh call below.
   let cumulativeOutput = 0;
@@ -250,9 +268,9 @@ const renderDialogueHtml = (dialogue: Dialogue): string => {
   const renderBlock = (block: AssistantBlock): string => {
     switch (block.kind) {
       case "text":
-        return textHtml(block.content);
+        return textHtml(block.content, clampable);
       case "insight":
-        return insightHtml(block.content);
+        return insightHtml(block.content, clampable);
       case "thinking":
         return thinkingHtml(block.content);
       case "tool-call":
@@ -270,7 +288,7 @@ const renderDialogueHtml = (dialogue: Dialogue): string => {
   return dialogue
     .map((node, index) => {
       if (node.kind === "spoken") {
-        return spokenHtml(node.role, node.content, index);
+        return spokenHtml(node.role, node.content, index, clampable);
       }
       // The assistant turn is one always-visible card carrying its interleaved
       // blocks in source order. data-index marks it as one navigable spine node.
