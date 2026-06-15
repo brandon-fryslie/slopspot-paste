@@ -2400,6 +2400,27 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     { type: "user", message: { role: "user", content: "do the recap" } },
     { type: "assistant", message: { role: "assistant", id: "m9", content: [{ type: "text", text: "Working on it." }] } },
   ];
+
+  // cbm.8: the uploader folds the orphan group's agent-<id>.meta.json {agentType,
+  // description} onto its first REAL sidechain line; the orphan branch reads it
+  // there (the only honest source, since an orphan has no spawning tool_result).
+  const SIDECHAIN_TYPED = SIDECHAIN.map((e, i) =>
+    i === 0 ? { ...e, agentType: "general-purpose", description: "do the recap" } : e);
+  const rt = parseInput({ kind: "claude-jsonl", content: lines([...MAIN_NO_AGENT, ...SIDECHAIN_TYPED]) });
+  assert("typed-orphan bundle parses", rt.ok);
+  if (rt.ok) {
+    const orphan = rt.turns[2]!;
+    assert("orphan surfaces its folded agentType (not null)",
+      orphan.kind === "subagent" && orphan.agentType === "general-purpose");
+    assert("orphan surfaces its folded description",
+      orphan.kind === "subagent" && orphan.description === "do the recap");
+    const html = renderDialogueHtml(deriveDialogue(rt.turns));
+    assert("typed orphan renders its agent-type chip",
+      html.includes('<span class="subagent-type">general-purpose</span>'));
+  }
+
+  // An upload predating the fold carries no injected fields → honest nulls, but
+  // the orphan still SURFACES (the type is unknown, not the run).
   const ro = parseInput({ kind: "claude-jsonl", content: lines([...MAIN_NO_AGENT, ...SIDECHAIN]) });
   assert("orphan bundle parses", ro.ok);
   if (ro.ok) {
@@ -2408,7 +2429,7 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     const orphan = ro.turns[2]!;
     assert("orphan transcript is captured from its group",
       orphan.kind === "subagent" && orphan.transcript.kind === "captured");
-    assert("orphan carries honest null type/description (no spawning tool-call)",
+    assert("untyped orphan (no folded meta) carries honest null type/description",
       orphan.kind === "subagent" && orphan.agentType === null && orphan.description === null);
     const html = renderDialogueHtml(deriveDialogue(ro.turns));
     assert("orphan renders as a condensed subagent row",
@@ -2473,6 +2494,13 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
   assert("augment rejects a non-sidechain line", !augStray.ok);
   assert("rejection names the unlinkable line",
     !augStray.ok && augStray.reason.includes("not a subagent sidechain"));
+
+  // cbm.8 + cbm.7 contract: a folded orphan line carries an EXTRA top-level
+  // agentType, but still has sessionId+agentId+isSidechain, so option (a) (the
+  // real sidechain line, never a synthetic one) passes the augment validator
+  // unchanged — backfilling an orphan-containing session is not rejected.
+  const augFolded = augmentJsonlWithSubagents(mainStamped, lines(stamp(SIDECHAIN_TYPED)));
+  assert("augment accepts a folded (agentType-bearing) sidechain line", augFolded.ok);
 
   // Empty / non-JSON supplied input fails cleanly, never silently.
   assert("augment rejects empty supplied input",
