@@ -17,7 +17,6 @@ import {
   renderMarkdown,
   sanitizeUrl,
 } from "../src/render";
-import { renderTurnsHtml } from "../src/renderTurns";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import { deriveDialogue, blockVisibility } from "../src/dialogue";
 import type { AssistantBlock, SpineNode } from "../src/dialogue";
@@ -827,11 +826,12 @@ console.log("\nclaude-jsonl token usage (display-tba):");
       u2.kind === "usage" && u2.usage.output === 50);
 
     // Running total folds across usage turns: 100, then 100+50=150.
-    const html = renderTurnsHtml(r.turns);
+    const html = renderDialogueHtml(deriveDialogue(r.turns));
     assert("per-message output rendered", html.includes("100 tokens") && html.includes("50 tokens"));
     assert("running total rendered (100 then 150)",
       html.includes("100 total") && html.includes("150 total"));
-    // No data-index on usage chips → the minimap (which selects [data-index]) skips them.
+    // Usage is a nested annotation, not a spine node → carries no data-index, so the
+    // minimap (which selects [data-index]) skips it.
     assert("usage chip carries no data-index",
       !/data-kind="usage"[^>]*data-index/.test(html));
   }
@@ -1273,88 +1273,14 @@ console.log("\nclaude-jsonl robustness + legacy auto-path (PR review):");
   }
 }
 
-console.log("\nrenderTurns snapshot (pins preview === permalink markup):");
+console.log("\nMarkdown fence language attribute escaping (XSS):");
 {
-  // [LAW:behavior-not-structure] Assert the rendered-markup landmarks that the
-  // permalink page and the future live preview both depend on — not the
-  // function's internals. One fixture exercises every kind and every output kind.
-  const DIFF_OUTPUT = `Added 1 line
-      162 +new line of code
-      163  context line`;
-  const FILE_OUTPUT = `Read 2 lines
-1  import { foo } from "bar";
-2  export const x = 1;`;
-  const fixture: Turn[] = [
-    { kind: "message", role: "user", content: "hello" },
-    { kind: "message", role: "assistant", content: "hi there" },
-    { kind: "message", role: "system", content: "you are helpful" },
-    { kind: "insight", content: "a key realization" },
-    { kind: "thinking", content: "let me reason about this" },
-    { kind: "turn-summary", text: "Sautéed for 53s" },
-    { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0", isError: false } },
-    { kind: "tool-call", tool: "Update", args: "src/x.ts", output: { kind: "diff", text: DIFF_OUTPUT, isError: false } },
-    { kind: "tool-call", tool: "Read", args: "src/x.ts", output: { kind: "file-read", text: FILE_OUTPUT, isError: false } },
-    { kind: "tool-call", tool: "WebFetch", args: "{json}", output: { kind: "generic", text: "some output", isError: false } },
-    { kind: "tool-call", tool: "cherry-mcp", args: "", output: null },
-  ];
-  const html = renderTurnsHtml(fixture);
-
-  const has = (label: string, needle: string) => assert(label, html.includes(needle));
-
-  // All collapsible turns use <details>/<summary>; open attribute = expanded-by-default.
-  has("message user bubble", '<details class="bubble bubble-user" data-kind="message" data-role="user"');
-  has("message user bubble open", 'class="bubble bubble-user" data-kind="message" data-role="user" data-index="0" open>');
-  has("message assistant bubble", 'class="bubble bubble-assistant"');
-  has("message system bubble", 'class="bubble bubble-system"');
-  has("role label rendered", '<span class="role-name">Assistant</span>');
-  has("insight star", '<span class="role-dot role-dot-insight" aria-hidden="true">★</span>');
-  has("insight name", '<span class="role-name">Insight</span>');
-  // Thinking renders as a native <details> WITHOUT `open` → collapsed by default,
-  // with a <summary> the browser makes the toggle. No client script involved.
-  has("thinking details (collapsed: no open attr)", '<details class="bubble bubble-thinking" data-kind="thinking"');
-  has("thinking summary toggle", '<summary class="bubble-role bubble-summary thinking-summary">');
-  has("thinking name", '<span class="role-name">Thinking</span>');
-  assert("thinking <details> is collapsed (no open attribute)",
-    !/<details class="bubble bubble-thinking"[^>]*\bopen\b/.test(html));
-  // Messages default to open (expanded); thinking defaults to closed (collapsed).
-  assert("message turns default open (expanded)", /<details class="bubble bubble-user"[^>]*\bopen\b/.test(html));
-  has("turn-summary aside", '<aside class="bubble-turn-summary" data-kind="turn-summary"');
-  has("tool-call details + data-tool", '<details class="bubble bubble-tool-call" data-kind="tool-call" data-tool="Bash"');
-  has("terminal frame", 'data-output-kind="terminal"');
-  has("terminal $-prefix", '$ ls -la');
-  has("diff frame", 'data-output-kind="diff"');
-  has("diff added row", '<div class="diff-line diff-added">');
-  has("diff summary pill", '>Added 1 line<');
-  has("file-read frame", 'data-output-kind="file-read"');
-  has("file row", '<div class="file-line">');
-  has("generic frame", 'data-output-kind="generic"');
-  has("generic args frame", 'data-output-kind="args"');
-  // output: null tool-call shows only its header, no output frame. cherry-mcp is
-  // the last turn, so nothing after its marker should contain a frame.
-  const cherryIdx = html.indexOf('data-tool="cherry-mcp"');
-  assert(
-    "null-output tool-call emits header only",
-    cherryIdx !== -1 && !html.slice(cherryIdx).includes("tool-output-frame"),
-  );
-
-  // [LAW:single-enforcer] The attribute/text-node escaping that Astro's auto-
-  // escaping gave the deleted components must survive the move to string
-  // concatenation. (Message/insight bodies go through renderMarkdown, whose
-  // HTML handling is unchanged by this refactor and tested elsewhere.)
-  const xss: Turn[] = [
-    { kind: "tool-call", tool: 'evil" onload="x', args: "", output: null },
-    { kind: "turn-summary", text: "<b>not bold</b>" },
-    { kind: "tool-call", tool: "X", args: "", output: { kind: "generic", text: "<i>raw</i>", isError: false } },
-  ];
-  const xssHtml = renderTurnsHtml(xss);
-  assert("tool name attribute escaped (no quote breakout)", !xssHtml.includes('data-tool="evil" onload='));
-  assert("tool name attribute escaped form present", xssHtml.includes("evil&quot; onload="));
-  assert("turn-summary text escaped", xssHtml.includes("&lt;b&gt;not bold&lt;/b&gt;"));
-  assert("tool output text escaped", xssHtml.includes("&lt;i&gt;raw&lt;/i&gt;"));
-
   // A code-fence info string is user-controlled and lands in a class="" value;
   // escapeHtml alone leaves quotes intact, so a fence like ```js" onx=" would
-  // break out of the attribute. The class attribute must quote-escape it.
+  // break out of the attribute. The class attribute must quote-escape it. This is
+  // a property of renderMarkdown (shared by every renderer), independent of which
+  // renderer wraps it. The disclosure renderer's own markup, kinds, output frames
+  // and escaping are pinned by the "Disclosure renderer" section below.
   const fenceXss = renderMarkdown('```js" onmouseover="alert(1)\nx\n```');
   assert("fence language attribute escaped (no quote breakout)", !fenceXss.includes('" onmouseover="alert(1)"'));
   assert("fence language attribute escaped form present", fenceXss.includes("language-js&quot; onmouseover=&quot;alert(1)"));
@@ -2231,6 +2157,9 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   const DIFF_OUTPUT = `Added 1 line
       162 +new line of code
       163  context line`;
+  const FILE_OUTPUT = `Read 2 lines
+1  import { foo } from "bar";
+2  export const x = 1;`;
 
   // One transcript exercising every block kind, interleaving, the usage fold,
   // the three tool statuses, name-only fallback, and XSS-bearing content. The
@@ -2250,6 +2179,7 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
       output: { kind: "terminal", text: "kaboom", isError: true } },
     { kind: "tool-call", tool: 'evil" onload="x', args: "", output: null },
     { kind: "tool-call", tool: "TodoWrite", args: "{}", output: { kind: "generic", text: "ok", isError: false } },
+    { kind: "tool-call", tool: "Read", args: "src/x.ts", output: { kind: "file-read", text: FILE_OUTPUT, isError: false } },
     { kind: "insight", content: "the key point" },
     { kind: "turn-summary", text: "<b>not bold</b>" },
     { kind: "usage", usage: { input: 10, output: 100, cacheCreation: 0, cacheRead: 0 } },
@@ -2284,6 +2214,8 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   has("terminal body shows the $-prefixed command", "$ ls -la");
   has("tool-call expands to the shared diff frame", 'data-output-kind="diff"');
   has("diff body shows an added row", '<div class="diff-line diff-added">');
+  has("tool-call expands to the shared file-read frame", 'data-output-kind="file-read"');
+  has("file-read body shows a file row", '<div class="file-line">');
 
   // ── Acceptance 3: condensed rows are scannable as a column — icon + label +
   // primary arg + badge, read straight from the cbm.2 condensed model.

@@ -83,10 +83,17 @@ const sourceUrl = sourceUrlOf(origin);
     // conversation*, never a second enumeration of turns. It reads the very
     // elements the renderer emitted (each top-level spine node carries
     // data-index/data-kind/data-role), so a marker cannot point at an index the
-    // renderer didn't produce. cbm.3 moved detail blocks (thinking, tool calls)
-    // into the nested disclosure model, so they are no longer top-level [data-index]
-    // children and the rail now markers one node per conversation-spine turn;
-    // cbm.5 reconciles the minimap shape with the nested render.
+    // renderer didn't produce.
+    //
+    // INCLUSION RULE (the one documented decision — [LAW:no-mode-explosion]): the
+    // rail markers exactly the conversation SPINE — one marker per top-level node
+    // (user/system message + each grouped assistant turn). Detail blocks the
+    // disclosure renderer nests *inside* an assistant card — thinking, tool calls,
+    // and subagents (with their own recursively-nested steps) — get NO marker and
+    // never appear on the rail, at any depth. The reader scans the human↔agent
+    // spine here, then dives into any one turn's detail by expanding it. Because
+    // the renderer emits data-index ONLY on spine nodes, this rule needs no filter:
+    // the selector below structurally cannot pick up a nested detail block.
     //
     // [LAW:effects-at-boundaries] Scroll position, viewport overflow, and
     // "which turn is in view" are facts only the browser holds. The server
@@ -96,19 +103,17 @@ const sourceUrl = sourceUrlOf(origin);
       ? [...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")]
       : [];
 
-    // aria-label text per kind — a value→string map, not a behaviour branch.
+    // aria-label text per role — a value→string map, not a behaviour branch.
+    // Every spine node is a data-kind="message" with one of these three roles
+    // (the inclusion rule above guarantees nothing else reaches the rail), so the
+    // label is a pure lookup on role — no per-kind dispatch.
     const roleName: Record<string, string> = {
       user: "User",
       assistant: "Assistant",
       system: "System",
     };
-    const markerLabel = (el: HTMLElement): string => {
-      const kind = el.dataset.kind ?? "turn";
-      if (kind === "message") return roleName[el.dataset.role ?? ""] ?? "Message";
-      if (kind === "tool-call") return el.dataset.tool ?? "Tool call";
-      if (kind === "turn-summary") return "Summary";
-      return kind.charAt(0).toUpperCase() + kind.slice(1);
-    };
+    const markerLabel = (el: HTMLElement): string =>
+      roleName[el.dataset.role ?? ""] ?? "Message";
 
     const nav = document.createElement("nav");
     nav.className = "minimap";

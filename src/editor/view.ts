@@ -400,8 +400,10 @@ const toolbar = (store: EditorStore): TemplateResult => html`
   </div>
 `;
 
-// [LAW:one-source-of-truth] previewHtml comes from renderTurnsHtml — the SAME
-// renderer the permalink uses. data-platform reads store.activePlatform:
+// [LAW:one-source-of-truth] previewHtml comes from renderDialogueHtml — the SAME
+// renderer the permalink uses (store derives the nested Dialogue first), so the
+// preview shows the exact disclosure UI a reader sees. data-platform reads
+// store.activePlatform:
 // - Override: userPlatform === conversation.platformOverride by construction.
 // - Auto: all three submitOrigin arms preserve source: sourceOf(importOrigin),
 //   so sourceOf(submitOrigin) === sourceOf(importOrigin) and platformOf is equal.

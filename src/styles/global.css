@@ -415,18 +415,14 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   border-radius: 999px;
   background: var(--minimap-color, var(--fg-muted));
 }
-/* [LAW:dataflow-not-control-flow] The marker carries its kind/role as data-*;
-   CSS maps the value to a hue. Same colour vocabulary as the role dots, so the
-   rail and the bubbles agree by construction. */
+/* [LAW:dataflow-not-control-flow] The marker carries its role as data-*; CSS maps
+   the value to a hue. Same colour vocabulary as the role dots, so the rail and the
+   bubbles agree by construction. The rail markers only conversation-spine nodes
+   (every one a data-kind="message"), so role is the only axis — detail-block hues
+   (thinking/tool-call/insight/turn-summary) are gone with the flat rail they served. */
 .minimap-marker[data-kind="message"][data-role="user"] { --minimap-color: var(--role-user); }
 .minimap-marker[data-kind="message"][data-role="assistant"] { --minimap-color: var(--role-assistant); }
 .minimap-marker[data-kind="message"][data-role="system"] { --minimap-color: var(--role-system); }
-.minimap-marker[data-kind="insight"] { --minimap-color: var(--accent); }
-.minimap-marker[data-kind="tool-call"] { --minimap-color: #38bdf8; }
-.minimap-marker[data-kind="thinking"] { --minimap-color: var(--fg-muted); }
-.minimap-marker[data-kind="turn-summary"] {
-  --minimap-color: var(--fg-muted);
-}
 
 /* [LAW:one-source-of-truth] The conversation-list layout (column + gap) is one
    rule shared by the permalink page (.conversation) and the editor preview
