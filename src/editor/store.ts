@@ -111,6 +111,10 @@ export class EditorStore {
   // running, both buttons disable. There is no legitimate state where a fetch
   // and a submit race, so a single flag is the honest representation.
   busy = false;
+  // [LAW:no-ambient-temporal-coupling] Two-phase discard: arm (click "Discard
+  // draft") → confirm (click "Discard") mirrors the pendingReparse pattern. false
+  // = no decision pending; true = the confirm strip is visible.
+  pendingDiscard = false;
 
   constructor(private readonly io: EditorIo) {
     makeAutoObservable<this, "io">(this, { io: false }, { autoBind: true });
@@ -203,6 +207,12 @@ export class EditorStore {
   }
 
   get canSubmit(): boolean {
+    return this.blocks.length > 0 && !this.busy;
+  }
+
+  // [LAW:no-ambient-temporal-coupling] Also gated on !busy to match canSubmit:
+  // a discard during an in-flight fetch would be overwritten by the completion.
+  get canDiscard(): boolean {
     return this.blocks.length > 0 && !this.busy;
   }
 
@@ -424,5 +434,29 @@ export class EditorStore {
       this.io.clearDraft();
       this.io.navigate(result.slug);
     }
+  }
+
+  armDiscard(): void {
+    this.pendingDiscard = true;
+  }
+
+  cancelDiscard(): void {
+    this.pendingDiscard = false;
+  }
+
+  // [LAW:single-enforcer] Route the full block/provenance/view reset through the
+  // one loader rather than duplicating loadTurns' resets at a second callsite.
+  // The import-scratch fields (importText, userKind, importError, submitError)
+  // are cleared here because loadTurns deliberately leaves them alone — the import
+  // box must survive a parse/fetch/draft-restore; discard returns to fresh-visit.
+  // [LAW:effects-at-boundaries] The store never touches localStorage directly.
+  discard(): void {
+    this.loadTurns({ turns: [], origin: null });
+    this.importText = "";
+    this.userKind = null;
+    this.importError = null;
+    this.submitError = null;
+    this.pendingDiscard = false;
+    this.io.clearDraft();
   }
 }
