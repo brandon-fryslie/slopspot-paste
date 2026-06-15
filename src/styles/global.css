@@ -45,6 +45,14 @@
   --syn-meta: #6b6b6b;
   --radius: 14px;
   --maxw: 820px;
+  /* [LAW:one-source-of-truth] The long-prose clamp height stated once, as a line
+     count → height. ~15 lines at the bubble line-height. enhanceClampBlocks
+     (clampBlocks.ts) reads the rendered geometry against this; it is never copied
+     into JS. --bubble-line-height is shared with .bubble-body so the two cannot
+     drift. */
+  --bubble-line-height: 1.62;
+  --clamp-lines: 15;
+  --clamp-max-height: calc(var(--clamp-lines) * var(--bubble-line-height) * 1em);
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
@@ -497,9 +505,41 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .role-dot-system { color: var(--role-system); }
 
 /* Markdown body — message text */
-.bubble-body { font-size: 17px; line-height: 1.62; }
+.bubble-body { font-size: 17px; line-height: var(--bubble-line-height); }
 .bubble-body > :first-child { margin-top: 0; }
 .bubble-body > :last-child { margin-bottom: 0; }
+/* The clamp wrapper holds the prose; the margin resets target ITS edge children
+   so wrapping the body in .clamp-content doesn't reintroduce the first/last
+   margin the bubble suppresses. */
+.clamp-content > :first-child { margin-top: 0; }
+.clamp-content > :last-child { margin-bottom: 0; }
+
+/* Long-prose clamp. The default (no-JS, or a block that fits) carries no
+   max-height — fully expanded. enhanceClampBlocks adds .is-collapsed only to
+   blocks it measured as overflowing, and appends the toggle in the same step, so
+   a clamped block always has its escape hatch. [LAW:no-silent-failure] */
+.clampable.is-collapsed > .clamp-content {
+  max-height: var(--clamp-max-height);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6em), transparent);
+}
+.clamp-toggle {
+  display: inline-block;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 3px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.clamp-toggle:hover { color: var(--fg); border-color: var(--accent); }
+.clamp-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .bubble-body p { margin: 0.65em 0; }
 .bubble-body h1, .bubble-body h2, .bubble-body h3, .bubble-body h4 {
   margin: 1.2em 0 0.4em;
