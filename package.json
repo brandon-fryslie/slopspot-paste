@@ -27,7 +27,6 @@
     "@astrojs/check": "^0.9.9",
     "@cloudflare/workers-types": "^4.20251101.0",
     "@types/jsdom": "^28.0.3",
-    "happy-dom": "^20.10.3",
     "jsdom": "^29.1.1",
     "tsx": "^4.22.0",
     "typescript": "^5.6.0",
