@@ -18,6 +18,7 @@ import {
   renderMarkdown,
   sanitizeUrl,
 } from "../src/render";
+import { highlightCode } from "../src/highlight";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import { deriveDialogue, blockVisibility } from "../src/dialogue";
 import type { AssistantBlock, SpineNode } from "../src/dialogue";
@@ -372,6 +373,78 @@ but only when a | b matches.`;
   assert(
     "wide table wrapped for overflow",
     /<div class="table-wrap"><table>/.test(html),
+  );
+}
+
+console.log("\nsyntax highlighting (highlightCode at the render boundary):");
+{
+  // A declared, registered language highlights and keeps the author's label.
+  const ts = highlightCode("export const x: number = 1;", "ts");
+  assert("declared lang highlights", ts.kind === "highlighted");
+  assert(
+    "declared lang keeps author label",
+    ts.kind === "highlighted" && ts.language === "ts",
+  );
+  assert(
+    "highlighted output carries hljs token spans",
+    ts.kind === "highlighted" && ts.html.includes('class="hljs-'),
+  );
+
+  // The highlighted markup round-trips to the original text — the copy button,
+  // which reads the <code> textContent, still yields the exact bytes.
+  const py = highlightCode('def greet(name):\n    print(f"hi {name}")', "python");
+  const stripped =
+    py.kind === "highlighted"
+      ? py.html
+          .replace(/<[^>]+>/g, "")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/&#x27;/g, "'")
+          .replace(/&amp;/g, "&")
+      : "";
+  assert(
+    "highlighted text round-trips to source (copy stays correct)",
+    stripped === 'def greet(name):\n    print(f"hi {name}")',
+  );
+
+  // A declared language we don't ship a grammar for: honor the label, no color.
+  const unknown = highlightCode("frobnicate the widget", "wingdings");
+  assert("unknown declared lang is labeled, not highlighted", unknown.kind === "labeled");
+  assert(
+    "unknown declared lang keeps the author label",
+    unknown.kind === "labeled" && unknown.language === "wingdings",
+  );
+
+  // Unlabeled but substantial real code: auto-detected confidently (high
+  // relevance AND a clear margin over the runner-up) and highlighted.
+  const auto = highlightCode(
+    "import os\n\ndef load_config(path):\n    with open(path) as f:\n        data = f.read()\n    return {k: v for k, v in parse(data)}\n\nclass Server:\n    def __init__(self, port):\n        self.port = port",
+    undefined,
+  );
+  assert("unlabeled substantial code auto-detects", auto.kind === "highlighted");
+  assert(
+    "auto-detect classifies the right language",
+    auto.kind === "highlighted" && auto.language === "python",
+  );
+
+  // Unlabeled prose: low confidence → plain, never a wrong-language guess.
+  const prose = highlightCode("just some words that are not code at all", undefined);
+  assert("unlabeled prose stays plain (no mislabel)", prose.kind === "plain");
+
+  // Ambiguous short snippet that hljs mis-detects at low margin → refused to plain
+  // rather than mislabeled (a JS one-liner gets guessed as bash at margin 0).
+  const ambiguous = highlightCode("function add(a, b) {\n  return a + b;\n}", undefined);
+  assert("ambiguous short snippet refused to plain (no mislabel)", ambiguous.kind === "plain");
+
+  // End-to-end through the render boundary: hljs class present, escaping intact.
+  const fenced = renderMarkdown("```python\nx = 1\n```");
+  assert("render boundary emits hljs <code>", /<code class="hljs">/.test(fenced));
+  assert("render boundary keeps code-lang label", /class="code-lang"/.test(fenced));
+  const plainFence = renderMarkdown("```\nnot real code just prose words here\n```");
+  assert(
+    "render boundary leaves low-confidence block plain",
+    !/<code class="hljs">/.test(plainFence) && /<code>/.test(plainFence),
   );
 }
 
