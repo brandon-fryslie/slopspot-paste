@@ -368,6 +368,20 @@ const platformSelect = (store: EditorStore): TemplateResult => html`
   </select>
 `;
 
+// [LAW:no-silent-failure] The discard gate. When the confirm is armed
+// (pendingDiscard), show a strip identical in shape to reparseConfirm.
+// The strip is invisible (nothing) when not armed, so the common path is silent.
+const discardConfirm = (store: EditorStore): TemplateResult | typeof nothing => {
+  if (!store.pendingDiscard) return nothing;
+  return html`
+    <div class="discard-confirm" role="alert">
+      <span>Discard this draft? This clears the editor and the saved copy.</span>
+      <button class="btn-secondary" @click=${() => store.cancelDiscard()}>Keep editing</button>
+      <button class="btn-danger" @click=${() => store.discard()}>Discard</button>
+    </div>
+  `;
+};
+
 const toolbar = (store: EditorStore): TemplateResult => html`
   <div class="editor-toolbar">
     <div class="view-toggle" role="tablist">
@@ -386,6 +400,9 @@ const toolbar = (store: EditorStore): TemplateResult => html`
     </div>
     <span class="block-counts">${countsLabel(store.counts)}</span>
     ${platformSelect(store)}
+    ${store.canDiscard
+      ? html`<button class="btn-secondary" @click=${() => store.armDiscard()}>Discard draft</button>`
+      : nothing}
     <button class="btn-primary" ?disabled=${!store.canSubmit} @click=${() => store.submit()}>
       ${store.busy ? "Sharing…" : "Share it"}
     </button>
@@ -412,6 +429,7 @@ const previewPane = (store: EditorStore): TemplateResult => html`
 export const appTemplate = (store: EditorStore): TemplateResult => html`
   <div class="editor">
     ${toolbar(store)}
+    ${discardConfirm(store)}
     ${store.view === "blocks"
       ? html`${importBox(store)}${blockList(store)}`
       : previewPane(store)}
