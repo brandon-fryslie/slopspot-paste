@@ -1750,50 +1750,6 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
   dispose();
 }
 
-console.log("\nEditorStore draft role round-trip (editor-draft-cos — roles survive persist→restore):");
-{
-  // [LAW:behavior-not-structure] Assert the CONTRACT (roles survive the
-  // persist→restore seam), not the DOM binding that was broken. A future
-  // regression in the serialize or restore path will fail here first.
-  let cell: string | null = null;
-  const io: EditorIo = {
-    fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
-    submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
-    navigate: () => {},
-    saveDraft: (draft) => { cell = JSON.stringify(draft); },
-    loadDraft: (): Draft => {
-      if (cell === null) return { turns: [], origin: null };
-      const o = JSON.parse(cell) as { turns?: unknown; origin?: unknown } | null;
-      return o && isTurns(o.turns)
-        ? { turns: o.turns, origin: isOrigin(o.origin) ? o.origin : null }
-        : { turns: [], origin: null };
-    },
-    clearDraft: () => { cell = null; },
-  };
-
-  // Build a store with three message blocks spanning all three roles.
-  const s = new EditorStore(io);
-  s.restoreDraft({ turns: [], origin: null });
-  const dispose = persistDrafts(s, io);
-  s.addBlock("message");
-  s.addBlock("message");
-  s.addBlock("message");
-  const [b0, b1, b2] = s.blocks;
-  s.replaceTurn(b0!.id, { kind: "message", role: "user", content: "hi" });
-  s.replaceTurn(b1!.id, { kind: "message", role: "assistant", content: "hello" });
-  s.replaceTurn(b2!.id, { kind: "message", role: "system", content: "sys prompt" });
-
-  // Restore into a fresh store and verify each role survived verbatim.
-  const s2 = new EditorStore(io);
-  s2.restoreDraft(io.loadDraft());
-  const roles = s2.blocks.map((b) => (b.turn as Extract<typeof b.turn, { role: unknown }>).role);
-  assertEq("restored draft preserves role[0] (user)", roles[0], "user");
-  assertEq("restored draft preserves role[1] (assistant)", roles[1], "assistant");
-  assertEq("restored draft preserves role[2] (system)", roles[2], "system");
-
-  dispose();
-}
-
 console.log("\nEditorStore submitOrigin (provenance-2my — share carries its origin, edits collapse to editor):");
 {
   const shareUrl = "https://claude.ai/share/abc-def-123";

@@ -1,0 +1,109 @@
+// First-render regression for the lit-html ?selected fix (editor-draft-cos).
+//
+// This file runs in its own process (see package.json "test") so that the
+// jsdom DOM globals can be installed before lit-html's node build is first
+// imported. The node build captures `l = globalThis.document` at module-load
+// time — if globalThis.document is undefined at that moment, it falls back to a
+// no-op stub and all render() calls fail. Setting up globals in this file's
+// body (before any dynamic import of lit-html) guarantees the correct capture.
+// [LAW:no-ambient-temporal-coupling] — explicit initialization order via
+// process boundary, not relying on implicit module-load timing folklore.
+//
+// jsdom over happy-dom: happy-dom doesn't implement the WHATWG select
+// "selectedness" algorithm correctly for disconnected elements, so
+// select.value doesn't reflect ?selected attribute changes. jsdom does.
+
+import { JSDOM } from "jsdom";
+import type { Draft, EditorIo, SubmitResult } from "../src/editor/store";
+import type { ParseResult } from "../src/types";
+
+// Install jsdom globals before any lit-html import. lit-html/node/lit-html.js
+// checks `void 0 === globalThis.document` at module load time; these
+// assignments run before the dynamic imports below.
+const jsdom = new JSDOM("<!DOCTYPE html>");
+const jswindow = jsdom.window;
+const setGlobal = (k: string, v: unknown): void => {
+  (globalThis as Record<string, unknown>)[k] = v;
+};
+setGlobal("document", jswindow.document);
+setGlobal("HTMLElement", jswindow.HTMLElement);
+setGlobal("Node", jswindow.Node);
+setGlobal("Element", jswindow.Element);
+setGlobal("Text", jswindow.Text);
+setGlobal("Comment", jswindow.Comment);
+setGlobal("DocumentFragment", jswindow.DocumentFragment);
+setGlobal("SVGElement", jswindow.SVGElement);
+
+// Dynamic imports — lit-html and view code load AFTER DOM globals are set up.
+const { render } = await import("lit-html");
+const { appTemplate } = await import("../src/editor/view");
+const { EditorStore } = await import("../src/editor/store");
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+const assert = (label: string, cond: boolean): void => {
+  if (!cond) {
+    console.error(`  ✗ ${label}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`  ✓ ${label}`);
+  }
+};
+
+const fakeIo = (): EditorIo => ({
+  fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+  submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
+  navigate: () => {},
+  saveDraft: () => {},
+  loadDraft: (): Draft => ({ turns: [], origin: null }),
+  clearDraft: () => {},
+});
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+console.log("\nView first-render select bindings (editor-draft-cos — lit-html ?selected):");
+{
+  // [LAW:verifiable-goals] These assertions would FAIL under the old
+  // `.value=${x}` binding on <select> (lit-html sets .value before <option>
+  // children exist; both role selects would show "user" and the kind badge
+  // for tool-call would show "message"). They PASS only with ?selected=${... === x}
+  // on each <option>.
+  const store = new EditorStore(fakeIo());
+  store.restoreDraft({
+    turns: [
+      { kind: "message", role: "assistant", content: "hello" } as const, // not first role 'user'
+      { kind: "message", role: "system", content: "prompt" } as const,   // not first role 'user'
+      { kind: "tool-call", tool: "bash", args: "{}", output: null } as const, // not first kind 'message'
+    ],
+    origin: null,
+  });
+
+  const container = jswindow.document.createElement("div");
+  render(appTemplate(store), container);
+
+  // Role selects: first role in ROLES is 'user'. Under old .value binding both
+  // would show 'user'; with ?selected they show their actual role.
+  const roleSelects = container.querySelectorAll<HTMLSelectElement>(".block-role");
+  assert(
+    'role select[0] shows "assistant" on first render (not the default "user")',
+    roleSelects[0]?.value === "assistant",
+  );
+  assert(
+    'role select[1] shows "system" on first render (not the default "user")',
+    roleSelects[1]?.value === "system",
+  );
+
+  // Kind badge: first kind in KINDS is 'message'. Under old .value binding the
+  // tool-call badge would show 'message'; with ?selected it shows 'tool-call'.
+  const badgeSelects = container.querySelectorAll<HTMLSelectElement>(".block-badge");
+  assert(
+    'badge select[2] shows "tool-call" on first render (not the default "message")',
+    badgeSelects[2]?.value === "tool-call",
+  );
+}
+
+if (process.exitCode) {
+  console.error("\nFAILED");
+} else {
+  console.log("\nAll view checks passed.");
+}
