@@ -22,13 +22,26 @@
 // expanded — degraded, never hidden-and-unrecoverable.
 
 const COLLAPSED = "is-collapsed"; // clamp applied — the CSS max-height rule reads this
-const MEASURED = "clamp-measured"; // processed once — makes re-runs idempotent
+const MEASURED = "clamp-measured"; // has been evaluated at least once
+const PINNED = "clamp-pinned"; // the reader toggled it — automatic re-evaluation must not stomp it
 const EXPAND_LABEL = "Show more";
 const COLLAPSE_LABEL = "Show less";
 
+const clampContent = (wrapper: HTMLElement): HTMLElement => {
+  const c = wrapper.querySelector<HTMLElement>(":scope > .clamp-content");
+  // [LAW:no-silent-failure] renderDialogue always emits .clamp-content inside a
+  // .clampable, so a missing child is a broken template invariant, not a normal
+  // empty case — fail loudly rather than skip the block into silence.
+  if (!c) throw new Error("clampable block has no .clamp-content");
+  return c;
+};
+
 // The toggle owns its own label/aria, derived from the wrapper's collapsed state
 // — one read, no duplicated "is it open" flag. [LAW:effects-at-boundaries] the
-// click mutates a class; CSS owns the resulting visual.
+// click mutates a class; CSS owns the resulting visual. The click also PINS the
+// block: from then on the reader's choice is authoritative and the width watcher
+// leaves it alone ([LAW:no-ambient-temporal-coupling] — a resize must not reset a
+// deliberate expand/collapse).
 const makeToggle = (wrapper: HTMLElement): HTMLButtonElement => {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -39,6 +52,7 @@ const makeToggle = (wrapper: HTMLElement): HTMLButtonElement => {
     btn.setAttribute("aria-expanded", String(!collapsed));
   };
   btn.addEventListener("click", () => {
+    wrapper.classList.add(PINNED);
     wrapper.classList.toggle(COLLAPSED);
     sync();
   });
@@ -46,20 +60,67 @@ const makeToggle = (wrapper: HTMLElement): HTMLButtonElement => {
   return btn;
 };
 
-const clampContent = (wrapper: HTMLElement): HTMLElement => {
-  const c = wrapper.querySelector<HTMLElement>(".clamp-content");
-  // [LAW:no-silent-failure] renderDialogue always emits .clamp-content inside a
-  // .clampable, so a missing child is a broken template invariant, not a normal
-  // empty case — fail loudly rather than skip the block into silence.
-  if (!c) throw new Error("clampable block has no .clamp-content");
-  return c;
+const existingToggle = (wrapper: HTMLElement): HTMLButtonElement | null =>
+  wrapper.querySelector<HTMLButtonElement>(":scope > .clamp-toggle");
+
+// Evaluate a set of clampable wrappers against the CURRENT layout and bring each
+// into the state its geometry dictates: clamped + toggle when it overflows, plain
+// when it fits. [LAW:effects-at-boundaries] Batched into one layout pass — write
+// the collapse class to ALL candidates, THEN read every geometry, THEN write the
+// per-block decision — so reads never interleave with writes and the whole set
+// forces at most one reflow. With the clamp applied, clientHeight is the capped
+// height and scrollHeight is the full content, so overflow is their inequality.
+// Idempotent: a block already in the right state keeps its (single) toggle.
+const evaluate = (blocks: HTMLElement[]): void => {
+  if (blocks.length === 0) return;
+  for (const w of blocks) w.classList.add(COLLAPSED);
+  const overflows = blocks.map((w) => {
+    const c = clampContent(w);
+    return c.scrollHeight > c.clientHeight + 1; // +1 absorbs sub-pixel rounding
+  });
+  blocks.forEach((w, i) => {
+    const toggle = existingToggle(w);
+    if (overflows[i]) {
+      if (!toggle) w.appendChild(makeToggle(w)); // overflow → reveal the control
+      return; // keep COLLAPSED (just re-applied) with its toggle present
+    }
+    w.classList.remove(COLLAPSED); // it fit — no clamp
+    if (toggle) toggle.remove(); // and no dangling control
+  });
 };
 
-// `root` is the rendered container (the permalink `.conversation`, or the editor
-// mount). Typed as HTMLElement rather than ParentNode because the Cloudflare
-// Worker types in scope redefine the broader DOM interfaces; the concrete element
-// both callers hold avoids that clash.
+// [LAW:no-ambient-temporal-coupling] A block measured once goes stale when the
+// viewport WIDTH changes (a desktop resize, a tablet orientation flip) reflows the
+// prose taller or shorter. The single owner of "re-measure on layout change" is
+// this watcher, installed once for the document. It keys on innerWidth — our own
+// clamp changes a block's HEIGHT, so watching height would feed back on itself;
+// width is the independent reflow driver. It re-evaluates only MEASURED, non-PINNED
+// blocks, so automatic state stays fresh while a reader's manual choice is left
+// untouched. rAF-coalesced so a drag-resize forces one pass, not one per event.
+let widthWatcherInstalled = false;
+const installWidthWatcher = (): void => {
+  if (widthWatcherInstalled) return;
+  widthWatcherInstalled = true;
+  let lastWidth = window.innerWidth;
+  let scheduled = false;
+  window.addEventListener("resize", () => {
+    if (window.innerWidth === lastWidth) return; // height-only change → ignore
+    lastWidth = window.innerWidth;
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      evaluate([
+        ...document.querySelectorAll<HTMLElement>(
+          `.clampable.${MEASURED}:not(.${PINNED})`,
+        ),
+      ]);
+    });
+  });
+};
+
 export const enhanceClampBlocks = (root: HTMLElement): void => {
+  installWidthWatcher();
   // Only blocks not already processed — re-running over a re-rendered preview
   // (lit replaces the subtree on a content change, yielding fresh un-marked
   // nodes) re-enhances the new nodes while skipping untouched ones, so this is
@@ -68,23 +129,6 @@ export const enhanceClampBlocks = (root: HTMLElement): void => {
     ...root.querySelectorAll<HTMLElement>(`.clampable:not(.${MEASURED})`),
   ];
   if (fresh.length === 0) return;
-
-  // [LAW:effects-at-boundaries] Batched into one layout pass: write the collapse
-  // class to ALL candidates, THEN read every geometry, THEN write the per-block
-  // decision. Reads never interleave with writes, so we force at most one reflow
-  // for the whole set instead of one per block (the measuring-every-block cost
-  // the ticket flags). With the clamp applied, clientHeight is the capped height
-  // and scrollHeight is the full content, so overflow is their inequality.
-  for (const w of fresh) w.classList.add(COLLAPSED, MEASURED);
-  const overflows = fresh.map((w) => {
-    const c = clampContent(w);
-    return c.scrollHeight > c.clientHeight + 1; // +1 absorbs sub-pixel rounding
-  });
-  fresh.forEach((w, i) => {
-    if (!overflows[i]) {
-      w.classList.remove(COLLAPSED); // it fit — no clamp, no control
-      return;
-    }
-    w.appendChild(makeToggle(w)); // overflow confirmed → reveal the control
-  });
+  for (const w of fresh) w.classList.add(MEASURED);
+  evaluate(fresh);
 };
