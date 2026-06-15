@@ -1,5 +1,6 @@
 import { Marked } from "marked";
 import type { ToolOutput } from "./types";
+import { highlightCode } from "./highlight";
 
 // [LAW:one-source-of-truth] Source markdown stays in storage. HTML is derived
 // per request. Since pastes are write-once, the derived form cannot go stale.
@@ -147,16 +148,37 @@ export const renderMarkdown = (md: string): string => {
     breaks: false,
     renderer: {
       code({ text, lang }) {
-        const langClass = lang ? ` language-${escapeAttr(lang)}` : "";
-        const langLabel = lang
-          ? `<span class="code-lang" aria-hidden="true">${escapeHtml(lang)}</span>`
+        // [LAW:single-enforcer] Syntax highlighting happens HERE, at the one
+        // md→HTML boundary, so the permalink and the editor preview (which render
+        // through this same renderMarkdown) cannot show different colors. The
+        // highlighter is a pure value-producer: highlightCode returns which of the
+        // three render shapes this block is, and we mirror that value into markup —
+        // [LAW:dataflow-not-control-flow], no second rendering mode.
+        const hl = highlightCode(text, lang);
+        // [LAW:types-are-the-program] The resolved language (author's label, or the
+        // confidently auto-detected one) is null exactly when we render plain — so a
+        // label/class is emitted iff there is a real language behind it. We never
+        // mislabel an unclassified block. [LAW:no-silent-failure]
+        const resolvedLang = hl.kind === "plain" ? null : hl.language;
+        const langClass = resolvedLang ? ` language-${escapeAttr(resolvedLang)}` : "";
+        const langLabel = resolvedLang
+          ? `<span class="code-lang" aria-hidden="true">${escapeHtml(resolvedLang)}</span>`
           : "";
+        // hljs markup is HTML-escaped by the highlighter (trusted-by-construction);
+        // every other shape escapes the raw text here, the same XSS-closing move
+        // code/codespan/html make. The `hljs` class scopes the token CSS so it never
+        // bleeds onto a plain (unhighlighted) block.
+        const codeInner =
+          hl.kind === "highlighted"
+            ? `<code class="hljs">${hl.html}</code>`
+            : `<code>${escapeHtml(text)}</code>`;
         // [LAW:one-source-of-truth] The copy button carries no copy of the code:
-        // the client reads this <code>'s textContent — the exact bytes shown —
-        // never a duplicated data-* attribute that could drift. It renders hidden
-        // and is revealed only once the client wires its clipboard effect
-        // ([LAW:effects-at-boundaries]), so a no-JS viewer never meets a dead button.
-        return `<pre class="code-block${langClass}">${langLabel}<button type="button" class="copy-code" aria-label="Copy code">Copy</button><code>${escapeHtml(text)}</code></pre>`;
+        // the client reads this <code>'s textContent — the exact bytes shown, since
+        // the hljs spans are text-transparent — never a duplicated data-* attribute
+        // that could drift. It renders hidden and is revealed only once the client
+        // wires its clipboard effect ([LAW:effects-at-boundaries]), so a no-JS viewer
+        // never meets a dead button.
+        return `<pre class="code-block${langClass}">${langLabel}<button type="button" class="copy-code" aria-label="Copy code">Copy</button>${codeInner}</pre>`;
       },
       codespan({ text }) {
         return `<code class="inline-code">${escapeHtml(text)}</code>`;

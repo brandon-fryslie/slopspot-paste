@@ -32,6 +32,17 @@
   --terminal-bg: #0f1419;
   --terminal-fg: #d6deeb;
   --terminal-prompt: #c792ea;
+  /* [LAW:one-source-of-truth] Syntax-highlight token hues stated once. Every
+     hljs-* token class below reads these, and a platform theme re-tints code in
+     one place by overriding them. Tuned for the light --bg-code surface. */
+  --syn-keyword: #9333ea;
+  --syn-string: #0a7a4f;
+  --syn-comment: #8a8a8a;
+  --syn-number: #b25000;
+  --syn-function: #1f5fd6;
+  --syn-type: #0e7490;
+  --syn-variable: #c026d3;
+  --syn-meta: #6b6b6b;
   --radius: 14px;
   --maxw: 820px;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -63,6 +74,14 @@
     --terminal-bg: #07090c;
     --terminal-fg: #d6deeb;
     --terminal-prompt: #c792ea;
+    --syn-keyword: #c792ea;
+    --syn-string: #c3e88d;
+    --syn-comment: #717784;
+    --syn-number: #f78c6c;
+    --syn-function: #82aaff;
+    --syn-type: #7fdbca;
+    --syn-variable: #f07178;
+    --syn-meta: #a1a1aa;
   }
 }
 
@@ -575,6 +594,69 @@ pre.code-block code {
   color: var(--fg);
   background: transparent;
   white-space: pre;
+}
+
+/* ─── Syntax highlighting ─────────────────────────────────────────────
+   [LAW:single-enforcer] highlight.js emits hljs-* token spans; the page owns
+   their color by mapping each token class to a theme variable. Scoped under
+   code.hljs so a plain (unhighlighted, low-confidence) block is never tinted —
+   it keeps the flat --fg above. [LAW:dataflow-not-control-flow] color is a
+   property of the token class the highlighter assigned, not a per-language rule. */
+code.hljs .hljs-keyword,
+code.hljs .hljs-built_in,
+code.hljs .hljs-literal,
+code.hljs .hljs-selector-tag,
+code.hljs .hljs-section {
+  color: var(--syn-keyword);
+}
+code.hljs .hljs-string,
+code.hljs .hljs-regexp,
+code.hljs .hljs-symbol,
+code.hljs .hljs-bullet,
+code.hljs .hljs-addition {
+  color: var(--syn-string);
+}
+code.hljs .hljs-comment,
+code.hljs .hljs-quote {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+code.hljs .hljs-number {
+  color: var(--syn-number);
+}
+code.hljs .hljs-title,
+code.hljs .hljs-title.function_,
+code.hljs .hljs-title.class_,
+code.hljs .hljs-name {
+  color: var(--syn-function);
+}
+code.hljs .hljs-type,
+code.hljs .hljs-class .hljs-title,
+code.hljs .hljs-selector-class,
+code.hljs .hljs-selector-id {
+  color: var(--syn-type);
+}
+code.hljs .hljs-variable,
+code.hljs .hljs-template-variable,
+code.hljs .hljs-attr,
+code.hljs .hljs-attribute,
+code.hljs .hljs-property,
+code.hljs .hljs-params {
+  color: var(--syn-variable);
+}
+code.hljs .hljs-meta,
+code.hljs .hljs-comment.hljs-doctag,
+code.hljs .hljs-tag {
+  color: var(--syn-meta);
+}
+code.hljs .hljs-deletion {
+  color: var(--diff-del-fg);
+}
+code.hljs .hljs-emphasis {
+  font-style: italic;
+}
+code.hljs .hljs-strong {
+  font-weight: 600;
 }
 .code-lang {
   position: absolute;
