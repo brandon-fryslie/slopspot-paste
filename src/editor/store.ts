@@ -210,8 +210,10 @@ export class EditorStore {
     return this.blocks.length > 0 && !this.busy;
   }
 
+  // [LAW:no-ambient-temporal-coupling] Also gated on !busy to match canSubmit:
+  // a discard during an in-flight fetch would be overwritten by the completion.
   get canDiscard(): boolean {
-    return this.blocks.length > 0;
+    return this.blocks.length > 0 && !this.busy;
   }
 
   // [LAW:one-source-of-truth] "Were the blocks hand-edited since the last parse?"
