@@ -379,7 +379,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
     display: flex;
     position: fixed;
     top: 50%;
-    left: 24px;
+    right: 24px;
     transform: translateY(-50%);
     flex-direction: column;
     align-items: flex-start;
@@ -414,7 +414,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
      scale. The page script owns it: a dock-style magnification lens writes each
      marker's scale as a pure function of its distance from the pointer, so the
      rail bulges toward the cursor and tapers off — the "genie". Anchored at the
-     rail's LEFT edge so the lines lengthen rightward toward the conversation.
+     rail's LEFT edge so the lines lengthen rightward (away from the conversation,
+     toward the screen edge — left-justified on a right-side rail).
      scaleX doesn't reflow, so the lens is cheap to drive per frame. Hover and
      active state below touch opacity only — they never write the scale. */
   transform-origin: left center;
