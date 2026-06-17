@@ -382,6 +382,21 @@ const discardConfirm = (store: EditorStore): TemplateResult | typeof nothing => 
   `;
 };
 
+// [LAW:single-enforcer] The one place the submit/discard button markup lives.
+// Both the top toolbar and the bottom bar use this fragment — they cannot
+// disagree because they share the same bindings to the same store getters.
+const submitControls = (store: EditorStore): TemplateResult => html`
+  ${store.canDiscard
+    ? html`<button class="btn-secondary" @click=${() => store.armDiscard()}>Discard draft</button>`
+    : nothing}
+  <button class="btn-primary" ?disabled=${!store.canSubmit} @click=${() => store.submit()}>
+    ${store.busy ? "Sharing…" : "Share it"}
+  </button>
+  ${store.submitError === null
+    ? nothing
+    : html`<span class="form-error" role="alert">${store.submitError}</span>`}
+`;
+
 const toolbar = (store: EditorStore): TemplateResult => html`
   <div class="editor-toolbar">
     <div class="view-toggle" role="tablist">
@@ -400,15 +415,16 @@ const toolbar = (store: EditorStore): TemplateResult => html`
     </div>
     <span class="block-counts">${countsLabel(store.counts)}</span>
     ${platformSelect(store)}
-    ${store.canDiscard
-      ? html`<button class="btn-secondary" @click=${() => store.armDiscard()}>Discard draft</button>`
-      : nothing}
-    <button class="btn-primary" ?disabled=${!store.canSubmit} @click=${() => store.submit()}>
-      ${store.busy ? "Sharing…" : "Share it"}
-    </button>
-    ${store.submitError === null
-      ? nothing
-      : html`<span class="form-error" role="alert">${store.submitError}</span>`}
+    ${submitControls(store)}
+  </div>
+`;
+
+// Sticky bottom bar: only rendered in blocks view. `position: sticky; bottom: 0`
+// keeps it pinned to the viewport bottom while scrolling through a long block
+// list, without taking it out of flow — so no overlap with block content above.
+const bottomBar = (store: EditorStore): TemplateResult => html`
+  <div class="editor-bottom-bar">
+    ${submitControls(store)}
   </div>
 `;
 
@@ -431,7 +447,7 @@ export const appTemplate = (store: EditorStore): TemplateResult => html`
     ${toolbar(store)}
     ${discardConfirm(store)}
     ${store.view === "blocks"
-      ? html`${importBox(store)}${blockList(store)}`
+      ? html`${importBox(store)}${blockList(store)}${bottomBar(store)}`
       : previewPane(store)}
   </div>
 `;
