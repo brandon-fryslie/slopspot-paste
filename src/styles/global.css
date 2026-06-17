@@ -358,7 +358,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .source-origin a:hover { border-bottom-color: currentColor; }
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
-   A fixed vertical rail of one marker per turn, sitting in the left gutter
+   A fixed vertical rail of one marker per turn, sitting in the right gutter
    beside the centred conversation column. Built client-side from the rendered
    turn elements (see [slug].astro).
 
