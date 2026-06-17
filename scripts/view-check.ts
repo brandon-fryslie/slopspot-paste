@@ -143,6 +143,52 @@ console.log("\nDiscard draft control (slopspot-editor-draft-rp4):");
   assert("after discard(): clearDraft was invoked", clearDraftCalled);
 }
 
+console.log("\nBottom submit bar (slopspot-editor-controls-csi):");
+{
+  // Blocks view: bottom bar present with submit button.
+  const store = new EditorStore(fakeIo());
+  store.restoreDraft({
+    turns: [{ kind: "message", role: "user", content: "hello" } as const],
+    origin: null,
+  });
+  const c = jswindow.document.createElement("div");
+  render(appTemplate(store), c);
+  const bar = c.querySelector(".editor-bottom-bar");
+  assert("blocks view: bottom bar is present", bar !== null);
+  const submitBtn = bar?.querySelector<HTMLButtonElement>(".btn-primary");
+  assert("blocks view: bottom bar has submit button", submitBtn !== null && submitBtn !== undefined);
+  assert("blocks view: bottom submit is enabled (canSubmit=true)", submitBtn?.disabled === false);
+
+  // Empty store: bottom submit disabled (canSubmit=false).
+  const storeEmpty = new EditorStore(fakeIo());
+  const cEmpty = jswindow.document.createElement("div");
+  render(appTemplate(storeEmpty), cEmpty);
+  const emptyBtn = cEmpty.querySelector<HTMLButtonElement>(".editor-bottom-bar .btn-primary");
+  assert("empty store: bottom submit is disabled (canSubmit=false)", emptyBtn?.disabled === true);
+
+  // Click on bottom submit invokes store.submit().
+  let submitCalled = false;
+  const trackIo: EditorIo = {
+    ...fakeIo(),
+    submit: async (): Promise<SubmitResult> => { submitCalled = true; return { ok: true, slug: "x" }; },
+  };
+  const storeTrack = new EditorStore(trackIo);
+  storeTrack.restoreDraft({
+    turns: [{ kind: "message", role: "user", content: "hello" } as const],
+    origin: null,
+  });
+  const cTrack = jswindow.document.createElement("div");
+  render(appTemplate(storeTrack), cTrack);
+  cTrack.querySelector<HTMLButtonElement>(".editor-bottom-bar .btn-primary")?.click();
+  await new Promise<void>((r) => setTimeout(r, 10));
+  assert("click on bottom submit invokes store.submit()", submitCalled);
+
+  // Preview view: bottom bar absent.
+  store.setView("preview");
+  render(appTemplate(store), c);
+  assert("preview view: bottom bar is absent", c.querySelector(".editor-bottom-bar") === null);
+}
+
 if (process.exitCode) {
   console.error("\nFAILED");
 } else {
