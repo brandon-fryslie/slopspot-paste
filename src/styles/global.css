@@ -46,12 +46,12 @@
   --radius: 14px;
   --maxw: 820px;
   /* [LAW:one-source-of-truth] The long-prose clamp height stated once, as a line
-     count → height. ~15 lines at the bubble line-height. enhanceClampBlocks
+     count → height. ~10 lines at the bubble line-height. enhanceClampBlocks
      (clampBlocks.ts) reads the rendered geometry against this; it is never copied
      into JS. --bubble-line-height is shared with .bubble-body so the two cannot
      drift. */
   --bubble-line-height: 1.62;
-  --clamp-lines: 15;
+  --clamp-lines: 10;
   --clamp-max-height: calc(var(--clamp-lines) * var(--bubble-line-height) * 1em);
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -524,6 +524,18 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6em), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6em), transparent);
+}
+/* Hover-preview: transiently lift the clamp and fade mask while the pointer is
+   over a collapsed block. [LAW:no-ambient-temporal-coupling] hover is pure CSS
+   (transient, pointer-owned); the click-pin in clampBlocks.ts owns the persistent
+   state. They share .is-collapsed as the single boolean — when present, hover
+   previews and mouse-leave restores automatically. Pinned-open blocks lack
+   .is-collapsed so this rule never fires on them. Pinned-closed blocks do have
+   .is-collapsed and DO get the preview, which is intentional. */
+.clampable.is-collapsed:hover > .clamp-content {
+  max-height: none;
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 .clamp-toggle {
   display: inline-block;
