@@ -470,6 +470,16 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   padding: 16px 20px;
   background: var(--bg-elev);
   max-width: 100%;
+  /* Hover-out uses this transition (target state = not-hovered). Hover-in
+     uses the shorter 0.13s from the :hover rule below (target = hovered). */
+  transition: box-shadow 0.22s ease-out;
+}
+.bubble:hover {
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.09);
+  transition: box-shadow 0.13s ease-out;
+}
+@media (prefers-color-scheme: dark) {
+  .bubble:hover { box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38); }
 }
 .bubble-user {
   background: var(--user-bg);
