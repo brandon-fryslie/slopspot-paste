@@ -1,5 +1,6 @@
 import type { Provider, Turn } from "./types";
 import { PROVIDERS } from "./types";
+import type { WaitStrategy } from "./firecrawl";
 import { parseClaudeShare } from "./parsers/claude-share";
 
 // [LAW:dataflow-not-control-flow] Per-provider behavior is a table lookup, not a
@@ -13,9 +14,11 @@ import { parseClaudeShare } from "./parsers/claude-share";
 // shape, never a bespoke arm or branch per host.
 //
 // [LAW:one-source-of-truth] A provider's accepted URL shape lives HERE only.
-// isClaudeShareUrl (parser.ts), the /api/fetch re-check, and the capture-fixture
-// gate all resolve through resolveProvider, so the pattern has exactly one
-// definition that cannot drift across callsites.
+// ingestPaste, reprojectOrigin, and the capture-fixture gate all resolve through
+// resolveProvider, so the pattern has exactly one definition that cannot drift
+// across callsites. (Detection and the /api/fetch re-check use the generic isUrl,
+// which recognizes ANY link; the provider pattern only chooses the parser after
+// fetch.)
 export interface ProviderEntry {
   // The URL shape that identifies this provider. resolveProvider tests it against
   // an already-trimmed, single-line URL, so the pattern need not re-encode those
@@ -25,13 +28,15 @@ export interface ProviderEntry {
   // conversation in this provider's format" — never a throw, never a guess
   // ([LAW:no-silent-failure]).
   readonly parser: (markdown: string) => Turn[] | null;
-  // [LAW:no-ambient-temporal-coupling] The DOM selector whose presence proves the
-  // client-rendered conversation hydrated — a selector wait, not a blind delay.
-  // It is per-provider because each host wraps its messages in its own contract:
-  // the spike (slopspot-url-ingestion-wfd.1) proved this is NOT constant —
-  // chatgpt.com never renders claude.ai's [data-testid="user-message"], so a
-  // single hard-coded wait timed out after 20s on that host.
-  readonly waitSelector: string;
+  // [LAW:no-ambient-temporal-coupling] How to wait for this host's client-rendered
+  // conversation to hydrate before the scrape reads it. A known provider uses a
+  // `selector` strategy — the DOM node that proves its messages rendered — because
+  // each host wraps its messages in its own contract: the spike
+  // (slopspot-url-ingestion-wfd.1) proved this is NOT constant — chatgpt.com never
+  // renders claude.ai's [data-testid="user-message"], so a single hard-coded wait
+  // timed out after 20s on that host. (The unclaimed-host fallback uses the
+  // selector-less `settle` strategy — see FALLBACK_WAIT.)
+  readonly wait: WaitStrategy;
 }
 
 // [LAW:types-are-the-program] Keyed by Provider, so the type system forces
@@ -42,9 +47,19 @@ export const PROVIDER_REGISTRY: { readonly [P in Provider]: ProviderEntry } = {
   "claude-share": {
     urlPattern: /^https?:\/\/claude\.ai\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i,
     parser: parseClaudeShare,
-    waitSelector: '[data-testid="user-message"]',
+    wait: { kind: "selector", selector: '[data-testid="user-message"]' },
   },
 };
+
+// [LAW:no-ambient-temporal-coupling] The hydration wait for a URL no registered
+// provider claims. There is no host-specific selector to wait on (the spike
+// proved no universal one exists and a wrong selector times out), so the only
+// honest strategy is a bounded settle: give the page a fixed window to render,
+// then read whatever is there. 8s sits well under firecrawl's 20s request
+// timeout while covering a typical SPA's first paint. This is a deliberate blind
+// delay scoped to exactly the case where no proof-of-hydration signal is
+// available — paired with parseFallback (parser.ts) as the unclaimed-host plan.
+export const FALLBACK_WAIT: WaitStrategy = { kind: "settle", ms: 8000 };
 
 // [LAW:single-enforcer] The one URL→Provider resolution. Iterates PROVIDERS in
 // tuple order and returns the first whose pattern matches the trimmed,

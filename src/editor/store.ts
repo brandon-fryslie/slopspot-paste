@@ -15,7 +15,7 @@
 // explosion). Variability lives in the turn value crossing one seam.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
+import type { InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
 import { platformOf, sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
@@ -77,12 +77,12 @@ const clamp = (n: number, lo: number, hi: number): number =>
 export class EditorStore {
   blocks: Block[] = [];
   importText = "";
-  // [LAW:one-source-of-truth] The selected source is DERIVED (see importKind),
+  // [LAW:one-source-of-truth] The selected input kind is DERIVED (see importKind),
   // not stored. userKind is an explicit override the user picked from the
   // dropdown; null means "follow detection". Storing the resolved kind directly
   // would drift from the text — "raw" is always detected, so a stored default
   // could never re-snap to a more-specific format once set.
-  userKind: SourceKind | null = null;
+  userKind: InputKind | null = null;
   // [LAW:one-source-of-truth] Explicit platform override; null = auto-derive from
   // source. Cleared on every loadTurns so new content re-snaps to detection.
   // activePlatform = userPlatform ?? platformOf(source) is the single resolution.
@@ -131,7 +131,7 @@ export class EditorStore {
   // authoring nested subagent structure is out of scope, so the preview mirrors
   // what is editable, not what is stored.
 
-  get detected(): ReadonlyArray<SourceKind> {
+  get detected(): ReadonlyArray<InputKind> {
     return detectSources(this.importText);
   }
 
@@ -140,7 +140,7 @@ export class EditorStore {
   // detected kind, else fall to the highest-priority detection. detected is
   // ordered most-specific-first (SOURCE_KINDS), so detected[0] is the best
   // auto-detection — paste markdown -> "markdown", not a sticky "raw".
-  get importKind(): SourceKind {
+  get importKind(): InputKind {
     return this.userKind !== null && this.detected.includes(this.userKind)
       ? this.userKind
       : (this.detected[0] ?? "raw");
@@ -167,7 +167,7 @@ export class EditorStore {
   }
 
   get isUrlImport(): boolean {
-    return this.importKind === "claude-share";
+    return this.importKind === "url";
   }
 
   // [LAW:one-source-of-truth] Styling provenance is DERIVED from the import
@@ -246,7 +246,7 @@ export class EditorStore {
     this.pendingReparse = null;
   }
 
-  setImportKind(kind: SourceKind): void {
+  setImportKind(kind: InputKind): void {
     this.userKind = kind;
     this.importError = null;
     this.pendingReparse = null;
@@ -256,14 +256,14 @@ export class EditorStore {
     this.userPlatform = platform;
   }
 
-  // The single import action. claude-share is the async URL arm (delegates to
-  // the injected capability); every other kind parses synchronously and purely.
+  // The single import action. "url" is the async fetch arm (delegates to the
+  // injected capability); every text kind parses synchronously and purely.
   // [LAW:dataflow-not-control-flow] One entry point; the kind value selects the
-  // path, and `kind` narrows to a text arm after the URL arm returns.
+  // path, and `kind` narrows to a text arm after the url arm returns.
   async ingest(): Promise<void> {
     const kind = this.importKind;
     this.importError = null;
-    if (kind === "claude-share") {
+    if (kind === "url") {
       await this.fetchShare(this.importText.trim());
       return;
     }

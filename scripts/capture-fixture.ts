@@ -12,8 +12,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { firecrawlScrape } from "../src/firecrawl";
+import { firecrawlScrape, type WaitStrategy } from "../src/firecrawl";
 import { PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
+import { isUrl } from "../src/parser";
 import { isIndicatorEligible } from "../src/parsers/claude-share";
 import { MAX_PASTE_BYTES, MAX_PASTE_LABEL } from "../src/types";
 
@@ -115,22 +116,6 @@ export const compareLines = (before: string, after: string): ScrubReport => {
 // share-*) so a fixture's provider is legible from its filename.
 const FIXTURE_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-// [LAW:no-silent-failure] The spike captures ARBITRARY links, not just known
-// hosts, so the gate here is "is this a fetchable http(s) URL", not a provider
-// pattern. The foundational task (slopspot-url-ingestion-wfd.4) lifts a generic
-// isUrl into parser.ts as the one detector; this local check is the capture-time
-// stand-in until that seam exists, and is cited so it gets replaced, not copied.
-const isHttpUrl = (raw: string): boolean => {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0 || trimmed.includes("\n")) return false;
-  try {
-    const u = new URL(trimmed);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
-};
-
 function fail(code: 1 | 2, message: string): never {
   console.error(message);
   process.exit(code);
@@ -160,7 +145,7 @@ const main = async (): Promise<void> => {
         "  wait-selector overrides the registry selector — required for a host no provider claims yet",
     );
   }
-  if (!isHttpUrl(url)) {
+  if (!isUrl(url)) {
     fail(2, `Not an http(s) URL: ${url}`);
   }
   if (!FIXTURE_NAME_RE.test(name)) {
@@ -177,8 +162,14 @@ const main = async (): Promise<void> => {
   // spike proved a wrong one times out), so capture refuses rather than scrape blind.
   const provider = resolveProvider(url);
   const entry = provider === null ? null : PROVIDER_REGISTRY[provider];
-  const waitSelector = selectorArg ?? entry?.waitSelector;
-  if (!waitSelector) {
+  // An explicit selectorArg is a `selector` strategy — capturing a known host's
+  // page expects its hydration selector. Otherwise the registered provider's wait
+  // is used. (Capture deliberately does NOT fall back to a blind settle: a fixture
+  // must prove its bytes hydrated, so an unclaimed host without an explicit
+  // selector fails loudly rather than risk capturing a half-rendered page.)
+  const wait: WaitStrategy | undefined =
+    selectorArg !== undefined ? { kind: "selector", selector: selectorArg } : entry?.wait;
+  if (!wait) {
     fail(
       2,
       `No registered provider claims ${url} and no wait-selector was supplied.\n` +
@@ -186,7 +177,7 @@ const main = async (): Promise<void> => {
     );
   }
 
-  const result = await firecrawlScrape(url, waitSelector, { FIRECRAWL_API_KEY: resolveApiKey() });
+  const result = await firecrawlScrape(url, wait, { FIRECRAWL_API_KEY: resolveApiKey() });
   if (!result.ok) {
     fail(1, `Scrape failed: ${result.reason}`);
   }
