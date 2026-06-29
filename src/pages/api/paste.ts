@@ -5,7 +5,7 @@ import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
 import type { Conversation, Origin, ParseResult, PasteInput, Platform, Turn } from "../../types";
-import { inputText, isOrigin, isPlatform, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
+import { inputText, isOrigin, isPlatform, isSourceKind, isTextArmKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
 
 export const prerender = false;
 
@@ -23,14 +23,15 @@ const MAX_TURNS = 10000;
 
 // [LAW:types-are-the-program] The trust boundary classifies wire JSON into
 // one of the union arms. Each arm's required field is checked against its
-// kind — a claude-share payload without `url` (or any other arm without
-// `content`) fails here instead of crashing downstream.
+// kind — a url payload without `url` (or a text arm without `content`) fails
+// here instead of crashing downstream. The url arm's discriminator is the
+// generic "url"; a text arm's kind must be a real TextArmKind (claude-share is
+// a Provider/SourceKind, never a PasteInput kind, so it is rejected here).
 const isPasteInput = (v: unknown): v is PasteInput => {
   if (!v || typeof v !== "object") return false;
   const o = v as { kind?: unknown; content?: unknown; url?: unknown };
-  if (!isSourceKind(o.kind)) return false;
-  if (o.kind === "claude-share") return typeof o.url === "string";
-  return typeof o.content === "string";
+  if (o.kind === "url") return typeof o.url === "string";
+  return isTextArmKind(o.kind) && typeof o.content === "string";
 };
 
 // [LAW:dataflow-not-control-flow] One decode path returns one tagged value.

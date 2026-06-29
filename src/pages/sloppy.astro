@@ -67,11 +67,11 @@ const canReproject = (c: (typeof rows)[number]): boolean =>
 
 // [LAW:decomposition] Re-fetch is a separate affordance from re-project:
 // it hits the network to refresh the stored bytes, then re-derives turns.
-// Gate: only claude-share origins carry a URL to re-fetch against.
+// Gate: only url (fetched) origins carry a link to re-fetch against.
 // [LAW:one-source-of-truth]: the gate is a projection of the origin kind, not
 // a second stored flag.
 const canRefetch = (c: (typeof rows)[number]): boolean =>
-  c.origin !== null && c.origin.kind === "claude-share";
+  c.origin !== null && c.origin.kind === "url";
 
 const previewOf = (c: (typeof rows)[number]): string => {
   const first = c.turns.find((t) => t.kind === "message");

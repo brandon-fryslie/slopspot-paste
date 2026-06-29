@@ -12,15 +12,46 @@ import { isOrigin, isPlatform, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS 
 // [LAW:one-way-deps] This module imports types only. Pages/API import storage.
 // Storage never imports rendering.
 
-// [LAW:types-are-the-program] KV is a trust boundary. Two historical origin
-// shapes exist in the store: bare Origin (current format) and StoredOrigin
-// wrapper { status, origin } (written before this commit's simplification).
-// Both unwrap to the same Origin|null the type now declares.
+// [LAW:types-are-the-program] Records written before the URL arm was generalized
+// store a fetched origin as { kind:"claude-share", url, fetched }. The current
+// shape is the generic url arm tagged with its provider: { kind:"url", url,
+// fetched, provider:"claude-share" }. Upgrade the legacy discriminator on read —
+// including a share origin nested as an editor arm's `input` — so every origin
+// above this boundary speaks the current shape. This is the governing
+// architecture in action: stored bytes are untouched; the new shape is DERIVED on
+// read, so the rename costs zero migration.
+// [LAW:no-silent-failure] Only the exact legacy share shape is rewritten; any
+// other value passes through unchanged to isOrigin, which rejects junk to null.
+const upgradeReplayable = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = raw as { kind?: unknown; url?: unknown; fetched?: unknown };
+  if (o.kind === "claude-share" && typeof o.url === "string" && typeof o.fetched === "string") {
+    return { kind: "url", url: o.url, fetched: o.fetched, provider: "claude-share" };
+  }
+  return raw;
+};
+
+export const upgradeOrigin = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = raw as { kind?: unknown; input?: unknown };
+  if (o.kind === "editor") {
+    return o.input === undefined ? raw : { ...o, input: upgradeReplayable(o.input) };
+  }
+  return upgradeReplayable(raw);
+};
+
+// [LAW:types-are-the-program] KV is a trust boundary. Three historical origin
+// shapes exist in the store: bare Origin (current format), the StoredOrigin
+// wrapper { status, origin } (written before this commit's simplification), and
+// the legacy claude-share discriminator (written before the URL arm was
+// generalized). upgradeOrigin lifts the legacy discriminator; isOrigin validates
+// the rest. All converge to the same Origin|null the type now declares.
 // [LAW:no-silent-failure] Wrapper records are extracted, not silently dropped.
 const normalizeOrigin = (raw: unknown): Conversation["origin"] => {
-  if (isOrigin(raw)) return raw;
+  const upgraded = upgradeOrigin(raw);
+  if (isOrigin(upgraded)) return upgraded;
   if (raw && typeof raw === "object") {
-    const inner = (raw as { origin?: unknown }).origin;
+    const inner = upgradeOrigin((raw as { origin?: unknown }).origin);
     if (isOrigin(inner)) return inner;
   }
   return null;
