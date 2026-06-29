@@ -2,6 +2,7 @@ import type { Provider, Turn } from "./types";
 import { PROVIDERS } from "./types";
 import type { WaitStrategy } from "./firecrawl";
 import { parseClaudeShare } from "./parsers/claude-share";
+import { singleLineUrl } from "./url";
 
 // [LAW:dataflow-not-control-flow] Per-provider behavior is a table lookup, not a
 // branch. Every recognized conversation host shares ONE ingestion behavior —
@@ -69,8 +70,8 @@ export const FALLBACK_WAIT: WaitStrategy = { kind: "settle", ms: 8000 };
 // ingestPaste turns it into a typed failure today, and the fallback parser
 // (slopspot-url-ingestion-wfd.4) will handle unmatched hosts.
 export const resolveProvider = (url: string): Provider | null => {
-  const trimmed = url.trim();
-  if (trimmed.length === 0 || trimmed.includes("\n")) return null;
+  const trimmed = singleLineUrl(url);
+  if (trimmed === null) return null;
   for (const provider of PROVIDERS) {
     if (PROVIDER_REGISTRY[provider].urlPattern.test(trimmed)) return provider;
   }

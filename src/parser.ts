@@ -4,6 +4,7 @@ import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
 import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "./providers";
 import { firecrawlScrape, type FirecrawlEnv, type WaitStrategy } from "./firecrawl";
+import { singleLineUrl } from "./url";
 
 // [LAW:types-are-the-program] Every parser produces the same Turn[] union.
 // All variability — which export format, which header style — is absorbed at
@@ -283,8 +284,8 @@ export const ingestPaste = async (
 // detection and at provider resolution. (Lifted from capture-fixture.ts's
 // stand-in isHttpUrl, which cited this task as its replacement.)
 export const isUrl = (input: string): boolean => {
-  const trimmed = input.trim();
-  if (trimmed.length === 0 || trimmed.includes("\n")) return false;
+  const trimmed = singleLineUrl(input);
+  if (trimmed === null) return false;
   try {
     const u = new URL(trimmed);
     return u.protocol === "http:" || u.protocol === "https:";
