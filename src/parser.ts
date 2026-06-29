@@ -1,4 +1,4 @@
-import type { Origin, ParseResult, PasteInput, Role, SourceKind, TextArmKind, Turn } from "./types";
+import type { Origin, ParseResult, PasteInput, Provider, Role, SourceKind, TextArmKind, Turn } from "./types";
 import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, TEXT_ARM_KINDS, textArmInput } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
@@ -142,14 +142,14 @@ const normalize = (input: string): string => input.replace(/\r\n?/g, "\n").trim(
 // uniform async surface use ingestPaste; callers that only care about text
 // arms (parser-check tests, detector) use parseInput.
 export const parseInput = (input: PasteInput): ParseResult => {
-  if (input.kind === "claude-share") {
+  if (input.kind === "url") {
     return {
       ok: false,
-      reason: "claude-share is a URL arm; use ingestPaste() to fetch and parse.",
+      reason: "the url arm is fetched, not parsed synchronously; use ingestPaste().",
     };
   }
-  // input is narrowed to the content-bearing arms here (claude-share returned
-  // above), so no cast is needed — a future URL-shaped arm would fail to compile.
+  // input is narrowed to the content-bearing arms here (the url arm returned
+  // above), so no cast is needed — the url-shaped arm cannot reach this point.
   const text = normalize(input.content);
   if (text.length === 0) return { ok: false, reason: "empty input" };
   const turns = PARSER_BY_KIND[input.kind](text);
@@ -174,11 +174,17 @@ export const ingestPaste = async (
   input: PasteInput,
   env: FirecrawlEnv,
 ): Promise<ParseResult> => {
-  if (input.kind !== "claude-share") return parseInput(input);
+  if (input.kind !== "url") return parseInput(input);
 
+  // [LAW:single-enforcer] Resolve which provider this URL belongs to, then fetch
+  // and parse through it. Today the one provider whose pattern + parser exist is
+  // claude-share; the provider REGISTRY (slopspot-url-ingestion-wfd.3) generalizes
+  // this resolution, the wait-selector, and the parser dispatch — the generic url
+  // arm and the stamped Provider tag below are the seam it fills.
   if (!isClaudeShareUrl(input.url)) {
     return { ok: false, reason: "Not a valid claude.ai/share URL." };
   }
+  const provider: Provider = "claude-share";
   const fetched = await firecrawlScrape(input.url, env);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
   // [LAW:single-enforcer] The same size cap that the API applies to user input
@@ -194,14 +200,15 @@ export const ingestPaste = async (
       reason: "Fetched the page, but could not extract a conversation.",
     };
   }
-  // [LAW:one-source-of-truth] The share arm was the lossy one: persist the
-  // ORIGINAL fetched markdown alongside the link, so re-projection parses these
-  // stored bytes and never has to re-hit the network (a refetch could 404, drift,
-  // or cost money — the captured bytes are the authority).
+  // [LAW:one-source-of-truth] The url arm was the lossy one: persist the ORIGINAL
+  // fetched markdown alongside the link AND the resolved provider, so re-projection
+  // parses these stored bytes through that provider's parser and never has to
+  // re-hit the network (a refetch could 404, drift, or cost money — the captured
+  // bytes are the authority).
   return {
     ok: true,
     turns,
-    origin: { kind: "claude-share", url: input.url, fetched: fetched.markdown },
+    origin: { kind: "url", url: input.url, fetched: fetched.markdown, provider },
   };
 };
 
@@ -273,16 +280,19 @@ export const parseAuto = (input: string): ParseResult => {
 // cache: replaying the captured input through today's parser reproduces (or
 // improves) the projection.
 //
-// [LAW:dataflow-not-control-flow] One switch on the discriminator. The share arm
+// [LAW:dataflow-not-control-flow] One switch on the discriminator. The url arm
 // parses its STORED bytes (never refetches); the text arms re-normalize then
 // re-parse; the editor arm returns null because its turns are the source of
 // truth — there is no upstream input to replay. A null return means "the stored
-// turns ARE canonical", not a failure.
+// turns ARE canonical", not a failure. The url arm parses through parseClaudeShare
+// because claude-share is the only provider whose parser exists; the provider
+// REGISTRY (slopspot-url-ingestion-wfd.3) replaces this with a dispatch on
+// origin.provider so each provider replays through its own parser.
 export const reprojectOrigin = (origin: Origin): ReadonlyArray<Turn> | null => {
   switch (origin.kind) {
     case "editor":
       return null;
-    case "claude-share":
+    case "url":
       return parseClaudeShare(origin.fetched);
     default:
       return PARSER_BY_KIND[origin.kind](normalize(origin.content));

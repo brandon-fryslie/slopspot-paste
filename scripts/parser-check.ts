@@ -10,6 +10,7 @@ import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
 import type { Origin, SourceKind } from "../src/types";
+import { upgradeOrigin } from "../src/storage";
 import {
   parseDiff,
   parseFileRead,
@@ -577,11 +578,11 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["text arm with content", { kind: "markdown", content: "## User\nhi" }],
     ["raw arm with empty content", { kind: "raw", content: "" }],
     ["every text arm accepted", { kind: "claude-jsonl", content: "{}" }],
-    ["claude-share with url + fetched", { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "## You said: q" }],
+    ["url arm with url + fetched + provider", { kind: "url", url: "https://claude.ai/share/x", fetched: "## You said: q", provider: "claude-share" }],
     ["editor with null source", { kind: "editor", source: null }],
     ["editor with a SourceKind source", { kind: "editor", source: "claude-code" }],
     ["editor with input (edited text import)", { kind: "editor", source: "claude-code", input: { kind: "claude-code", content: "original content" } }],
-    ["editor with share input (edited share import)", { kind: "editor", source: "claude-share", input: { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "original" } }],
+    ["editor with url input (edited share import)", { kind: "editor", source: "claude-share", input: { kind: "url", url: "https://claude.ai/share/x", fetched: "original", provider: "claude-share" } }],
   ];
   for (const [label, v] of accepts) assert(`accepts: ${label}`, isOrigin(v));
 
@@ -594,15 +595,64 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["text arm missing content", { kind: "raw" }],
     ["text arm with non-string content", { kind: "raw", content: 42 }],
     ["unknown kind", { kind: "nonsense", content: "x" }],
-    ["claude-share kind is not a text arm", { kind: "claude-share", content: "x" }],
-    ["share missing fetched", { kind: "claude-share", url: "https://claude.ai/share/x" }],
-    ["share missing url", { kind: "claude-share", fetched: "body" }],
+    ["claude-share kind is a Provider, not an Origin discriminator", { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "body" }],
+    ["url arm missing fetched", { kind: "url", url: "https://claude.ai/share/x", provider: "claude-share" }],
+    ["url arm missing url", { kind: "url", fetched: "body", provider: "claude-share" }],
+    ["url arm missing provider", { kind: "url", url: "https://claude.ai/share/x", fetched: "body" }],
+    ["url arm with unknown provider", { kind: "url", url: "https://claude.ai/share/x", fetched: "body", provider: "bogus" }],
     ["editor with a bogus source", { kind: "editor", source: "bogus" }],
     ["editor missing source field", { kind: "editor" }],
     ["editor with invalid input (bogus kind)", { kind: "editor", source: null, input: { kind: "bogus" } }],
     ["editor with invalid input (editor arm — not replayable)", { kind: "editor", source: null, input: { kind: "editor", source: null } }],
   ];
   for (const [label, v] of rejects) assert(`rejects: ${label}`, !isOrigin(v));
+}
+
+console.log("\nLegacy origin upgrade (upgradeOrigin — claude-share → url arm, url-ingestion-wfd.2):");
+{
+  // [LAW:one-source-of-truth] The governing architecture in action: records
+  // written before the URL arm was generalized stored a fetched origin as
+  // { kind:"claude-share", url, fetched }. upgradeOrigin lifts that legacy
+  // discriminator into the current { kind:"url", …, provider } shape on read, so
+  // the rename costs ZERO migration — stored bytes are untouched, the new shape
+  // is DERIVED. isOrigin then accepts the upgraded value; sourceOf/sourceUrlOf
+  // re-derive provenance unchanged, so a legacy paste renders identically.
+  const legacyShare = { kind: "claude-share", url: "https://claude.ai/share/abc", fetched: "## You said:\nq" };
+  const upgraded = upgradeOrigin(legacyShare);
+  assert("legacy share upgrades to the url arm accepted by isOrigin", isOrigin(upgraded));
+  assertEq("upgraded kind is url", (upgraded as { kind?: unknown }).kind, "url");
+  assertEq("upgraded provider is claude-share", (upgraded as { provider?: unknown }).provider, "claude-share");
+  assertEq("upgraded keeps the link", sourceUrlOf(upgraded as Origin), "https://claude.ai/share/abc");
+  assertEq("upgraded keeps the styling provenance", sourceOf(upgraded as Origin), "claude-share");
+  assertEq(
+    "upgraded keeps the original fetched bytes verbatim",
+    (upgraded as { fetched?: unknown }).fetched,
+    "## You said:\nq",
+  );
+
+  // A legacy share nested as an EDITOR arm's `input` (an edited share import) is
+  // upgraded in place; the editor's own `source` was already a valid SourceKind.
+  const legacyEditedShare = {
+    kind: "editor",
+    source: "claude-share",
+    input: { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "orig" },
+  };
+  const upgradedEditor = upgradeOrigin(legacyEditedShare);
+  assert("legacy edited-share editor upgrades to a valid Origin", isOrigin(upgradedEditor));
+  assertEq(
+    "nested input is upgraded to the url arm",
+    ((upgradedEditor as { input?: { kind?: unknown } }).input ?? {}).kind,
+    "url",
+  );
+
+  // [LAW:no-silent-failure] Idempotent + total: a current url origin and a text
+  // origin pass through byte-identical (no double-upgrade, no field churn), and
+  // junk passes through untouched for isOrigin to reject downstream.
+  const currentUrl: Origin = { kind: "url", url: "https://claude.ai/share/y", fetched: "f", provider: "claude-share" };
+  assertEq("current url origin is unchanged (idempotent)", JSON.stringify(upgradeOrigin(currentUrl)), JSON.stringify(currentUrl));
+  const textOrigin: Origin = { kind: "markdown", content: "## User\nhi" };
+  assertEq("text origin is unchanged", JSON.stringify(upgradeOrigin(textOrigin)), JSON.stringify(textOrigin));
+  assert("junk passes through to be rejected by isOrigin", !isOrigin(upgradeOrigin({ kind: "nonsense" })));
 }
 
 console.log("\nOrigin → source derivation (sourceOf — shape table, provenance-kg4):");
@@ -615,7 +665,7 @@ console.log("\nOrigin → source derivation (sourceOf — shape table, provenanc
     ["editor authored from scratch → null", { kind: "editor", source: null }, null],
     ["editor carrying provenance → that kind", { kind: "editor", source: "chatgpt" }, "chatgpt"],
     ["text arm → its own kind", { kind: "markdown", content: "x" }, "markdown"],
-    ["claude-share → claude-share", { kind: "claude-share", url: "u", fetched: "f" }, "claude-share"],
+    ["url arm → its provider (the host styling identity)", { kind: "url", url: "u", fetched: "f", provider: "claude-share" }, "claude-share"],
   ];
   for (const [label, origin, expected] of cases) assertEq(label, sourceOf(origin), expected);
 }
@@ -623,7 +673,7 @@ console.log("\nOrigin → source derivation (sourceOf — shape table, provenanc
 console.log("\nOrigin → source URL derivation (sourceUrlOf — shape table, provenance-2my):");
 {
   // [LAW:one-source-of-truth] sourceUrlOf is the SINGLE derivation of the
-  // original-source link from the canonical origin. ONLY a claude-share origin
+  // original-source link from the canonical origin. ONLY a url (fetched) origin
   // carries an upstream URL; every other shape (text arms carry content, editor
   // authoring + legacy carry no link) maps to null — honest absence the paste
   // page renders as nothing, never a placeholder.
@@ -632,7 +682,7 @@ console.log("\nOrigin → source URL derivation (sourceUrlOf — shape table, pr
     ["editor authored from scratch → null", { kind: "editor", source: null }, null],
     ["editor carrying share provenance → still null (no url retained)", { kind: "editor", source: "claude-share" }, null],
     ["text arm → null", { kind: "markdown", content: "x" }, null],
-    ["claude-share → its url", { kind: "claude-share", url: "https://claude.ai/share/abc", fetched: "f" }, "https://claude.ai/share/abc"],
+    ["url arm → its url", { kind: "url", url: "https://claude.ai/share/abc", fetched: "f", provider: "claude-share" }, "https://claude.ai/share/abc"],
   ];
   for (const [label, origin, expected] of cases) assertEq(label, sourceUrlOf(origin), expected);
 }
@@ -655,18 +705,19 @@ console.log("\nReplay theorem (reprojectOrigin — purely re-derives turns, prov
     );
   }
 
-  // claude-share replay parses the STORED fetched bytes — never the network. A
-  // hand-built share origin (the only arm whose capture needs a live fetch) is
+  // url-arm replay parses the STORED fetched bytes — never the network. A
+  // hand-built url origin (the only arm whose capture needs a live fetch) is
   // re-projected from its bytes and matches a direct parse of those same bytes.
   const fetched = readFileSync("test/fixtures/claude-share.md", "utf8");
   const shareOrigin: Origin = {
-    kind: "claude-share",
+    kind: "url",
     url: "https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82",
     fetched,
+    provider: "claude-share",
   };
   const shareTurns = reprojectOrigin(shareOrigin);
   assertEq(
-    "share origin re-projects from stored bytes (no network)",
+    "url origin re-projects from stored bytes (no network)",
     JSON.stringify(shareTurns),
     JSON.stringify(parseClaudeShare(fetched)),
   );
@@ -1052,10 +1103,10 @@ console.log("\nclaude-share parser (T3 — URL ingestion):");
     assert(`URL excludes ${k}`, !urlSet.includes(k as SourceKind));
   });
 
-  // parseInput must reject claude-share with a useful redirect message —
+  // parseInput must reject the url arm with a useful redirect message —
   // it has no synchronous interpretation.
-  const blocked = parseInput({ kind: "claude-share", url });
-  assert("parseInput rejects claude-share arm", !blocked.ok);
+  const blocked = parseInput({ kind: "url", url });
+  assert("parseInput rejects the url arm", !blocked.ok);
   if (!blocked.ok) {
     assert("parseInput error names the async path", blocked.reason.includes("ingestPaste"));
   }
@@ -1803,7 +1854,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
     { kind: "message", role: "user", content: "q" },
     { kind: "message", role: "assistant", content: "a" },
   ];
-  const shareOrigin: Origin = { kind: "claude-share", url: shareUrl, fetched: shareFetched };
+  const shareOrigin: Origin = { kind: "url", url: shareUrl, fetched: shareFetched, provider: "claude-share" };
   // fetchShare stands in for /api/fetch returning the FULL captured origin (url +
   // fetched bytes), which the editor now carries through to submit.
   const io: EditorIo = {
@@ -1824,10 +1875,13 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   assert("share import loads its turns and is not dirty", s.blocks.length === 2 && !s.isDirty);
   const pristine = s.submitOrigin;
   assert(
-    "a pristine share stamps a claude-share origin carrying url + fetched bytes",
-    pristine.kind === "claude-share" && pristine.url === shareUrl && pristine.fetched === shareFetched,
+    "a pristine share stamps a url origin carrying link + fetched bytes + provider",
+    pristine.kind === "url" &&
+      pristine.url === shareUrl &&
+      pristine.fetched === shareFetched &&
+      pristine.provider === "claude-share",
   );
-  assertEq("styling derives from the share origin", s.source, "claude-share");
+  assertEq("styling derives from the url origin's provider", s.source, "claude-share");
 
   // --- editing the imported turns collapses to an editor origin: the turns are
   //     now the source (claiming the share URL would lie about replay), but the
