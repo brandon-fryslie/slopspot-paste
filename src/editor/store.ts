@@ -53,17 +53,28 @@ export interface Draft {
   readonly platformOverride?: Platform;
 }
 
+// [LAW:types-are-the-program] Loading a server draft (an agent handoff via
+// /api/draft) has exactly two outcomes. Unlike ImportResult it carries a Draft —
+// origin may be null (an editor-origin or provenance-less draft) — so the restore
+// reuses the editor's one load path. A missing/expired draft is the {ok:false}
+// arm, surfaced through the same importError channel as a failed fetch.
+export type DraftLoadResult =
+  | { readonly ok: true; readonly draft: Draft }
+  | { readonly ok: false; readonly reason: string };
+
 // [LAW:effects-at-boundaries] The store's entire contact with the world, named
-// as capabilities. fetchShare hits /api/fetch (URL -> turns + Origin), submit
-// hits /api/paste (Draft -> slug), navigate changes the page; saveDraft/loadDraft/
-// clearDraft persist the in-progress Draft to localStorage so an accidental
-// reload doesn't lose work. mount.ts is the one place these are real.
+// as capabilities. fetchShare hits /api/fetch (URL -> turns + Origin), fetchDraft
+// hits /api/draft (id -> Draft, the agent-handoff restore), submit hits /api/paste
+// (Draft -> slug), navigate changes the page; saveDraft/loadDraft/clearDraft
+// persist the in-progress Draft to localStorage so an accidental reload doesn't
+// lose work. mount.ts is the one place these are real.
 //
 // loadDraft returns the empty Draft ({ turns: [], origin: null }) for "no
 // draft" (absent or unparseable) — the same empty editor a fresh visit gets,
 // so restore is unconditional dataflow, not a branch.
 export interface EditorIo {
   readonly fetchShare: (url: string) => Promise<ImportResult>;
+  readonly fetchDraft: (id: string) => Promise<DraftLoadResult>;
   readonly submit: (draft: Draft) => Promise<SubmitResult>;
   readonly navigate: (slug: string) => void;
   readonly saveDraft: (draft: Draft) => void;
@@ -286,6 +297,26 @@ export class EditorStore {
         return;
       }
       this.accept({ turns: result.turns, origin: result.origin });
+    });
+  }
+
+  // [LAW:single-enforcer] An agent handoff: restore a server-stored draft
+  // (/api/draft) for review. Mirrors fetchShare's busy/error orchestration and
+  // converges on the SAME accept() loader, so a handed-off draft enters editing
+  // exactly as a fetched import does — its turns become the dirty baseline (not
+  // instantly "dirty"), and a missing/expired draft surfaces through the same
+  // importError channel, never a silent empty editor [LAW:no-silent-failure].
+  async loadServerDraft(id: string): Promise<void> {
+    this.busy = true;
+    this.importError = null;
+    const result = await this.io.fetchDraft(id);
+    runInAction(() => {
+      this.busy = false;
+      if (!result.ok) {
+        this.importError = result.reason;
+        return;
+      }
+      this.accept(result.draft);
     });
   }
 

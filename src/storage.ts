@@ -1,5 +1,5 @@
-import type { Conversation, Lifetime } from "./types";
-import { isOrigin, isPlatform, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
+import type { Conversation, Lifetime, Origin, Platform, Turn } from "./types";
+import { isOrigin, isPlatform, isTurns, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
 // to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
@@ -129,6 +129,52 @@ export const getConversation = async (
       origin: normalizeOrigin(parsed.origin),
       platformOverride: isPlatform(parsed.platformOverride) ? parsed.platformOverride : undefined,
     } as Conversation;
+  } catch {
+    return null;
+  }
+};
+
+// [LAW:decomposition] Drafts are a SEPARATE concern from published conversations:
+// ephemeral, unlisted, no slug/title/lifetime. They live under their own key
+// prefix with a short backstop TTL so an abandoned handoff self-evicts and never
+// pollutes the published listing (listConversations only walks `paste:`). A draft
+// is the agent-handoff payload the editor restores for review before publishing.
+const DRAFT_KEY_PREFIX = "draft:";
+
+// One hour: long enough to extract, open the editor, review and submit; short
+// enough that an abandoned draft leaves no lingering trace.
+const DRAFT_TTL_SECONDS = 3600;
+
+// [LAW:one-source-of-truth] A draft carries exactly the editable state the editor
+// restores — the same {turns, origin, platformOverride} shape the client Draft
+// and the /api/paste editor arm already speak. No second representation.
+export interface DraftRecord {
+  readonly turns: ReadonlyArray<Turn>;
+  readonly origin: Origin | null;
+  readonly platformOverride?: Platform;
+}
+
+export const putDraft = async (kv: KVNamespace, id: string, draft: DraftRecord): Promise<void> => {
+  await kv.put(DRAFT_KEY_PREFIX + id, JSON.stringify(draft), { expirationTtl: DRAFT_TTL_SECONDS });
+};
+
+// [LAW:types-are-the-program] KV is a trust boundary even for our own fresh
+// writes: a corrupt/absent record reads as null (the editor surfaces "expired or
+// not found" loudly) rather than a malformed value poisoning the editor.
+// [LAW:single-enforcer] origin normalization reuses the same normalizeOrigin the
+// conversation read path uses, so a draft and a published paste lift provenance
+// identically.
+export const getDraft = async (kv: KVNamespace, id: string): Promise<DraftRecord | null> => {
+  const raw = await kv.get(DRAFT_KEY_PREFIX + id, "text");
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as { turns?: unknown; origin?: unknown; platformOverride?: unknown };
+    if (!isTurns(parsed.turns)) return null;
+    return {
+      turns: parsed.turns,
+      origin: normalizeOrigin(parsed.origin),
+      platformOverride: isPlatform(parsed.platformOverride) ? parsed.platformOverride : undefined,
+    };
   } catch {
     return null;
   }

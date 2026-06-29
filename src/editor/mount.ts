@@ -12,7 +12,7 @@
 import { autorun, comparer, reaction, type IReactionDisposer } from "mobx";
 import { render } from "lit-html";
 import { isOrigin, isTurns, upgradeOrigin } from "../types";
-import { EditorStore, type Draft, type EditorIo, type ImportResult, type SubmitResult } from "./store";
+import { EditorStore, type Draft, type DraftLoadResult, type EditorIo, type ImportResult, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
 import { enhanceClampBlocks } from "../clampBlocks";
 
@@ -50,6 +50,24 @@ const fetchShare = async (url: string): Promise<ImportResult> => {
     return { ok: false, reason: "Malformed response from /api/fetch." };
   }
   return { ok: true, turns: data.turns, origin: data.origin };
+};
+
+// [LAW:no-silent-failure] The agent-handoff restore. /api/draft is our own
+// endpoint, but a 404 (expired/unknown id), a non-200, or a malformed body
+// becomes an explicit { ok: false } the store renders as an import error — never
+// a silent fall-through to an empty editor.
+const fetchDraft = async (id: string): Promise<DraftLoadResult> => {
+  const res = await fetch("/api/draft?id=" + encodeURIComponent(id));
+  const data = (await res.json().catch(() => null)) as
+    | { turns?: unknown; origin?: unknown; error?: unknown }
+    | null;
+  if (!res.ok || data === null || !isTurns(data.turns)) {
+    return { ok: false, reason: errorText(data, "This draft has expired or was not found.") };
+  }
+  // [LAW:single-enforcer] Lift any legacy origin the same way the KV read and the
+  // localStorage loader do; a null/junk origin reads as no-provenance, not failure.
+  const upgraded = upgradeOrigin(data.origin);
+  return { ok: true, draft: { turns: data.turns, origin: isOrigin(upgraded) ? upgraded : null } };
 };
 
 const submit = async (draft: Draft): Promise<SubmitResult> => {
@@ -149,6 +167,7 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
   const root = must(rootSelector, HTMLElement);
   const io: EditorIo = {
     fetchShare,
+    fetchDraft,
     submit,
     navigate: (slug) => window.location.assign("/" + slug),
     saveDraft,
@@ -156,11 +175,21 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
     clearDraft,
   };
   const store = new EditorStore(io);
-  // Restore any persisted draft before the first render. An absent/corrupt draft
-  // loads as [] — the same empty editor a fresh visit gets — so this is one
-  // unconditional load, never an "is there a draft" branch. Done before persist
-  // is wired so restoring doesn't immediately re-save an identical draft.
-  store.restoreDraft(io.loadDraft());
+  // [LAW:no-ambient-temporal-coupling] Draft source is decided once, here, at the
+  // boundary that can read the URL. A ?draft=<id> handoff (an agent staged this
+  // content via /api/draft) takes precedence over the localStorage draft — the
+  // agent just placed it for review, so a stale local draft must not shadow it.
+  // With no ?draft, restore the localStorage draft as before (absent/corrupt loads
+  // as [], the same empty editor a fresh visit gets). The server load is async:
+  // render starts empty and the autorun re-renders when the draft resolves (or
+  // when its failure lands in importError). Both run before persist is wired so
+  // restoring doesn't immediately re-save an identical draft.
+  const draftId = new URLSearchParams(window.location.search).get("draft");
+  if (draftId === null || draftId === "") {
+    store.restoreDraft(io.loadDraft());
+  } else {
+    void store.loadServerDraft(draftId);
+  }
   // [LAW:no-ambient-temporal-coupling] mobx's autorun is the single render
   // owner: it runs once now and again whenever any observable the template reads
   // changes. Render order is not folklore — it's whatever the reactive graph

@@ -14,7 +14,7 @@
 // select.value doesn't reflect ?selected attribute changes. jsdom does.
 
 import { JSDOM } from "jsdom";
-import type { Draft, EditorIo, SubmitResult } from "../src/editor/store";
+import type { Draft, DraftLoadResult, EditorIo, SubmitResult } from "../src/editor/store";
 import type { ParseResult } from "../src/types";
 
 // Install jsdom globals before any lit-html import. lit-html/node/lit-html.js
@@ -52,6 +52,7 @@ const assert = (label: string, cond: boolean): void => {
 
 const fakeIo = (): EditorIo => ({
   fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+  fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "unused" }),
   submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
   navigate: () => {},
   saveDraft: () => {},
@@ -187,6 +188,37 @@ console.log("\nBottom submit bar (slopspot-editor-controls-csi):");
   store.setView("preview");
   render(appTemplate(store), c);
   assert("preview view: bottom bar is absent", c.querySelector(".editor-bottom-bar") === null);
+}
+
+console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/draft):");
+{
+  // [LAW:verifiable-goals] The agent-handoff acceptance: a server draft loads into
+  // the editor for review (turns become the non-dirty baseline), and a missing/
+  // expired draft surfaces loudly through importError — never a silent empty editor.
+
+  // 1. Success: fetchDraft returns a draft -> blocks populated, not dirty, no error.
+  const okIo: EditorIo = {
+    ...fakeIo(),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({
+      ok: true,
+      draft: { turns: [{ kind: "message", role: "user", content: "from agent" } as const], origin: null },
+    }),
+  };
+  const okStore = new EditorStore(okIo);
+  await okStore.loadServerDraft("abc123");
+  assert("handoff: blocks populated from server draft", okStore.blocks.length === 1);
+  assert("handoff: restored draft is not dirty (baseline set)", okStore.isDirty === false);
+  assert("handoff: no importError on success", okStore.importError === null);
+
+  // 2. Failure: an expired/unknown draft id -> importError set, editor stays empty.
+  const failIo: EditorIo = {
+    ...fakeIo(),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "This draft has expired or was not found." }),
+  };
+  const failStore = new EditorStore(failIo);
+  await failStore.loadServerDraft("missing");
+  assert("handoff: expired draft sets importError (loud, not silent)", failStore.importError === "This draft has expired or was not found.");
+  assert("handoff: expired draft leaves editor empty", failStore.blocks.length === 0);
 }
 
 if (process.exitCode) {
