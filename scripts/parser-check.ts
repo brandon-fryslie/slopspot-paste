@@ -1086,6 +1086,12 @@ console.log("\nGeneric URL detection (isUrl — url-ingestion-wfd.4):");
   assert("non-http scheme rejected", !isUrl("ftp://example.com/x"));
   assert("bare word rejected", !isUrl("claude.ai"));
   assert("multiline rejected", !isUrl("https://example.com/x\nmore text"));
+  // [LAW:one-source-of-truth] The WHATWG URL parser silently strips tab/CR/LF, so a
+  // string carrying any of them internally would be FETCHED as a different URL than
+  // its literal text — reject the whole strip-set, not just \n.
+  assert("CR-only multiline rejected (parser would strip the CR)", !isUrl("https://example.com/x\rmore"));
+  assert("internal tab rejected (parser would strip it)", !isUrl("https://example.com/x\tmore"));
+  assert("surrounding CR/tab is trimmed — still a URL", isUrl("\r\thttps://example.com/x\r"));
   assert("empty rejected", !isUrl(""));
   assert("whitespace-only rejected", !isUrl("   \n\t "));
 
@@ -2833,6 +2839,10 @@ console.log("\nProvider registry URL resolution (url-ingestion.3):");
   assert("rejects a non-share claude.ai URL", resolveProvider("https://claude.ai/chat/abc123") === null);
   assert("rejects a different host", resolveProvider("https://chatgpt.com/share/abc123") === null);
   assert("rejects a multi-line string", resolveProvider("https://claude.ai/share/abc\nhttps://claude.ai/share/def") === null);
+  // [LAW:single-enforcer] Same single-line rule as isUrl (shared singleLineUrl): a
+  // CR-only break or internal tab the URL parser would strip is rejected here too.
+  assert("rejects a CR-only multi-line string", resolveProvider("https://claude.ai/share/abc\rhttps://claude.ai/share/def") === null);
+  assert("rejects an internal tab", resolveProvider("https://claude.ai/share/a\tbc") === null);
   assert("rejects empty input", resolveProvider("   ") === null);
 }
 
