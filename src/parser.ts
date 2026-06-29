@@ -219,6 +219,23 @@ export const ingestPaste = async (
 ): Promise<ParseResult> => {
   if (input.kind !== "url") return parseInput(input);
 
+  // [LAW:single-enforcer] isUrl is THE "is this a fetchable link" precondition,
+  // and ingestPaste is THE network boundary — so it is validated HERE, where the
+  // effect happens, rather than trusting each caller to have checked. /api/fetch's
+  // isUrl is then a fast-fail that spares a Firecrawl round-trip; /api/paste's url
+  // arm (whose shape check only proves `url` is a string) and the reclassified
+  // no-JS/legacy arms all inherit the guarantee through this one point, instead of
+  // leaning on Firecrawl to reject malformed input ([LAW:no-silent-failure]).
+  if (!isUrl(input.url)) {
+    return { ok: false, reason: "Expected an http(s) URL." };
+  }
+  // [LAW:one-source-of-truth] Canonicalize the link ONCE, at the network boundary
+  // that both fetches it and stores it as the origin. isUrl and resolveProvider
+  // already operate on the trimmed form, so trimming here makes the link we
+  // resolve, the link we fetch, and the link we persist provably the same string —
+  // never a stored origin.url carrying incidental paste whitespace.
+  const url = input.url.trim();
+
   // [LAW:dataflow-not-control-flow] Provider resolution is a registry lookup, and
   // a URL no provider claims is NOT a dead end — it resolves to `null`, which
   // selects the fallback wait + parser. So fetch+parse is ONE path for every URL;
@@ -227,8 +244,8 @@ export const ingestPaste = async (
   // an unclaimed host's bytes are still split into turns (or surfaced as one raw
   // bubble of the fetched content), never dropped — the user's intent that any
   // posted link becomes a conversation, never a lone raw bubble of the link text.
-  const provider = resolveProvider(input.url);
-  const fetched = await firecrawlScrape(input.url, waitFor(provider), env);
+  const provider = resolveProvider(url);
+  const fetched = await firecrawlScrape(url, waitFor(provider), env);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
   // [LAW:single-enforcer] The same size cap that the API applies to user input
   // also governs fetched content — otherwise a tiny URL could smuggle an
@@ -253,7 +270,7 @@ export const ingestPaste = async (
   return {
     ok: true,
     turns,
-    origin: { kind: "url", url: input.url, fetched: fetched.markdown, provider },
+    origin: { kind: "url", url, fetched: fetched.markdown, provider },
   };
 };
 

@@ -5,7 +5,8 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { canonicalize, detectSources, isUrl, parseFallback, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { canonicalize, detectSources, ingestPaste, isUrl, parseFallback, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { decodeRequest } from "../src/paste-request";
 import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { INPUT_KINDS, isOrigin, isTurns, PROVIDERS, sourceOf, sourceUrlOf, TEXT_ARM_KINDS, textArmInput } from "../src/types";
@@ -2835,8 +2836,104 @@ console.log("\nProvider registry URL resolution (url-ingestion.3):");
   assert("rejects empty input", resolveProvider("   ") === null);
 }
 
-if (process.exitCode) {
-  console.error("\nFAILED");
-} else {
-  console.log("\nAll checks passed.");
-}
+// [LAW:verifiable-goals] The async ingress guards (url-ingestion-wfd.5). These
+// exercise the network boundary (ingestPaste) and the wire-format trust boundary
+// (decodeRequest) — both async — so they run inside an async IIFE whose awaits are
+// function-scoped (top-level await is unavailable under tsx's CJS output). The
+// final pass/fail report moves inside so it prints AFTER these complete; the sync
+// checks above have already set process.exitCode on any failure.
+void (async () => {
+  console.log("\nSingle network boundary re-validates its URL (ingestPaste isUrl guard, url-ingestion.5):");
+  {
+    // [LAW:single-enforcer] isUrl is enforced at THE network boundary, not just at
+    // /api/fetch. A crafted url-arm input with a non-URL string is rejected BEFORE
+    // any Firecrawl call — so the env carries no key and no network is touched, yet
+    // the guard still fails the paste cleanly. (A valid URL would fetch; not unit-
+    // tested here to keep the suite offline — the live smoke in .4 covered that.)
+    const offline = { FIRECRAWL_API_KEY: undefined };
+    const bad = await ingestPaste({ kind: "url", url: "not a url" }, offline);
+    assert("ingestPaste rejects a non-URL url-arm before fetching", !bad.ok);
+    const alsoBad = await ingestPaste({ kind: "url", url: "ftp://example.com/x" }, offline);
+    assert("ingestPaste rejects a non-http(s) scheme before fetching", !alsoBad.ok);
+    // A text arm never reaches the network — it parses locally regardless of env.
+    const text = await ingestPaste({ kind: "raw", content: "Human: hi\n\nAssistant: yo" }, offline);
+    assert("ingestPaste parses a text arm with no network", text.ok);
+    // [LAW:one-source-of-truth] A whitespace-wrapped link is still rejected/accepted
+    // by the trimmed predicate, then canonicalized — but we can't assert the stored
+    // origin offline (it requires a live fetch). What we CAN assert offline: leading/
+    // trailing whitespace does not defeat the isUrl guard (it would reach the fetch),
+    // proving the guard and resolveProvider see the same trimmed form.
+    const padded = await ingestPaste({ kind: "url", url: "   not a url   " }, offline);
+    assert("ingestPaste's isUrl guard trims before judging (padded non-URL still rejected)", !padded.ok);
+  }
+
+  console.log("\nAny posted link is a conversation on EVERY ingress (decodeRequest, url-ingestion.5):");
+  {
+    // [LAW:behavior-not-structure] The contract: a bare http(s) link, however it
+    // arrives at /api/paste, decodes to the url FETCH arm — never a text arm that
+    // would render the link as a one-message raw bubble. Tested against the real
+    // decoder over constructed Requests (no network: decodeRequest only classifies;
+    // ingestPaste does the fetch downstream).
+    const formReq = (fields: Record<string, string>): Request => {
+      const body = new URLSearchParams(fields);
+      return new Request("https://x/api/paste", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+    };
+    const jsonReq = (obj: unknown): Request =>
+      new Request("https://x/api/paste", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(obj),
+      });
+
+    const url = "https://chatgpt.com/share/abc-123";
+
+    const formUrl = await decodeRequest(formReq({ source: "raw", content: url }));
+    assertEq("no-JS form: a bare link → url fetch arm (not the selected text arm)",
+      formUrl, { ok: true, input: { kind: "url", url } });
+
+    const formText = await decodeRequest(formReq({ source: "raw", content: "Human: hi\n\nAssistant: yo" }));
+    assertEq("no-JS form: real text stays a text arm",
+      formText, { ok: true, input: { kind: "raw", content: "Human: hi\n\nAssistant: yo" } });
+
+    const legacyUrl = await decodeRequest(jsonReq({ content: url }));
+    assertEq("legacy JSON: a bare link → url fetch arm",
+      legacyUrl, { ok: true, input: { kind: "url", url } });
+
+    const legacyText = await decodeRequest(jsonReq({ content: "just some prose with no markers" }));
+    assertEq("legacy JSON: non-link content stays the legacy arm",
+      legacyText, { ok: true, legacy: "just some prose with no markers" });
+
+    const structured = await decodeRequest(jsonReq({ source: { kind: "raw", content: url } }));
+    assertEq("structured text-arm carrying a bare link → url fetch arm",
+      structured, { ok: true, input: { kind: "url", url } });
+
+    // [LAW:no-silent-failure] A multi-line transcript that merely BEGINS with a
+    // link is NOT a bare link — isUrl rejects newlines — so it keeps its text arm.
+    const startsWithLink = `${url}\n\n## User\nwhat is this?`;
+    const multiline = await decodeRequest(formReq({ source: "markdown", content: startsWithLink }));
+    assertEq("multi-line content beginning with a link stays a text arm (not reclassified)",
+      multiline, { ok: true, input: { kind: "markdown", content: startsWithLink } });
+
+    // The claude-share form guard still fires for claude-share TEXT (no URL to
+    // fetch) — a craftable wire SourceKind that the form dropdown never offers.
+    const shareText = await decodeRequest(formReq({ source: "claude-share", content: "Human said something" }));
+    assert("form-encoded claude-share with non-URL text fails loudly (no silent raw bubble)",
+      !shareText.ok);
+
+    // …but claude-share-as-content that IS a link is fetched, not refused.
+    const shareUrl = "https://claude.ai/share/deadbeef";
+    const shareLink = await decodeRequest(formReq({ source: "claude-share", content: shareUrl }));
+    assertEq("a pasted claude.ai/share link is fetched even on the no-JS form",
+      shareLink, { ok: true, input: { kind: "url", url: shareUrl } });
+  }
+
+  if (process.exitCode) {
+    console.error("\nFAILED");
+  } else {
+    console.log("\nAll checks passed.");
+  }
+})();
