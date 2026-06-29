@@ -1,15 +1,18 @@
 ---
 import Base from "../layouts/Base.astro";
-import { MAX_PASTE_LABEL, SOURCE_KINDS, SOURCE_LABEL } from "../types";
+import { MAX_PASTE_LABEL, SOURCE_LABEL, TEXT_ARM_KINDS } from "../types";
 
 export const prerender = false;
 
-// [LAW:no-silent-fallbacks] The no-JS <form> POST path cannot fetch URLs
-// (claude-share is a JS-only JSON arm; the server rejects it on the form path).
-// So the server-rendered fallback offers only the kinds that path can fulfill.
-// With JS on, the editor (mountEditor) replaces this entirely — its import box
-// rebuilds the dropdown from store.detected and restores claude-share for URLs.
-const fallbackKinds = SOURCE_KINDS.filter((k) => k !== "claude-share");
+// [LAW:no-silent-fallbacks] The no-JS <form> POST path cannot fetch URLs (the
+// url arm is a JS-only JSON path; the server rejects it on the form path). So the
+// server-rendered fallback offers only the text kinds that path can fulfill —
+// every SourceKind that is not a Provider. With JS on, the editor (mountEditor)
+// replaces this entirely — its import box rebuilds the dropdown from
+// store.detected and offers the generic "url" fetch arm for any link.
+// [LAW:one-source-of-truth] TEXT_ARM_KINDS IS the non-Provider subset; no second
+// hand-rolled filter to drift from it.
+const fallbackKinds = TEXT_ARM_KINDS;
 ---
 
 <Base title="slopspot · paste — share LLM conversations">

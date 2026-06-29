@@ -12,8 +12,8 @@
 import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
 import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
-import type { Platform, Role, SourceKind, ToolOutputKind, Turn } from "../types";
-import { PLATFORMS, ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
+import type { InputKind, Platform, Role, ToolOutputKind, Turn } from "../types";
+import { inputLabel, PLATFORMS, ROLES, TOOL_OUTPUT_KINDS } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { convertKind, KINDS } from "./blocks";
 import type { EditorStore } from "./store";
@@ -276,9 +276,9 @@ const blockList = (store: EditorStore): TemplateResult => html`
 
 // ── Import box ──────────────────────────────────────────────────────────────
 
-const asSourceKind = (store: EditorStore, v: string): SourceKind => {
+const asInputKind = (store: EditorStore, v: string): InputKind => {
   const found = store.detected.find((k) => k === v);
-  if (found === undefined) throw new Error(`undetected source kind: ${v}`);
+  if (found === undefined) throw new Error(`undetected input kind: ${v}`);
   return found;
 };
 
@@ -312,9 +312,9 @@ const importBox = (store: EditorStore): TemplateResult => html`
     <div class="import-row">
       <select
         class="source-select"
-        @change=${(e: Event) => store.setImportKind(asSourceKind(store, valueOf(e)))}
+        @change=${(e: Event) => store.setImportKind(asInputKind(store, valueOf(e)))}
       >
-        ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${SOURCE_LABEL[k]}</option>`)}
+        ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${inputLabel(k)}</option>`)}
       </select>
       <button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.ingest()}>
         ${store.isUrlImport

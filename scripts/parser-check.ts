@@ -5,11 +5,11 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { canonicalize, detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { canonicalize, detectSources, isUrl, parseFallback, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { isOrigin, isTurns, PROVIDERS, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
-import type { Origin, SourceKind } from "../src/types";
+import { INPUT_KINDS, isOrigin, isTurns, PROVIDERS, sourceOf, sourceUrlOf, TEXT_ARM_KINDS, textArmInput } from "../src/types";
+import type { InputKind, Origin, SourceKind } from "../src/types";
 import { upgradeOrigin } from "../src/storage";
 import {
   parseDiff,
@@ -41,7 +41,7 @@ import type { ParseResult, Turn } from "../src/types";
 import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
 import { readFileSync } from "node:fs";
 import { scrapeRequestBody } from "../src/firecrawl";
-import { PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
+import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
 
 const CC_SAMPLE = `❯ deleted
 
@@ -580,6 +580,7 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["raw arm with empty content", { kind: "raw", content: "" }],
     ["every text arm accepted", { kind: "claude-jsonl", content: "{}" }],
     ["url arm with url + fetched + provider", { kind: "url", url: "https://claude.ai/share/x", fetched: "## You said: q", provider: "claude-share" }],
+    ["url arm with provider:null (unclaimed host — fetched, no registered parser)", { kind: "url", url: "https://example.com/post", fetched: "## You said: q", provider: null }],
     ["editor with null source", { kind: "editor", source: null }],
     ["editor with a SourceKind source", { kind: "editor", source: "claude-code" }],
     ["editor with input (edited text import)", { kind: "editor", source: "claude-code", input: { kind: "claude-code", content: "original content" } }],
@@ -1022,15 +1023,15 @@ console.log("\ndetectSources (T2 — UI-gating detector):");
 {
   // For text arms: the detector IS the parser. expected() mirrors the text-
   // arm half of the detector; if the parser changes its mind, the detector
-  // follows it. The claude-share arm uses a pattern check (not the parser)
-  // so it's excluded here and verified separately in the T3 block below.
-  const expected = (text: string): ReadonlyArray<SourceKind> =>
-    SOURCE_KINDS.filter(
-      (k) => k !== "claude-share" && parseInput(textArmInput(k, text)).ok,
-    );
+  // follows it. The url arm is recognized by isUrl (not a parser) so it's
+  // excluded here and verified separately in the URL-detection block below.
+  const expected = (text: string): ReadonlyArray<InputKind> =>
+    TEXT_ARM_KINDS.filter((k) => parseInput(textArmInput(k, text)).ok);
 
-  assertEq("empty → all kinds (priming)", detectSources(""), SOURCE_KINDS);
-  assertEq("whitespace-only → all kinds (priming)", detectSources("   \n  \t  "), SOURCE_KINDS);
+  // Priming (empty) offers every input kind — the generic url arm plus the text
+  // arms — for pre-selection before anything is pasted.
+  assertEq("empty → all input kinds (priming)", detectSources(""), INPUT_KINDS);
+  assertEq("whitespace-only → all input kinds (priming)", detectSources("   \n  \t  "), INPUT_KINDS);
 
   // CC sample must include claude-code; raw is always present for non-empty.
   const ccSet = detectSources(CC_SAMPLE);
@@ -1065,45 +1066,41 @@ console.log("\ndetectSources (T2 — UI-gating detector):");
   assertEq("plain prose → only raw", proseSet, ["raw"]);
 }
 
-console.log("\nclaude-share parser (T3 — URL ingestion):");
+console.log("\nGeneric URL detection (isUrl — url-ingestion-wfd.4):");
 {
-  // isClaudeShareUrl — positive cases
-  assert("https URL accepted",
-    isClaudeShareUrl("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"));
-  assert("http URL accepted (we upgrade later)",
-    isClaudeShareUrl("http://claude.ai/share/abc123"));
-  assert("trailing slash accepted",
-    isClaudeShareUrl("https://claude.ai/share/abc123/"));
-  assert("surrounding whitespace tolerated",
-    isClaudeShareUrl("  https://claude.ai/share/abc123  \n"));
-  assert("uppercase scheme accepted",
-    isClaudeShareUrl("HTTPS://claude.ai/share/abc123"));
-  assert("query string tolerated",
-    isClaudeShareUrl("https://claude.ai/share/abc123?utm=x"));
+  // isUrl recognizes ANY http(s) link, NOT a specific provider — which parser
+  // applies (or the fallback) is resolved AFTER fetch via resolveProvider.
+  // Positive cases: known and unknown hosts alike are fetchable links.
+  assert("https claude share accepted",
+    isUrl("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"));
+  assert("http accepted", isUrl("http://claude.ai/share/abc123"));
+  assert("an unknown host is still a URL", isUrl("https://example.com/some/post"));
+  assert("a chatgpt share link is a URL", isUrl("https://chatgpt.com/share/abc123"));
+  assert("surrounding whitespace tolerated", isUrl("  https://example.com/x  \n"));
+  assert("uppercase scheme accepted", isUrl("HTTPS://example.com/x"));
+  assert("query string tolerated", isUrl("https://example.com/x?utm=y"));
 
-  // isClaudeShareUrl — negative cases
-  assert("plain text rejected", !isClaudeShareUrl("hello world"));
-  assert("non-claude URL rejected", !isClaudeShareUrl("https://example.com/share/abc"));
-  assert("claude.ai non-share URL rejected", !isClaudeShareUrl("https://claude.ai/new"));
-  assert("share without id rejected", !isClaudeShareUrl("https://claude.ai/share/"));
-  assert("multiline rejected", !isClaudeShareUrl("https://claude.ai/share/abc\nmore text"));
-  assert("empty rejected", !isClaudeShareUrl(""));
-  assert("whitespace-only rejected", !isClaudeShareUrl("   \n\t "));
+  // Negative cases: not a fetchable http(s) link.
+  assert("plain text rejected", !isUrl("hello world"));
+  assert("non-http scheme rejected", !isUrl("ftp://example.com/x"));
+  assert("bare word rejected", !isUrl("claude.ai"));
+  assert("multiline rejected", !isUrl("https://example.com/x\nmore text"));
+  assert("empty rejected", !isUrl(""));
+  assert("whitespace-only rejected", !isUrl("   \n\t "));
 
-  // Detector recognizes URLs and prioritizes claude-share
+  // [LAW:no-silent-failure] The detector collapses ANY link to the single
+  // generic "url" fetch arm — never the text-parser race, which would render a
+  // lone link as a raw bubble of the link text (the outcome the user forbade).
+  // This holds for an UNKNOWN host as much as for claude-share: provider
+  // resolution is server-side, so detection does not distinguish them.
+  assertEq("claude.ai/share URL → ['url']",
+    detectSources("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"), ["url"]);
+  assertEq("unknown-host URL → ['url'] (still fetched, not a raw bubble)",
+    detectSources("https://example.com/some/blog-post"), ["url"]);
+  assertEq("chatgpt URL → ['url']",
+    detectSources("https://chatgpt.com/share/abc123"), ["url"]);
+
   const url = "https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82";
-  const urlSet = detectSources(url);
-  assert("URL detection includes claude-share", urlSet.includes("claude-share"));
-  assert("URL detection ranks claude-share first", urlSet[0] === "claude-share");
-  // URLs are short single lines; the raw fallback still applies because raw
-  // never rejects anything. This is intentional: it gives the user an escape
-  // hatch to render the URL string as a single bubble if Firecrawl is down.
-  assert("URL detection still includes raw fallback", urlSet.includes("raw"));
-  // None of the text-arm parsers should match a bare URL — no false-positives.
-  ["claude-jsonl", "claude-code", "markdown", "chatgpt", "claude-paste"].forEach((k) => {
-    assert(`URL excludes ${k}`, !urlSet.includes(k as SourceKind));
-  });
-
   // parseInput must reject the url arm with a useful redirect message —
   // it has no synchronous interpretation.
   const blocked = parseInput({ kind: "url", url });
@@ -1872,7 +1869,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   const s = new EditorStore(io);
   s.setImport(shareUrl);
   await s.ingest();
-  assertEq("share import detects the URL arm", s.importKind, "claude-share");
+  assertEq("share import detects the generic url arm (provider resolved server-side)", s.importKind, "url");
   assert("share import loads its turns and is not dirty", s.blocks.length === 2 && !s.isDirty);
   const pristine = s.submitOrigin;
   assert(
@@ -2735,28 +2732,97 @@ console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — per-provid
   // drops the action, or stops threading the selector, fails loudly here.
   for (const provider of PROVIDERS) {
     const entry = PROVIDER_REGISTRY[provider];
-    const body = scrapeRequestBody("https://example.test/x", entry.waitSelector);
+    const body = scrapeRequestBody("https://example.test/x", entry.wait);
     assert(`scrapeRequestBody[${provider}] includes formats:markdown`, body.formats.includes("markdown"));
     const waitAction = body.actions.find((a) => a.type === "wait");
     assert(`scrapeRequestBody[${provider}] has a wait action`, waitAction !== undefined);
-    assert(
-      `scrapeRequestBody[${provider}] wait action targets the provider's selector`,
-      waitAction !== undefined && waitAction.selector === entry.waitSelector,
-    );
+    // The action mirrors the provider's WaitStrategy VALUE: a selector strategy
+    // targets its selector; a settle strategy carries its milliseconds.
+    if (entry.wait.kind === "selector") {
+      assert(
+        `scrapeRequestBody[${provider}] selector strategy targets the provider's selector`,
+        waitAction !== undefined && "selector" in waitAction && waitAction.selector === entry.wait.selector,
+      );
+    } else {
+      assert(
+        `scrapeRequestBody[${provider}] settle strategy carries its milliseconds`,
+        waitAction !== undefined && "milliseconds" in waitAction && waitAction.milliseconds === entry.wait.ms,
+      );
+    }
   }
   // Pin the verified claude.ai contract specifically — a regression guard on the
   // exact selector the spike validated against the live hydrated DOM, so a careless
   // registry edit can't silently swap it for a selector that never hydrates.
+  const claudeWait = PROVIDER_REGISTRY["claude-share"].wait;
   assert(
-    "claude-share wait selector is [data-testid=\"user-message\"]",
-    PROVIDER_REGISTRY["claude-share"].waitSelector === '[data-testid="user-message"]',
+    "claude-share waits on the verified selector [data-testid=\"user-message\"]",
+    claudeWait.kind === "selector" && claudeWait.selector === '[data-testid="user-message"]',
   );
+
+  // [LAW:no-silent-failure] The unclaimed-host fallback waits by a bounded SETTLE,
+  // not a DOM selector — the spike proved there is no universal hydration selector,
+  // so a wrong one would time out. Assert it maps to a milliseconds wait action
+  // carrying NO selector (firecrawl's only selector-less wait mode).
+  const fallbackBody = scrapeRequestBody("https://example.test/x", FALLBACK_WAIT);
+  const fallbackWait = fallbackBody.actions.find((a) => a.type === "wait");
+  const fallbackMs = FALLBACK_WAIT.kind === "settle" ? FALLBACK_WAIT.ms : -1;
+  assert("FALLBACK_WAIT is a settle strategy", FALLBACK_WAIT.kind === "settle");
+  assert("fallback wait is a positive bounded delay", fallbackMs > 0);
+  assert(
+    "fallback produces a milliseconds wait action",
+    fallbackWait !== undefined && "milliseconds" in fallbackWait && fallbackWait.milliseconds === fallbackMs,
+  );
+  assert(
+    "fallback wait carries NO selector",
+    fallbackWait !== undefined && !("selector" in fallbackWait),
+  );
+}
+
+console.log("\nFallback parser for unclaimed hosts (url-ingestion-wfd.4):");
+{
+  // [LAW:no-silent-failure] The CORE acceptance: a fetched page whose host no
+  // registered provider claims is still split into a CONVERSATION, never rendered
+  // as a single raw bubble. The captured ChatGPT fixture (an unclaimed host —
+  // chatgpt.com has no registered provider) is the real-world witness: its
+  // firecrawl-rendered "#### You said:" / "#### ChatGPT said:" markers must
+  // produce many turns across both roles.
+  const chatgptFetched = readFileSync("test/fixtures/chatgpt-share.md", "utf8");
+  const fbTurns = parseFallback(chatgptFetched);
+  assert("unclaimed-host fixture splits into many turns (NOT one bubble)", fbTurns.length > 1);
+  const fbMessages = fbTurns.filter((t): t is Extract<Turn, { kind: "message" }> => t.kind === "message");
+  const fbRoles = new Set(fbMessages.map((m) => m.role));
+  assert("fallback recovers BOTH user and assistant turns", fbRoles.has("user") && fbRoles.has("assistant"));
+
+  // [LAW:no-silent-failure] A page with no conversational structure is surfaced
+  // honestly — one raw bubble of the fetched CONTENT (not dropped), and never null:
+  // parseFallback is total, so a url ingest can always render something honest.
+  const prose = parseFallback("Just a plain article with no speaker markers at all.");
+  assertEq("structureless content → exactly one bubble (honest surface)", prose.length, 1);
+  assert("the single bubble carries the content", prose[0]?.kind === "message");
+
+  // reprojectOrigin replays a stored url origin through the SAME resolver: a
+  // provider:null origin re-derives via parseFallback (the unclaimed-host plan),
+  // and a named provider still re-derives via ITS parser — known providers win
+  // ahead of the fallback, exactly as ingest resolves them.
+  const fallbackOrigin: Origin = { kind: "url", url: "https://example.com/x", fetched: chatgptFetched, provider: null };
+  const replayedFallback = reprojectOrigin(fallbackOrigin);
+  assertEq("reproject(provider:null) === parseFallback(bytes)",
+    JSON.stringify(replayedFallback), JSON.stringify(fbTurns));
+
+  const shareFixture = readFileSync("test/fixtures/claude-share.md", "utf8");
+  const namedOrigin: Origin = { kind: "url", url: "https://claude.ai/share/x", fetched: shareFixture, provider: "claude-share" };
+  const replayedNamed = reprojectOrigin(namedOrigin);
+  assertEq("reproject(provider:claude-share) === parseClaudeShare(bytes)",
+    JSON.stringify(replayedNamed), JSON.stringify(parseClaudeShare(shareFixture)));
+
+  // A null-provider url origin styles as generic (honest absence), never crashes.
+  assertEq("provider:null url origin → generic styling (null source)", sourceOf(fallbackOrigin), null);
 }
 
 console.log("\nProvider registry URL resolution (url-ingestion.3):");
 {
   // [LAW:behavior-not-structure] resolveProvider is the one URL→Provider mapping
-  // ingestPaste, isClaudeShareUrl, and capture all share. Assert its contract:
+  // ingestPaste, reprojectOrigin, and capture all share. Assert its contract:
   // a claude.ai/share URL resolves to claude-share; trailing slash, query, and
   // surrounding whitespace are tolerated; a non-share claude URL, a different
   // host, a multi-line string, and empty input all resolve to null (no provider).

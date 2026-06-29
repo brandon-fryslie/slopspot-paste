@@ -1,6 +1,6 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
-import { ingestPaste, isClaudeShareUrl } from "../../parser";
+import { ingestPaste, isUrl } from "../../parser";
 import { json } from "../../http";
 import type { ParseResult } from "../../types";
 
@@ -13,14 +13,15 @@ export const prerender = false;
 // is never re-fetched at store time.
 //
 // [LAW:single-enforcer] URL validation + the size cap on fetched content live
-// inside ingestPaste (shared with /api/paste's claude-share arm). This route
-// re-checks isClaudeShareUrl first so a non-URL body fails fast with a clear
-// message instead of paying for a Firecrawl round-trip on garbage input.
+// inside ingestPaste (shared with /api/paste's url arm). This route re-checks
+// isUrl first so a non-URL body fails fast with a clear message instead of paying
+// for a Firecrawl round-trip on garbage input. It accepts ANY http(s) link — the
+// provider (or the fallback) is resolved inside ingestPaste, not gated here.
 export const POST: APIRoute = async ({ request }) => {
   const body = (await request.json().catch(() => null)) as { url?: unknown } | null;
   const url = body?.url;
-  if (typeof url !== "string" || !isClaudeShareUrl(url)) {
-    return json(400, { error: "Expected a claude.ai/share URL." });
+  if (typeof url !== "string" || !isUrl(url)) {
+    return json(400, { error: "Expected an http(s) URL." });
   }
 
   const parsed: ParseResult = await ingestPaste({ kind: "url", url }, env);
