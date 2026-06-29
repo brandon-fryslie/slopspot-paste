@@ -29,14 +29,18 @@ interface ScrapeResponse {
 }
 
 // [LAW:effects-at-boundaries] Pure request body — testable without mocking
-// fetch. [LAW:no-ambient-temporal-coupling] A selector wait rather than a
-// blind millisecond delay: claude.ai/share is a client-rendered SPA whose
-// user messages appear under [data-testid="user-message"]; waiting on that
-// selector guarantees hydration without racing the clock.
-export const scrapeRequestBody = (url: string) => ({
+// fetch. [LAW:no-ambient-temporal-coupling] A selector wait rather than a blind
+// millisecond delay: a conversation share page is a client-rendered SPA, so the
+// scrape waits on the DOM selector that proves its messages hydrated.
+// [LAW:single-enforcer] The selector is NOT this module's to know — it is a
+// per-provider VALUE the caller supplies from the provider registry, because
+// each host wraps its messages in its own contract (the spike proved one
+// hard-coded selector cannot serve every host). This file owns only the wire
+// format; which selector to wait on is the registry's authority.
+export const scrapeRequestBody = (url: string, waitSelector: string) => ({
   url,
   formats: ["markdown"],
-  actions: [{ type: "wait" as const, selector: '[data-testid="user-message"]' }],
+  actions: [{ type: "wait" as const, selector: waitSelector }],
 });
 
 // [LAW:no-defensive-null-guards] This IS a trust boundary — Firecrawl is an
@@ -45,6 +49,7 @@ export const scrapeRequestBody = (url: string) => ({
 // receives a structurally valid value.
 export const firecrawlScrape = async (
   url: string,
+  waitSelector: string,
   env: FirecrawlEnv,
 ): Promise<FirecrawlResult> => {
   const key = env.FIRECRAWL_API_KEY;
@@ -66,7 +71,7 @@ export const firecrawlScrape = async (
       "content-type": "application/json",
       authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify(scrapeRequestBody(url)),
+    body: JSON.stringify(scrapeRequestBody(url, waitSelector)),
     signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
   }).catch((e: unknown): unknown => e);
 

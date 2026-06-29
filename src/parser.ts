@@ -1,8 +1,8 @@
-import type { Origin, ParseResult, PasteInput, Provider, Role, SourceKind, TextArmKind, Turn } from "./types";
+import type { Origin, ParseResult, PasteInput, Role, SourceKind, TextArmKind, Turn } from "./types";
 import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, TEXT_ARM_KINDS, textArmInput } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
-import { parseClaudeShare } from "./parsers/claude-share";
+import { PROVIDER_REGISTRY, resolveProvider } from "./providers";
 import { firecrawlScrape, type FirecrawlEnv } from "./firecrawl";
 
 // [LAW:types-are-the-program] Every parser produces the same Turn[] union.
@@ -176,16 +176,18 @@ export const ingestPaste = async (
 ): Promise<ParseResult> => {
   if (input.kind !== "url") return parseInput(input);
 
-  // [LAW:single-enforcer] Resolve which provider this URL belongs to, then fetch
-  // and parse through it. Today the one provider whose pattern + parser exist is
-  // claude-share; the provider REGISTRY (slopspot-url-ingestion-wfd.3) generalizes
-  // this resolution, the wait-selector, and the parser dispatch — the generic url
-  // arm and the stamped Provider tag below are the seam it fills.
-  if (!isClaudeShareUrl(input.url)) {
-    return { ok: false, reason: "Not a valid claude.ai/share URL." };
+  // [LAW:dataflow-not-control-flow] Provider resolution is a registry lookup, not
+  // a per-host branch: match the URL against the registered patterns to get a
+  // Provider, then fetch with THAT provider's wait selector and parse with THAT
+  // provider's parser. ingestPaste names no provider directly — the three values
+  // that differ per host are read from the entry. A URL no provider claims is a
+  // typed failure here (slopspot-url-ingestion-wfd.4 adds the fallback parser).
+  const provider = resolveProvider(input.url);
+  if (provider === null) {
+    return { ok: false, reason: "No recognized conversation provider for this URL." };
   }
-  const provider: Provider = "claude-share";
-  const fetched = await firecrawlScrape(input.url, env);
+  const entry = PROVIDER_REGISTRY[provider];
+  const fetched = await firecrawlScrape(input.url, entry.waitSelector, env);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
   // [LAW:single-enforcer] The same size cap that the API applies to user input
   // also governs fetched content — otherwise a tiny URL could smuggle an
@@ -193,7 +195,7 @@ export const ingestPaste = async (
   if (new TextEncoder().encode(fetched.markdown).length > MAX_PASTE_BYTES) {
     return { ok: false, reason: `Fetched content exceeds the ${MAX_PASTE_LABEL} limit.` };
   }
-  const turns = parseClaudeShare(fetched.markdown);
+  const turns = entry.parser(fetched.markdown);
   if (turns === null || turns.length === 0) {
     return {
       ok: false,
@@ -212,18 +214,14 @@ export const ingestPaste = async (
   };
 };
 
-// [LAW:one-source-of-truth] The URL shape claude-share accepts lives here,
-// once. The detector calls it; ingestPaste re-validates at the trust boundary
-// (defense against a directly-crafted API request that bypassed the UI).
-const CLAUDE_SHARE_RE =
-  /^https?:\/\/claude\.ai\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i;
-
-export const isClaudeShareUrl = (input: string): boolean => {
-  const trimmed = input.trim();
-  if (trimmed.length === 0) return false;
-  if (trimmed.includes("\n")) return false;
-  return CLAUDE_SHARE_RE.test(trimmed);
-};
+// [LAW:one-source-of-truth] The claude-share URL shape is the registry's
+// urlPattern; this predicate is a thin projection of resolveProvider, never a
+// second copy of the regex. The detector calls it; the /api/fetch boundary
+// re-validates with it (defense against a directly-crafted request that bypassed
+// the UI). slopspot-url-ingestion-wfd.4 replaces these callers with a generic
+// isUrl that recognizes ANY link, routing all hosts through resolveProvider.
+export const isClaudeShareUrl = (input: string): boolean =>
+  resolveProvider(input) === "claude-share";
 
 // [LAW:one-source-of-truth] For text arms, the detector IS the parser — it
 // calls parseInput and keeps kinds that succeed. There is no separate
@@ -284,16 +282,16 @@ export const parseAuto = (input: string): ParseResult => {
 // parses its STORED bytes (never refetches); the text arms re-normalize then
 // re-parse; the editor arm returns null because its turns are the source of
 // truth — there is no upstream input to replay. A null return means "the stored
-// turns ARE canonical", not a failure. The url arm parses through parseClaudeShare
-// because claude-share is the only provider whose parser exists; the provider
-// REGISTRY (slopspot-url-ingestion-wfd.3) replaces this with a dispatch on
-// origin.provider so each provider replays through its own parser.
+// turns ARE canonical", not a failure. The url arm replays through the parser
+// the registry holds for origin.provider — so every provider re-derives its
+// stored bytes through its own parser, which is what makes replay correct (and
+// improvable) for non-claude providers, not just claude-share.
 export const reprojectOrigin = (origin: Origin): ReadonlyArray<Turn> | null => {
   switch (origin.kind) {
     case "editor":
       return null;
     case "url":
-      return parseClaudeShare(origin.fetched);
+      return PROVIDER_REGISTRY[origin.provider].parser(origin.fetched);
     default:
       return PARSER_BY_KIND[origin.kind](normalize(origin.content));
   }

@@ -8,7 +8,7 @@
 import { canonicalize, detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
+import { isOrigin, isTurns, PROVIDERS, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
 import type { Origin, SourceKind } from "../src/types";
 import { upgradeOrigin } from "../src/storage";
 import {
@@ -41,6 +41,7 @@ import type { ParseResult, Turn } from "../src/types";
 import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
 import { readFileSync } from "node:fs";
 import { scrapeRequestBody } from "../src/firecrawl";
+import { PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
 
 const CC_SAMPLE = `❯ deleted
 
@@ -2724,19 +2725,48 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     } as Turn));
 }
 
-console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — SPA render-wait):");
+console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — per-provider SPA render-wait):");
 {
-  // [LAW:behavior-not-structure] Assert the CONTRACT: the request body for any
-  // URL must include a wait action targeting the SPA's hydration selector.
-  // A future edit that drops the action silently reverts the fix.
-  const body = scrapeRequestBody("https://claude.ai/share/test-123");
-  assert("scrapeRequestBody includes formats:markdown", body.formats.includes("markdown"));
-  const waitAction = body.actions.find((a) => a.type === "wait");
-  assert("scrapeRequestBody has a wait action", waitAction !== undefined);
+  // [LAW:behavior-not-structure] Assert the CONTRACT: the request body carries a
+  // wait action targeting the PROVIDER'S OWN hydration selector — the value the
+  // registry holds, not one hard-coded selector. The spike proved the selector is
+  // per-provider (chatgpt.com never renders claude's), so the assertion iterates
+  // the registry rather than pinning a single host's contract. A future edit that
+  // drops the action, or stops threading the selector, fails loudly here.
+  for (const provider of PROVIDERS) {
+    const entry = PROVIDER_REGISTRY[provider];
+    const body = scrapeRequestBody("https://example.test/x", entry.waitSelector);
+    assert(`scrapeRequestBody[${provider}] includes formats:markdown`, body.formats.includes("markdown"));
+    const waitAction = body.actions.find((a) => a.type === "wait");
+    assert(`scrapeRequestBody[${provider}] has a wait action`, waitAction !== undefined);
+    assert(
+      `scrapeRequestBody[${provider}] wait action targets the provider's selector`,
+      waitAction !== undefined && waitAction.selector === entry.waitSelector,
+    );
+  }
+  // Pin the verified claude.ai contract specifically — a regression guard on the
+  // exact selector the spike validated against the live hydrated DOM, so a careless
+  // registry edit can't silently swap it for a selector that never hydrates.
   assert(
-    "wait action targets [data-testid=\"user-message\"]",
-    waitAction !== undefined && waitAction.selector === '[data-testid="user-message"]',
+    "claude-share wait selector is [data-testid=\"user-message\"]",
+    PROVIDER_REGISTRY["claude-share"].waitSelector === '[data-testid="user-message"]',
   );
+}
+
+console.log("\nProvider registry URL resolution (url-ingestion.3):");
+{
+  // [LAW:behavior-not-structure] resolveProvider is the one URL→Provider mapping
+  // ingestPaste, isClaudeShareUrl, and capture all share. Assert its contract:
+  // a claude.ai/share URL resolves to claude-share; trailing slash, query, and
+  // surrounding whitespace are tolerated; a non-share claude URL, a different
+  // host, a multi-line string, and empty input all resolve to null (no provider).
+  assert("resolves a claude.ai/share URL", resolveProvider("https://claude.ai/share/abc123") === "claude-share");
+  assert("tolerates trailing slash + query", resolveProvider("https://claude.ai/share/abc-123/?x=1") === "claude-share");
+  assert("trims surrounding whitespace", resolveProvider("  https://claude.ai/share/abc123  ") === "claude-share");
+  assert("rejects a non-share claude.ai URL", resolveProvider("https://claude.ai/chat/abc123") === null);
+  assert("rejects a different host", resolveProvider("https://chatgpt.com/share/abc123") === null);
+  assert("rejects a multi-line string", resolveProvider("https://claude.ai/share/abc\nhttps://claude.ai/share/def") === null);
+  assert("rejects empty input", resolveProvider("   ") === null);
 }
 
 if (process.exitCode) {
