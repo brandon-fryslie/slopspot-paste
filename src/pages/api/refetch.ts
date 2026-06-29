@@ -40,19 +40,19 @@ export const POST: APIRoute = async ({ request }) => {
   const existing = await getConversation(env.PASTES, slug);
   if (existing === null) return json(404, { error: "No such paste." });
 
-  // [LAW:no-silent-failure] Only claude-share origins have a URL to re-fetch.
-  // All other origins (text arms, editor, absent) are rejected loudly; the
-  // /sloppy affordance is hidden for them, but a directly-crafted request
-  // still fails here instead of no-op'ing.
+  // [LAW:no-silent-failure] Only url origins have a link to re-fetch. All other
+  // origins (text arms, editor, absent) are rejected loudly; the /sloppy
+  // affordance is hidden for them, but a directly-crafted request still fails
+  // here instead of no-op'ing.
   const origin = existing.origin;
-  if (origin === null || origin.kind !== "claude-share") {
-    return json(409, { error: "This paste does not have a claude-share origin to re-fetch." });
+  if (origin === null || origin.kind !== "url") {
+    return json(409, { error: "This paste does not have a fetched-URL origin to re-fetch." });
   }
 
   // [LAW:effects-at-boundaries] Network access happens exactly here.
   // ingestPaste fetches origin.url via Firecrawl, validates the size cap,
   // parses the fresh markdown, and returns {ok:true,turns,origin} or {ok:false,reason}.
-  const fresh = await ingestPaste({ kind: "claude-share", url: origin.url }, env);
+  const fresh = await ingestPaste({ kind: "url", url: origin.url }, env);
   if (!fresh.ok) {
     return json(422, { error: `Re-fetch failed: ${fresh.reason}` });
   }

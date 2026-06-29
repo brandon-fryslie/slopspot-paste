@@ -1,99 +1,25 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { parseAuto, ingestPaste, deriveTitle, canonicalize } from "../../parser";
+import { decodeRequest } from "../../paste-request";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json, seeOther } from "../../http";
-import type { Conversation, Origin, ParseResult, PasteInput, Platform, Turn } from "../../types";
-import { inputText, isOrigin, isPlatform, isSourceKind, isTurns, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL, textArmInput } from "../../types";
+import type { Conversation, ParseResult } from "../../types";
+import { inputText, lifetimeFromChoice, MAX_PASTE_BYTES, MAX_PASTE_LABEL } from "../../types";
 
 export const prerender = false;
 
-// [LAW:single-enforcer] All validation lives at this trust boundary.
-// Downstream code (storage, render) trusts the typed PasteInput / Conversation.
-// [LAW:no-defensive-null-guards] The shape-narrowing below is the legitimate
-// kind of guard — this IS the trust boundary; unknown JSON from the wire has
-// to be classified into one of the typed cases.
+// [LAW:single-enforcer] All validation lives at this trust boundary. The wire
+// classification is decodeRequest (paste-request.ts, pure + testable); this
+// handler owns the effects — size cap, parse/fetch, store. Downstream code
+// (storage, render) trusts the typed PasteInput / Conversation.
 
 // [LAW:single-enforcer] One size cap for every kind, stated once in types.ts
 // (MAX_PASTE_BYTES) so the API limit and the page's advertised limit share a
 // source. 8 MiB gives honest headroom for JSON-encoding overhead on long CC
 // session JSONL (observed at 1.74 MB) while staying under KV's 25 MB ceiling.
 const MAX_TURNS = 10000;
-
-// [LAW:types-are-the-program] The trust boundary classifies wire JSON into
-// one of the union arms. Each arm's required field is checked against its
-// kind — a claude-share payload without `url` (or any other arm without
-// `content`) fails here instead of crashing downstream.
-const isPasteInput = (v: unknown): v is PasteInput => {
-  if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; content?: unknown; url?: unknown };
-  if (!isSourceKind(o.kind)) return false;
-  if (o.kind === "claude-share") return typeof o.url === "string";
-  return typeof o.content === "string";
-};
-
-// [LAW:dataflow-not-control-flow] One decode path returns one tagged value.
-// Downstream branches on the tag, never on "did the request have a source
-// field?" scattered across the file.
-type DecodedRequest =
-  | { ok: true; input: PasteInput }
-  | { ok: true; turns: ReadonlyArray<Turn>; origin: Origin; platformOverride?: Platform }
-  | { ok: true; legacy: string }
-  | { ok: false; reason: string };
-
-const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
-  const ct = request.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
-    const body = (await request.json().catch(() => null)) as
-      | { source?: unknown; content?: unknown; turns?: unknown; origin?: unknown; platformOverride?: unknown }
-      | null;
-    // [LAW:single-enforcer] The editor arm: a pre-parsed Turn[] plus the Origin
-    // the editor chose to stamp, validated here at the one boundary. isTurns and
-    // isOrigin reject every illegal shape so downstream trusts the typed values.
-    // The editor sends a replayable claude-share origin for a pristine share
-    // import (its turns are canonicalized below) or an `editor` origin otherwise
-    // (its turns ARE the source). A missing or junk origin reads as editor-with-
-    // no-provenance — the same leniency a bare {turns} POST always had — never a
-    // guess about where the turns came from.
-    if (body && isTurns(body.turns)) {
-      const origin: Origin = isOrigin(body.origin)
-        ? body.origin
-        : { kind: "editor", source: null };
-      const platformOverride = isPlatform(body.platformOverride) ? body.platformOverride : undefined;
-      return { ok: true, turns: body.turns, origin, platformOverride };
-    }
-    if (body && isPasteInput(body.source)) return { ok: true, input: body.source };
-    if (body && typeof body.content === "string") return { ok: true, legacy: body.content };
-    return { ok: false, reason: "Missing 'turns', 'source' or 'content' field." };
-  }
-  const form = await request.formData().catch(() => null);
-  const kind = form?.get("source");
-  // The form encoding only carries text arms; URL arms are JSON-only (the
-  // browser script always submits JSON). The `<form action="/api/paste">`
-  // fallback exists for users with JS disabled or external clients.
-  const content = form?.get("content");
-  if (typeof content !== "string") {
-    return { ok: false, reason: "Missing 'content' field." };
-  }
-  // No recognized source kind → legacy path (direct API callers without a
-  // source field). Checking this first lets the claude-share guard below narrow
-  // kind to a text arm, so textArmInput is built without a cast.
-  if (!isSourceKind(kind)) {
-    return { ok: true, legacy: content };
-  }
-  // [LAW:no-silent-fallbacks] claude-share is a URL arm that only the JS submit
-  // path (JSON { url }) can fulfill. A form-encoded claude-share request fails
-  // loudly here instead of being silently re-routed to parseAuto, which would
-  // render the URL as a raw bubble — the opposite of what the user asked for.
-  if (kind === "claude-share") {
-    return {
-      ok: false,
-      reason: "claude.ai/share URLs require JavaScript enabled (they're fetched via the JSON submit path).",
-    };
-  }
-  return { ok: true, input: textArmInput(kind, content) };
-};
 
 const sizeOf = (s: string): number => new Blob([s]).size;
 

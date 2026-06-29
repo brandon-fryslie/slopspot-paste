@@ -5,11 +5,13 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { canonicalize, detectSources, isClaudeShareUrl, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { canonicalize, detectSources, ingestPaste, isUrl, parseFallback, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { decodeRequest } from "../src/paste-request";
 import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
-import { isOrigin, isTurns, SOURCE_KINDS, sourceOf, sourceUrlOf, textArmInput } from "../src/types";
-import type { Origin, SourceKind } from "../src/types";
+import { INPUT_KINDS, isOrigin, isTurns, PROVIDERS, sourceOf, sourceUrlOf, TEXT_ARM_KINDS, textArmInput } from "../src/types";
+import type { InputKind, Origin, SourceKind } from "../src/types";
+import { upgradeOrigin } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -40,6 +42,7 @@ import type { ParseResult, Turn } from "../src/types";
 import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
 import { readFileSync } from "node:fs";
 import { scrapeRequestBody } from "../src/firecrawl";
+import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
 
 const CC_SAMPLE = `❯ deleted
 
@@ -577,11 +580,12 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["text arm with content", { kind: "markdown", content: "## User\nhi" }],
     ["raw arm with empty content", { kind: "raw", content: "" }],
     ["every text arm accepted", { kind: "claude-jsonl", content: "{}" }],
-    ["claude-share with url + fetched", { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "## You said: q" }],
+    ["url arm with url + fetched + provider", { kind: "url", url: "https://claude.ai/share/x", fetched: "## You said: q", provider: "claude-share" }],
+    ["url arm with provider:null (unclaimed host — fetched, no registered parser)", { kind: "url", url: "https://example.com/post", fetched: "## You said: q", provider: null }],
     ["editor with null source", { kind: "editor", source: null }],
     ["editor with a SourceKind source", { kind: "editor", source: "claude-code" }],
     ["editor with input (edited text import)", { kind: "editor", source: "claude-code", input: { kind: "claude-code", content: "original content" } }],
-    ["editor with share input (edited share import)", { kind: "editor", source: "claude-share", input: { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "original" } }],
+    ["editor with url input (edited share import)", { kind: "editor", source: "claude-share", input: { kind: "url", url: "https://claude.ai/share/x", fetched: "original", provider: "claude-share" } }],
   ];
   for (const [label, v] of accepts) assert(`accepts: ${label}`, isOrigin(v));
 
@@ -594,15 +598,79 @@ console.log("\nOrigin validator (isOrigin — shape table, provenance-kg4):");
     ["text arm missing content", { kind: "raw" }],
     ["text arm with non-string content", { kind: "raw", content: 42 }],
     ["unknown kind", { kind: "nonsense", content: "x" }],
-    ["claude-share kind is not a text arm", { kind: "claude-share", content: "x" }],
-    ["share missing fetched", { kind: "claude-share", url: "https://claude.ai/share/x" }],
-    ["share missing url", { kind: "claude-share", fetched: "body" }],
+    ["claude-share kind is a Provider, not an Origin discriminator", { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "body" }],
+    ["url arm missing fetched", { kind: "url", url: "https://claude.ai/share/x", provider: "claude-share" }],
+    ["url arm missing url", { kind: "url", fetched: "body", provider: "claude-share" }],
+    ["url arm missing provider", { kind: "url", url: "https://claude.ai/share/x", fetched: "body" }],
+    ["url arm with unknown provider", { kind: "url", url: "https://claude.ai/share/x", fetched: "body", provider: "bogus" }],
     ["editor with a bogus source", { kind: "editor", source: "bogus" }],
     ["editor missing source field", { kind: "editor" }],
     ["editor with invalid input (bogus kind)", { kind: "editor", source: null, input: { kind: "bogus" } }],
     ["editor with invalid input (editor arm — not replayable)", { kind: "editor", source: null, input: { kind: "editor", source: null } }],
   ];
   for (const [label, v] of rejects) assert(`rejects: ${label}`, !isOrigin(v));
+}
+
+console.log("\nLegacy origin upgrade (upgradeOrigin — claude-share → url arm, url-ingestion-wfd.2):");
+{
+  // [LAW:one-source-of-truth] The governing architecture in action: records
+  // written before the URL arm was generalized stored a fetched origin as
+  // { kind:"claude-share", url, fetched }. upgradeOrigin lifts that legacy
+  // discriminator into the current { kind:"url", …, provider } shape on read, so
+  // the rename costs ZERO migration — stored bytes are untouched, the new shape
+  // is DERIVED. isOrigin then accepts the upgraded value; sourceOf/sourceUrlOf
+  // re-derive provenance unchanged, so a legacy paste renders identically.
+  const legacyShare = { kind: "claude-share", url: "https://claude.ai/share/abc", fetched: "## You said:\nq" };
+  const upgraded = upgradeOrigin(legacyShare);
+  assert("legacy share upgrades to the url arm accepted by isOrigin", isOrigin(upgraded));
+  assertEq("upgraded kind is url", (upgraded as { kind?: unknown }).kind, "url");
+  assertEq("upgraded provider is claude-share", (upgraded as { provider?: unknown }).provider, "claude-share");
+  assertEq("upgraded keeps the link", sourceUrlOf(upgraded as Origin), "https://claude.ai/share/abc");
+  assertEq("upgraded keeps the styling provenance", sourceOf(upgraded as Origin), "claude-share");
+  assertEq(
+    "upgraded keeps the original fetched bytes verbatim",
+    (upgraded as { fetched?: unknown }).fetched,
+    "## You said:\nq",
+  );
+
+  // A legacy share nested as an EDITOR arm's `input` (an edited share import) is
+  // upgraded in place; the editor's own `source` was already a valid SourceKind.
+  const legacyEditedShare = {
+    kind: "editor",
+    source: "claude-share",
+    input: { kind: "claude-share", url: "https://claude.ai/share/x", fetched: "orig" },
+  };
+  const upgradedEditor = upgradeOrigin(legacyEditedShare);
+  assert("legacy edited-share editor upgrades to a valid Origin", isOrigin(upgradedEditor));
+  assertEq(
+    "nested input is upgraded to the url arm",
+    ((upgradedEditor as { input?: { kind?: unknown } }).input ?? {}).kind,
+    "url",
+  );
+
+  // [LAW:no-silent-failure] Idempotent + total: a current url origin and a text
+  // origin pass through byte-identical (no double-upgrade, no field churn), and
+  // junk passes through untouched for isOrigin to reject downstream.
+  const currentUrl: Origin = { kind: "url", url: "https://claude.ai/share/y", fetched: "f", provider: "claude-share" };
+  assertEq("current url origin is unchanged (idempotent)", JSON.stringify(upgradeOrigin(currentUrl)), JSON.stringify(currentUrl));
+  const textOrigin: Origin = { kind: "markdown", content: "## User\nhi" };
+  assertEq("text origin is unchanged", JSON.stringify(upgradeOrigin(textOrigin)), JSON.stringify(textOrigin));
+  assert("junk passes through to be rejected by isOrigin", !isOrigin(upgradeOrigin({ kind: "nonsense" })));
+
+  // [LAW:single-enforcer] The CLIENT draft loader (mount.loadDraft) now runs the
+  // SAME upgradeOrigin the server applies on KV read. Prove the draft-migration
+  // contract: a draft persisted before the URL arm was generalized — its origin the
+  // legacy claude-share shape — hydrates as a replayable url origin, not null. The
+  // first assert is the regression that existed before the fix (raw isOrigin rejects
+  // the legacy shape, so the draft would silently drop its provenance).
+  const legacyDraftOrigin = { kind: "claude-share", url: "https://claude.ai/share/draft", fetched: "## You said:\nq" };
+  assert("regression guard: raw legacy draft origin is NOT a current Origin", !isOrigin(legacyDraftOrigin));
+  // The exact resolution loadDraft performs: upgrade, then validate.
+  const draftUpgraded = upgradeOrigin(legacyDraftOrigin);
+  const draftOrigin = isOrigin(draftUpgraded) ? draftUpgraded : null;
+  assert("loadDraft path preserves a legacy share draft's provenance (not null)", draftOrigin !== null);
+  assertEq("restored draft origin is a replayable url origin", (draftOrigin as { kind?: unknown }).kind, "url");
+  assertEq("restored draft origin keeps the claude-share provenance", sourceOf(draftOrigin as Origin), "claude-share");
 }
 
 console.log("\nOrigin → source derivation (sourceOf — shape table, provenance-kg4):");
@@ -615,7 +683,7 @@ console.log("\nOrigin → source derivation (sourceOf — shape table, provenanc
     ["editor authored from scratch → null", { kind: "editor", source: null }, null],
     ["editor carrying provenance → that kind", { kind: "editor", source: "chatgpt" }, "chatgpt"],
     ["text arm → its own kind", { kind: "markdown", content: "x" }, "markdown"],
-    ["claude-share → claude-share", { kind: "claude-share", url: "u", fetched: "f" }, "claude-share"],
+    ["url arm → its provider (the host styling identity)", { kind: "url", url: "u", fetched: "f", provider: "claude-share" }, "claude-share"],
   ];
   for (const [label, origin, expected] of cases) assertEq(label, sourceOf(origin), expected);
 }
@@ -623,7 +691,7 @@ console.log("\nOrigin → source derivation (sourceOf — shape table, provenanc
 console.log("\nOrigin → source URL derivation (sourceUrlOf — shape table, provenance-2my):");
 {
   // [LAW:one-source-of-truth] sourceUrlOf is the SINGLE derivation of the
-  // original-source link from the canonical origin. ONLY a claude-share origin
+  // original-source link from the canonical origin. ONLY a url (fetched) origin
   // carries an upstream URL; every other shape (text arms carry content, editor
   // authoring + legacy carry no link) maps to null — honest absence the paste
   // page renders as nothing, never a placeholder.
@@ -632,7 +700,7 @@ console.log("\nOrigin → source URL derivation (sourceUrlOf — shape table, pr
     ["editor authored from scratch → null", { kind: "editor", source: null }, null],
     ["editor carrying share provenance → still null (no url retained)", { kind: "editor", source: "claude-share" }, null],
     ["text arm → null", { kind: "markdown", content: "x" }, null],
-    ["claude-share → its url", { kind: "claude-share", url: "https://claude.ai/share/abc", fetched: "f" }, "https://claude.ai/share/abc"],
+    ["url arm → its url", { kind: "url", url: "https://claude.ai/share/abc", fetched: "f", provider: "claude-share" }, "https://claude.ai/share/abc"],
   ];
   for (const [label, origin, expected] of cases) assertEq(label, sourceUrlOf(origin), expected);
 }
@@ -655,18 +723,19 @@ console.log("\nReplay theorem (reprojectOrigin — purely re-derives turns, prov
     );
   }
 
-  // claude-share replay parses the STORED fetched bytes — never the network. A
-  // hand-built share origin (the only arm whose capture needs a live fetch) is
+  // url-arm replay parses the STORED fetched bytes — never the network. A
+  // hand-built url origin (the only arm whose capture needs a live fetch) is
   // re-projected from its bytes and matches a direct parse of those same bytes.
   const fetched = readFileSync("test/fixtures/claude-share.md", "utf8");
   const shareOrigin: Origin = {
-    kind: "claude-share",
+    kind: "url",
     url: "https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82",
     fetched,
+    provider: "claude-share",
   };
   const shareTurns = reprojectOrigin(shareOrigin);
   assertEq(
-    "share origin re-projects from stored bytes (no network)",
+    "url origin re-projects from stored bytes (no network)",
     JSON.stringify(shareTurns),
     JSON.stringify(parseClaudeShare(fetched)),
   );
@@ -970,15 +1039,15 @@ console.log("\ndetectSources (T2 — UI-gating detector):");
 {
   // For text arms: the detector IS the parser. expected() mirrors the text-
   // arm half of the detector; if the parser changes its mind, the detector
-  // follows it. The claude-share arm uses a pattern check (not the parser)
-  // so it's excluded here and verified separately in the T3 block below.
-  const expected = (text: string): ReadonlyArray<SourceKind> =>
-    SOURCE_KINDS.filter(
-      (k) => k !== "claude-share" && parseInput(textArmInput(k, text)).ok,
-    );
+  // follows it. The url arm is recognized by isUrl (not a parser) so it's
+  // excluded here and verified separately in the URL-detection block below.
+  const expected = (text: string): ReadonlyArray<InputKind> =>
+    TEXT_ARM_KINDS.filter((k) => parseInput(textArmInput(k, text)).ok);
 
-  assertEq("empty → all kinds (priming)", detectSources(""), SOURCE_KINDS);
-  assertEq("whitespace-only → all kinds (priming)", detectSources("   \n  \t  "), SOURCE_KINDS);
+  // Priming (empty) offers every input kind — the generic url arm plus the text
+  // arms — for pre-selection before anything is pasted.
+  assertEq("empty → all input kinds (priming)", detectSources(""), INPUT_KINDS);
+  assertEq("whitespace-only → all input kinds (priming)", detectSources("   \n  \t  "), INPUT_KINDS);
 
   // CC sample must include claude-code; raw is always present for non-empty.
   const ccSet = detectSources(CC_SAMPLE);
@@ -1013,49 +1082,51 @@ console.log("\ndetectSources (T2 — UI-gating detector):");
   assertEq("plain prose → only raw", proseSet, ["raw"]);
 }
 
-console.log("\nclaude-share parser (T3 — URL ingestion):");
+console.log("\nGeneric URL detection (isUrl — url-ingestion-wfd.4):");
 {
-  // isClaudeShareUrl — positive cases
-  assert("https URL accepted",
-    isClaudeShareUrl("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"));
-  assert("http URL accepted (we upgrade later)",
-    isClaudeShareUrl("http://claude.ai/share/abc123"));
-  assert("trailing slash accepted",
-    isClaudeShareUrl("https://claude.ai/share/abc123/"));
-  assert("surrounding whitespace tolerated",
-    isClaudeShareUrl("  https://claude.ai/share/abc123  \n"));
-  assert("uppercase scheme accepted",
-    isClaudeShareUrl("HTTPS://claude.ai/share/abc123"));
-  assert("query string tolerated",
-    isClaudeShareUrl("https://claude.ai/share/abc123?utm=x"));
+  // isUrl recognizes ANY http(s) link, NOT a specific provider — which parser
+  // applies (or the fallback) is resolved AFTER fetch via resolveProvider.
+  // Positive cases: known and unknown hosts alike are fetchable links.
+  assert("https claude share accepted",
+    isUrl("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"));
+  assert("http accepted", isUrl("http://claude.ai/share/abc123"));
+  assert("an unknown host is still a URL", isUrl("https://example.com/some/post"));
+  assert("a chatgpt share link is a URL", isUrl("https://chatgpt.com/share/abc123"));
+  assert("surrounding whitespace tolerated", isUrl("  https://example.com/x  \n"));
+  assert("uppercase scheme accepted", isUrl("HTTPS://example.com/x"));
+  assert("query string tolerated", isUrl("https://example.com/x?utm=y"));
 
-  // isClaudeShareUrl — negative cases
-  assert("plain text rejected", !isClaudeShareUrl("hello world"));
-  assert("non-claude URL rejected", !isClaudeShareUrl("https://example.com/share/abc"));
-  assert("claude.ai non-share URL rejected", !isClaudeShareUrl("https://claude.ai/new"));
-  assert("share without id rejected", !isClaudeShareUrl("https://claude.ai/share/"));
-  assert("multiline rejected", !isClaudeShareUrl("https://claude.ai/share/abc\nmore text"));
-  assert("empty rejected", !isClaudeShareUrl(""));
-  assert("whitespace-only rejected", !isClaudeShareUrl("   \n\t "));
+  // Negative cases: not a fetchable http(s) link.
+  assert("plain text rejected", !isUrl("hello world"));
+  assert("non-http scheme rejected", !isUrl("ftp://example.com/x"));
+  assert("bare word rejected", !isUrl("claude.ai"));
+  assert("multiline rejected", !isUrl("https://example.com/x\nmore text"));
+  // [LAW:one-source-of-truth] The WHATWG URL parser silently strips tab/CR/LF, so a
+  // string carrying any of them internally would be FETCHED as a different URL than
+  // its literal text — reject the whole strip-set, not just \n.
+  assert("CR-only multiline rejected (parser would strip the CR)", !isUrl("https://example.com/x\rmore"));
+  assert("internal tab rejected (parser would strip it)", !isUrl("https://example.com/x\tmore"));
+  assert("surrounding CR/tab is trimmed — still a URL", isUrl("\r\thttps://example.com/x\r"));
+  assert("empty rejected", !isUrl(""));
+  assert("whitespace-only rejected", !isUrl("   \n\t "));
 
-  // Detector recognizes URLs and prioritizes claude-share
+  // [LAW:no-silent-failure] The detector collapses ANY link to the single
+  // generic "url" fetch arm — never the text-parser race, which would render a
+  // lone link as a raw bubble of the link text (the outcome the user forbade).
+  // This holds for an UNKNOWN host as much as for claude-share: provider
+  // resolution is server-side, so detection does not distinguish them.
+  assertEq("claude.ai/share URL → ['url']",
+    detectSources("https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82"), ["url"]);
+  assertEq("unknown-host URL → ['url'] (still fetched, not a raw bubble)",
+    detectSources("https://example.com/some/blog-post"), ["url"]);
+  assertEq("chatgpt URL → ['url']",
+    detectSources("https://chatgpt.com/share/abc123"), ["url"]);
+
   const url = "https://claude.ai/share/61812fbb-da15-4992-8de8-1e6fbc7bbd82";
-  const urlSet = detectSources(url);
-  assert("URL detection includes claude-share", urlSet.includes("claude-share"));
-  assert("URL detection ranks claude-share first", urlSet[0] === "claude-share");
-  // URLs are short single lines; the raw fallback still applies because raw
-  // never rejects anything. This is intentional: it gives the user an escape
-  // hatch to render the URL string as a single bubble if Firecrawl is down.
-  assert("URL detection still includes raw fallback", urlSet.includes("raw"));
-  // None of the text-arm parsers should match a bare URL — no false-positives.
-  ["claude-jsonl", "claude-code", "markdown", "chatgpt", "claude-paste"].forEach((k) => {
-    assert(`URL excludes ${k}`, !urlSet.includes(k as SourceKind));
-  });
-
-  // parseInput must reject claude-share with a useful redirect message —
+  // parseInput must reject the url arm with a useful redirect message —
   // it has no synchronous interpretation.
-  const blocked = parseInput({ kind: "claude-share", url });
-  assert("parseInput rejects claude-share arm", !blocked.ok);
+  const blocked = parseInput({ kind: "url", url });
+  assert("parseInput rejects the url arm", !blocked.ok);
   if (!blocked.ok) {
     assert("parseInput error names the async path", blocked.reason.includes("ingestPaste"));
   }
@@ -1803,7 +1874,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
     { kind: "message", role: "user", content: "q" },
     { kind: "message", role: "assistant", content: "a" },
   ];
-  const shareOrigin: Origin = { kind: "claude-share", url: shareUrl, fetched: shareFetched };
+  const shareOrigin: Origin = { kind: "url", url: shareUrl, fetched: shareFetched, provider: "claude-share" };
   // fetchShare stands in for /api/fetch returning the FULL captured origin (url +
   // fetched bytes), which the editor now carries through to submit.
   const io: EditorIo = {
@@ -1820,14 +1891,17 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   const s = new EditorStore(io);
   s.setImport(shareUrl);
   await s.ingest();
-  assertEq("share import detects the URL arm", s.importKind, "claude-share");
+  assertEq("share import detects the generic url arm (provider resolved server-side)", s.importKind, "url");
   assert("share import loads its turns and is not dirty", s.blocks.length === 2 && !s.isDirty);
   const pristine = s.submitOrigin;
   assert(
-    "a pristine share stamps a claude-share origin carrying url + fetched bytes",
-    pristine.kind === "claude-share" && pristine.url === shareUrl && pristine.fetched === shareFetched,
+    "a pristine share stamps a url origin carrying link + fetched bytes + provider",
+    pristine.kind === "url" &&
+      pristine.url === shareUrl &&
+      pristine.fetched === shareFetched &&
+      pristine.provider === "claude-share",
   );
-  assertEq("styling derives from the share origin", s.source, "claude-share");
+  assertEq("styling derives from the url origin's provider", s.source, "claude-share");
 
   // --- editing the imported turns collapses to an editor origin: the turns are
   //     now the source (claiming the share URL would lie about replay), but the
@@ -2670,23 +2744,221 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     } as Turn));
 }
 
-console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — SPA render-wait):");
+console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — per-provider SPA render-wait):");
 {
-  // [LAW:behavior-not-structure] Assert the CONTRACT: the request body for any
-  // URL must include a wait action targeting the SPA's hydration selector.
-  // A future edit that drops the action silently reverts the fix.
-  const body = scrapeRequestBody("https://claude.ai/share/test-123");
-  assert("scrapeRequestBody includes formats:markdown", body.formats.includes("markdown"));
-  const waitAction = body.actions.find((a) => a.type === "wait");
-  assert("scrapeRequestBody has a wait action", waitAction !== undefined);
+  // [LAW:behavior-not-structure] Assert the CONTRACT: the request body carries a
+  // wait action targeting the PROVIDER'S OWN hydration selector — the value the
+  // registry holds, not one hard-coded selector. The spike proved the selector is
+  // per-provider (chatgpt.com never renders claude's), so the assertion iterates
+  // the registry rather than pinning a single host's contract. A future edit that
+  // drops the action, or stops threading the selector, fails loudly here.
+  for (const provider of PROVIDERS) {
+    const entry = PROVIDER_REGISTRY[provider];
+    const body = scrapeRequestBody("https://example.test/x", entry.wait);
+    assert(`scrapeRequestBody[${provider}] includes formats:markdown`, body.formats.includes("markdown"));
+    const waitAction = body.actions.find((a) => a.type === "wait");
+    assert(`scrapeRequestBody[${provider}] has a wait action`, waitAction !== undefined);
+    // The action mirrors the provider's WaitStrategy VALUE: a selector strategy
+    // targets its selector; a settle strategy carries its milliseconds.
+    if (entry.wait.kind === "selector") {
+      assert(
+        `scrapeRequestBody[${provider}] selector strategy targets the provider's selector`,
+        waitAction !== undefined && "selector" in waitAction && waitAction.selector === entry.wait.selector,
+      );
+    } else {
+      assert(
+        `scrapeRequestBody[${provider}] settle strategy carries its milliseconds`,
+        waitAction !== undefined && "milliseconds" in waitAction && waitAction.milliseconds === entry.wait.ms,
+      );
+    }
+  }
+  // Pin the verified claude.ai contract specifically — a regression guard on the
+  // exact selector the spike validated against the live hydrated DOM, so a careless
+  // registry edit can't silently swap it for a selector that never hydrates.
+  const claudeWait = PROVIDER_REGISTRY["claude-share"].wait;
   assert(
-    "wait action targets [data-testid=\"user-message\"]",
-    waitAction !== undefined && waitAction.selector === '[data-testid="user-message"]',
+    "claude-share waits on the verified selector [data-testid=\"user-message\"]",
+    claudeWait.kind === "selector" && claudeWait.selector === '[data-testid="user-message"]',
+  );
+
+  // [LAW:no-silent-failure] The unclaimed-host fallback waits by a bounded SETTLE,
+  // not a DOM selector — the spike proved there is no universal hydration selector,
+  // so a wrong one would time out. Assert it maps to a milliseconds wait action
+  // carrying NO selector (firecrawl's only selector-less wait mode).
+  const fallbackBody = scrapeRequestBody("https://example.test/x", FALLBACK_WAIT);
+  const fallbackWait = fallbackBody.actions.find((a) => a.type === "wait");
+  const fallbackMs = FALLBACK_WAIT.kind === "settle" ? FALLBACK_WAIT.ms : -1;
+  assert("FALLBACK_WAIT is a settle strategy", FALLBACK_WAIT.kind === "settle");
+  assert("fallback wait is a positive bounded delay", fallbackMs > 0);
+  assert(
+    "fallback produces a milliseconds wait action",
+    fallbackWait !== undefined && "milliseconds" in fallbackWait && fallbackWait.milliseconds === fallbackMs,
+  );
+  assert(
+    "fallback wait carries NO selector",
+    fallbackWait !== undefined && !("selector" in fallbackWait),
   );
 }
 
-if (process.exitCode) {
-  console.error("\nFAILED");
-} else {
-  console.log("\nAll checks passed.");
+console.log("\nFallback parser for unclaimed hosts (url-ingestion-wfd.4):");
+{
+  // [LAW:no-silent-failure] The CORE acceptance: a fetched page whose host no
+  // registered provider claims is still split into a CONVERSATION, never rendered
+  // as a single raw bubble. The captured ChatGPT fixture (an unclaimed host —
+  // chatgpt.com has no registered provider) is the real-world witness: its
+  // firecrawl-rendered "#### You said:" / "#### ChatGPT said:" markers must
+  // produce many turns across both roles.
+  const chatgptFetched = readFileSync("test/fixtures/chatgpt-share.md", "utf8");
+  const fbTurns = parseFallback(chatgptFetched);
+  assert("unclaimed-host fixture splits into many turns (NOT one bubble)", fbTurns.length > 1);
+  const fbMessages = fbTurns.filter((t): t is Extract<Turn, { kind: "message" }> => t.kind === "message");
+  const fbRoles = new Set(fbMessages.map((m) => m.role));
+  assert("fallback recovers BOTH user and assistant turns", fbRoles.has("user") && fbRoles.has("assistant"));
+
+  // [LAW:no-silent-failure] A page with no conversational structure is surfaced
+  // honestly — one raw bubble of the fetched CONTENT (not dropped), and never null:
+  // parseFallback is total, so a url ingest can always render something honest.
+  const prose = parseFallback("Just a plain article with no speaker markers at all.");
+  assertEq("structureless content → exactly one bubble (honest surface)", prose.length, 1);
+  assert("the single bubble carries the content", prose[0]?.kind === "message");
+
+  // reprojectOrigin replays a stored url origin through the SAME resolver: a
+  // provider:null origin re-derives via parseFallback (the unclaimed-host plan),
+  // and a named provider still re-derives via ITS parser — known providers win
+  // ahead of the fallback, exactly as ingest resolves them.
+  const fallbackOrigin: Origin = { kind: "url", url: "https://example.com/x", fetched: chatgptFetched, provider: null };
+  const replayedFallback = reprojectOrigin(fallbackOrigin);
+  assertEq("reproject(provider:null) === parseFallback(bytes)",
+    JSON.stringify(replayedFallback), JSON.stringify(fbTurns));
+
+  const shareFixture = readFileSync("test/fixtures/claude-share.md", "utf8");
+  const namedOrigin: Origin = { kind: "url", url: "https://claude.ai/share/x", fetched: shareFixture, provider: "claude-share" };
+  const replayedNamed = reprojectOrigin(namedOrigin);
+  assertEq("reproject(provider:claude-share) === parseClaudeShare(bytes)",
+    JSON.stringify(replayedNamed), JSON.stringify(parseClaudeShare(shareFixture)));
+
+  // A null-provider url origin styles as generic (honest absence), never crashes.
+  assertEq("provider:null url origin → generic styling (null source)", sourceOf(fallbackOrigin), null);
 }
+
+console.log("\nProvider registry URL resolution (url-ingestion.3):");
+{
+  // [LAW:behavior-not-structure] resolveProvider is the one URL→Provider mapping
+  // ingestPaste, reprojectOrigin, and capture all share. Assert its contract:
+  // a claude.ai/share URL resolves to claude-share; trailing slash, query, and
+  // surrounding whitespace are tolerated; a non-share claude URL, a different
+  // host, a multi-line string, and empty input all resolve to null (no provider).
+  assert("resolves a claude.ai/share URL", resolveProvider("https://claude.ai/share/abc123") === "claude-share");
+  assert("tolerates trailing slash + query", resolveProvider("https://claude.ai/share/abc-123/?x=1") === "claude-share");
+  assert("trims surrounding whitespace", resolveProvider("  https://claude.ai/share/abc123  ") === "claude-share");
+  assert("rejects a non-share claude.ai URL", resolveProvider("https://claude.ai/chat/abc123") === null);
+  assert("rejects a different host", resolveProvider("https://chatgpt.com/share/abc123") === null);
+  assert("rejects a multi-line string", resolveProvider("https://claude.ai/share/abc\nhttps://claude.ai/share/def") === null);
+  // [LAW:single-enforcer] Same single-line rule as isUrl (shared singleLineUrl): a
+  // CR-only break or internal tab the URL parser would strip is rejected here too.
+  assert("rejects a CR-only multi-line string", resolveProvider("https://claude.ai/share/abc\rhttps://claude.ai/share/def") === null);
+  assert("rejects an internal tab", resolveProvider("https://claude.ai/share/a\tbc") === null);
+  assert("rejects empty input", resolveProvider("   ") === null);
+}
+
+// [LAW:verifiable-goals] The async ingress guards (url-ingestion-wfd.5). These
+// exercise the network boundary (ingestPaste) and the wire-format trust boundary
+// (decodeRequest) — both async — so they run inside an async IIFE whose awaits are
+// function-scoped (top-level await is unavailable under tsx's CJS output). The
+// final pass/fail report moves inside so it prints AFTER these complete; the sync
+// checks above have already set process.exitCode on any failure.
+void (async () => {
+  console.log("\nSingle network boundary re-validates its URL (ingestPaste isUrl guard, url-ingestion.5):");
+  {
+    // [LAW:single-enforcer] isUrl is enforced at THE network boundary, not just at
+    // /api/fetch. A crafted url-arm input with a non-URL string is rejected BEFORE
+    // any Firecrawl call — so the env carries no key and no network is touched, yet
+    // the guard still fails the paste cleanly. (A valid URL would fetch; not unit-
+    // tested here to keep the suite offline — the live smoke in .4 covered that.)
+    const offline = { FIRECRAWL_API_KEY: undefined };
+    const bad = await ingestPaste({ kind: "url", url: "not a url" }, offline);
+    assert("ingestPaste rejects a non-URL url-arm before fetching", !bad.ok);
+    const alsoBad = await ingestPaste({ kind: "url", url: "ftp://example.com/x" }, offline);
+    assert("ingestPaste rejects a non-http(s) scheme before fetching", !alsoBad.ok);
+    // A text arm never reaches the network — it parses locally regardless of env.
+    const text = await ingestPaste({ kind: "raw", content: "Human: hi\n\nAssistant: yo" }, offline);
+    assert("ingestPaste parses a text arm with no network", text.ok);
+    // [LAW:one-source-of-truth] A whitespace-wrapped link is still rejected/accepted
+    // by the trimmed predicate, then canonicalized — but we can't assert the stored
+    // origin offline (it requires a live fetch). What we CAN assert offline: leading/
+    // trailing whitespace does not defeat the isUrl guard (it would reach the fetch),
+    // proving the guard and resolveProvider see the same trimmed form.
+    const padded = await ingestPaste({ kind: "url", url: "   not a url   " }, offline);
+    assert("ingestPaste's isUrl guard trims before judging (padded non-URL still rejected)", !padded.ok);
+  }
+
+  console.log("\nAny posted link is a conversation on EVERY ingress (decodeRequest, url-ingestion.5):");
+  {
+    // [LAW:behavior-not-structure] The contract: a bare http(s) link, however it
+    // arrives at /api/paste, decodes to the url FETCH arm — never a text arm that
+    // would render the link as a one-message raw bubble. Tested against the real
+    // decoder over constructed Requests (no network: decodeRequest only classifies;
+    // ingestPaste does the fetch downstream).
+    const formReq = (fields: Record<string, string>): Request => {
+      const body = new URLSearchParams(fields);
+      return new Request("https://x/api/paste", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+    };
+    const jsonReq = (obj: unknown): Request =>
+      new Request("https://x/api/paste", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(obj),
+      });
+
+    const url = "https://chatgpt.com/share/abc-123";
+
+    const formUrl = await decodeRequest(formReq({ source: "raw", content: url }));
+    assertEq("no-JS form: a bare link → url fetch arm (not the selected text arm)",
+      formUrl, { ok: true, input: { kind: "url", url } });
+
+    const formText = await decodeRequest(formReq({ source: "raw", content: "Human: hi\n\nAssistant: yo" }));
+    assertEq("no-JS form: real text stays a text arm",
+      formText, { ok: true, input: { kind: "raw", content: "Human: hi\n\nAssistant: yo" } });
+
+    const legacyUrl = await decodeRequest(jsonReq({ content: url }));
+    assertEq("legacy JSON: a bare link → url fetch arm",
+      legacyUrl, { ok: true, input: { kind: "url", url } });
+
+    const legacyText = await decodeRequest(jsonReq({ content: "just some prose with no markers" }));
+    assertEq("legacy JSON: non-link content stays the legacy arm",
+      legacyText, { ok: true, legacy: "just some prose with no markers" });
+
+    const structured = await decodeRequest(jsonReq({ source: { kind: "raw", content: url } }));
+    assertEq("structured text-arm carrying a bare link → url fetch arm",
+      structured, { ok: true, input: { kind: "url", url } });
+
+    // [LAW:no-silent-failure] A multi-line transcript that merely BEGINS with a
+    // link is NOT a bare link — isUrl rejects newlines — so it keeps its text arm.
+    const startsWithLink = `${url}\n\n## User\nwhat is this?`;
+    const multiline = await decodeRequest(formReq({ source: "markdown", content: startsWithLink }));
+    assertEq("multi-line content beginning with a link stays a text arm (not reclassified)",
+      multiline, { ok: true, input: { kind: "markdown", content: startsWithLink } });
+
+    // The claude-share form guard still fires for claude-share TEXT (no URL to
+    // fetch) — a craftable wire SourceKind that the form dropdown never offers.
+    const shareText = await decodeRequest(formReq({ source: "claude-share", content: "Human said something" }));
+    assert("form-encoded claude-share with non-URL text fails loudly (no silent raw bubble)",
+      !shareText.ok);
+
+    // …but claude-share-as-content that IS a link is fetched, not refused.
+    const shareUrl = "https://claude.ai/share/deadbeef";
+    const shareLink = await decodeRequest(formReq({ source: "claude-share", content: shareUrl }));
+    assertEq("a pasted claude.ai/share link is fetched even on the no-JS form",
+      shareLink, { ok: true, input: { kind: "url", url: shareUrl } });
+  }
+
+  if (process.exitCode) {
+    console.error("\nFAILED");
+  } else {
+    console.log("\nAll checks passed.");
+  }
+})();

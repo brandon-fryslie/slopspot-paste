@@ -11,6 +11,30 @@ export type FirecrawlResult =
   | { readonly ok: true; readonly markdown: string }
   | { readonly ok: false; readonly reason: string };
 
+// [LAW:types-are-the-program] How the scrape waits for a client-rendered page to
+// hydrate before reading its DOM. Two honest strategies, each mapping to one
+// Firecrawl wait action (verified against the scrape API — those are the only two
+// wait modes; there is no networkidle):
+//   selector — wait until a DOM node proving the messages rendered appears. The
+//              strong choice: it fires the instant hydration completes. Used by
+//              every registered provider, whose message contract we know.
+//   settle   — wait a fixed duration with NO selector. The honest fallback for a
+//              host no provider claims: the spike proved there is no universal
+//              hydration selector, so an unknown page can only be given time.
+//              [LAW:no-ambient-temporal-coupling] this is a blind delay BY
+//              NECESSITY, scoped to the one case where no proof-of-hydration
+//              signal exists — a deliberate value, not an ambient assumption.
+export type WaitStrategy =
+  | { readonly kind: "selector"; readonly selector: string }
+  | { readonly kind: "settle"; readonly ms: number };
+
+// [LAW:dataflow-not-control-flow] One match maps the strategy VALUE to its wire
+// action; the caller never branches on wait mode, it passes a WaitStrategy.
+const waitAction = (wait: WaitStrategy) =>
+  wait.kind === "selector"
+    ? { type: "wait" as const, selector: wait.selector }
+    : { type: "wait" as const, milliseconds: wait.ms };
+
 export interface FirecrawlEnv {
   readonly FIRECRAWL_API_KEY?: string;
 }
@@ -29,14 +53,15 @@ interface ScrapeResponse {
 }
 
 // [LAW:effects-at-boundaries] Pure request body — testable without mocking
-// fetch. [LAW:no-ambient-temporal-coupling] A selector wait rather than a
-// blind millisecond delay: claude.ai/share is a client-rendered SPA whose
-// user messages appear under [data-testid="user-message"]; waiting on that
-// selector guarantees hydration without racing the clock.
-export const scrapeRequestBody = (url: string) => ({
+// fetch. The page is a client-rendered SPA, so the scrape waits for hydration
+// before reading the DOM. [LAW:single-enforcer] HOW to wait is NOT this module's
+// to decide — it is a WaitStrategy VALUE the caller supplies (a provider's
+// hydration selector from the registry, or the settle fallback for an unclaimed
+// host). This file owns only the wire format: turning that value into the action.
+export const scrapeRequestBody = (url: string, wait: WaitStrategy) => ({
   url,
   formats: ["markdown"],
-  actions: [{ type: "wait" as const, selector: '[data-testid="user-message"]' }],
+  actions: [waitAction(wait)],
 });
 
 // [LAW:no-defensive-null-guards] This IS a trust boundary — Firecrawl is an
@@ -45,6 +70,7 @@ export const scrapeRequestBody = (url: string) => ({
 // receives a structurally valid value.
 export const firecrawlScrape = async (
   url: string,
+  wait: WaitStrategy,
   env: FirecrawlEnv,
 ): Promise<FirecrawlResult> => {
   const key = env.FIRECRAWL_API_KEY;
@@ -66,7 +92,7 @@ export const firecrawlScrape = async (
       "content-type": "application/json",
       authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify(scrapeRequestBody(url)),
+    body: JSON.stringify(scrapeRequestBody(url, wait)),
     signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
   }).catch((e: unknown): unknown => e);
 

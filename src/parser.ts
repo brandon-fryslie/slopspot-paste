@@ -1,9 +1,10 @@
-import type { Origin, ParseResult, PasteInput, Role, SourceKind, TextArmKind, Turn } from "./types";
-import { MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_KINDS, TEXT_ARM_KINDS, textArmInput } from "./types";
+import type { InputKind, Origin, ParseResult, PasteInput, Provider, Role, TextArmKind, Turn } from "./types";
+import { INPUT_KINDS, MAX_PASTE_BYTES, MAX_PASTE_LABEL, TEXT_ARM_KINDS, textArmInput } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
-import { parseClaudeShare } from "./parsers/claude-share";
-import { firecrawlScrape, type FirecrawlEnv } from "./firecrawl";
+import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "./providers";
+import { firecrawlScrape, type FirecrawlEnv, type WaitStrategy } from "./firecrawl";
+import { singleLineUrl } from "./url";
 
 // [LAW:types-are-the-program] Every parser produces the same Turn[] union.
 // All variability — which export format, which header style — is absorbed at
@@ -60,9 +61,13 @@ const MARKDOWN_HEADING_DETECTOR: HeaderDetector = {
 };
 
 const SAID_MARKER_DETECTOR: HeaderDetector = {
-  // "You said:" / "ChatGPT said:" / "Claude said:" — ChatGPT/Claude copy-paste
+  // "You said:" / "ChatGPT said:" / "Claude said:" — ChatGPT/Claude copy-paste,
+  // AND the heading-prefixed variant a fetched page renders ("#### You said:"):
+  // firecrawl emits the speaker label as a markdown heading, so the leading
+  // `#{0,6}\s*` tolerates that decoration. Same "Name said:" concept either way —
+  // one detector, robust to the rendering variant ([LAW:one-source-of-truth]).
   name: "said-marker",
-  headerPattern: /^\*{0,2}([A-Za-z][A-Za-z0-9 .\-]{0,40})\s+said:?\*{0,2}\s*$/,
+  headerPattern: /^#{0,6}\s*\*{0,2}([A-Za-z][A-Za-z0-9 .\-]{0,40})\s+said:?\*{0,2}\s*$/,
   classify: classifyLabel,
 };
 
@@ -131,6 +136,45 @@ const PARSER_BY_KIND: {
 
 const normalize = (input: string): string => input.replace(/\r\n?/g, "\n").trim();
 
+// [LAW:one-source-of-truth] The header-detector race lives ONCE here. Iterate
+// TEXT_ARM_KINDS most-specific-first (the canonical priority order) and return
+// the first parser that claims the text, with the kind it won under. raw is in
+// the tuple and total, so the loop always returns; the throw is the loud witness
+// [LAW:no-silent-failure] that the raw-is-total invariant held. Both the no-source
+// auto path (parseAuto) and the unclaimed-host fallback (parseFallback) are this
+// one race — neither re-orders nor re-pairs parsers.
+const raceTextArms = (text: string): { kind: TextArmKind; turns: Turn[] } => {
+  for (const kind of TEXT_ARM_KINDS) {
+    const turns = PARSER_BY_KIND[kind](text);
+    if (turns !== null && turns.length > 0) return { kind, turns };
+  }
+  throw new Error("raceTextArms: no parser matched (raw must always parse)");
+};
+
+// [LAW:no-silent-failure] The parser for a fetched page whose host no registered
+// provider claims. It runs the same best-effort header race over the fetched
+// bytes — a real conversation page (e.g. ChatGPT's "You said:" / "… said:")
+// splits into its turns; anything else surfaces as a raw bubble of the fetched
+// CONTENT (raw is total). Either way the bytes are projected and shown, never
+// silently dropped. This is total, so a url ingest can always render *something*
+// honest; only a NAMED provider's parser returning null is a real "couldn't
+// extract" failure. Replaying a stored unclaimed-host origin re-runs this exact
+// function (via parserFor), so the cache cannot drift from ingest.
+export const parseFallback = (markdown: string): Turn[] => raceTextArms(normalize(markdown)).turns;
+
+// [LAW:single-enforcer] The one resolution of "which parser projects this url
+// origin's bytes", keyed on the resolved provider (null = unclaimed host →
+// fallback). Both ingest and reproject route through it, so a paste is replayed
+// through the same parser that first projected it.
+const parserFor = (provider: Provider | null): ((markdown: string) => Turn[] | null) =>
+  provider === null ? parseFallback : PROVIDER_REGISTRY[provider].parser;
+
+// [LAW:single-enforcer] The companion resolution of "how to wait for this url's
+// host to hydrate" — a named provider's selector strategy, or the settle fallback
+// for an unclaimed host. Only ingest fetches, so only ingest needs this.
+const waitFor = (provider: Provider | null): WaitStrategy =>
+  provider === null ? FALLBACK_WAIT : PROVIDER_REGISTRY[provider].wait;
+
 // [LAW:types-are-the-program] parseInput commits to the kind the caller named.
 // No silent fallback to a different parser — a wrong pick is a typed failure.
 // The T2 detector (detectSources, below) makes wrong picks unreachable from
@@ -142,14 +186,14 @@ const normalize = (input: string): string => input.replace(/\r\n?/g, "\n").trim(
 // uniform async surface use ingestPaste; callers that only care about text
 // arms (parser-check tests, detector) use parseInput.
 export const parseInput = (input: PasteInput): ParseResult => {
-  if (input.kind === "claude-share") {
+  if (input.kind === "url") {
     return {
       ok: false,
-      reason: "claude-share is a URL arm; use ingestPaste() to fetch and parse.",
+      reason: "the url arm is fetched, not parsed synchronously; use ingestPaste().",
     };
   }
-  // input is narrowed to the content-bearing arms here (claude-share returned
-  // above), so no cast is needed — a future URL-shaped arm would fail to compile.
+  // input is narrowed to the content-bearing arms here (the url arm returned
+  // above), so no cast is needed — the url-shaped arm cannot reach this point.
   const text = normalize(input.content);
   if (text.length === 0) return { ok: false, reason: "empty input" };
   const turns = PARSER_BY_KIND[input.kind](text);
@@ -174,12 +218,35 @@ export const ingestPaste = async (
   input: PasteInput,
   env: FirecrawlEnv,
 ): Promise<ParseResult> => {
-  if (input.kind !== "claude-share") return parseInput(input);
+  if (input.kind !== "url") return parseInput(input);
 
-  if (!isClaudeShareUrl(input.url)) {
-    return { ok: false, reason: "Not a valid claude.ai/share URL." };
+  // [LAW:single-enforcer] isUrl is THE "is this a fetchable link" precondition,
+  // and ingestPaste is THE network boundary — so it is validated HERE, where the
+  // effect happens, rather than trusting each caller to have checked. /api/fetch's
+  // isUrl is then a fast-fail that spares a Firecrawl round-trip; /api/paste's url
+  // arm (whose shape check only proves `url` is a string) and the reclassified
+  // no-JS/legacy arms all inherit the guarantee through this one point, instead of
+  // leaning on Firecrawl to reject malformed input ([LAW:no-silent-failure]).
+  if (!isUrl(input.url)) {
+    return { ok: false, reason: "Expected an http(s) URL." };
   }
-  const fetched = await firecrawlScrape(input.url, env);
+  // [LAW:one-source-of-truth] Canonicalize the link ONCE, at the network boundary
+  // that both fetches it and stores it as the origin. isUrl and resolveProvider
+  // already operate on the trimmed form, so trimming here makes the link we
+  // resolve, the link we fetch, and the link we persist provably the same string —
+  // never a stored origin.url carrying incidental paste whitespace.
+  const url = input.url.trim();
+
+  // [LAW:dataflow-not-control-flow] Provider resolution is a registry lookup, and
+  // a URL no provider claims is NOT a dead end — it resolves to `null`, which
+  // selects the fallback wait + parser. So fetch+parse is ONE path for every URL;
+  // the provider value only picks which wait strategy hydrates it and which parser
+  // projects it. ingestPaste names no provider directly. [LAW:no-silent-failure]:
+  // an unclaimed host's bytes are still split into turns (or surfaced as one raw
+  // bubble of the fetched content), never dropped — the user's intent that any
+  // posted link becomes a conversation, never a lone raw bubble of the link text.
+  const provider = resolveProvider(url);
+  const fetched = await firecrawlScrape(url, waitFor(provider), env);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
   // [LAW:single-enforcer] The same size cap that the API applies to user input
   // also governs fetched content — otherwise a tiny URL could smuggle an
@@ -187,58 +254,70 @@ export const ingestPaste = async (
   if (new TextEncoder().encode(fetched.markdown).length > MAX_PASTE_BYTES) {
     return { ok: false, reason: `Fetched content exceeds the ${MAX_PASTE_LABEL} limit.` };
   }
-  const turns = parseClaudeShare(fetched.markdown);
+  const turns = parserFor(provider)(fetched.markdown);
   if (turns === null || turns.length === 0) {
+    // Reachable only for a NAMED provider whose parser rejected the bytes — the
+    // fallback is total, so an unclaimed host always yields ≥1 turn above.
     return {
       ok: false,
       reason: "Fetched the page, but could not extract a conversation.",
     };
   }
-  // [LAW:one-source-of-truth] The share arm was the lossy one: persist the
-  // ORIGINAL fetched markdown alongside the link, so re-projection parses these
-  // stored bytes and never has to re-hit the network (a refetch could 404, drift,
-  // or cost money — the captured bytes are the authority).
+  // [LAW:one-source-of-truth] The url arm was the lossy one: persist the ORIGINAL
+  // fetched markdown alongside the link AND the resolved provider, so re-projection
+  // parses these stored bytes through that provider's parser and never has to
+  // re-hit the network (a refetch could 404, drift, or cost money — the captured
+  // bytes are the authority).
   return {
     ok: true,
     turns,
-    origin: { kind: "claude-share", url: input.url, fetched: fetched.markdown },
+    origin: { kind: "url", url, fetched: fetched.markdown, provider },
   };
 };
 
-// [LAW:one-source-of-truth] The URL shape claude-share accepts lives here,
-// once. The detector calls it; ingestPaste re-validates at the trust boundary
-// (defense against a directly-crafted API request that bypassed the UI).
-const CLAUDE_SHARE_RE =
-  /^https?:\/\/claude\.ai\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i;
-
-export const isClaudeShareUrl = (input: string): boolean => {
-  const trimmed = input.trim();
-  if (trimmed.length === 0) return false;
-  if (trimmed.includes("\n")) return false;
-  return CLAUDE_SHARE_RE.test(trimmed);
+// [LAW:single-enforcer] The ONE "is this a fetchable link" predicate at the input
+// boundary: detectSources routes ANY http(s) URL to the fetch arm, and /api/fetch
+// re-validates with it (defense against a crafted request that bypassed the UI).
+// It recognizes a link, NOT a specific provider — which parser to apply (or the
+// fallback) is resolved AFTER fetch via resolveProvider. The trim + single-line
+// guard mirrors resolveProvider's, so a string classifies identically at
+// detection and at provider resolution. (Lifted from capture-fixture.ts's
+// stand-in isHttpUrl, which cited this task as its replacement.)
+export const isUrl = (input: string): boolean => {
+  const trimmed = singleLineUrl(input);
+  if (trimmed === null) return false;
+  try {
+    const u = new URL(trimmed);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
 };
 
 // [LAW:one-source-of-truth] For text arms, the detector IS the parser — it
 // calls parseInput and keeps kinds that succeed. There is no separate
 // "could-this-parse" heuristic for text arms; drift is structurally impossible.
 //
-// For claude-share, the detector necessarily diverges: a fetch on every
-// keystroke would be wrong (rate-limited, slow, costs money), so the URL arm
-// is recognized by pattern. The actual fetch + parse happens at submit time
-// inside ingestPaste. This split is the single point where the URL/text
-// asymmetry surfaces; comment it so it doesn't metastasize.
+// For the url arm, the detector necessarily diverges: a fetch on every keystroke
+// would be wrong (rate-limited, slow, costs money), so a link is recognized by
+// isUrl alone and offered as the single generic "url" option — the user does not
+// pick a provider, and a lone link never falls through to the text race that
+// would render it as a raw bubble of the link text. The actual fetch + provider
+// resolution + parse happens at submit time inside ingestPaste. This split is the
+// single point where the URL/text asymmetry surfaces; comment it so it doesn't
+// metastasize.
 //
 // [LAW:dataflow-not-control-flow] Empty input is the priming state: no text
-// to classify yet, so every kind is a legitimate pre-selection for the about-
-// to-be-pasted content. The return shape (a ReadonlyArray<SourceKind>) is the
-// same in every case; the dropdown reads it as data and rebuilds its options.
-export const detectSources = (input: string): ReadonlyArray<SourceKind> => {
-  if (normalize(input).length === 0) return SOURCE_KINDS;
-  return SOURCE_KINDS.filter((kind) =>
-    kind === "claude-share"
-      ? isClaudeShareUrl(input)
-      : parseInput(textArmInput(kind, input)).ok,
-  );
+// to classify yet, so every input kind is a legitimate pre-selection for the
+// about-to-be-pasted content. The return shape (a ReadonlyArray<InputKind>) is
+// the same in every case; the dropdown reads it as data and rebuilds its options.
+export const detectSources = (input: string): ReadonlyArray<InputKind> => {
+  if (normalize(input).length === 0) return INPUT_KINDS;
+  // [LAW:no-silent-failure] ANY http(s) link routes to the fetch arm as the sole
+  // option; which provider claims it (or that it falls back) is resolved
+  // server-side in ingestPaste, not chosen here.
+  if (isUrl(input)) return ["url"];
+  return TEXT_ARM_KINDS.filter((kind) => parseInput(textArmInput(kind, input)).ok);
 };
 
 // [LAW:locality-or-seam] The legacy auto-race lives behind its own seam so
@@ -255,16 +334,12 @@ export const detectSources = (input: string): ReadonlyArray<SourceKind> => {
 export const parseAuto = (input: string): ParseResult => {
   const text = normalize(input);
   if (text.length === 0) return { ok: false, reason: "empty input" };
-
-  for (const kind of TEXT_ARM_KINDS) {
-    const turns = PARSER_BY_KIND[kind](text);
-    // [LAW:one-source-of-truth] The origin carries the verbatim input, not the
-    // normalized text — the winning kind names how to re-parse it.
-    if (turns !== null && turns.length > 0) return { ok: true, turns, origin: { kind, content: input } };
-  }
-  // [LAW:no-silent-failure] Unreachable while the raw parser is total; if that
-  // invariant ever breaks, fail loudly instead of fabricating a result.
-  throw new Error("parseAuto: no parser matched (raw must always parse)");
+  // [LAW:one-source-of-truth] The same race the url fallback uses. The origin
+  // carries the verbatim input, not the normalized text — the winning kind names
+  // how to re-parse it. raceTextArms is total (raw), so a non-empty input always
+  // yields a result.
+  const { kind, turns } = raceTextArms(text);
+  return { ok: true, turns, origin: { kind, content: input } };
 };
 
 // [LAW:one-source-of-truth] Re-projection: regenerate Turn[] from a stored
@@ -273,17 +348,21 @@ export const parseAuto = (input: string): ParseResult => {
 // cache: replaying the captured input through today's parser reproduces (or
 // improves) the projection.
 //
-// [LAW:dataflow-not-control-flow] One switch on the discriminator. The share arm
+// [LAW:dataflow-not-control-flow] One switch on the discriminator. The url arm
 // parses its STORED bytes (never refetches); the text arms re-normalize then
 // re-parse; the editor arm returns null because its turns are the source of
 // truth — there is no upstream input to replay. A null return means "the stored
-// turns ARE canonical", not a failure.
+// turns ARE canonical", not a failure. The url arm replays through parserFor —
+// a named provider's parser, or the best-effort fallback for an unclaimed host
+// (origin.provider === null) — so every fetched paste re-derives its stored bytes
+// through the same parser that first projected it, which makes replay correct
+// (and improvable) for unclaimed hosts as much as for named providers.
 export const reprojectOrigin = (origin: Origin): ReadonlyArray<Turn> | null => {
   switch (origin.kind) {
     case "editor":
       return null;
-    case "claude-share":
-      return parseClaudeShare(origin.fetched);
+    case "url":
+      return parserFor(origin.provider)(origin.fetched);
     default:
       return PARSER_BY_KIND[origin.kind](normalize(origin.content));
   }
