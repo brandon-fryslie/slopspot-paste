@@ -221,6 +221,26 @@ console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/dr
   assert("handoff: expired draft leaves editor empty", failStore.blocks.length === 0);
 }
 
+console.log("\nclaude.ai/code link handoff affordance (slopspot-cc-share-4nc.9):");
+{
+  // [LAW:verifiable-goals] Pasting a claude.ai/code link shows the honest
+  // temporary-workaround notice + copyable handoff and SUPPRESSES the doomed
+  // fetch button; a normal link keeps the fetch affordance and shows no notice.
+  const store = new EditorStore(fakeIo());
+  store.setImport("https://claude.ai/code/session_01E1cdheWtrieG1o6dhhFAJu");
+  const c = jswindow.document.createElement("div");
+  render(appTemplate(store), c);
+  assert("code link: temporary-workaround notice renders", c.querySelector(".code-link-notice") !== null);
+  assert("code link: copyable instructions present", c.querySelector(".code-link-prompt") !== null);
+  assert("code link: doomed fetch row is suppressed", c.querySelector(".import-row") === null);
+
+  // A normal (non-code) link keeps the fetch affordance and shows no notice.
+  store.setImport("https://claude.ai/share/abc123");
+  render(appTemplate(store), c);
+  assert("share link: no code-link notice", c.querySelector(".code-link-notice") === null);
+  assert("share link: fetch row present", c.querySelector(".import-row") !== null);
+}
+
 if (process.exitCode) {
   console.error("\nFAILED");
 } else {

@@ -20,6 +20,7 @@ import { platformOf, sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
+import { claudeCodeSessionId } from "../url";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveDialogue } from "../dialogue";
 
@@ -179,6 +180,15 @@ export class EditorStore {
 
   get isUrlImport(): boolean {
     return this.importKind === "url";
+  }
+
+  // [LAW:one-source-of-truth] Recognize a claude.ai/code session link via the one
+  // shared matcher (url.ts). Non-null = the import text IS such a link (value is
+  // its session id): the view offers the agent-handoff workaround instead of a
+  // fetch, because slopspot cannot fetch these server-side yet. Drives a DISPLAY
+  // branch only; the link is never silently fetched as a doomed url import.
+  get claudeCodeLinkId(): string | null {
+    return claudeCodeSessionId(this.importText);
   }
 
   // [LAW:one-source-of-truth] Styling provenance is DERIVED from the import

@@ -298,6 +298,38 @@ const PLATFORM_DISPLAY: Record<Platform, string> = {
   "generic": "Generic",
 };
 
+// [LAW:no-silent-failure] applied to the PRODUCT message: a claude.ai/code link
+// cannot be fetched server-side yet (slopspot-cc-share-4nc.2/.10), so the editor
+// says so plainly and hands the user a workaround instead of silently fetching
+// the login wall. The agent that owns the session extracts it and POSTs to
+// /api/draft, which opens it here unsubmitted for review. The instruction is
+// self-contained (works whether or not the share-slop skill is installed).
+const CLAUDE_CODE_HANDOFF_PROMPT = `Share my current Claude Code session to slopspot for review. If the share-slop skill is installed, run it. Otherwise: read this session's transcript at ~/.claude/projects/<slug>/$CLAUDE_CODE_SESSION_ID.jsonl (slug = $PWD with every "/" and "." replaced by "-"), append any ~/.claude/projects/<slug>/$CLAUDE_CODE_SESSION_ID/subagents/agent-*.jsonl files, then POST {"source":{"kind":"claude-jsonl","content":"<the full jsonl text>"}} with header "content-type: application/json" to https://paste.slopspot.ai/api/draft. The response is {"draftId","url"}; open https://paste.slopspot.ai followed by that "url" to review the rendered conversation, then publish it.`;
+
+// [LAW:effects-at-boundaries] A leaf UI affordance: copy the handoff text to the
+// clipboard. Optional-chained because jsdom/older browsers may lack the API; a
+// missing clipboard is a no-op, never a throw mid-handler.
+const copyHandoff = (): void => {
+  void navigator.clipboard?.writeText(CLAUDE_CODE_HANDOFF_PROMPT);
+};
+
+const codeLinkNotice = (): TemplateResult => html`
+  <div class="code-link-notice" role="note">
+    <p class="code-link-title">
+      Direct fetch of <code>claude.ai/code</code> links isn’t available yet
+      <span class="code-link-temp">(temporary)</span>.
+    </p>
+    <p class="code-link-body">
+      A shared Claude Code session is private to your Claude account, so slopspot
+      can’t fetch it server-side yet. Paste the instruction below into the Claude
+      Code session you want to share — your agent extracts it and opens it here,
+      filled in and ready for you to review before publishing.
+    </p>
+    <textarea class="code-link-prompt" readonly rows="5" .value=${CLAUDE_CODE_HANDOFF_PROMPT}></textarea>
+    <button class="btn-secondary code-link-copy" @click=${copyHandoff}>Copy instructions</button>
+  </div>
+`;
+
 const importBox = (store: EditorStore): TemplateResult => html`
   <div class="import-box">
     <label class="visually-hidden" for="import-text">Conversation to import</label>
@@ -309,21 +341,24 @@ const importBox = (store: EditorStore): TemplateResult => html`
       .value=${store.importText}
       @input=${(e: Event) => store.setImport(valueOf(e))}
     ></textarea>
-    <div class="import-row">
-      <select
-        class="source-select"
-        @change=${(e: Event) => store.setImportKind(asInputKind(store, valueOf(e)))}
-      >
-        ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${inputLabel(k)}</option>`)}
-      </select>
-      <button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.ingest()}>
-        ${store.isUrlImport
-          ? store.busy
-            ? "Fetching…"
-            : "Fetch & parse"
-          : "Parse into blocks"}
-      </button>
-    </div>
+    ${store.claudeCodeLinkId !== null
+      ? codeLinkNotice()
+      : html`
+        <div class="import-row">
+          <select
+            class="source-select"
+            @change=${(e: Event) => store.setImportKind(asInputKind(store, valueOf(e)))}
+          >
+            ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${inputLabel(k)}</option>`)}
+          </select>
+          <button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.ingest()}>
+            ${store.isUrlImport
+              ? store.busy
+                ? "Fetching…"
+                : "Fetch & parse"
+              : "Parse into blocks"}
+          </button>
+        </div>`}
     ${store.importError === null
       ? nothing
       : html`<p class="form-error" role="alert">${store.importError}</p>`}
