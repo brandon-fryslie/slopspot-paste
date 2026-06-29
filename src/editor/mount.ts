@@ -11,7 +11,7 @@
 
 import { autorun, comparer, reaction, type IReactionDisposer } from "mobx";
 import { render } from "lit-html";
-import { isOrigin, isTurns } from "../types";
+import { isOrigin, isTurns, upgradeOrigin } from "../types";
 import { EditorStore, type Draft, type EditorIo, type ImportResult, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
 import { enhanceClampBlocks } from "../clampBlocks";
@@ -107,7 +107,13 @@ const loadDraft = (): Draft => {
     if (isTurns(parsed)) return { turns: parsed, origin: null };
     const o = parsed as { turns?: unknown; origin?: unknown } | null;
     if (o && isTurns(o.turns)) {
-      return { turns: o.turns, origin: isOrigin(o.origin) ? o.origin : null };
+      // [LAW:single-enforcer] Run the SAME legacy-origin migration the server applies
+      // on KV read (types.upgradeOrigin), so a draft saved before the URL arm was
+      // generalized — its origin still the legacy { kind:"claude-share", … } shape —
+      // hydrates as a replayable url origin instead of failing isOrigin and silently
+      // dropping its provenance to null. [LAW:no-silent-failure]
+      const upgraded = upgradeOrigin(o.origin);
+      return { turns: o.turns, origin: isOrigin(upgraded) ? upgraded : null };
     }
     return EMPTY_DRAFT;
   } catch {

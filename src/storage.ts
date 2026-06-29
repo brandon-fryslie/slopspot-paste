@@ -1,5 +1,5 @@
 import type { Conversation, Lifetime } from "./types";
-import { isOrigin, isPlatform, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
+import { isOrigin, isPlatform, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
 // to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
@@ -12,33 +12,10 @@ import { isOrigin, isPlatform, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS 
 // [LAW:one-way-deps] This module imports types only. Pages/API import storage.
 // Storage never imports rendering.
 
-// [LAW:types-are-the-program] Records written before the URL arm was generalized
-// store a fetched origin as { kind:"claude-share", url, fetched }. The current
-// shape is the generic url arm tagged with its provider: { kind:"url", url,
-// fetched, provider:"claude-share" }. Upgrade the legacy discriminator on read —
-// including a share origin nested as an editor arm's `input` — so every origin
-// above this boundary speaks the current shape. This is the governing
-// architecture in action: stored bytes are untouched; the new shape is DERIVED on
-// read, so the rename costs zero migration.
-// [LAW:no-silent-failure] Only the exact legacy share shape is rewritten; any
-// other value passes through unchanged to isOrigin, which rejects junk to null.
-const upgradeReplayable = (raw: unknown): unknown => {
-  if (!raw || typeof raw !== "object") return raw;
-  const o = raw as { kind?: unknown; url?: unknown; fetched?: unknown };
-  if (o.kind === "claude-share" && typeof o.url === "string" && typeof o.fetched === "string") {
-    return { kind: "url", url: o.url, fetched: o.fetched, provider: "claude-share" };
-  }
-  return raw;
-};
-
-export const upgradeOrigin = (raw: unknown): unknown => {
-  if (!raw || typeof raw !== "object") return raw;
-  const o = raw as { kind?: unknown; input?: unknown };
-  if (o.kind === "editor") {
-    return o.input === undefined ? raw : { ...o, input: upgradeReplayable(o.input) };
-  }
-  return upgradeReplayable(raw);
-};
+// [LAW:single-enforcer] The legacy-origin migration lives in types.ts (upgradeOrigin),
+// co-located with Origin/isOrigin and shared with the client draft loader — the same
+// rename must not be re-implemented per reader. This module composes it with the
+// KV-only wrapper unwrap below.
 
 // [LAW:types-are-the-program] KV is a trust boundary. Three historical origin
 // shapes exist in the store: bare Origin (current format), the StoredOrigin
