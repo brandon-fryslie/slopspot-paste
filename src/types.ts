@@ -333,44 +333,72 @@ export type ParseResult =
   | { ok: true; turns: ReadonlyArray<Turn>; origin: Origin }
   | { ok: false; reason: string };
 
+// [LAW:one-type-per-behavior] A Provider is which recognized conversation host a
+// fetched URL came from — a VALUE the url arm carries, never a per-provider arm
+// kind. Every provider shares one behavior (fetch the link, store the original
+// bytes, derive turns from a pure parser), differing only in the URL pattern that
+// identifies it and the parser that projects it — values the registry holds
+// (slopspot-url-ingestion-wfd.3). A Provider is also the styling identity of a
+// fetched paste: every Provider is a SourceKind, so it maps to a Platform exactly
+// as the text kinds do. Today the one provider whose parser exists is
+// claude-share; .3/.4 widen this set as their parsers land.
+export const PROVIDERS = ["claude-share"] as const;
+export type Provider = (typeof PROVIDERS)[number];
+
+export const isProvider = (v: unknown): v is Provider =>
+  typeof v === "string" && (PROVIDERS as ReadonlyArray<string>).includes(v);
+
 // [LAW:types-are-the-program] PasteInput IS the input to parsing — each arm
 // carries exactly the fields its parser needs and no more. A flat enum with a
 // separate `content` field would admit illegal pairings (e.g. a URL-kind with
 // `content` and no URL); the discriminated shape forbids them by construction.
 //
 // [LAW:single-enforcer] Network access lives on exactly one arm. Text arms
-// dispatch to local pure parsers; only the URL arm (claude-share) can reach
-// the network. The cost model is visible in the types — no scattered
-// `if (looksLikeUrl(...)) fetch(...)` gates.
+// dispatch to local pure parsers; only the url arm can reach the network. The
+// cost model is visible in the types — no scattered `if (looksLikeUrl(...))
+// fetch(...)` gates.
 //
-// [LAW:no-mode-explosion] Each arm earns its keep by mapping to a distinct
-// header-detector in src/parser.ts (or, for claude-share, an entirely
-// distinct ingestion path). No "config bag" — per-source options land as
-// new *fields on the relevant arm* rather than as flag combinations.
+// [LAW:one-type-per-behavior] The text kinds are one structural arm keyed by
+// TextArmKind — identical "carry the content" behavior — and the url arm is the
+// single generic fetch arm. There is no bespoke arm per provider: a new provider
+// is a VALUE (its pattern + parser in the registry), not a new PasteInput shape.
+// The url arm carries no provider yet — that is resolved from the URL during
+// ingestion and stamped on the stored origin below.
 export type PasteInput =
-  | { readonly kind: "claude-code"; readonly content: string }
-  | { readonly kind: "claude-jsonl"; readonly content: string }
-  | { readonly kind: "chatgpt"; readonly content: string }
-  | { readonly kind: "claude-paste"; readonly content: string }
-  | { readonly kind: "markdown"; readonly content: string }
-  | { readonly kind: "raw"; readonly content: string }
-  | { readonly kind: "claude-share"; readonly url: string };
+  | { readonly kind: TextArmKind; readonly content: string }
+  | { readonly kind: "url"; readonly url: string };
 
 // [LAW:types-are-the-program] The URL/text bifurcation IS the type — text arms
-// expose `content`, the URL arm exposes `url`. Code that needs to read "the
+// expose `content`, the url arm exposes `url`. Code that needs to read "the
 // user-supplied string regardless of shape" goes through this accessor so the
 // discriminator stays the single point of dispatch.
 export const inputText = (input: PasteInput): string =>
-  input.kind === "claude-share" ? input.url : input.content;
+  input.kind === "url" ? input.url : input.content;
 
-export type SourceKind = PasteInput["kind"];
+// [LAW:types-are-the-program] The kinds a user picks at the input boundary —
+// exactly PasteInput's discriminator: the text arms, or the generic "url" fetch
+// arm. Deliberately DISTINCT from SourceKind: SourceKind carries Providers
+// (claude-share, …) for styling, but the user never PICKS a provider — it is
+// resolved from the URL server-side at fetch time. So detection and the dropdown
+// speak InputKind ("any link is one 'url' option"), while provenance/styling
+// speaks SourceKind. The two axes meet only at ingest, where the url arm's
+// resolved Provider becomes the stored origin's styling identity.
+export type InputKind = PasteInput["kind"];
 
-// [LAW:types-are-the-program] The content-bearing kinds (everything but the URL
-// arm) and a typed constructor for building their PasteInput. Callers that hold
-// a non-share kind + content build the arm through textArmInput so the union
-// shape is checked by the compiler — no `as PasteInput` assertion that would
-// mask a future URL-shaped arm.
-export type TextArmKind = Exclude<SourceKind, "claude-share">;
+// [LAW:one-source-of-truth] SourceKind is the provenance/styling identity set —
+// the dropdown options, the parser-dispatch keys, the platform-styling keys. It
+// derives from the SOURCE_KINDS tuple (below), NOT from PasteInput["kind"]: the
+// url arm's discriminator is the generic "url", while a fetched paste's
+// provenance is its Provider (claude-share, …). The two axes are deliberately
+// distinct — every Provider is a SourceKind; the text kinds are the rest.
+export type SourceKind = (typeof SOURCE_KINDS)[number];
+
+// [LAW:types-are-the-program] The content-bearing kinds (every SourceKind that is
+// not a URL Provider) and a typed constructor for building their PasteInput.
+// Callers that hold a text kind + content build the arm through textArmInput so
+// the union shape is checked by the compiler — no `as PasteInput` assertion that
+// would mask the url-shaped arm.
+export type TextArmKind = Exclude<SourceKind, Provider>;
 export const textArmInput = (kind: TextArmKind, content: string): PasteInput => ({
   kind,
   content,
@@ -380,10 +408,11 @@ export const textArmInput = (kind: TextArmKind, content: string): PasteInput => 
 // input a paste was created from, in the strongest shape that lets us replay it
 // without the network. It is PasteInput's storable twin: every text arm already
 // carries its verbatim `content`, so those collapse to one structural arm keyed
-// by kind ([LAW:one-type-per-behavior] — six text kinds, identical "carry the
-// content" behavior). The claude-share arm is the one that was lossy: it keeps
-// the link AND the original fetched markdown (HAR-spirit: the bytes, not just a
-// pointer), so re-projection parses stored bytes rather than re-hitting Firecrawl.
+// by kind ([LAW:one-type-per-behavior] — the text kinds, identical "carry the
+// content" behavior). The url arm is the one that was lossy: it keeps the link,
+// the original fetched markdown (HAR-spirit: the bytes, not just a pointer), AND
+// the Provider tag, so re-projection parses the stored bytes through that
+// provider's parser rather than re-hitting Firecrawl.
 //
 // The `editor` arm is in-editor authoring: there is no upstream input the parser
 // consumed — the (possibly hand-edited) Turns ARE the source, so reprojectOrigin
@@ -400,24 +429,42 @@ export const textArmInput = (kind: TextArmKind, content: string): PasteInput => 
 // from parse(input) — turns are the authority — but input preserves the provenance
 // so it is never silently discarded ([LAW:no-silent-failure]). Absent = authored
 // from scratch or edited from an editor-origin draft (no upstream text to replay).
-// [LAW:types-are-the-program] `input` is scoped to the replayable arms (text/share)
+// [LAW:types-are-the-program] `input` is scoped to the replayable arms (text/url)
 // — an editor arm has no upstream text and can never be a valid provenance source,
 // so that state is unrepresentable. This also keeps isOrigin non-recursive.
+// [LAW:types-are-the-program] The url arm's `provider` is `Provider | null`:
+// null is the honest "fetched from a host no registered provider claims" state —
+// a value distinct from each known provider, not a missing field. Re-projection
+// reads it to pick the parser (a named provider's parser, or the best-effort
+// fallback for null), and styling derives generic from null. A fetched paste
+// whose host gained a provider later still re-derives correctly: the stored
+// bytes are the authority, the provider tag only selects which parser replays them.
 export type ReplayableOrigin =
   | { readonly kind: TextArmKind; readonly content: string }
-  | { readonly kind: "claude-share"; readonly url: string; readonly fetched: string };
+  | {
+      readonly kind: "url";
+      readonly url: string;
+      readonly fetched: string;
+      readonly provider: Provider | null;
+    };
 
 export type Origin =
   | ReplayableOrigin
   | { readonly kind: "editor"; readonly source: SourceKind | null; readonly input?: ReplayableOrigin };
 
-const isTextArmKind = (v: unknown): v is TextArmKind =>
+export const isTextArmKind = (v: unknown): v is TextArmKind =>
   typeof v === "string" && (TEXT_ARM_KINDS as ReadonlyArray<string>).includes(v);
 
 const isReplayableOrigin = (v: unknown): v is ReplayableOrigin => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown };
-  if (o.kind === "claude-share") return typeof o.url === "string" && typeof o.fetched === "string";
+  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; provider?: unknown };
+  if (o.kind === "url") {
+    return (
+      typeof o.url === "string" &&
+      typeof o.fetched === "string" &&
+      (o.provider === null || isProvider(o.provider))
+    );
+  }
   return isTextArmKind(o.kind) && typeof o.content === "string";
 };
 
@@ -436,21 +483,58 @@ export const isOrigin = (v: unknown): v is Origin => {
   return isReplayableOrigin(v);
 };
 
+// [LAW:single-enforcer] / [LAW:one-source-of-truth] The ONE migration that lifts a
+// legacy origin shape to the current one, co-located with Origin and isOrigin so it
+// cannot drift from the type it migrates. Records and drafts written before the URL
+// arm was generalized store a fetched origin as { kind:"claude-share", url, fetched };
+// the current shape is the generic url arm tagged with its provider. BOTH consumers
+// run this exact function: the server (storage.normalizeOrigin, reading KV) and the
+// client (editor draft loader, reading localStorage). This is the governing
+// architecture in action — stored bytes are untouched; the new shape is DERIVED on
+// read, so the rename costs zero migration and no caller can forget to apply it.
+// [LAW:no-silent-failure] Only the exact legacy share shape is rewritten; any other
+// value passes through unchanged to isOrigin, which rejects junk to null.
+const upgradeReplayable = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = raw as { kind?: unknown; url?: unknown; fetched?: unknown };
+  if (o.kind === "claude-share" && typeof o.url === "string" && typeof o.fetched === "string") {
+    return { kind: "url", url: o.url, fetched: o.fetched, provider: "claude-share" };
+  }
+  return raw;
+};
+
+export const upgradeOrigin = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = raw as { kind?: unknown; input?: unknown };
+  if (o.kind === "editor") {
+    return o.input === undefined ? raw : { ...o, input: upgradeReplayable(o.input) };
+  }
+  return upgradeReplayable(raw);
+};
+
 // [LAW:one-source-of-truth] The single derivation of styling provenance from the
 // canonical origin. A text or share arm reports its own kind; the editor arm
-// reports the provenance it carried; legacy (null) origin and from-scratch
-// editor authoring both report null — honest absence, rendered as the generic
-// platform. Nothing re-guesses the platform from content.
-export const sourceOf = (origin: Origin | null): SourceKind | null =>
-  origin === null || origin.kind === "editor" ? (origin?.source ?? null) : origin.kind;
+// reports the provenance it carried; a url arm reports its Provider (the host it
+// was fetched from); legacy (null) origin and from-scratch editor authoring both
+// report null — honest absence, rendered as the generic platform. Nothing
+// re-guesses the platform from content.
+// [LAW:dataflow-not-control-flow] One total projection over the origin shapes;
+// each arm names the SourceKind it contributes, so styling is a value, not a
+// scattered set of `if (kind === …)` guesses.
+export const sourceOf = (origin: Origin | null): SourceKind | null => {
+  if (origin === null) return null;
+  if (origin.kind === "editor") return origin.source;
+  if (origin.kind === "url") return origin.provider;
+  return origin.kind;
+};
 
 // [LAW:one-source-of-truth] The single derivation of "where on the web this paste
-// came from" — the share link, or null for every origin without an upstream URL
+// came from" — the fetched link, or null for every origin without an upstream URL
 // (text arms carry verbatim content, editor authoring and legacy records have no
 // source URL). The paste page reads this projection of the canonical origin;
 // nothing re-guesses a URL from content or stores it as a second field.
 export const sourceUrlOf = (origin: Origin | null): string | null =>
-  origin?.kind === "claude-share" ? origin.url : null;
+  origin?.kind === "url" ? origin.url : null;
 
 
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
@@ -458,7 +542,7 @@ export const sourceUrlOf = (origin: Origin | null): string | null =>
 // tuple. Order is detection-priority: most-specific markers first, raw last.
 // claude-share leads — a matching URL pattern is the cheapest, strictest
 // classifier we have (one regex on one trimmed line).
-export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
+export const SOURCE_KINDS = [
   "claude-share",  // https://claude.ai/share/<id> — strictest, no false-positive
   "claude-jsonl",  // CC session JSONL — valid JSON on the first line
   "claude-code",   // ❯ ⏺ ⎿ — most specific markers, can't false-positive
@@ -466,7 +550,7 @@ export const SOURCE_KINDS: ReadonlyArray<SourceKind> = [
   "chatgpt",       // "You said:" / "ChatGPT said:" — copy-paste marker
   "claude-paste",  // "Human:" / "Assistant:" — bare name+colon
   "raw",           // always succeeds; fallback bubble
-];
+] as const;
 
 // [LAW:one-source-of-truth] The text-arm subset and the wire validator are both
 // derived from SOURCE_KINDS, so neither can drift from the canonical tuple.
@@ -516,7 +600,10 @@ export const PLATFORM_LABEL: { readonly [P in Platform]: string | null } = {
 };
 
 export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
-  "claude-share": "claude.ai/share URL (we fetch + parse it)",
+  // claude-share is a Provider styling identity, not a dropdown option — the
+  // dropdown offers the generic "url" arm (URL_INPUT_LABEL) and resolves the
+  // provider server-side. This entry keeps the map total over SourceKind.
+  "claude-share": "Claude (claude.ai/share)",
   "claude-jsonl": "Claude Code session JSONL (raw transcript file)",
   "claude-code": "Claude Code transcript",
   "chatgpt": "ChatGPT / Claude.ai (You said: / … said:)",
@@ -524,3 +611,18 @@ export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
   "markdown": "Markdown headings (## User / ## Assistant)",
   "raw": "Raw (single bubble, no parsing)",
 };
+
+// [LAW:one-source-of-truth] The input-kind set the detector emits and the
+// dropdown renders: the generic url fetch arm plus every text arm, derived from
+// TEXT_ARM_KINDS so it cannot drift from SOURCE_KINDS. "url" leads — a link is
+// the cheapest, strictest classifier (one isUrl check) and routes straight to
+// the fetch arm, never the text-parser race.
+export const INPUT_KINDS: ReadonlyArray<InputKind> = ["url", ...TEXT_ARM_KINDS];
+
+// [LAW:one-source-of-truth] The dropdown label for an input kind. Text arms reuse
+// SOURCE_LABEL (they ARE SourceKinds); the generic url arm — not a SourceKind —
+// carries its own label here. One total projection, no duplicated text-arm
+// strings. `kind === "url"` narrows the else to TextArmKind ⊆ SourceKind.
+export const URL_INPUT_LABEL = "URL — any conversation link (we fetch + parse it)";
+export const inputLabel = (kind: InputKind): string =>
+  kind === "url" ? URL_INPUT_LABEL : SOURCE_LABEL[kind];

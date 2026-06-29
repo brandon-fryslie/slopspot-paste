@@ -4,7 +4,7 @@
 // that makes the leak class behind GitHub secret-scanning alert #1
 // unrepresentable in committed fixtures. Never commit a raw scrape directly.
 //
-// Usage:      npm run capture-fixture -- <claude.ai/share URL> <fixture-name>
+// Usage:      npm run capture-fixture -- <share URL> <fixture-name> [wait-selector]
 // Writes:     test/fixtures/<fixture-name>.md
 // Exit codes: 0 fixture written · 1 scrape or scrub verification failed ·
 //             2 usage / configuration error.
@@ -12,9 +12,10 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { firecrawlScrape } from "../src/firecrawl";
-import { isClaudeShareUrl } from "../src/parser";
-import { isIndicatorEligible, parseClaudeShare } from "../src/parsers/claude-share";
+import { firecrawlScrape, type WaitStrategy } from "../src/firecrawl";
+import { PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
+import { isUrl } from "../src/parser";
+import { isIndicatorEligible } from "../src/parsers/claude-share";
 import { MAX_PASTE_BYTES, MAX_PASTE_LABEL } from "../src/types";
 
 // [LAW:dataflow-not-control-flow] The scrub is an unconditional fold over
@@ -110,9 +111,10 @@ export const compareLines = (before: string, after: string): ScrubReport => {
   return { changedLines, flips };
 };
 
-// Fixture names are enforced here so the convention has a single owner; every
-// existing fixture for this source matches it.
-const FIXTURE_NAME_RE = /^claude-share(-[a-z0-9-]+)?$/;
+// Fixture names are enforced here so the convention has a single owner. Kebab-
+// case, host-prefixed by convention (claude-share-*, claude-code-*, chatgpt-
+// share-*) so a fixture's provider is legible from its filename.
+const FIXTURE_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function fail(code: 1 | 2, message: string): never {
   console.error(message);
@@ -134,22 +136,48 @@ const resolveApiKey = (): string => {
 };
 
 const main = async (): Promise<void> => {
-  const [url, name, ...extra] = process.argv.slice(2);
+  const [url, name, selectorArg, ...extra] = process.argv.slice(2);
   if (!url || !name || extra.length > 0) {
     fail(
       2,
-      "Usage: npm run capture-fixture -- <claude.ai/share URL> <fixture-name>\n" +
-        "  fixture-name matches claude-share[-suffix]; output is test/fixtures/<fixture-name>.md",
+      "Usage: npm run capture-fixture -- <conversation share URL> <fixture-name> [wait-selector]\n" +
+        "  fixture-name is kebab-case; output is test/fixtures/<fixture-name>.md\n" +
+        "  wait-selector overrides the registry selector — required for a host no provider claims yet",
     );
   }
-  if (!isClaudeShareUrl(url)) {
-    fail(2, `Not a claude.ai/share URL: ${url}`);
+  if (!isUrl(url)) {
+    fail(2, `Not an http(s) URL: ${url}`);
   }
   if (!FIXTURE_NAME_RE.test(name)) {
     fail(2, `Fixture name must match ${FIXTURE_NAME_RE} (got: ${name})`);
   }
 
-  const result = await firecrawlScrape(url, { FIRECRAWL_API_KEY: resolveApiKey() });
+  // [LAW:dataflow-not-control-flow] The provider registry supplies BOTH per-host
+  // values capture needs as VALUES, selected by one URL→provider lookup: the wait
+  // selector firecrawlScrape now requires, and the parser the fixture gate runs.
+  // An explicit selector arg overrides for a host no provider claims yet (the
+  // spike captures arbitrary hosts — e.g. capturing chatgpt.com/share to seed its
+  // future parser). [LAW:no-silent-failure] An unregistered host with NO explicit
+  // selector fails loudly: there is no universal hydration selector to guess (the
+  // spike proved a wrong one times out), so capture refuses rather than scrape blind.
+  const provider = resolveProvider(url);
+  const entry = provider === null ? null : PROVIDER_REGISTRY[provider];
+  // An explicit selectorArg is a `selector` strategy — capturing a known host's
+  // page expects its hydration selector. Otherwise the registered provider's wait
+  // is used. (Capture deliberately does NOT fall back to a blind settle: a fixture
+  // must prove its bytes hydrated, so an unclaimed host without an explicit
+  // selector fails loudly rather than risk capturing a half-rendered page.)
+  const wait: WaitStrategy | undefined =
+    selectorArg !== undefined ? { kind: "selector", selector: selectorArg } : entry?.wait;
+  if (!wait) {
+    fail(
+      2,
+      `No registered provider claims ${url} and no wait-selector was supplied.\n` +
+        "  Pass the host's hydration selector as the third argument.",
+    );
+  }
+
+  const result = await firecrawlScrape(url, wait, { FIRECRAWL_API_KEY: resolveApiKey() });
   if (!result.ok) {
     fail(1, `Scrape failed: ${result.reason}`);
   }
@@ -164,11 +192,23 @@ const main = async (): Promise<void> => {
   if (leaks.length > 0) {
     fail(1, "Credentials survived the scrub; nothing written:\n" + leaks.map((l) => `  - ${l}`).join("\n"));
   }
-  // Mirrors the last ingestion gate: a capture the production parser turns
-  // into nothing (e.g. a "Loading..." scrape race) is not a legal fixture.
-  const turns = parseClaudeShare(scrubbed);
-  if (turns === null || turns.length === 0) {
-    fail(1, "Scrape did not parse as a claude.ai share conversation; nothing written.");
+  // [LAW:dataflow-not-control-flow] One fixture-validity gate runs for EVERY
+  // host; the variability is a VALUE — the validator selected for this URL — not
+  // a branch deciding whether the gate runs. A registered provider supplies the
+  // real predicate (its parser projects the fetched bytes into a conversation); a
+  // host no provider claims yet supplies the honest identity, leaving parseability
+  // for the parser task that will register it to assert. This reads the SAME
+  // registry ingestion uses, so the gate cannot diverge from production parsing.
+  // `entry` is const, so its non-null narrowing holds inside the closure — the
+  // gate reads the registered parser directly, no assertion.
+  const fixtureGate: (md: string) => boolean = entry
+    ? (md) => {
+        const turns = entry.parser(md);
+        return turns !== null && turns.length > 0;
+      }
+    : () => true;
+  if (!fixtureGate(scrubbed)) {
+    fail(1, "Scrape did not parse into a conversation; nothing written.");
   }
   const report = compareLines(result.markdown, scrubbed);
   if (report.flips.length > 0) {

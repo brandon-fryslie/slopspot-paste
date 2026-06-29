@@ -1,5 +1,5 @@
 import type { Conversation, Lifetime } from "./types";
-import { isOrigin, isPlatform, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
+import { isOrigin, isPlatform, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
 // to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
@@ -12,15 +12,23 @@ import { isOrigin, isPlatform, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS 
 // [LAW:one-way-deps] This module imports types only. Pages/API import storage.
 // Storage never imports rendering.
 
-// [LAW:types-are-the-program] KV is a trust boundary. Two historical origin
-// shapes exist in the store: bare Origin (current format) and StoredOrigin
-// wrapper { status, origin } (written before this commit's simplification).
-// Both unwrap to the same Origin|null the type now declares.
+// [LAW:single-enforcer] The legacy-origin migration lives in types.ts (upgradeOrigin),
+// co-located with Origin/isOrigin and shared with the client draft loader — the same
+// rename must not be re-implemented per reader. This module composes it with the
+// KV-only wrapper unwrap below.
+
+// [LAW:types-are-the-program] KV is a trust boundary. Three historical origin
+// shapes exist in the store: bare Origin (current format), the StoredOrigin
+// wrapper { status, origin } (written before this commit's simplification), and
+// the legacy claude-share discriminator (written before the URL arm was
+// generalized). upgradeOrigin lifts the legacy discriminator; isOrigin validates
+// the rest. All converge to the same Origin|null the type now declares.
 // [LAW:no-silent-failure] Wrapper records are extracted, not silently dropped.
 const normalizeOrigin = (raw: unknown): Conversation["origin"] => {
-  if (isOrigin(raw)) return raw;
+  const upgraded = upgradeOrigin(raw);
+  if (isOrigin(upgraded)) return upgraded;
   if (raw && typeof raw === "object") {
-    const inner = (raw as { origin?: unknown }).origin;
+    const inner = upgradeOrigin((raw as { origin?: unknown }).origin);
     if (isOrigin(inner)) return inner;
   }
   return null;
