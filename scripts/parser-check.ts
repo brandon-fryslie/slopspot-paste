@@ -11,7 +11,7 @@ import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { INPUT_KINDS, isOrigin, isTurns, PROVIDERS, sourceOf, sourceUrlOf, TEXT_ARM_KINDS, textArmInput } from "../src/types";
 import type { InputKind, Origin, SourceKind } from "../src/types";
-import { upgradeOrigin } from "../src/storage";
+import { upgradeOrigin } from "../src/types";
 import {
   parseDiff,
   parseFileRead,
@@ -656,6 +656,21 @@ console.log("\nLegacy origin upgrade (upgradeOrigin — claude-share → url arm
   const textOrigin: Origin = { kind: "markdown", content: "## User\nhi" };
   assertEq("text origin is unchanged", JSON.stringify(upgradeOrigin(textOrigin)), JSON.stringify(textOrigin));
   assert("junk passes through to be rejected by isOrigin", !isOrigin(upgradeOrigin({ kind: "nonsense" })));
+
+  // [LAW:single-enforcer] The CLIENT draft loader (mount.loadDraft) now runs the
+  // SAME upgradeOrigin the server applies on KV read. Prove the draft-migration
+  // contract: a draft persisted before the URL arm was generalized — its origin the
+  // legacy claude-share shape — hydrates as a replayable url origin, not null. The
+  // first assert is the regression that existed before the fix (raw isOrigin rejects
+  // the legacy shape, so the draft would silently drop its provenance).
+  const legacyDraftOrigin = { kind: "claude-share", url: "https://claude.ai/share/draft", fetched: "## You said:\nq" };
+  assert("regression guard: raw legacy draft origin is NOT a current Origin", !isOrigin(legacyDraftOrigin));
+  // The exact resolution loadDraft performs: upgrade, then validate.
+  const draftUpgraded = upgradeOrigin(legacyDraftOrigin);
+  const draftOrigin = isOrigin(draftUpgraded) ? draftUpgraded : null;
+  assert("loadDraft path preserves a legacy share draft's provenance (not null)", draftOrigin !== null);
+  assertEq("restored draft origin is a replayable url origin", (draftOrigin as { kind?: unknown }).kind, "url");
+  assertEq("restored draft origin keeps the claude-share provenance", sourceOf(draftOrigin as Origin), "claude-share");
 }
 
 console.log("\nOrigin → source derivation (sourceOf — shape table, provenance-kg4):");

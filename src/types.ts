@@ -483,6 +483,35 @@ export const isOrigin = (v: unknown): v is Origin => {
   return isReplayableOrigin(v);
 };
 
+// [LAW:single-enforcer] / [LAW:one-source-of-truth] The ONE migration that lifts a
+// legacy origin shape to the current one, co-located with Origin and isOrigin so it
+// cannot drift from the type it migrates. Records and drafts written before the URL
+// arm was generalized store a fetched origin as { kind:"claude-share", url, fetched };
+// the current shape is the generic url arm tagged with its provider. BOTH consumers
+// run this exact function: the server (storage.normalizeOrigin, reading KV) and the
+// client (editor draft loader, reading localStorage). This is the governing
+// architecture in action — stored bytes are untouched; the new shape is DERIVED on
+// read, so the rename costs zero migration and no caller can forget to apply it.
+// [LAW:no-silent-failure] Only the exact legacy share shape is rewritten; any other
+// value passes through unchanged to isOrigin, which rejects junk to null.
+const upgradeReplayable = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = raw as { kind?: unknown; url?: unknown; fetched?: unknown };
+  if (o.kind === "claude-share" && typeof o.url === "string" && typeof o.fetched === "string") {
+    return { kind: "url", url: o.url, fetched: o.fetched, provider: "claude-share" };
+  }
+  return raw;
+};
+
+export const upgradeOrigin = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = raw as { kind?: unknown; input?: unknown };
+  if (o.kind === "editor") {
+    return o.input === undefined ? raw : { ...o, input: upgradeReplayable(o.input) };
+  }
+  return upgradeReplayable(raw);
+};
+
 // [LAW:one-source-of-truth] The single derivation of styling provenance from the
 // canonical origin. A text or share arm reports its own kind; the editor arm
 // reports the provenance it carried; a url arm reports its Provider (the host it
