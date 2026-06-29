@@ -110,9 +110,26 @@ export const compareLines = (before: string, after: string): ScrubReport => {
   return { changedLines, flips };
 };
 
-// Fixture names are enforced here so the convention has a single owner; every
-// existing fixture for this source matches it.
-const FIXTURE_NAME_RE = /^claude-share(-[a-z0-9-]+)?$/;
+// Fixture names are enforced here so the convention has a single owner. Kebab-
+// case, host-prefixed by convention (claude-share-*, claude-code-*, chatgpt-
+// share-*) so a fixture's provider is legible from its filename.
+const FIXTURE_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+// [LAW:no-silent-failure] The spike captures ARBITRARY links, not just known
+// hosts, so the gate here is "is this a fetchable http(s) URL", not a provider
+// pattern. The foundational task (slopspot-url-ingestion-wfd.4) lifts a generic
+// isUrl into parser.ts as the one detector; this local check is the capture-time
+// stand-in until that seam exists, and is cited so it gets replaced, not copied.
+const isHttpUrl = (raw: string): boolean => {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.includes("\n")) return false;
+  try {
+    const u = new URL(trimmed);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
 
 function fail(code: 1 | 2, message: string): never {
   console.error(message);
@@ -138,12 +155,12 @@ const main = async (): Promise<void> => {
   if (!url || !name || extra.length > 0) {
     fail(
       2,
-      "Usage: npm run capture-fixture -- <claude.ai/share URL> <fixture-name>\n" +
-        "  fixture-name matches claude-share[-suffix]; output is test/fixtures/<fixture-name>.md",
+      "Usage: npm run capture-fixture -- <conversation share URL> <fixture-name>\n" +
+        "  fixture-name is kebab-case; output is test/fixtures/<fixture-name>.md",
     );
   }
-  if (!isClaudeShareUrl(url)) {
-    fail(2, `Not a claude.ai/share URL: ${url}`);
+  if (!isHttpUrl(url)) {
+    fail(2, `Not an http(s) URL: ${url}`);
   }
   if (!FIXTURE_NAME_RE.test(name)) {
     fail(2, `Fixture name must match ${FIXTURE_NAME_RE} (got: ${name})`);
@@ -164,11 +181,22 @@ const main = async (): Promise<void> => {
   if (leaks.length > 0) {
     fail(1, "Credentials survived the scrub; nothing written:\n" + leaks.map((l) => `  - ${l}`).join("\n"));
   }
-  // Mirrors the last ingestion gate: a capture the production parser turns
-  // into nothing (e.g. a "Loading..." scrape race) is not a legal fixture.
-  const turns = parseClaudeShare(scrubbed);
-  if (turns === null || turns.length === 0) {
-    fail(1, "Scrape did not parse as a claude.ai share conversation; nothing written.");
+  // [LAW:dataflow-not-control-flow] One fixture-validity gate runs for EVERY
+  // host; the variability is a VALUE — the validator selected for this URL — not
+  // a branch deciding whether the gate runs. claude-share supplies the real
+  // predicate (its parser exists today); a host whose parser is still downstream
+  // work (slopspot-url-ingestion-wfd.3) supplies `deferred`, the honest identity
+  // that leaves parseability for the parser task to assert. This is the two-entry
+  // shadow of the eventual parser registry — when that lands, this lookup
+  // collapses into it and the call site below is unchanged.
+  const parsesAsConversation = (md: string): boolean => {
+    const turns = parseClaudeShare(md);
+    return turns !== null && turns.length > 0;
+  };
+  const deferred = (_md: string): boolean => true;
+  const fixtureGate = isClaudeShareUrl(url) ? parsesAsConversation : deferred;
+  if (!fixtureGate(scrubbed)) {
+    fail(1, "Scrape did not parse into a conversation; nothing written.");
   }
   const report = compareLines(result.markdown, scrubbed);
   if (report.flips.length > 0) {
