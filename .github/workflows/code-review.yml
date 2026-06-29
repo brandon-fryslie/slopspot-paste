@@ -22,4 +22,10 @@ jobs:
       - name: Code Review
         uses: brandon-fryslie/coding-agent-review@v1
         with:
+          # The repo's committed reviewer config (.github/review-agents.yml,
+          # `default: codex`) selects the OpenAI/Codex engine, so the workflow must
+          # map OPENAI_API_KEY — the secret that config's apiKeyEnv names. Mapping
+          # only DEEPSEEK_API_KEY (the installer's default) left OPENAI_API_KEY
+          # empty and the run errored. Keep both so either configured engine resolves.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
