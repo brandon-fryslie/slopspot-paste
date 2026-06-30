@@ -342,7 +342,7 @@ export type ParseResult =
 // fetched paste: every Provider is a SourceKind, so it maps to a Platform exactly
 // as the text kinds do. Today the one provider whose parser exists is
 // claude-share; .3/.4 widen this set as their parsers land.
-export const PROVIDERS = ["claude-share"] as const;
+export const PROVIDERS = ["claude-share", "chatgpt-share"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export const isProvider = (v: unknown): v is Provider =>
@@ -544,6 +544,7 @@ export const sourceUrlOf = (origin: Origin | null): string | null =>
 // classifier we have (one regex on one trimmed line).
 export const SOURCE_KINDS = [
   "claude-share",  // https://claude.ai/share/<id> — strictest, no false-positive
+  "chatgpt-share", // https://chatgpt.com/share/<id> — URL pattern, no false-positive
   "claude-jsonl",  // CC session JSONL — valid JSON on the first line
   "claude-code",   // ❯ ⏺ ⎿ — most specific markers, can't false-positive
   "markdown",      // ## User / ## Assistant — explicit heading
@@ -555,9 +556,14 @@ export const SOURCE_KINDS = [
 // [LAW:one-source-of-truth] The text-arm subset and the wire validator are both
 // derived from SOURCE_KINDS, so neither can drift from the canonical tuple.
 // TEXT_ARM_KINDS preserves SOURCE_KINDS order — parseAuto's race priority IS
-// this order, not a second hand-maintained list.
+// this order, not a second hand-maintained list. The exclusion is derived from
+// PROVIDERS (isProvider), not a hard-coded kind name: TextArmKind is exactly
+// "a SourceKind that is not a Provider", so the runtime filter and the type
+// predicate state the SAME theorem. Hard-coding "claude-share" here would lie to
+// the compiler the moment a second provider joins — it silently leaked the new
+// provider into the text-arm race (which has no parser for it) until this derived.
 export const TEXT_ARM_KINDS: ReadonlyArray<TextArmKind> = SOURCE_KINDS.filter(
-  (k): k is TextArmKind => k !== "claude-share",
+  (k): k is TextArmKind => !isProvider(k),
 );
 
 export const isSourceKind = (v: unknown): v is SourceKind =>
@@ -579,6 +585,7 @@ export type Platform = (typeof PLATFORMS)[number];
 
 export const PLATFORM_BY_SOURCE: { readonly [K in SourceKind]: Platform } = {
   "claude-share": "claude-web",
+  "chatgpt-share": "chatgpt",
   "claude-paste": "claude-web",
   "claude-jsonl": "claude-code",
   "claude-code": "claude-code",
@@ -617,6 +624,7 @@ export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
   // dropdown offers the generic "url" arm (URL_INPUT_LABEL) and resolves the
   // provider server-side. This entry keeps the map total over SourceKind.
   "claude-share": "Claude (claude.ai/share)",
+  "chatgpt-share": "ChatGPT (chatgpt.com/share)",
   "claude-jsonl": "Claude Code session JSONL (raw transcript file)",
   "claude-code": "Claude Code transcript",
   "chatgpt": "ChatGPT / Claude.ai (You said: / … said:)",

@@ -76,8 +76,11 @@ The parser converges these inputs into the same `Turn[]`:
 - Bare name + colon on its own line: `User:` / `Assistant:`
 - Claude Code transcript: `❯` / `⏺` / `⎿` markers
 - Claude Code session JSONL: a raw `~/.claude/projects/.../<uuid>.jsonl` file
-- **claude.ai/share URL**: paste a `https://claude.ai/share/<id>` link; the
-  server fetches it via Firecrawl and parses the rendered markdown. The URL
+- **Conversation share URL**: paste a `https://claude.ai/share/<id>` or
+  `https://chatgpt.com/share/<id>` link; the server fetches it via Firecrawl and
+  parses the rendered markdown through that host's provider (see
+  `src/providers.ts` — a provider is a URL pattern + a pure parser + a hydration
+  wait selector). Any other link is fetched too and parsed best-effort. The URL
   arm is the only ingest path that does network I/O — see `src/firecrawl.ts`
   for the single enforcer.
 
