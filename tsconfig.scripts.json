@@ -1,0 +1,19 @@
+{
+  // [LAW:decomposition] The test scripts are a Node + jsdom + lit-html program, a
+  // DIFFERENT ambient world than the Cloudflare Worker `src` (which `astro check`
+  // owns). They are type-checked here so test fixtures cannot silently drift out of
+  // conformance with the `src` interfaces they implement (slopspot-tooling-ba1).
+  //
+  // Crucially this config does NOT include `worker-configuration.d.ts`: its ambient
+  // `interface Element` (Cloudflare HTMLRewriter, `remove(): Element`) would
+  // declaration-merge with the DOM lib's `Element` (`remove(): void`) and poison
+  // every `querySelectorAll<HTMLSelectElement>` the jsdom view tests rely on. The
+  // scripts import only pure/client `src` modules, none of which reference Worker
+  // ambient globals, so excluding it is sound.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node", "jsdom"]
+  },
+  "include": ["scripts"]
+}
