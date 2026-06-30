@@ -1,7 +1,7 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { ingestRequest } from "../../ingest-request";
-import { putDraft, getDraft } from "../../storage";
+import { putDraft, getDraft, deleteDraft } from "../../storage";
 import { generateSlug } from "../../slug";
 import { json } from "../../http";
 
@@ -40,4 +40,17 @@ export const GET: APIRoute = async ({ url }) => {
   const draft = await getDraft(env.PASTES, id);
   if (draft === null) return json(404, { error: "This draft has expired or was not found." });
   return json(200, { turns: draft.turns, origin: draft.origin, platformOverride: draft.platformOverride });
+};
+
+// [LAW:no-silent-failure] Revoke a handoff draft immediately on discard, rather than
+// leaving it to expire on its TTL. [LAW:single-enforcer] Mirrors the soft-delete
+// endpoint's idempotency: deleting an absent/expired/never-stored id is a no-op that
+// returns 200, because the outcome (no draft with this id) is already reached — a
+// missing id is success, not a 404. Only a structurally invalid request (no id) is a
+// 400. The draft URL is single-use and the TTL bounds exposure, so this is hardening.
+export const DELETE: APIRoute = async ({ url }) => {
+  const id = url.searchParams.get("id");
+  if (id === null || id === "") return json(400, { error: "Missing draft id." });
+  await deleteDraft(env.PASTES, id);
+  return json(200, { id });
 };
