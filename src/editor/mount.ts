@@ -244,7 +244,15 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
     // resurrect the discarded draft. Only on success — a failed restore keeps the id
     // so its importError stays the surfaced outcome, not silently erased.
     void store.loadServerDraft(draftId).then(() => {
-      if (store.importError === null) stripDraftParam();
+      // [LAW:no-ambient-temporal-coupling] Strip ONLY when the draft was actually
+      // COMMITTED (loadTurns ran), keyed on the committed state — not when it failed
+      // (importError) and not when it was merely STAGED for a clobber confirmation
+      // (pendingReparse holds it, awaiting the user's confirm). Keying on
+      // `importError === null` alone would also strip a staged-but-uncommitted draft,
+      // discarding the only recoverable handle before the restore is applied. At
+      // mount the store is empty so accept always commits, but correctness must rest
+      // on the committed STATE, not on that ambient "empty at mount" fact.
+      if (store.importError === null && store.pendingReparse === null) stripDraftParam();
     });
   }
   // [LAW:no-ambient-temporal-coupling] mobx's autorun is the single render
