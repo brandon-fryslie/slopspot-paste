@@ -358,18 +358,31 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .source-origin a:hover { border-bottom-color: currentColor; }
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
-   A fixed vertical rail of one marker per turn, sitting in the right gutter
-   beside the centred conversation column. Built client-side from the rendered
-   turn elements (see [slug].astro).
+   A vertical rail of one marker per turn. Built client-side from the rendered
+   turn elements (see [slug].astro). One rail, two placements: on a wide viewport
+   it sits fixed in the right gutter beside the centred column; on a narrow one,
+   where there is no gutter, the SAME rail is a right-edge slide-over revealed by
+   a floating toggle. Only placement differs between the two — the rail's own
+   layout below is shared.
 
-   Two independent visibility gates, each owned by the layer that holds the fact:
-   - CSS media query: the viewport must be wide enough to have gutter room.
+   Visibility is the union of values, each owned by the layer that holds the
+   fact — no JS branch decides it:
    - body.has-timeline: JS toggles this iff the page overflows the viewport
      (navigation only has value when there is off-screen content to reach).
-   Both must hold for the rail to show. An empty rail (no turns) hides via
-   :empty. No JS branch decides visibility — the values do. */
+   - viewport width (CSS media query): wide → the gutter rail shows on has-timeline
+     alone; narrow → the rail shows only while body.minimap-open (the toggle is up).
+   An empty rail (no turns) hides via :empty. */
 .minimap {
+  /* Intrinsic rail layout, shared by both placements. Inert while display:none;
+     each media query below only flips display + sets where the rail sits, so the
+     column/scroll/gap shape has a single source of truth. */
   display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  z-index: 20;
 }
 .minimap:empty {
   display: none !important;
@@ -381,17 +394,79 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
     top: 50%;
     right: 24px;
     transform: translateY(-50%);
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 5px;
     max-height: 80vh;
-    overflow-y: auto;
     padding: 8px 6px;
-    z-index: 20;
-    scrollbar-width: none;
+  }
+}
+@media (max-width: 1099px) {
+  /* The same rail as a right-anchored slide-over. [LAW:dataflow-not-control-flow]
+     shown iff a timeline exists AND the panel is open — a union of values, not a
+     branch. The backing surface + scrim lift it above the prose it overlays. */
+  body.has-timeline.minimap-open .minimap {
+    display: flex;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 100dvh;
+    padding: 16px 12px;
+    padding-right: max(12px, env(safe-area-inset-right));
+    background: var(--bg-elev);
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 24px rgb(0 0 0 / 18%);
+  }
+  /* Touch targets: every marker is at least a finger tall, its lines centred so a
+     one-line turn stays tappable without changing how length reads. */
+  body.minimap-open .minimap .minimap-marker {
+    min-height: 44px;
+    justify-content: center;
   }
 }
 .minimap::-webkit-scrollbar { display: none; }
+
+/* Mobile timeline toggle — a floating control that opens the slide-over rail,
+   and the scrim that dims the prose behind it. Both hidden on desktop (the rail
+   shows in the gutter directly) and whenever there is no timeline. The glyph is a
+   miniature spine, previewing the rail it opens. */
+.minimap-toggle { display: none; }
+.minimap-scrim { display: none; }
+@media (max-width: 1099px) {
+  body.has-timeline .minimap-toggle {
+    display: flex;
+    position: fixed;
+    right: 16px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    z-index: 21;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 3px;
+    width: 44px;
+    height: 44px;
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-elev);
+    box-shadow: 0 2px 10px rgb(0 0 0 / 18%);
+    cursor: pointer;
+    appearance: none;
+  }
+  body.minimap-open .minimap-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+    background: rgb(0 0 0 / 35%);
+  }
+}
+.minimap-toggle-line {
+  height: 2px;
+  border-radius: 999px;
+  background: var(--fg-muted);
+}
+.minimap-toggle-line:nth-child(1) { width: 13px; }
+.minimap-toggle-line:nth-child(2) { width: 20px; }
+.minimap-toggle-line:nth-child(3) { width: 9px; }
 .minimap-marker {
   /* A marker is a turn rendered as wrapped text: a column of full-width line
      slots plus a partial final line, so the turn's length reads the way text
