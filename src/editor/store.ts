@@ -15,7 +15,7 @@
 // explosion). Variability lives in the turn value crossing one seam.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
+import type { DraftRecord, InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
 import { platformOf, sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
@@ -40,19 +40,17 @@ export type SubmitResult =
 // It is the same outcome shape the parser returns; aliasing keeps the one type.
 export type ImportResult = ParseResult;
 
-// [LAW:one-type-per-behavior] The unit the editor authors: turns plus the Origin
-// they were imported from (null = authored from scratch, no parser ran). Submit
-// and draft persistence both move this one shape — the origin is never separated
-// from the turns it describes, so it cannot be dropped at one seam and kept at
-// another. The origin a Draft carries is the IMPORT origin (where the turns came
-// from); the store derives the origin to STAMP at submit time (see submitOrigin).
-// platformOverride carries the user's explicit theme pick to the paste API so
-// the permalink honors it instead of re-deriving from source.
-export interface Draft {
-  readonly turns: ReadonlyArray<Turn>;
-  readonly origin: Origin | null;
-  readonly platformOverride?: Platform;
-}
+// [LAW:one-type-per-behavior][LAW:one-source-of-truth] The unit the editor authors:
+// turns plus the Origin they were imported from (null = authored from scratch, no
+// parser ran). This is the editor-facing name for the canonical DraftRecord shape
+// (types.ts) — the SAME contract the server KV record speaks, defined once so the
+// client and server cannot drift. Submit and draft persistence both move this one
+// shape — the origin is never separated from the turns it describes, so it cannot
+// be dropped at one seam and kept at another. The origin a Draft carries is the
+// IMPORT origin (where the turns came from); the store derives the origin to STAMP
+// at submit time (see submitOrigin). platformOverride carries the user's explicit
+// theme pick to the paste API so the permalink honors it instead of re-deriving.
+export type Draft = DraftRecord;
 
 // [LAW:types-are-the-program] Loading a server draft (an agent handoff via
 // /api/draft) has exactly two outcomes. Unlike ImportResult it carries a Draft —

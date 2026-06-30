@@ -1,4 +1,4 @@
-import type { Conversation, Lifetime, Origin, Platform, Turn } from "./types";
+import type { Conversation, DraftRecord, Lifetime } from "./types";
 import { isOrigin, isPlatform, isTurns, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
@@ -146,14 +146,8 @@ const DRAFT_KEY_PREFIX = "draft:";
 const DRAFT_TTL_SECONDS = 3600;
 
 // [LAW:one-source-of-truth] A draft carries exactly the editable state the editor
-// restores — the same {turns, origin, platformOverride} shape the client Draft
-// and the /api/paste editor arm already speak. No second representation.
-export interface DraftRecord {
-  readonly turns: ReadonlyArray<Turn>;
-  readonly origin: Origin | null;
-  readonly platformOverride?: Platform;
-}
-
+// restores — the canonical DraftRecord shape (types.ts), the same one the client
+// Draft aliases and the /api/paste editor arm already speak. No second representation.
 export const putDraft = async (kv: KVNamespace, id: string, draft: DraftRecord): Promise<void> => {
   await kv.put(DRAFT_KEY_PREFIX + id, JSON.stringify(draft), { expirationTtl: DRAFT_TTL_SECONDS });
 };
