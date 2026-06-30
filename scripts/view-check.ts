@@ -242,6 +242,26 @@ console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/dr
   await failStore.loadServerDraft("missing");
   assert("handoff: expired draft sets importError (loud, not silent)", failStore.importError === "This draft has expired or was not found.");
   assert("handoff: expired draft leaves editor empty", failStore.blocks.length === 0);
+
+  // [LAW:effects-at-boundaries][LAW:no-silent-failure] The SHIPPING boundary must be
+  // total: a transport rejection (offline/DNS/abort) becomes a typed {ok:false},
+  // never an escaped rejection — otherwise it would propagate out of loadServerDraft
+  // (which set busy=true) and strand the editor busy with a blank screen.
+  const { fetchDraft } = await import("../src/editor/mount");
+  const origFetch = globalThis.fetch;
+  setGlobal("fetch", async (): Promise<Response> => {
+    throw new TypeError("Failed to fetch");
+  });
+  let rejected = false;
+  let boundaryResult: DraftLoadResult = { ok: false, reason: "sentinel" };
+  try {
+    boundaryResult = await fetchDraft("any-id");
+  } catch {
+    rejected = true;
+  }
+  setGlobal("fetch", origFetch);
+  assert("boundary: a rejected fetch does NOT throw out of fetchDraft", rejected === false);
+  assert("boundary: a rejected fetch resolves to a typed {ok:false}", boundaryResult.ok === false);
 }
 
 console.log("\nclaude.ai/code link handoff affordance (slopspot-cc-share-4nc.9):");

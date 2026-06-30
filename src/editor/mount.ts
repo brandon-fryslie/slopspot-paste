@@ -28,20 +28,42 @@ const must = <T,>(sel: string, ctor: new () => T): T => {
   return el;
 };
 
-// [LAW:no-silent-failure] Both network calls validate their response shape at
-// this boundary and surface a typed failure reason. /api/fetch and /api/paste
-// are our own endpoints, but a non-200, a parse failure, or a malformed body
-// becomes an explicit `{ ok: false }` the store renders — never a silent default.
+// [LAW:effects-at-boundaries][LAW:no-silent-failure] The single seam where a
+// network call becomes a value. fetch() REJECTS on a dropped connection (offline,
+// DNS, abort) — a rejection that, left to escape, would propagate out of the store
+// action that set `busy`, stranding the editor busy with no surfaced error. This
+// catches that one transport failure and renders it as `ok:false` with no body,
+// which every caller already turns into a typed reason — so the capabilities below
+// honor their `Promise<...Result>` type (they resolve, never reject) and the store
+// interior stays pure. Not a silent swallow: the failure surfaces as the caller's
+// reason; only the raw rejection is converted, never discarded.
+const callJson = async (
+  input: string,
+  init?: RequestInit,
+): Promise<{ readonly ok: boolean; readonly data: Record<string, unknown> | null }> => {
+  try {
+    const res = await fetch(input, init);
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    return { ok: res.ok, data };
+  } catch {
+    return { ok: false, data: null };
+  }
+};
+
+const POST_JSON = (body: unknown): RequestInit => ({
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+// [LAW:no-silent-failure] Each call validates its response shape at this boundary
+// and surfaces a typed failure reason. /api/fetch and /api/paste are our own
+// endpoints, but a transport failure, a non-200, a parse failure, or a malformed
+// body becomes an explicit `{ ok: false }` the store renders — never a silent
+// default and never an escaped rejection.
 const fetchShare = async (url: string): Promise<ImportResult> => {
-  const res = await fetch("/api/fetch", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ url }),
-  });
-  const data = (await res.json().catch(() => null)) as
-    | { turns?: unknown; origin?: unknown; error?: unknown }
-    | null;
-  if (!res.ok || data === null) {
+  const { ok, data } = await callJson("/api/fetch", POST_JSON({ url }));
+  if (!ok || data === null) {
     return { ok: false, reason: errorText(data, "Failed to fetch the URL.") };
   }
   // [LAW:no-silent-failure] The captured origin is part of the response contract;
@@ -53,15 +75,17 @@ const fetchShare = async (url: string): Promise<ImportResult> => {
 };
 
 // [LAW:no-silent-failure] The agent-handoff restore. /api/draft is our own
-// endpoint, but a 404 (expired/unknown id), a non-200, or a malformed body
-// becomes an explicit { ok: false } the store renders as an import error — never
-// a silent fall-through to an empty editor.
-const fetchDraft = async (id: string): Promise<DraftLoadResult> => {
-  const res = await fetch("/api/draft?id=" + encodeURIComponent(id));
-  const data = (await res.json().catch(() => null)) as
-    | { turns?: unknown; origin?: unknown; platformOverride?: unknown; error?: unknown }
-    | null;
-  if (!res.ok || data === null || !isTurns(data.turns)) {
+// endpoint, but a transport failure, a 404 (expired/unknown id), a non-200, or a
+// malformed body becomes an explicit { ok: false } the store renders as an import
+// error — never a silent fall-through to an empty editor, never a stuck-busy
+// editor from an escaped rejection.
+// Exported so the view-check exercises the SHIPPING boundary (callJson + this
+// validation), proving a transport rejection becomes a typed {ok:false} rather
+// than an escaped rejection — the guarantee loadServerDraft relies on to never
+// strand the editor busy. [LAW:verifiable-goals]
+export const fetchDraft = async (id: string): Promise<DraftLoadResult> => {
+  const { ok, data } = await callJson("/api/draft?id=" + encodeURIComponent(id));
+  if (!ok || data === null || !isTurns(data.turns)) {
     return { ok: false, reason: errorText(data, "This draft has expired or was not found.") };
   }
   // [LAW:single-enforcer] Lift any legacy origin the same way the KV read and the
@@ -79,15 +103,11 @@ const fetchDraft = async (id: string): Promise<DraftLoadResult> => {
 };
 
 const submit = async (draft: Draft): Promise<SubmitResult> => {
-  const res = await fetch("/api/paste", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ turns: draft.turns, origin: draft.origin, platformOverride: draft.platformOverride }),
-  });
-  const data = (await res.json().catch(() => null)) as
-    | { slug?: unknown; error?: unknown }
-    | null;
-  if (!res.ok || typeof data?.slug !== "string") {
+  const { ok, data } = await callJson(
+    "/api/paste",
+    POST_JSON({ turns: draft.turns, origin: draft.origin, platformOverride: draft.platformOverride }),
+  );
+  if (!ok || typeof data?.slug !== "string") {
     return { ok: false, reason: errorText(data, "Server error.") };
   }
   return { ok: true, slug: data.slug };

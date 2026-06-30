@@ -1553,7 +1553,7 @@ body:has(.admin-empty) main { max-width: 1100px; }
 }
 .code-link-prompt {
   width: 100%;
-  font-family: var(--mono, monospace);
+  font-family: var(--font-mono);
   font-size: 0.82em;
   resize: vertical;
 }
