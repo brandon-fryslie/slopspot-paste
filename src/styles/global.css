@@ -1568,7 +1568,8 @@ body:has(.admin-empty) main { max-width: 1100px; }
 .import-text,
 .block-content,
 .block-args,
-.block-out-text {
+.block-out-text,
+.code-link-prompt {
   min-height: 0;
 }
 
