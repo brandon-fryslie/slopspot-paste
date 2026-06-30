@@ -35,7 +35,7 @@ import {
   toBlocks,
   toTurns,
 } from "../src/editor/blocks";
-import type { Kind } from "../src/editor/blocks";
+import type { AuthorableTurn, Kind } from "../src/editor/blocks";
 import { EditorStore, type Draft, type DraftLoadResult, type EditorIo, type SubmitResult } from "../src/editor/store";
 import { persistDrafts } from "../src/editor/mount";
 import type { ParseResult, Turn } from "../src/types";
@@ -107,9 +107,13 @@ And 3+3?
 ChatGPT said:
 6`;
 
-type Kind = Turn["kind"];
+// [LAW:types-are-the-program] The FULL turn discriminator (all seven kinds,
+// including the source-derived `usage`/`subagent`) — distinct from the editor's
+// authorable `Kind` imported above (five kinds). The kind-sequence assertions
+// below label whole parsed streams, so they must name every kind a Turn can be.
+type TurnKind = Turn["kind"];
 
-const kinds = (turns: ReadonlyArray<Turn>): Kind[] => turns.map((t) => t.kind);
+const kinds = (turns: ReadonlyArray<Turn>): TurnKind[] => turns.map((t) => t.kind);
 
 const assertEq = <T,>(label: string, actual: T, expected: T): void => {
   const a = JSON.stringify(actual);
@@ -1434,8 +1438,11 @@ console.log("\nMarkdown fence language attribute escaping (XSS):");
 
 console.log("\nBlock model (b48.2 — pure editor blocks):");
 {
-  // One fixture exercising every kind, including a tool-call with output.
-  const fixture: Turn[] = [
+  // One fixture exercising every authorable kind, including a tool-call with
+  // output. Typed AuthorableTurn[] — the editor only ever holds these (usage and
+  // subagent are filtered out before reaching a Block), so this is what toBlocks
+  // accepts. [LAW:types-are-the-program]
+  const fixture: AuthorableTurn[] = [
     { kind: "message", role: "user", content: "hello" },
     { kind: "message", role: "assistant", content: "hi there" },
     { kind: "insight", content: "a key realization" },
@@ -2017,7 +2024,7 @@ console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } 
   ]));
 
   // --- round-trip: toTurns output (what the editor actually submits) passes ---
-  const fixture: Turn[] = [
+  const fixture: AuthorableTurn[] = [
     { kind: "message", role: "user", content: "hello" },
     { kind: "insight", content: "a key realization" },
     { kind: "tool-call", tool: "Bash", args: "ls -la", output: { kind: "terminal", text: "total 0", isError: false } },
@@ -2245,6 +2252,13 @@ console.log("\nDerived nested dialogue (deriveDialogue — cbm.1):");
       insight: { kind: "insight", content: "" },
       "turn-summary": { kind: "turn-summary", text: "" },
       usage: { kind: "usage", usage: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 } },
+      subagent: {
+        kind: "subagent",
+        agentType: null,
+        description: null,
+        stepCount: 0,
+        body: { kind: "summary-only", prompt: "", result: "" },
+      },
     };
     return blockVisibility(sample[kind]);
   };
@@ -2252,6 +2266,7 @@ console.log("\nDerived nested dialogue (deriveDialogue — cbm.1):");
   assertEq("insight is spine", visOf("insight"), "spine");
   assertEq("thinking is detail", visOf("thinking"), "detail");
   assertEq("tool-call is detail", visOf("tool-call"), "detail");
+  assertEq("subagent is detail", visOf("subagent"), "detail");
   assertEq("turn-summary is meta", visOf("turn-summary"), "meta");
   assertEq("usage is meta", visOf("usage"), "meta");
 
