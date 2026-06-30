@@ -1534,7 +1534,7 @@ body:has(.admin-empty) main { max-width: 1100px; }
   gap: 8px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent, #6366f1);
+  border-left: 3px solid var(--accent);
   border-radius: var(--radius);
   background: var(--bg);
 }

@@ -200,6 +200,15 @@ export const persistDrafts = (store: EditorStore, io: EditorIo): IReactionDispos
     { equals: comparer.structural },
   );
 
+// [LAW:effects-at-boundaries] History manipulation is a world effect; the store
+// never touches the address bar. Removes the consumed ?draft handoff param while
+// preserving the path, any other query params, and the hash.
+const stripDraftParam = (): void => {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("draft");
+  window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+};
+
 export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
   const root = must(rootSelector, HTMLElement);
   const io: EditorIo = {
@@ -216,16 +225,27 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
   // boundary that can read the URL. A ?draft=<id> handoff (an agent staged this
   // content via /api/draft) takes precedence over the localStorage draft — the
   // agent just placed it for review, so a stale local draft must not shadow it.
-  // With no ?draft, restore the localStorage draft as before (absent/corrupt loads
-  // as [], the same empty editor a fresh visit gets). The server load is async:
-  // render starts empty and the autorun re-renders when the draft resolves (or
-  // when its failure lands in importError). Both run before persist is wired so
-  // restoring doesn't immediately re-save an identical draft.
+  // With no ?draft, restore the localStorage draft synchronously (absent/corrupt
+  // loads as [], the same empty editor a fresh visit gets) — before persist is
+  // wired, so restoring doesn't immediately re-save an identical draft. The server
+  // load is async: render starts empty and the autorun re-renders when the draft
+  // resolves (or when its failure lands in importError). It resolves AFTER persist
+  // is wired, so a restored handoff is captured into the localStorage draft — which
+  // is what makes stripping ?draft below safe: a refresh restores the local copy.
   const draftId = new URLSearchParams(window.location.search).get("draft");
   if (draftId === null || draftId === "") {
     store.restoreDraft(io.loadDraft());
   } else {
-    void store.loadServerDraft(draftId);
+    // [LAW:one-source-of-truth] The ?draft handoff is single-use. On a successful
+    // restore the content now lives in the localStorage draft (the persist reaction
+    // above captures the restored turns), so strip ?draft from the URL: the location
+    // must not stay a second authoritative copy of the editor state, or a refresh
+    // would re-fetch and clobber later edits and a discard-then-refresh would
+    // resurrect the discarded draft. Only on success — a failed restore keeps the id
+    // so its importError stays the surfaced outcome, not silently erased.
+    void store.loadServerDraft(draftId).then(() => {
+      if (store.importError === null) stripDraftParam();
+    });
   }
   // [LAW:no-ambient-temporal-coupling] mobx's autorun is the single render
   // owner: it runs once now and again whenever any observable the template reads
