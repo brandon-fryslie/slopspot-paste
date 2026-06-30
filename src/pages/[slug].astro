@@ -132,7 +132,42 @@ const sourceUrl = sourceUrlOf(origin);
 
     const nav = document.createElement("nav");
     nav.className = "minimap";
+    nav.id = "minimap";
     nav.setAttribute("aria-label", "Conversation timeline");
+
+    // [LAW:decomposition] On a narrow viewport there is no gutter to hold the
+    // fixed rail, so the SAME rail is revealed as a slide-over by a floating
+    // toggle, dimmed behind a scrim. The toggle and scrim are part of the minimap
+    // part — built and owned here alongside the rail, meaningless without it. On
+    // desktop CSS never reveals them; the rail shows in the gutter directly.
+    // [LAW:one-type-per-behavior] not a second mobile rail — one rail, two
+    // placements that differ only in CSS (gutter vs. panel).
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "minimap-toggle";
+    toggle.setAttribute("aria-label", "Show conversation timeline");
+    toggle.setAttribute("aria-controls", "minimap");
+    toggle.setAttribute("aria-expanded", "false");
+    // A miniature spine glyph — short/long/short bars — so the control previews
+    // the rail it opens. Lengths are CSS (.minimap-toggle-line:nth-child).
+    for (let i = 0; i < 3; i++) {
+      const line = document.createElement("span");
+      line.className = "minimap-toggle-line";
+      toggle.appendChild(line);
+    }
+    const scrim = document.createElement("div");
+    scrim.className = "minimap-scrim";
+    scrim.setAttribute("aria-hidden", "true");
+
+    // [LAW:one-source-of-truth] The open state lives in ONE place: the body class
+    // the CSS reads. aria-expanded is a derived view of it, written here in the
+    // single transition owner so the accessible state can never drift from the
+    // visual one. [LAW:dataflow-not-control-flow] open is a value; flipping it is
+    // the whole behaviour — no JS positions the panel or the scrim.
+    const setOpen = (open: boolean): void => {
+      document.body.classList.toggle("minimap-open", open);
+      toggle.setAttribute("aria-expanded", String(open));
+    };
 
     // One marker per turn, in order. Colour is carried as data-* and mapped to a
     // hue by CSS — no colour logic in JS. The button is the correct interactive
@@ -188,9 +223,13 @@ const sourceUrl = sourceUrlOf(origin);
       btn.setAttribute("aria-label", `Jump to ${markerLabel(el)}`);
       // [LAW:no-ambient-temporal-coupling] Native smooth scroll; the browser
       // owns the animation lifecycle — no rAF loop, no easing timer of ours.
-      btn.addEventListener("click", () =>
-        el.scrollIntoView({ behavior: "smooth", block: "start" }),
-      );
+      btn.addEventListener("click", () => {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        // On mobile the rail is a slide-over; jumping dismisses it so the reader
+        // lands on the destination. On desktop minimap-open is never set, so this
+        // is a no-op — one handler, no per-viewport branch.
+        setOpen(false);
+      });
       const lines = Array.from({ length: MAX_LINES }, () => {
         const line = document.createElement("span");
         line.className = "minimap-line";
@@ -202,6 +241,8 @@ const sourceUrl = sourceUrlOf(origin);
       bars.push({ el, lines });
     }
     document.body.appendChild(nav);
+    document.body.appendChild(toggle);
+    document.body.appendChild(scrim);
 
     // [LAW:no-ambient-temporal-coupling] IntersectionObserver is the browser's
     // owner of "is this turn on screen" — not a scroll handler we debounce. We
@@ -306,6 +347,28 @@ const sourceUrl = sourceUrlOf(origin);
     // Prime the cache synchronously so the lens is live on the very first
     // pointer event, not coupled to the first async layout callback.
     measureCenters();
+
+    // [LAW:effects-at-boundaries] Open/close is user intent — from the toggle,
+    // the scrim, a jump (above), or Escape — all routed through the one setOpen
+    // owner. Opening lays out the until-now display:none rail for the first time,
+    // so re-measure marker centres before the genie's first touch-drag reads them.
+    toggle.addEventListener("click", () => {
+      const willOpen = !document.body.classList.contains("minimap-open");
+      setOpen(willOpen);
+      // Opening lays out the until-now display:none rail; remeasure AND wake the
+      // lens so every marker eases to its current-geometry target (the active
+      // marker's resting magnification, or any marker the rail's last close left
+      // mid-scale) instead of reappearing stale. Mirrors recompute()'s measure-
+      // then-kick — the rAF loop is the one timing authority for the scale.
+      if (willOpen) {
+        measureCenters();
+        kick();
+      }
+    });
+    scrim.addEventListener("click", () => setOpen(false));
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") setOpen(false);
+    });
 
     // [LAW:dataflow-not-control-flow] Degradation is a value transition, not a
     // branch that skips building the rail: the timeline is shown iff the page
