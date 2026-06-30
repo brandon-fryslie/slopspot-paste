@@ -9,6 +9,7 @@ import { canonicalize, detectSources, ingestPaste, isUrl, parseFallback, parseIn
 import { decodeRequest } from "../src/paste-request";
 import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
+import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { INPUT_KINDS, isOrigin, isTurns, PROVIDERS, sourceOf, sourceUrlOf, TEXT_ARM_KINDS, textArmInput } from "../src/types";
 import type { InputKind, Origin, SourceKind } from "../src/types";
 import { upgradeOrigin } from "../src/types";
@@ -2872,13 +2873,19 @@ console.log("\nFallback parser for unclaimed hosts (url-ingestion-wfd.4):");
 {
   // [LAW:no-silent-failure] The CORE acceptance: a fetched page whose host no
   // registered provider claims is still split into a CONVERSATION, never rendered
-  // as a single raw bubble. The captured ChatGPT fixture (an unclaimed host —
-  // chatgpt.com has no registered provider) is the real-world witness: its
-  // firecrawl-rendered "#### You said:" / "#### ChatGPT said:" markers must
-  // produce many turns across both roles.
-  const chatgptFetched = readFileSync("test/fixtures/chatgpt-share.md", "utf8");
-  const fbTurns = parseFallback(chatgptFetched);
-  assert("unclaimed-host fixture splits into many turns (NOT one bubble)", fbTurns.length > 1);
+  // as a single raw bubble. parseFallback never sees the URL — it races the text
+  // arms over the fetched bytes — so the witness is host-independent: a conversation
+  // carrying generic speaker markers no provider claims must produce many turns
+  // across both roles. (chatgpt.com is now a registered provider — see the dedicated
+  // parseChatgptShare block — so its bytes would no longer route through the fallback.)
+  const unclaimedFetched = [
+    "## User", "what is the airspeed velocity of an unladen swallow?",
+    "## Assistant", "African or European?",
+    "## User", "European.",
+    "## Assistant", "Roughly 11 metres per second.",
+  ].join("\n\n");
+  const fbTurns = parseFallback(unclaimedFetched);
+  assert("unclaimed-host bytes split into many turns (NOT one bubble)", fbTurns.length > 1);
   const fbMessages = fbTurns.filter((t): t is Extract<Turn, { kind: "message" }> => t.kind === "message");
   const fbRoles = new Set(fbMessages.map((m) => m.role));
   assert("fallback recovers BOTH user and assistant turns", fbRoles.has("user") && fbRoles.has("assistant"));
@@ -2894,7 +2901,7 @@ console.log("\nFallback parser for unclaimed hosts (url-ingestion-wfd.4):");
   // provider:null origin re-derives via parseFallback (the unclaimed-host plan),
   // and a named provider still re-derives via ITS parser — known providers win
   // ahead of the fallback, exactly as ingest resolves them.
-  const fallbackOrigin: Origin = { kind: "url", url: "https://example.com/x", fetched: chatgptFetched, provider: null };
+  const fallbackOrigin: Origin = { kind: "url", url: "https://example.com/x", fetched: unclaimedFetched, provider: null };
   const replayedFallback = reprojectOrigin(fallbackOrigin);
   assertEq("reproject(provider:null) === parseFallback(bytes)",
     JSON.stringify(replayedFallback), JSON.stringify(fbTurns));
@@ -2909,6 +2916,55 @@ console.log("\nFallback parser for unclaimed hosts (url-ingestion-wfd.4):");
   assertEq("provider:null url origin → generic styling (null source)", sourceOf(fallbackOrigin), null);
 }
 
+console.log("\nChatGPT share parser (chatgpt-share-nfs.1):");
+{
+  // [LAW:behavior-not-structure] parseChatgptShare against the real captured
+  // fixture (firecrawl scrape of the reference share link). Its level-4 role
+  // markers ("#### You said:" / "#### ChatGPT said:") must split into a clean
+  // alternation of messages with page chrome stripped and code fences intact —
+  // the measurable improvement over parseFallback, which leaks the page footer
+  // ("Voice", the AI disclaimer) into the final turn and applies no ChatGPT styling.
+  const fixture = readFileSync("test/fixtures/chatgpt-share.md", "utf8");
+  const turns = parseChatgptShare(fixture);
+  assert("chatgpt fixture parses to non-null", turns !== null);
+  if (turns) {
+    const messages = turns.filter((t): t is Extract<Turn, { kind: "message" }> => t.kind === "message");
+    assert("every turn is a message (no tool-call shapes in this scrape)", messages.length === turns.length);
+    assertEq("fixture splits into 36 turns", turns.length, 36);
+    const roles = new Set(messages.map((m) => m.role));
+    assert("recovers BOTH user and assistant turns", roles.has("user") && roles.has("assistant"));
+    assert("first turn is the user's opening question",
+      turns[0]!.kind === "message" && turns[0]!.role === "user" &&
+      turns[0]!.content.includes("$1 million per software engineer"));
+    assert("second turn is the assistant's answer",
+      turns[1]!.kind === "message" && turns[1]!.role === "assistant" &&
+      turns[1]!.content.includes("revenue per software engineer"));
+    const allText = messages.map((m) => m.content).join("\n");
+    // Page chrome (header + footer) is stripped from every turn — the leak class
+    // the dedicated provider exists to fix.
+    assert("'Chat history' header stripped", !allText.includes("## Chat history"));
+    assert("'copy of a shared ChatGPT' notice stripped", !allText.includes("This is a copy of a shared ChatGPT conversation"));
+    assert("'Report conversation' stripped", !/^Report conversation$/m.test(allText));
+    assert("'Voice' footer button stripped", !/^Voice$/m.test(allText));
+    assert("AI disclaimer footer stripped", !allText.includes("ChatGPT is AI and can make mistakes"));
+    assert("[Skip to content] link stripped", !allText.includes("[Skip to content]"));
+    // In-body headings and fenced code are conversation content, preserved verbatim.
+    assert("in-body markdown headings survive (not treated as turn delimiters)",
+      allText.includes("### Why this metric exists"));
+    assert("fenced code blocks survive verbatim", /```/.test(allText));
+  }
+
+  // The marker shape is exact: a level-2 "## You said:" (the claude.ai/share
+  // heading level) is NOT a chatgpt turn delimiter, and a single exchange does
+  // not reach the >= 2 turn floor → null, never a half-parsed guess.
+  assert("non-chatgpt heading levels do not parse",
+    parseChatgptShare("## You said:\nq\n\n## Claude responded:\na") === null);
+  assert("a lone exchange below the 2-turn floor → null",
+    parseChatgptShare("#### You said:\n\nonly one turn here") === null);
+  assert("a clean two-turn exchange parses",
+    parseChatgptShare("#### You said:\n\nhi\n\n#### ChatGPT said:\n\nhello")?.length === 2);
+}
+
 console.log("\nProvider registry URL resolution (url-ingestion.3):");
 {
   // [LAW:behavior-not-structure] resolveProvider is the one URL→Provider mapping
@@ -2919,8 +2975,11 @@ console.log("\nProvider registry URL resolution (url-ingestion.3):");
   assert("resolves a claude.ai/share URL", resolveProvider("https://claude.ai/share/abc123") === "claude-share");
   assert("tolerates trailing slash + query", resolveProvider("https://claude.ai/share/abc-123/?x=1") === "claude-share");
   assert("trims surrounding whitespace", resolveProvider("  https://claude.ai/share/abc123  ") === "claude-share");
+  assert("resolves a chatgpt.com/share URL", resolveProvider("https://chatgpt.com/share/abc123") === "chatgpt-share");
+  assert("chatgpt-share tolerates trailing slash + query", resolveProvider("https://chatgpt.com/share/abc-123/?x=1") === "chatgpt-share");
   assert("rejects a non-share claude.ai URL", resolveProvider("https://claude.ai/chat/abc123") === null);
-  assert("rejects a different host", resolveProvider("https://chatgpt.com/share/abc123") === null);
+  assert("rejects a non-share chatgpt.com URL", resolveProvider("https://chatgpt.com/c/abc123") === null);
+  assert("rejects a different host", resolveProvider("https://gemini.google.com/share/abc123") === null);
   assert("rejects a multi-line string", resolveProvider("https://claude.ai/share/abc\nhttps://claude.ai/share/def") === null);
   // [LAW:single-enforcer] Same single-line rule as isUrl (shared singleLineUrl): a
   // CR-only break or internal tab the URL parser would strip is rejected here too.
