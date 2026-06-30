@@ -2,6 +2,7 @@ import type { Provider, Turn } from "./types";
 import { PROVIDERS } from "./types";
 import type { WaitStrategy } from "./firecrawl";
 import { parseClaudeShare } from "./parsers/claude-share";
+import { parseChatgptShare } from "./parsers/chatgpt-share";
 import { singleLineUrl } from "./url";
 
 // [LAW:dataflow-not-control-flow] Per-provider behavior is a table lookup, not a
@@ -49,6 +50,17 @@ export const PROVIDER_REGISTRY: { readonly [P in Provider]: ProviderEntry } = {
     urlPattern: /^https?:\/\/claude\.ai\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i,
     parser: parseClaudeShare,
     wait: { kind: "selector", selector: '[data-testid="user-message"]' },
+  },
+  "chatgpt-share": {
+    urlPattern: /^https?:\/\/chatgpt\.com\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i,
+    parser: parseChatgptShare,
+    // [LAW:no-ambient-temporal-coupling] The hydration proof for chatgpt.com,
+    // resolved by the wfd.1 spike via live DOM inspection: the spike confirmed
+    // chatgpt.com never renders claude.ai's [data-testid="user-message"] (a
+    // hard-coded wait there timed out after 20s), and that every message node
+    // carries data-message-author-role. Waiting on it proves the conversation
+    // hydrated before the scrape read it.
+    wait: { kind: "selector", selector: "[data-message-author-role]" },
   },
 };
 
