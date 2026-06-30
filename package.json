@@ -11,7 +11,9 @@
     "build": "astro build",
     "preview": "wrangler dev --config dist/server/wrangler.json",
     "deploy": "npm run test && astro build && wrangler deploy --config dist/server/wrangler.json",
-    "typecheck": "astro check",
+    "typecheck": "astro check && npm run typecheck:scripts",
+    "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
+    "pretest": "npm run typecheck:scripts",
     "test": "tsx scripts/parser-check.ts && tsx scripts/view-check.ts",
     "capture-fixture": "tsx scripts/capture-fixture.ts"
   },
@@ -27,6 +29,7 @@
     "@astrojs/check": "^0.9.9",
     "@cloudflare/workers-types": "^4.20251101.0",
     "@types/jsdom": "^28.0.3",
+    "@types/node": "^25.9.3",
     "jsdom": "^29.1.1",
     "tsx": "^4.22.0",
     "typescript": "^5.6.0",
