@@ -382,9 +382,14 @@ export class EditorStore {
     this.importOrigin = draft.origin;
     this.pendingReparse = null;
     this.view = "blocks";
-    // [LAW:no-mode-explosion] New content snaps theme back to auto-detection;
-    // a stale override silently diverging from new content is a hidden mode.
-    this.userPlatform = null;
+    // [LAW:dataflow-not-control-flow] The theme override is a VALUE the draft
+    // carries, not a branch on how loadTurns was reached. A fresh parse/fetch
+    // carries no override, so this snaps theme back to auto-detection exactly as
+    // before ([LAW:no-mode-explosion] — a stale override diverging from new
+    // content is a hidden mode); a restored draft (server handoff or localStorage)
+    // that carried an explicit pick honors it, so the editor reopens — and later
+    // republishes — the same theme that was saved ([LAW:one-source-of-truth]).
+    this.userPlatform = draft.platformOverride ?? null;
   }
 
   // [LAW:dataflow-not-control-flow] The one card mutation. The view computes the

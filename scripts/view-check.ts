@@ -210,6 +210,29 @@ console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/dr
   assert("handoff: restored draft is not dirty (baseline set)", okStore.isDirty === false);
   assert("handoff: no importError on success", okStore.importError === null);
 
+  // [LAW:one-source-of-truth] A saved theme override must survive the restore, or the
+  // editor reopens with the wrong theme and republishes a different override than was
+  // saved. A draft carrying platformOverride restores userPlatform/activePlatform.
+  const themedIo: EditorIo = {
+    ...fakeIo(),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({
+      ok: true,
+      draft: {
+        turns: [{ kind: "message", role: "user", content: "themed" } as const],
+        origin: null,
+        platformOverride: "chatgpt",
+      },
+    }),
+  };
+  const themedStore = new EditorStore(themedIo);
+  await themedStore.loadServerDraft("themed1");
+  assert("handoff: saved platformOverride restores userPlatform", themedStore.userPlatform === "chatgpt");
+  assert("handoff: restored override drives activePlatform", themedStore.activePlatform === "chatgpt");
+
+  // A draft with no override snaps theme to auto-detection (userPlatform null) — the
+  // existing fresh-content behavior is preserved as a value, not a branch.
+  assert("handoff: draft without override leaves userPlatform null (auto)", okStore.userPlatform === null);
+
   // 2. Failure: an expired/unknown draft id -> importError set, editor stays empty.
   const failIo: EditorIo = {
     ...fakeIo(),

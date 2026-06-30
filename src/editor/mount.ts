@@ -11,7 +11,7 @@
 
 import { autorun, comparer, reaction, type IReactionDisposer } from "mobx";
 import { render } from "lit-html";
-import { isOrigin, isTurns, upgradeOrigin } from "../types";
+import { isOrigin, isPlatform, isTurns, upgradeOrigin } from "../types";
 import { EditorStore, type Draft, type DraftLoadResult, type EditorIo, type ImportResult, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
 import { enhanceClampBlocks } from "../clampBlocks";
@@ -59,7 +59,7 @@ const fetchShare = async (url: string): Promise<ImportResult> => {
 const fetchDraft = async (id: string): Promise<DraftLoadResult> => {
   const res = await fetch("/api/draft?id=" + encodeURIComponent(id));
   const data = (await res.json().catch(() => null)) as
-    | { turns?: unknown; origin?: unknown; error?: unknown }
+    | { turns?: unknown; origin?: unknown; platformOverride?: unknown; error?: unknown }
     | null;
   if (!res.ok || data === null || !isTurns(data.turns)) {
     return { ok: false, reason: errorText(data, "This draft has expired or was not found.") };
@@ -67,7 +67,15 @@ const fetchDraft = async (id: string): Promise<DraftLoadResult> => {
   // [LAW:single-enforcer] Lift any legacy origin the same way the KV read and the
   // localStorage loader do; a null/junk origin reads as no-provenance, not failure.
   const upgraded = upgradeOrigin(data.origin);
-  return { ok: true, draft: { turns: data.turns, origin: isOrigin(upgraded) ? upgraded : null } };
+  // [LAW:one-source-of-truth] Carry the saved theme override through restore (the
+  // same isPlatform gate the KV read and the paste decode use); dropping it here
+  // would reopen with the wrong theme and republish a different override than was
+  // saved. Junk reads as "no override" (auto-derive), not failure.
+  const platformOverride = isPlatform(data.platformOverride) ? data.platformOverride : undefined;
+  return {
+    ok: true,
+    draft: { turns: data.turns, origin: isOrigin(upgraded) ? upgraded : null, platformOverride },
+  };
 };
 
 const submit = async (draft: Draft): Promise<SubmitResult> => {
@@ -123,7 +131,7 @@ const loadDraft = (): Draft => {
     if (raw === null) return EMPTY_DRAFT;
     const parsed = JSON.parse(raw) as unknown;
     if (isTurns(parsed)) return { turns: parsed, origin: null };
-    const o = parsed as { turns?: unknown; origin?: unknown } | null;
+    const o = parsed as { turns?: unknown; origin?: unknown; platformOverride?: unknown } | null;
     if (o && isTurns(o.turns)) {
       // [LAW:single-enforcer] Run the SAME legacy-origin migration the server applies
       // on KV read (types.upgradeOrigin), so a draft saved before the URL arm was
@@ -131,7 +139,10 @@ const loadDraft = (): Draft => {
       // hydrates as a replayable url origin instead of failing isOrigin and silently
       // dropping its provenance to null. [LAW:no-silent-failure]
       const upgraded = upgradeOrigin(o.origin);
-      return { turns: o.turns, origin: isOrigin(upgraded) ? upgraded : null };
+      // [LAW:one-source-of-truth] Same isPlatform gate as the KV read — restore the
+      // saved theme pick; junk or a pre-override draft reads as "no override".
+      const platformOverride = isPlatform(o.platformOverride) ? o.platformOverride : undefined;
+      return { turns: o.turns, origin: isOrigin(upgraded) ? upgraded : null, platformOverride };
     }
     return EMPTY_DRAFT;
   } catch {
@@ -158,7 +169,13 @@ export const persistDrafts = (store: EditorStore, io: EditorIo): IReactionDispos
     // [LAW:one-source-of-truth] Persist the IMPORT origin (where the turns came
     // from), not the stamp-time submitOrigin — so a restored draft re-establishes
     // the same editable state, and isDirty is judged against the same baseline.
-    (): Draft => ({ turns: store.turns, origin: store.importOrigin }),
+    // platformOverride rides along so a reload re-establishes the user's theme pick
+    // too; without it the same drop the server-draft path had survives on reload.
+    (): Draft => ({
+      turns: store.turns,
+      origin: store.importOrigin,
+      platformOverride: store.userPlatform ?? undefined,
+    }),
     (draft) => io.saveDraft(draft),
     { equals: comparer.structural },
   );
