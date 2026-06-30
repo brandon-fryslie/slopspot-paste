@@ -79,6 +79,13 @@ export interface EditorIo {
   readonly saveDraft: (draft: Draft) => void;
   readonly loadDraft: () => Draft;
   readonly clearDraft: () => void;
+  // [LAW:dataflow-not-control-flow] Revoke the server-side handoff draft this editor
+  // was opened from (DELETE /api/draft). The id is a VALUE the store passes through —
+  // null when the editor wasn't opened from a server draft (from-scratch authoring or
+  // a localStorage restore), so the boundary no-ops with no network call, exactly as
+  // clearDraft is unconditional + idempotent. Fire-and-forget: the DRAFT_TTL is the
+  // authoritative backstop, so discard never waits on (or branches on) revocation.
+  readonly deleteDraft: (id: string | null) => void;
 }
 
 const clamp = (n: number, lo: number, hi: number): number =>
@@ -125,6 +132,13 @@ export class EditorStore {
   // draft") → confirm (click "Discard") mirrors the pendingReparse pattern. false
   // = no decision pending; true = the confirm strip is visible.
   pendingDiscard = false;
+
+  // [LAW:one-source-of-truth] The server-side handoff draft this editor was opened
+  // from (set by loadServerDraft on success). It is the ONLY in-editor copy of that
+  // handle: mount strips ?draft from the URL after a successful restore so the URL
+  // stops being a second authoritative copy, leaving this the single place that knows
+  // which KV draft a discard should revoke. null = not opened from a server draft.
+  serverDraftId: string | null = null;
 
   constructor(private readonly io: EditorIo) {
     makeAutoObservable<this, "io">(this, { io: false }, { autoBind: true });
@@ -324,6 +338,10 @@ export class EditorStore {
         this.importError = result.reason;
         return;
       }
+      // [LAW:one-source-of-truth] Bind the revocable handle now, so a later discard
+      // can DELETE this exact KV draft. Set only on success — a failed restore leaves
+      // serverDraftId null, so discarding the resulting empty editor revokes nothing.
+      this.serverDraftId = id;
       this.accept(result.draft);
     });
   }
@@ -501,6 +519,12 @@ export class EditorStore {
     this.importError = null;
     this.submitError = null;
     this.pendingDiscard = false;
+    // [LAW:effects-at-boundaries] Revoke both copies of the draft: the localStorage
+    // copy (clearDraft) and the server-side KV handoff copy (deleteDraft). The id is
+    // passed as a value — null when this wasn't a server handoff, which the boundary
+    // no-ops — then cleared, so a second discard doesn't re-issue a stale revoke.
     this.io.clearDraft();
+    this.io.deleteDraft(this.serverDraftId);
+    this.serverDraftId = null;
   }
 }

@@ -214,6 +214,21 @@ const clearDraft = (): void => {
   }
 };
 
+// [LAW:effects-at-boundaries] The server-side counterpart of clearDraft: revoke the
+// KV handoff draft this editor was opened from. Fire-and-forget by design — null is
+// "no server draft to revoke" (from-scratch / localStorage restore), so it no-ops
+// with no request, exactly as clearDraft no-ops when nothing is persisted.
+//
+// [LAW:no-silent-failure] exception: the DELETE's outcome has no downstream consumer.
+// The draft's DRAFT_TTL_SECONDS expiry is the AUTHORITATIVE revocation backstop, so a
+// failed immediate delete degrades to TTL expiry — the exact behavior that shipped
+// before this endpoint existed — not a masked failure in a load-bearing path. The
+// swallow is justified by the same reasoning saveDraft/clearDraft swallow localStorage.
+const deleteDraft = (id: string | null): void => {
+  if (id === null || id === "") return;
+  void httpJson("/api/draft?id=" + encodeURIComponent(id), { method: "DELETE" });
+};
+
 // [LAW:one-source-of-truth][LAW:no-ambient-temporal-coupling] The single owner of
 // WHEN the draft is persisted: a mobx reaction off the derived Draft. It fires
 // whenever the blocks or provenance change shape (structural compare — a fresh
@@ -255,6 +270,7 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
     saveDraft,
     loadDraft,
     clearDraft,
+    deleteDraft,
   };
   const store = new EditorStore(io);
   // [LAW:no-ambient-temporal-coupling] Draft source is decided once, here, at the

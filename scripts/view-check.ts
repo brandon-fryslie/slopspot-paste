@@ -59,6 +59,7 @@ const fakeIo = (): EditorIo => ({
   saveDraft: () => {},
   loadDraft: (): Draft => ({ turns: [], origin: null }),
   clearDraft: () => {},
+  deleteDraft: () => {},
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────

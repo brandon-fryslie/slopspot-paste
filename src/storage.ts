@@ -188,6 +188,15 @@ export const deleteConversation = async (
   await kv.delete(KEY_PREFIX + slug);
 };
 
+// [LAW:decomposition] The draft-prefix counterpart of deleteConversation: revoke a
+// handoff draft immediately rather than waiting out DRAFT_TTL_SECONDS. KV delete is
+// idempotent (a missing key is a no-op), so this is safe to call for a draft that
+// already expired or was never stored — the DELETE endpoint leans on that to stay
+// idempotent. [LAW:single-enforcer] all draft writes/reads/deletes own the prefix here.
+export const deleteDraft = async (kv: KVNamespace, id: string): Promise<void> => {
+  await kv.delete(DRAFT_KEY_PREFIX + id);
+};
+
 // [LAW:one-source-of-truth] Admin listing derives from the same KV records
 // that the read path returns; no parallel index, no stored summary fields.
 // [LAW:no-defensive-null-guards] The `c !== null` filter is a real trust

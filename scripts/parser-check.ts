@@ -1631,6 +1631,7 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
       clearDraft: () => {
         cell = null;
       },
+      deleteDraft: () => {},
     };
     return { io, submitted, navigated, draftCell: () => cell };
   };
@@ -1717,6 +1718,7 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
     saveDraft: () => {},
     loadDraft: (): Draft => ({ turns: [], origin: null }),
     clearDraft: () => {},
+    deleteDraft: () => {},
   };
 
   // --- splitBlock: one card becomes two in place; head keeps id, tail is fresh ---
@@ -1792,6 +1794,7 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
       clearDraft: () => {
         cell = null;
       },
+      deleteDraft: () => {},
     };
     return { io, cell: () => cell };
   };
@@ -1852,6 +1855,7 @@ console.log("\nDiscard draft persistence round-trip (slopspot-editor-draft-rp4):
         : { turns: [], origin: null };
     },
     clearDraft: () => { cell = null; },
+    deleteDraft: () => {},
   };
 
   const store = new EditorStore(discardIo);
@@ -1877,6 +1881,49 @@ console.log("\nDiscard draft persistence round-trip (slopspot-editor-draft-rp4):
   dispose();
 }
 
+console.log("\nDiscard revokes the server-side handoff draft (slopspot-cc-share-4nc.11):");
+{
+  // [LAW:verifiable-goals] The ticket's acceptance: discarding a draft opened from a
+  // server handoff (?draft=<id> -> loadServerDraft) DELETEs that exact KV draft, so
+  // exposure ends immediately instead of waiting out the 1h TTL. The id the boundary
+  // received is captured so the test asserts the bound handle — not merely that some
+  // delete fired.
+  const deleted: (string | null)[] = [];
+  const draftTurns: Turn[] = [{ kind: "message", role: "user", content: "handed off" }];
+  const handoffIo: EditorIo = {
+    fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: true, draft: { turns: draftTurns, origin: null } }),
+    submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
+    navigate: () => {},
+    saveDraft: () => {},
+    loadDraft: (): Draft => ({ turns: [], origin: null }),
+    clearDraft: () => {},
+    deleteDraft: (id) => { deleted.push(id); },
+  };
+
+  const store = new EditorStore(handoffIo);
+  await store.loadServerDraft("draft_abc123");
+  assertEq("server draft restored its turns", store.blocks.length, 1);
+  assertEq("the revocable handle is bound after restore", store.serverDraftId, "draft_abc123");
+
+  store.discard();
+  assertEq("discard revoked exactly the bound draft id", JSON.stringify(deleted), JSON.stringify(["draft_abc123"]));
+  assert("the handle is cleared after revocation (a second discard re-issues nothing)", store.serverDraftId === null);
+
+  store.discard();
+  assertEq("a second discard passes null (no server draft to revoke)", JSON.stringify(deleted), JSON.stringify(["draft_abc123", null]));
+
+  // A from-scratch editor (never opened from a handoff) revokes nothing server-side:
+  // serverDraftId stays null, so discard passes null and the boundary no-ops.
+  const scratchDeleted: (string | null)[] = [];
+  const scratchIo: EditorIo = { ...handoffIo, deleteDraft: (id) => { scratchDeleted.push(id); } };
+  const scratch = new EditorStore(scratchIo);
+  scratch.setImport("## User\nhi\n\n## Assistant\nyo");
+  scratch.ingest();
+  scratch.discard();
+  assertEq("from-scratch discard passes null (no handoff to revoke)", JSON.stringify(scratchDeleted), JSON.stringify([null]));
+}
+
 console.log("\nEditorStore submitOrigin (provenance-2my — share carries its origin, edits collapse to editor):");
 {
   const shareUrl = "https://claude.ai/share/abc-def-123";
@@ -1896,6 +1943,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
     saveDraft: () => {},
     loadDraft: (): Draft => ({ turns: [], origin: null }),
     clearDraft: () => {},
+    deleteDraft: () => {},
   };
 
   // --- a pristine share import stamps the replayable claude-share origin: its
