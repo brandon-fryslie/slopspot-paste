@@ -355,7 +355,15 @@ const sourceUrl = sourceUrlOf(origin);
     toggle.addEventListener("click", () => {
       const willOpen = !document.body.classList.contains("minimap-open");
       setOpen(willOpen);
-      if (willOpen) measureCenters();
+      // Opening lays out the until-now display:none rail; remeasure AND wake the
+      // lens so every marker eases to its current-geometry target (the active
+      // marker's resting magnification, or any marker the rail's last close left
+      // mid-scale) instead of reappearing stale. Mirrors recompute()'s measure-
+      // then-kick — the rAF loop is the one timing authority for the scale.
+      if (willOpen) {
+        measureCenters();
+        kick();
+      }
     });
     scrim.addEventListener("click", () => setOpen(false));
     window.addEventListener("keydown", (e) => {
