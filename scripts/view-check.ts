@@ -15,6 +15,7 @@
 
 import { JSDOM } from "jsdom";
 import type { Draft, DraftLoadResult, EditorIo, SubmitResult } from "../src/editor/store";
+import type { HttpOutcome } from "../src/editor/mount";
 import type { ParseResult } from "../src/types";
 
 // Install jsdom globals before any lit-html import. lit-html/node/lit-html.js
@@ -247,7 +248,7 @@ console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/dr
   // total: a transport rejection (offline/DNS/abort) becomes a typed {ok:false},
   // never an escaped rejection — otherwise it would propagate out of loadServerDraft
   // (which set busy=true) and strand the editor busy with a blank screen.
-  const { fetchDraft } = await import("../src/editor/mount");
+  const { fetchDraft, decodeJson } = await import("../src/editor/mount");
   const origFetch = globalThis.fetch;
   setGlobal("fetch", async (): Promise<Response> => {
     throw new TypeError("Failed to fetch");
@@ -262,6 +263,21 @@ console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/dr
   setGlobal("fetch", origFetch);
   assert("boundary: a rejected fetch does NOT throw out of fetchDraft", rejected === false);
   assert("boundary: a rejected fetch resolves to a typed {ok:false}", boundaryResult.ok === false);
+  assert(
+    "boundary: a rejected fetch reports a transport reason (not 'expired')",
+    boundaryResult.ok === false && boundaryResult.reason === "Couldn't reach the server to load the draft.",
+  );
+
+  // [LAW:no-silent-failure][LAW:verifiable-goals] decodeJson is the PURE classifier:
+  // each failure mode gets its OWN reason, so transport/5xx/malformed are never
+  // collapsed into the 404 "expired" message. Tested directly — no fetch needed.
+  const reasons = { transport: "T", server: "S", malformed: "M" };
+  const dec = (o: HttpOutcome) => decodeJson(o, reasons);
+  assert("decodeJson: transport-error -> transport reason", (() => { const r = dec({ kind: "transport-error" }); return !r.ok && r.reason === "T"; })());
+  assert("decodeJson: 404 with body.error -> server's own text (sourced once)", (() => { const r = dec({ kind: "response", status: 404, body: { error: "gone" } }); return !r.ok && r.reason === "gone"; })());
+  assert("decodeJson: 5xx with no body -> generic server reason (NOT expired)", (() => { const r = dec({ kind: "response", status: 503, body: null }); return !r.ok && r.reason === "S"; })());
+  assert("decodeJson: 2xx with non-object body -> malformed reason", (() => { const r = dec({ kind: "response", status: 200, body: null }); return !r.ok && r.reason === "M"; })());
+  assert("decodeJson: clean 2xx object body -> ok with data", (() => { const r = dec({ kind: "response", status: 200, body: { slug: "x" } }); return r.ok && r.data.slug === "x"; })());
 }
 
 console.log("\nclaude.ai/code link handoff affordance (slopspot-cc-share-4nc.9):");

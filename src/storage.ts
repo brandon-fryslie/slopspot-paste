@@ -163,7 +163,12 @@ export const getDraft = async (kv: KVNamespace, id: string): Promise<DraftRecord
   if (raw === null) return null;
   try {
     const parsed = JSON.parse(raw) as { turns?: unknown; origin?: unknown; platformOverride?: unknown };
-    if (!isTurns(parsed.turns)) return null;
+    // [LAW:types-are-the-program][LAW:single-enforcer] A valid handoff always has at
+    // least one turn — ingestRequest rejects 0-turn pastes on write (ingest-request
+    // "Empty paste."), so an empty array here is corruption or a hand-edited record.
+    // Reject it (reads back as not-found, surfaced loudly) rather than reopen the
+    // editor as a silent blank handoff [LAW:no-silent-failure].
+    if (!isTurns(parsed.turns) || parsed.turns.length === 0) return null;
     return {
       turns: parsed.turns,
       origin: normalizeOrigin(parsed.origin),

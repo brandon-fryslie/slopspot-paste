@@ -28,26 +28,56 @@ const must = <T,>(sel: string, ctor: new () => T): T => {
   return el;
 };
 
-// [LAW:effects-at-boundaries][LAW:no-silent-failure] The single seam where a
-// network call becomes a value. fetch() REJECTS on a dropped connection (offline,
-// DNS, abort) — a rejection that, left to escape, would propagate out of the store
-// action that set `busy`, stranding the editor busy with no surfaced error. This
-// catches that one transport failure and renders it as `ok:false` with no body,
-// which every caller already turns into a typed reason — so the capabilities below
-// honor their `Promise<...Result>` type (they resolve, never reject) and the store
-// interior stays pure. Not a silent swallow: the failure surfaces as the caller's
-// reason; only the raw rejection is converted, never discarded.
-const callJson = async (
-  input: string,
-  init?: RequestInit,
-): Promise<{ readonly ok: boolean; readonly data: Record<string, unknown> | null }> => {
+// [LAW:effects-at-boundaries] The EFFECT half of an HTTP-JSON call: perform the
+// request and read the body, and nothing else — no domain judgement. fetch()
+// REJECTS on a dropped connection (offline, DNS, abort); that one transport failure
+// is caught and reported as a distinct `transport-error` outcome, so this never
+// throws (the capabilities below honor their `Promise<...Result>` type and the
+// store interior stays pure). It returns the raw status and the parsed body (or
+// null when the body isn't JSON); deciding what each status/body MEANS is the pure
+// decoder's job, not the effect's.
+export type HttpOutcome =
+  | { readonly kind: "response"; readonly status: number; readonly body: Record<string, unknown> | null }
+  | { readonly kind: "transport-error" };
+
+const httpJson = async (input: string, init?: RequestInit): Promise<HttpOutcome> => {
   try {
     const res = await fetch(input, init);
-    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-    return { ok: res.ok, data };
+    const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    return { kind: "response", status: res.status, body };
   } catch {
-    return { ok: false, data: null };
+    return { kind: "transport-error" };
   }
+};
+
+const errorText = (data: { error?: unknown } | null, fallback: string): string =>
+  typeof data?.error === "string" ? data.error : fallback;
+
+// [LAW:no-silent-failure][LAW:effects-at-boundaries] The PURE half: classify an
+// HttpOutcome into the failure modes that MUST be told apart, each with its own
+// reason — a transport error (never reached the server), a non-2xx response
+// (surface the server's own error text when present, else a generic server reason;
+// e.g. a real 404 keeps "expired or was not found" sourced once from the endpoint,
+// while a 5xx is NOT mislabeled as expired), or a 2xx whose body wasn't a JSON
+// object (malformed). A clean 2xx object body flows on to the caller's own shape
+// decode. No fetch here, so it is unit-testable in isolation [LAW:verifiable-goals].
+type Decoded =
+  | { readonly ok: true; readonly data: Record<string, unknown> }
+  | { readonly ok: false; readonly reason: string };
+
+export interface DecodeReasons {
+  readonly transport: string;
+  readonly server: string;
+  readonly malformed: string;
+}
+
+export const decodeJson = (outcome: HttpOutcome, reasons: DecodeReasons): Decoded => {
+  if (outcome.kind === "transport-error") return { ok: false, reason: reasons.transport };
+  if (outcome.status < 200 || outcome.status >= 300) {
+    return { ok: false, reason: errorText(outcome.body, reasons.server) };
+  }
+  if (outcome.body === null) return { ok: false, reason: reasons.malformed };
+  return { ok: true, data: outcome.body };
 };
 
 const POST_JSON = (body: unknown): RequestInit => ({
@@ -56,65 +86,71 @@ const POST_JSON = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-// [LAW:no-silent-failure] Each call validates its response shape at this boundary
-// and surfaces a typed failure reason. /api/fetch and /api/paste are our own
-// endpoints, but a transport failure, a non-200, a parse failure, or a malformed
-// body becomes an explicit `{ ok: false }` the store renders — never a silent
-// default and never an escaped rejection.
+// [LAW:no-silent-failure] Each call is the EFFECT (httpJson) composed with the pure
+// classifier (decodeJson) and then its own shape decode. /api/fetch and /api/paste
+// are our own endpoints, but a transport failure, a non-2xx, a parse failure, or a
+// malformed body becomes an explicit `{ ok: false }` the store renders — each with
+// its own honest reason, never a single catch-all and never an escaped rejection.
 const fetchShare = async (url: string): Promise<ImportResult> => {
-  const { ok, data } = await callJson("/api/fetch", POST_JSON({ url }));
-  if (!ok || data === null) {
-    return { ok: false, reason: errorText(data, "Failed to fetch the URL.") };
-  }
+  const decoded = decodeJson(await httpJson("/api/fetch", POST_JSON({ url })), {
+    transport: "Couldn't reach the server.",
+    server: "Failed to fetch the URL.",
+    malformed: "Malformed response from /api/fetch.",
+  });
+  if (!decoded.ok) return decoded;
   // [LAW:no-silent-failure] The captured origin is part of the response contract;
   // junk in it is a malformed response, not a value to quietly degrade to null.
-  if (!isTurns(data.turns) || !isOrigin(data.origin)) {
+  if (!isTurns(decoded.data.turns) || !isOrigin(decoded.data.origin)) {
     return { ok: false, reason: "Malformed response from /api/fetch." };
   }
-  return { ok: true, turns: data.turns, origin: data.origin };
+  return { ok: true, turns: decoded.data.turns, origin: decoded.data.origin };
 };
 
-// [LAW:no-silent-failure] The agent-handoff restore. /api/draft is our own
-// endpoint, but a transport failure, a 404 (expired/unknown id), a non-200, or a
-// malformed body becomes an explicit { ok: false } the store renders as an import
-// error — never a silent fall-through to an empty editor, never a stuck-busy
-// editor from an escaped rejection.
-// Exported so the view-check exercises the SHIPPING boundary (callJson + this
-// validation), proving a transport rejection becomes a typed {ok:false} rather
-// than an escaped rejection — the guarantee loadServerDraft relies on to never
-// strand the editor busy. [LAW:verifiable-goals]
+// [LAW:no-silent-failure] The agent-handoff restore. A transport failure, a 404
+// (expired/unknown id — its message sourced once from the endpoint), any other
+// non-2xx, or a malformed body each becomes an explicit { ok: false } with its own
+// reason the store renders as an import error — never a silent fall-through to an
+// empty editor, never a stuck-busy editor from an escaped rejection, and never a
+// 5xx/transport failure mislabeled as "expired".
+// Exported so the view-check exercises the SHIPPING boundary (httpJson + decodeJson
+// + this validation), proving a transport rejection becomes a typed {ok:false}
+// rather than an escaped rejection. [LAW:verifiable-goals]
 export const fetchDraft = async (id: string): Promise<DraftLoadResult> => {
-  const { ok, data } = await callJson("/api/draft?id=" + encodeURIComponent(id));
-  if (!ok || data === null || !isTurns(data.turns)) {
-    return { ok: false, reason: errorText(data, "This draft has expired or was not found.") };
+  const decoded = decodeJson(await httpJson("/api/draft?id=" + encodeURIComponent(id)), {
+    // [LAW:one-source-of-truth] The 404 "expired or was not found" text is sourced
+    // once from the endpoint body (draft.ts GET) via errorText; this `server`
+    // fallback is the GENERIC non-2xx reason, so a 5xx is never mislabeled "expired".
+    transport: "Couldn't reach the server to load the draft.",
+    server: "Couldn't load the draft (server error).",
+    malformed: "Malformed response from /api/draft.",
+  });
+  if (!decoded.ok) return decoded;
+  if (!isTurns(decoded.data.turns)) {
+    return { ok: false, reason: "Malformed response from /api/draft." };
   }
   // [LAW:single-enforcer] Lift any legacy origin the same way the KV read and the
   // localStorage loader do; a null/junk origin reads as no-provenance, not failure.
-  const upgraded = upgradeOrigin(data.origin);
+  const upgraded = upgradeOrigin(decoded.data.origin);
   // [LAW:one-source-of-truth] Carry the saved theme override through restore (the
   // same isPlatform gate the KV read and the paste decode use); dropping it here
   // would reopen with the wrong theme and republish a different override than was
   // saved. Junk reads as "no override" (auto-derive), not failure.
-  const platformOverride = isPlatform(data.platformOverride) ? data.platformOverride : undefined;
+  const platformOverride = isPlatform(decoded.data.platformOverride) ? decoded.data.platformOverride : undefined;
   return {
     ok: true,
-    draft: { turns: data.turns, origin: isOrigin(upgraded) ? upgraded : null, platformOverride },
+    draft: { turns: decoded.data.turns, origin: isOrigin(upgraded) ? upgraded : null, platformOverride },
   };
 };
 
 const submit = async (draft: Draft): Promise<SubmitResult> => {
-  const { ok, data } = await callJson(
-    "/api/paste",
-    POST_JSON({ turns: draft.turns, origin: draft.origin, platformOverride: draft.platformOverride }),
+  const decoded = decodeJson(
+    await httpJson("/api/paste", POST_JSON({ turns: draft.turns, origin: draft.origin, platformOverride: draft.platformOverride })),
+    { transport: "Couldn't reach the server.", server: "Server error.", malformed: "Server error." },
   );
-  if (!ok || typeof data?.slug !== "string") {
-    return { ok: false, reason: errorText(data, "Server error.") };
-  }
-  return { ok: true, slug: data.slug };
+  if (!decoded.ok) return decoded;
+  if (typeof decoded.data.slug !== "string") return { ok: false, reason: "Server error." };
+  return { ok: true, slug: decoded.data.slug };
 };
-
-const errorText = (data: { error?: unknown } | null, fallback: string): string =>
-  typeof data?.error === "string" ? data.error : fallback;
 
 // [LAW:effects-at-boundaries] localStorage draft persistence — the editor's only
 // durable client-side world. The store never touches it; it persists/restores
