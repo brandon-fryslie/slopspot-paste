@@ -15,11 +15,12 @@
 // explosion). Variability lives in the turn value crossing one seam.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
+import type { DraftRecord, InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
 import { platformOf, sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
+import { claudeCodeSessionId } from "../url";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveDialogue } from "../dialogue";
 
@@ -39,31 +40,40 @@ export type SubmitResult =
 // It is the same outcome shape the parser returns; aliasing keeps the one type.
 export type ImportResult = ParseResult;
 
-// [LAW:one-type-per-behavior] The unit the editor authors: turns plus the Origin
-// they were imported from (null = authored from scratch, no parser ran). Submit
-// and draft persistence both move this one shape — the origin is never separated
-// from the turns it describes, so it cannot be dropped at one seam and kept at
-// another. The origin a Draft carries is the IMPORT origin (where the turns came
-// from); the store derives the origin to STAMP at submit time (see submitOrigin).
-// platformOverride carries the user's explicit theme pick to the paste API so
-// the permalink honors it instead of re-deriving from source.
-export interface Draft {
-  readonly turns: ReadonlyArray<Turn>;
-  readonly origin: Origin | null;
-  readonly platformOverride?: Platform;
-}
+// [LAW:one-type-per-behavior][LAW:one-source-of-truth] The unit the editor authors:
+// turns plus the Origin they were imported from (null = authored from scratch, no
+// parser ran). This is the editor-facing name for the canonical DraftRecord shape
+// (types.ts) — the SAME contract the server KV record speaks, defined once so the
+// client and server cannot drift. Submit and draft persistence both move this one
+// shape — the origin is never separated from the turns it describes, so it cannot
+// be dropped at one seam and kept at another. The origin a Draft carries is the
+// IMPORT origin (where the turns came from); the store derives the origin to STAMP
+// at submit time (see submitOrigin). platformOverride carries the user's explicit
+// theme pick to the paste API so the permalink honors it instead of re-deriving.
+export type Draft = DraftRecord;
+
+// [LAW:types-are-the-program] Loading a server draft (an agent handoff via
+// /api/draft) has exactly two outcomes. Unlike ImportResult it carries a Draft —
+// origin may be null (an editor-origin or provenance-less draft) — so the restore
+// reuses the editor's one load path. A missing/expired draft is the {ok:false}
+// arm, surfaced through the same importError channel as a failed fetch.
+export type DraftLoadResult =
+  | { readonly ok: true; readonly draft: Draft }
+  | { readonly ok: false; readonly reason: string };
 
 // [LAW:effects-at-boundaries] The store's entire contact with the world, named
-// as capabilities. fetchShare hits /api/fetch (URL -> turns + Origin), submit
-// hits /api/paste (Draft -> slug), navigate changes the page; saveDraft/loadDraft/
-// clearDraft persist the in-progress Draft to localStorage so an accidental
-// reload doesn't lose work. mount.ts is the one place these are real.
+// as capabilities. fetchShare hits /api/fetch (URL -> turns + Origin), fetchDraft
+// hits /api/draft (id -> Draft, the agent-handoff restore), submit hits /api/paste
+// (Draft -> slug), navigate changes the page; saveDraft/loadDraft/clearDraft
+// persist the in-progress Draft to localStorage so an accidental reload doesn't
+// lose work. mount.ts is the one place these are real.
 //
 // loadDraft returns the empty Draft ({ turns: [], origin: null }) for "no
 // draft" (absent or unparseable) — the same empty editor a fresh visit gets,
 // so restore is unconditional dataflow, not a branch.
 export interface EditorIo {
   readonly fetchShare: (url: string) => Promise<ImportResult>;
+  readonly fetchDraft: (id: string) => Promise<DraftLoadResult>;
   readonly submit: (draft: Draft) => Promise<SubmitResult>;
   readonly navigate: (slug: string) => void;
   readonly saveDraft: (draft: Draft) => void;
@@ -168,6 +178,15 @@ export class EditorStore {
 
   get isUrlImport(): boolean {
     return this.importKind === "url";
+  }
+
+  // [LAW:one-source-of-truth] Recognize a claude.ai/code session link via the one
+  // shared matcher (url.ts). Non-null = the import text IS such a link (value is
+  // its session id): the view offers the agent-handoff workaround instead of a
+  // fetch, because slopspot cannot fetch these server-side yet. Drives a DISPLAY
+  // branch only; the link is never silently fetched as a doomed url import.
+  get claudeCodeLinkId(): string | null {
+    return claudeCodeSessionId(this.importText);
   }
 
   // [LAW:one-source-of-truth] Styling provenance is DERIVED from the import
@@ -289,6 +308,26 @@ export class EditorStore {
     });
   }
 
+  // [LAW:single-enforcer] An agent handoff: restore a server-stored draft
+  // (/api/draft) for review. Mirrors fetchShare's busy/error orchestration and
+  // converges on the SAME accept() loader, so a handed-off draft enters editing
+  // exactly as a fetched import does — its turns become the dirty baseline (not
+  // instantly "dirty"), and a missing/expired draft surfaces through the same
+  // importError channel, never a silent empty editor [LAW:no-silent-failure].
+  async loadServerDraft(id: string): Promise<void> {
+    this.busy = true;
+    this.importError = null;
+    const result = await this.io.fetchDraft(id);
+    runInAction(() => {
+      this.busy = false;
+      if (!result.ok) {
+        this.importError = result.reason;
+        return;
+      }
+      this.accept(result.draft);
+    });
+  }
+
   // ── Blocks ──────────────────────────────────────────────────────────────
 
   // [LAW:single-enforcer] The one decision every freshly-parsed/fetched batch
@@ -341,9 +380,14 @@ export class EditorStore {
     this.importOrigin = draft.origin;
     this.pendingReparse = null;
     this.view = "blocks";
-    // [LAW:no-mode-explosion] New content snaps theme back to auto-detection;
-    // a stale override silently diverging from new content is a hidden mode.
-    this.userPlatform = null;
+    // [LAW:dataflow-not-control-flow] The theme override is a VALUE the draft
+    // carries, not a branch on how loadTurns was reached. A fresh parse/fetch
+    // carries no override, so this snaps theme back to auto-detection exactly as
+    // before ([LAW:no-mode-explosion] — a stale override diverging from new
+    // content is a hidden mode); a restored draft (server handoff or localStorage)
+    // that carried an explicit pick honors it, so the editor reopens — and later
+    // republishes — the same theme that was saved ([LAW:one-source-of-truth]).
+    this.userPlatform = draft.platformOverride ?? null;
   }
 
   // [LAW:dataflow-not-control-flow] The one card mutation. The view computes the

@@ -36,7 +36,7 @@ import {
   toTurns,
 } from "../src/editor/blocks";
 import type { Kind } from "../src/editor/blocks";
-import { EditorStore, type Draft, type EditorIo, type SubmitResult } from "../src/editor/store";
+import { EditorStore, type Draft, type DraftLoadResult, type EditorIo, type SubmitResult } from "../src/editor/store";
 import { persistDrafts } from "../src/editor/mount";
 import type { ParseResult, Turn } from "../src/types";
 import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
@@ -1605,6 +1605,7 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
     let cell: string | null = null;
     const io: EditorIo = {
       fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+      fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "unused" }),
       submit: async (draft): Promise<SubmitResult> => {
         submitted.push(draft);
         return { ok: true, slug: "test-slug" };
@@ -1703,6 +1704,7 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
 {
   const io: EditorIo = {
     fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "unused" }),
     submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
     navigate: () => {},
     saveDraft: () => {},
@@ -1767,6 +1769,7 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
     let cell: string | null = null;
     const io: EditorIo = {
       fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+      fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "unused" }),
       submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "saved-slug" }),
       navigate: () => {},
       saveDraft: (draft) => {
@@ -1830,6 +1833,7 @@ console.log("\nDiscard draft persistence round-trip (slopspot-editor-draft-rp4):
   let cell: string | null = null;
   const discardIo: EditorIo = {
     fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "unused" }),
     submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
     navigate: () => {},
     saveDraft: (draft) => { cell = JSON.stringify(draft); },
@@ -1879,6 +1883,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   // fetched bytes), which the editor now carries through to submit.
   const io: EditorIo = {
     fetchShare: async (): Promise<ParseResult> => ({ ok: true, turns: shareTurns, origin: shareOrigin }),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "unused" }),
     submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
     navigate: () => {},
     saveDraft: () => {},

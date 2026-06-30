@@ -590,6 +590,19 @@ export const PLATFORM_BY_SOURCE: { readonly [K in SourceKind]: Platform } = {
 export const platformOf = (source: SourceKind | null): Platform =>
   source === null ? "generic" : PLATFORM_BY_SOURCE[source];
 
+// [LAW:one-source-of-truth] The persisted-draft shape: the editable state a draft
+// carries — turns, the import origin they came from, and an optional explicit theme
+// override. ONE authoritative definition, shared by the editor's in-memory Draft
+// (editor/store.ts aliases this) and the server's KV record (storage.ts imports it),
+// so the client/server contract cannot drift. Both modules already depend downward
+// on types.ts, so sharing it adds no dependency edge and no cycle [LAW:one-way-deps];
+// storage stays independent of the editor store.
+export interface DraftRecord {
+  readonly turns: ReadonlyArray<Turn>;
+  readonly origin: Origin | null;
+  readonly platformOverride?: Platform;
+}
+
 // Short display name for the conversation meta line. generic carries no badge —
 // absence of provenance is shown as absence, never a fabricated label.
 export const PLATFORM_LABEL: { readonly [P in Platform]: string | null } = {

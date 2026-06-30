@@ -24,3 +24,20 @@ export const singleLineUrl = (input: string): string | null => {
   if (trimmed.length === 0 || STRIPPED_BY_URL_PARSER.test(trimmed)) return null;
   return trimmed;
 };
+
+// [LAW:one-source-of-truth] The single recognizer for a claude.ai/code session
+// share link. Unlike claude.ai/share these are NOT a fetchable provider: slopspot
+// cannot fetch them server-side yet (the transcript loads via an authenticated
+// XHR the SPA issues only for an entitled account, behind Cloudflare — see
+// slopspot-cc-share-4nc.2). The editor recognizes the shape to offer the agent-
+// handoff workaround instead of a doomed fetch that would render the login wall.
+// Returns the session id (the token after `session_`) when matched, else null —
+// distinct from `false` so a caller can show the id without re-parsing.
+const CLAUDE_CODE_SESSION_RE = /^https?:\/\/claude\.ai\/code\/session_([A-Za-z0-9_-]+)\/?(?:\?.*)?$/i;
+
+export const claudeCodeSessionId = (input: string): string | null => {
+  const url = singleLineUrl(input);
+  if (url === null) return null;
+  const m = CLAUDE_CODE_SESSION_RE.exec(url);
+  return m === null ? null : (m[1] ?? null);
+};
