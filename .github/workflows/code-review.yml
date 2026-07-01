@@ -21,11 +21,5 @@ jobs:
 
       - name: Code Review
         uses: brandon-fryslie/coding-agent-review@v1
-        # The committed reviewer config (.github/review-agents.yml, `default: codex`)
-        # reads its key from the BARE env var its `apiKeyEnv: OPENAI_API_KEY` names —
-        # not from a `with:` input (which only sets INPUT_OPENAI_API_KEY). So the
-        # keys go on `env:`, matching the engine's apiKeyEnv contract. Both are
-        # provided so whichever engine the config selects resolves.
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
