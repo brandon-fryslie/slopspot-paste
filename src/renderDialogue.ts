@@ -270,7 +270,19 @@ const usageHtml = (usage: Usage, cumulative: number): string => {
 // subagent transcript renders through this same function with topLevel=false, so
 // its nodes (which would repeat t0,t1,…) carry no id at all — not deduped after
 // the fact, simply never minted.
-const renderDialogueHtml = (dialogue: Dialogue, topLevel: boolean = true): string => {
+// [LAW:composability] baseIndex is the spine position of the FIRST node in this
+// array — the fact the array position stands in for. It defaults to 0, so the full
+// page (which renders the whole spine from the start) and nested transcripts are
+// byte-identical. The single-turn card render target passes [node] sliced from
+// index N with baseIndex=N, so the node keeps its TRUE identity id="t<N>"/data-index
+// N instead of the t0 a bare 1-element slice would reset it to [LAW:one-source-of-
+// truth] — the card URL and the in-page permalink then name the same turn by one
+// scheme.
+const renderDialogueHtml = (
+  dialogue: Dialogue,
+  topLevel: boolean = true,
+  baseIndex: number = 0,
+): string => {
   const clampable = topLevel;
   // Usage is a running fold scoped to THIS dialogue — a nested subagent transcript
   // (cbm.4) folds its own total, since it renders through a fresh call below.
@@ -301,15 +313,18 @@ const renderDialogueHtml = (dialogue: Dialogue, topLevel: boolean = true): strin
       // [LAW:dataflow-not-control-flow] The permalink anchor is a value carried off
       // each top-level spine node (empty when nested), never a branch: `#t<index>`
       // names the same spine position the minimap already navigates by, so both
-      // read one navigational contract [LAW:one-source-of-truth].
-      const anchorAttr = topLevel ? ` id="t${index}"` : "";
+      // read one navigational contract [LAW:one-source-of-truth]. spineIndex is the
+      // node's absolute position (baseIndex + array position), so a sliced card
+      // render keeps its true t<N> identity — see baseIndex above.
+      const spineIndex = baseIndex + index;
+      const anchorAttr = topLevel ? ` id="t${spineIndex}"` : "";
       if (node.kind === "spoken") {
-        return spokenHtml(node.role, node.content, index, clampable, anchorAttr);
+        return spokenHtml(node.role, node.content, spineIndex, clampable, anchorAttr);
       }
       // The assistant turn is one always-visible card carrying its interleaved
       // blocks in source order. data-index marks it as one navigable spine node.
       return (
-        `<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="${index}"${anchorAttr}>` +
+        `<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="${spineIndex}"${anchorAttr}>` +
         roleHeader("assistant", "Assistant") +
         `<div class="assistant-blocks">${node.blocks.map(renderBlock).join("")}</div>` +
         `</article>`

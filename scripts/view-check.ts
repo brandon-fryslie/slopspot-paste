@@ -301,6 +301,49 @@ console.log("\nclaude.ai/code link handoff affordance (slopspot-cc-share-4nc.9):
   assert("share link: fetch row present", c.querySelector(".import-row") !== null);
 }
 
+console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");
+{
+  // [LAW:verifiable-goals] The card renders exactly one turn, through the SAME
+  // renderer the full page uses, keeping the turn's TRUE t<N> identity; an
+  // out-of-range or non-canonical segment is an honest absence (404), never a
+  // fallback to turn 0 or the whole paste.
+  const { deriveDialogue } = await import("../src/dialogue");
+  const { renderDialogueHtml } = await import("../src/renderDialogue");
+  const { renderTurnCard } = await import("../src/turnCard");
+
+  // Three spine turns: user(0), assistant(1), user(2).
+  const dialogue = deriveDialogue([
+    { kind: "message", role: "user", content: "first question" } as const,
+    { kind: "message", role: "assistant", content: "an answer" } as const,
+    { kind: "message", role: "user", content: "second question" } as const,
+  ]);
+
+  const t0 = renderTurnCard(dialogue, "t0");
+  const t2 = renderTurnCard(dialogue, "t2");
+
+  assert("card t0 renders and carries its content", t0 !== null && t0.includes("first question"));
+  assert("card t0 carries id=\"t0\"", t0 !== null && t0.includes('id="t0"'));
+
+  // The core decision: a sliced turn keeps its TRUE index, not the t0 a bare
+  // 1-element slice would reset it to [LAW:one-source-of-truth].
+  assert("card t2 carries id=\"t2\" (true index, not reset to t0)", t2 !== null && t2.includes('id="t2"'));
+  assert("card t2 does NOT carry id=\"t0\"", t2 !== null && !t2.includes('id="t0"'));
+  assert("card t2 renders its own content", t2 !== null && t2.includes("second question"));
+
+  // [LAW:single-enforcer] The card is drawn by the SAME renderer, so turn 2's card
+  // markup is byte-identical to turn 2 inside the full page — a substring of it.
+  const full = renderDialogueHtml(dialogue);
+  assert("card t2 is a verbatim substring of the full-page render (one renderer)", t2 !== null && full.includes(t2));
+
+  // [LAW:no-silent-failure] Out-of-range and non-canonical segments are null (404),
+  // never a fallback.
+  assert("index past the spine → null (out-of-range 404)", renderTurnCard(dialogue, "t3") === null);
+  assert("non-canonical leading-zero segment → null", renderTurnCard(dialogue, "t007") === null);
+  assert("non-numeric segment → null", renderTurnCard(dialogue, "tx") === null);
+  assert("missing t prefix → null", renderTurnCard(dialogue, "2") === null);
+  assert("bare prefix → null", renderTurnCard(dialogue, "t") === null);
+}
+
 if (process.exitCode) {
   console.error("\nFAILED");
 } else {
