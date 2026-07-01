@@ -1,0 +1,53 @@
+---
+import { env } from "cloudflare:workers";
+import Base from "../../layouts/Base.astro";
+import { deriveDialogue } from "../../dialogue";
+import { renderTurnCard } from "../../turnCard";
+import { loadViewablePaste } from "../../loadPaste";
+import { PLATFORM_LABEL, platformOf, sourceOf } from "../../types";
+
+export const prerender = false;
+
+const { slug, turn } = Astro.params;
+
+// [LAW:single-enforcer] The SAME gate the full page uses — a soft-deleted or expired
+// paste is hidden here too, so the card surface cannot leak a paste that is gone on
+// /<slug>. [LAW:dataflow-not-control-flow] the result is a value: the conversation or
+// the exact response to emit.
+const load = await loadViewablePaste(env.PASTES, slug, Date.now());
+if (!load.ok) {
+  return new Response(load.message, { status: load.status });
+}
+const conversation = load.conversation;
+
+// [LAW:single-enforcer] The card renders through the SAME renderer the full page uses
+// (renderTurnCard → renderDialogueHtml), so a turn drawn as a card cannot drift from
+// the same turn in the full conversation. [LAW:no-silent-failure] a non-canonical
+// segment or an index past the spine returns null → an honest 404, never a fallback
+// to turn 0 or the whole paste. `turn` is always present on this route.
+const card = renderTurnCard(deriveDialogue(conversation.turns), turn ?? "");
+if (card === null) {
+  return new Response("Not found", { status: 404 });
+}
+
+// [LAW:one-source-of-truth] Platform theme is a projection of the captured origin —
+// the SAME derivation the full page runs: the manual override wins, else the
+// source-derived platform. A generic platform has a null label, so absence of
+// provenance renders as absence.
+const platform = conversation.platformOverride ?? platformOf(sourceOf(conversation.origin));
+const platformLabel = PLATFORM_LABEL[platform];
+const title = conversation.title ?? "Shared conversation";
+---
+
+<Base title={`${title} · one turn · slopspot paste`} platform={platform}>
+  <section class="conversation-header">
+    <p class="conversation-meta">
+      {platformLabel && <span class="platform-badge">{platformLabel}</span>}
+      {platformLabel && <span aria-hidden="true">·</span>}
+      <span>One turn from</span>
+      <a href={`/${slug}#${turn}`}>{title}</a>
+    </p>
+  </section>
+
+  <section class="conversation" aria-label="Conversation turn" set:html={card} />
+</Base>
