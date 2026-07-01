@@ -417,6 +417,36 @@ const sourceUrl = sourceUrlOf(origin);
     // action they can't deliver. Revealing them is one value flip, not a branch
     // that conditionally builds the affordance.
     if (navigator.clipboard) {
+      // [LAW:effects-at-boundaries] The permalink id is server-emitted (so #t<N>
+      // fragment-scrolls with no JS); the COPY affordance is a browser capability,
+      // built here over the same `turns` the minimap projects — one navigational
+      // contract [LAW:one-source-of-truth], never a second enumeration. Each button
+      // copies location.origin+pathname+'#t'+index: the exact fragment the browser
+      // already honors. Absolute-positioned, so it adds no height and never perturbs
+      // the minimap's length measurement.
+      for (const el of turns) {
+        const index = el.dataset.index ?? "";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "copy-turn-link";
+        btn.setAttribute("aria-label", "Copy link to this turn");
+        btn.textContent = "Copy link";
+        // [LAW:one-source-of-truth] Revert label read from the button, never re-typed.
+        const label = btn.textContent;
+        btn.addEventListener("click", async () => {
+          const url = location.origin + location.pathname + "#t" + index;
+          await navigator.clipboard.writeText(url);
+          btn.classList.add("copied");
+          btn.textContent = "Copied";
+          window.setTimeout(() => {
+            btn.classList.remove("copied");
+            btn.textContent = label;
+          }, 1200);
+        });
+        el.appendChild(btn);
+      }
+      document.body.classList.add("permalink-ready");
+
       for (const btn of document.querySelectorAll<HTMLButtonElement>(
         "pre.code-block > .copy-code",
       )) {
