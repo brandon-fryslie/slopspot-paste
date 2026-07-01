@@ -417,28 +417,86 @@ const sourceUrl = sourceUrlOf(origin);
     // action they can't deliver. Revealing them is one value flip, not a branch
     // that conditionally builds the affordance.
     if (navigator.clipboard) {
-      // [LAW:effects-at-boundaries] The permalink id is server-emitted (so #t<N>
-      // fragment-scrolls with no JS); the COPY affordance is a browser capability,
-      // built here over the same `turns` the minimap projects — one navigational
-      // contract [LAW:one-source-of-truth], never a second enumeration. Each button
-      // copies location.origin+pathname+'#t'+index: the exact fragment the browser
-      // already honors. Absolute-positioned, so it adds no height and never perturbs
-      // the minimap's length measurement.
-      for (const el of turns) {
+      // [LAW:one-source-of-truth] The permalink is derived from the rendered anchor
+      // the server emitted (el.id, e.g. "t3"), never a re-encoding of the "#t"+index
+      // scheme — so a copied URL cannot drift from the id the browser honors for
+      // fragment navigation. Both per-turn controls read the link through this.
+      const permalinkOf = (el: HTMLElement): string =>
+        location.origin + location.pathname + "#" + el.id;
+
+      // [LAW:one-source-of-truth] The quoted text is a prose block's rendered text,
+      // read from the DOM the renderer emitted — but stripped of the interactive
+      // CHROME the renderer also puts INSIDE prose. A code block carries a "Copy"
+      // button and a language tag; the reader does not read those as content, so a
+      // quote that includes them drifts from what is on screen. They are hidden for
+      // the single innerText read (which forces layout but no paint — nothing
+      // flickers), then restored: the same measure-by-transient-toggle pattern
+      // clampBlocks uses. innerText (not textContent) keeps paragraph breaks, and
+      // with the chrome gone a <pre>'s own whitespace (code indentation) survives.
+      // Only leading/trailing blank LINES are stripped — never spaces, which would
+      // eat a code block's indentation.
+      const proseText = (src: HTMLElement): string => {
+        const chrome = [
+          ...src.querySelectorAll<HTMLElement>(".copy-code, .code-lang"),
+        ];
+        const restore = chrome.map((c) => c.style.display);
+        for (const c of chrome) c.style.display = "none";
+        try {
+          return src.innerText.replace(/^\n+/, "").replace(/\n+$/, "");
+        } finally {
+          chrome.forEach((c, i) => (c.style.display = restore[i]!));
+        }
+      };
+
+      // [LAW:one-source-of-truth] A quote is the turn's OWN rendered prose plus its
+      // permalink — read from the DOM the renderer emitted, never a re-serialization,
+      // so it can't drift from what the reader sees. Spine prose only: every
+      // .bubble-body NOT nested inside a collapsed detail (thinking/tool-call/
+      // subagent) — the readable moment of the turn, not its folded machinery. The
+      // prose sits in .clamp-content when a block is clampable (whose wrapper also
+      // holds the Show-more toggle, which reading .clamp-content skips), else in the
+      // body itself.
+      const buildQuote = (el: HTMLElement): string => {
+        const prose = [...el.querySelectorAll<HTMLElement>(".bubble-body")]
+          .filter((b) => !b.closest(".condensed"))
+          .map((b) =>
+            proseText(b.querySelector<HTMLElement>(":scope > .clamp-content") ?? b),
+          )
+          .filter((t) => t.trim() !== "")
+          .join("\n\n");
+        // [LAW:dataflow-not-control-flow] The blockquote is a VALUE derived from the
+        // prose, not a branch that skips formatting: one return, the data decides its
+        // shape. Empty prose (a turn with no readable text — e.g. only tool calls) maps
+        // to an empty string, so the result is the bare permalink — never a lone '>'
+        // marker quoting nothing. Present prose becomes blockquote lines (a blank line
+        // → a bare '>', so a multi-paragraph quote stays one blockquote) plus the
+        // separator; the formatter only touches non-empty prose, so it never emits the
+        // empty marker.
+        const quoted = prose
+          ? prose.split("\n").map((line) => (line ? "> " + line : ">")).join("\n") +
+            "\n\n"
+          : "";
+        return quoted + permalinkOf(el);
+      };
+
+      // [LAW:one-type-per-behavior] copy-link and quote are ONE control type — a
+      // clipboard pill that flips to "Copied" then reverts — differing only in label
+      // and in the value copied. The payload is a thunk read at click time, so it
+      // reflects the live DOM (current prose, current permalink), never a value
+      // snapshotted at build. [LAW:effects-at-boundaries] the click is the only
+      // world-touch; the button owns its own revert timer, no shared scheduler.
+      const clipboardControl = (
+        label: string,
+        ariaLabel: string,
+        payload: () => string,
+      ): HTMLButtonElement => {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "copy-turn-link";
-        btn.setAttribute("aria-label", "Copy link to this turn");
-        btn.textContent = "Copy link";
-        // [LAW:one-source-of-truth] Revert label read from the button, never re-typed.
-        const label = btn.textContent;
+        btn.className = "turn-control";
+        btn.setAttribute("aria-label", ariaLabel);
+        btn.textContent = label;
         btn.addEventListener("click", async () => {
-          // [LAW:one-source-of-truth] The permalink is derived from the rendered
-          // anchor the server emitted (el.id, e.g. "t3"), never a re-encoding of the
-          // "#t"+index scheme — so the copied URL cannot drift from the id the
-          // browser actually honors for fragment navigation.
-          const url = location.origin + location.pathname + "#" + el.id;
-          await navigator.clipboard.writeText(url);
+          await navigator.clipboard.writeText(payload());
           btn.classList.add("copied");
           btn.textContent = "Copied";
           window.setTimeout(() => {
@@ -446,7 +504,27 @@ const sourceUrl = sourceUrlOf(origin);
             btn.textContent = label;
           }, 1200);
         });
-        el.appendChild(btn);
+        return btn;
+      };
+
+      // [LAW:effects-at-boundaries] The controls are a browser capability built here
+      // over the same `turns` the minimap projects — one navigational contract
+      // [LAW:one-source-of-truth], never a second enumeration. The cluster is
+      // absolute-positioned (CSS), so it adds no height and never perturbs the
+      // minimap's length measurement; both controls sit within it, so neither
+      // hardcodes an offset past the other.
+      for (const el of turns) {
+        const controls = document.createElement("div");
+        controls.className = "turn-controls";
+        controls.appendChild(
+          clipboardControl("Copy link", "Copy link to this turn", () =>
+            permalinkOf(el),
+          ),
+        );
+        controls.appendChild(
+          clipboardControl("Quote", "Quote this turn", () => buildQuote(el)),
+        );
+        el.appendChild(controls);
       }
       document.body.classList.add("permalink-ready");
 
