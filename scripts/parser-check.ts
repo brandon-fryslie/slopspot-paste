@@ -2454,10 +2454,13 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
 
   // ── Acceptance 1: collapsed by default = thinking, tool-call; always visible =
   // user + assistant text. Spine nodes are NOT <details>, so they cannot collapse.
+  // Each top-level spine node carries id="t<index>" — the permalink anchor, the
+  // same index the minimap navigates by (permalinks-64g.1). It is emitted only at
+  // the top level; a nested subagent transcript carries none (asserted below).
   has("user message is an always-visible article (not a details)",
-    '<article class="bubble bubble-user" data-kind="message" data-role="user" data-index="0">');
+    '<article class="bubble bubble-user" data-kind="message" data-role="user" data-index="0" id="t0">');
   has("assistant turn is an always-visible article",
-    '<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="1">');
+    '<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="1" id="t1">');
   has("assistant TEXT renders always-visible (no details wrapper)",
     '<div class="assistant-text bubble-body clampable">');
   assert("no spine bubble is a <details> (user/assistant text never collapse)",
@@ -2524,7 +2527,7 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   // ── Spine grouping: the two assistant message.ids merge into ONE assistant
   // node (index 1); the trailing system message is its own spine node (index 2).
   has("trailing system message is its own spine node",
-    '<article class="bubble bubble-system" data-kind="message" data-role="system" data-index="2">');
+    '<article class="bubble bubble-system" data-kind="message" data-role="system" data-index="2" id="t2">');
   assert("the merged run yields exactly one assistant turn",
     (html.match(/class="bubble bubble-assistant assistant-turn"/g) ?? []).length === 1);
 
@@ -2642,6 +2645,13 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
         window.includes('<div class="bubble-body">'));
       assert("nested subagent prose carries no clampable marker",
         tx >= 0 && !window.includes("clampable"));
+      // [LAW:types-are-the-program] The permalink id is emitted only at the top
+      // level (permalinks-64g.1). A nested transcript renders through the same
+      // function with topLevel=false, so its spine nodes carry data-index but NO
+      // id="t…" — the duplicate-DOM-id state (nested t0 colliding with the outer
+      // t0) is never minted, not deduped after the fact.
+      assert("nested subagent spine carries no permalink id (no duplicate anchors)",
+        tx >= 0 && window.includes("data-index=") && !window.includes('id="t'));
     }
 
     // [LAW:one-source-of-truth] Re-projecting the captured origin reproduces an

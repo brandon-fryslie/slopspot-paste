@@ -66,13 +66,16 @@ const clampableBody = (leadingClass: string, content: string, clampable: boolean
 // data-index/data-kind/data-role are the navigational contract the page's minimap
 // reads (`:scope > [data-index]`); only top-level spine nodes carry them, so the
 // minimap projects the conversation spine and skips the nested detail blocks.
+// anchorAttr is the permalink id (`id="t<index>"`), emitted for the same top-level
+// spine nodes and empty for nested ones — see renderDialogueHtml.
 const spokenHtml = (
   role: Exclude<Role, "assistant">,
   content: string,
   index: number,
   clampable: boolean,
+  anchorAttr: string,
 ): string =>
-  `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}">` +
+  `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}"${anchorAttr}>` +
   roleHeader(role, SPOKEN_LABEL[role]) +
   clampableBody("bubble-body", content, clampable) +
   `</article>`;
@@ -213,10 +216,11 @@ const subagentHtml = (
 ): string => {
   const body =
     block.body.kind === "captured"
-      ? // [LAW:no-silent-failure] clampable=false: the nested transcript lives in a
-        // collapsed <details>, so its prose must NOT be marked clampable (it would
-        // measure at zero height while hidden and never clamp). The seam is one
-        // level out, here, where we know this render is nested.
+      ? // [LAW:no-silent-failure] topLevel=false: this render is nested. Its prose
+        // must NOT be marked clampable (a closed <details> measures at zero height
+        // and would never clamp), AND its spine nodes must carry no permalink id
+        // (they would repeat t0,t1,… and collide with the outer conversation). Both
+        // fall out of the one nested fact, asserted here where we know the depth.
         `<div class="subagent-transcript">${renderDialogueHtml(block.body.transcript, false)}</div>`
       : subagentDegradedHtml(block.body.prompt, block.body.result);
   const attrs = block.agentType ? ` data-agent-type="${escapeAttr(block.agentType)}"` : "";
@@ -255,12 +259,19 @@ const usageHtml = (usage: Usage, cumulative: number): string => {
 // is threaded by closure so a usage block reads the running total accumulated by
 // the blocks before it; a nested subagent transcript folds its OWN total because
 // it renders through a fresh renderDialogueHtml call (cumulativeOutput resets).
-// [LAW:one-source-of-truth] `clampable` defaults true for the top-level call (the
-// permalink page and the editor preview both render the outer conversation, whose
-// spine prose is always visible). subagentHtml re-enters with false, so depth is
-// not threaded as a number — the single fact that matters is "is this prose always
-// laid out," and the nested call is the one place that is false.
-const renderDialogueHtml = (dialogue: Dialogue, clampable: boolean = true): string => {
+// [LAW:one-source-of-truth] `topLevel` defaults true for the outer call (the
+// permalink page and the editor preview both render the outer conversation).
+// subagentHtml re-enters with false, so depth is not threaded as a number — the
+// single fact that matters is "is this the outer render," and the nested call is
+// the one place that is false. TWO behaviors derive from that one fact: spine
+// prose is clampable only when always-laid-out (top level), and a spine node gets
+// a permalink `id="t<index>"` only at the top level. [LAW:types-are-the-program]
+// Emitting the id only here makes duplicate DOM ids unrepresentable: a nested
+// subagent transcript renders through this same function with topLevel=false, so
+// its nodes (which would repeat t0,t1,…) carry no id at all — not deduped after
+// the fact, simply never minted.
+const renderDialogueHtml = (dialogue: Dialogue, topLevel: boolean = true): string => {
+  const clampable = topLevel;
   // Usage is a running fold scoped to THIS dialogue — a nested subagent transcript
   // (cbm.4) folds its own total, since it renders through a fresh call below.
   let cumulativeOutput = 0;
@@ -287,13 +298,18 @@ const renderDialogueHtml = (dialogue: Dialogue, clampable: boolean = true): stri
 
   return dialogue
     .map((node, index) => {
+      // [LAW:dataflow-not-control-flow] The permalink anchor is a value carried off
+      // each top-level spine node (empty when nested), never a branch: `#t<index>`
+      // names the same spine position the minimap already navigates by, so both
+      // read one navigational contract [LAW:one-source-of-truth].
+      const anchorAttr = topLevel ? ` id="t${index}"` : "";
       if (node.kind === "spoken") {
-        return spokenHtml(node.role, node.content, index, clampable);
+        return spokenHtml(node.role, node.content, index, clampable, anchorAttr);
       }
       // The assistant turn is one always-visible card carrying its interleaved
       // blocks in source order. data-index marks it as one navigable spine node.
       return (
-        `<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="${index}">` +
+        `<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="${index}"${anchorAttr}>` +
         roleHeader("assistant", "Assistant") +
         `<div class="assistant-blocks">${node.blocks.map(renderBlock).join("")}</div>` +
         `</article>`
