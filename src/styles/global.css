@@ -861,18 +861,31 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   .conversation > [data-index]:target { animation: none; }
 }
 
-/* The copy-link affordance mirrors .copy-code: inert until the client confirms
+/* The per-turn control cluster mirrors .copy-code: inert until the client confirms
    clipboard support (body.permalink-ready), revealed on hover, so a no-JS viewer
-   never sees a button that can't act. The permalink itself still works with no JS
-   — the button only copies it. */
-.copy-turn-link {
+   never sees controls that can't act. The permalink itself still works with no JS —
+   these only copy it (or a quote of the turn). [LAW:one-type-per-behavior] copy-link
+   and quote are one control type (.turn-control); the cluster lays them out side by
+   side so neither hardcodes an offset past the other, and its single opacity fades
+   both in together on hover. Absolute-positioned, so it adds no height and never
+   perturbs the minimap's length measurement. */
+.turn-controls {
   display: none;
 }
-body.permalink-ready .copy-turn-link {
-  display: inline-block;
+body.permalink-ready .turn-controls {
+  display: flex;
+  gap: 6px;
   position: absolute;
   top: 12px;
   right: 14px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+body.permalink-ready .bubble:hover > .turn-controls,
+body.permalink-ready .turn-controls:focus-within {
+  opacity: 1;
+}
+.turn-control {
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.05em;
@@ -882,16 +895,10 @@ body.permalink-ready .copy-turn-link {
   background: var(--bg-elev);
   color: var(--fg-muted);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, color 0.12s ease;
+  transition: color 0.12s ease, border-color 0.12s ease;
 }
-body.permalink-ready .bubble:hover > .copy-turn-link,
-body.permalink-ready .copy-turn-link:focus-visible {
-  opacity: 1;
-}
-.copy-turn-link:hover { color: var(--fg); }
-.copy-turn-link.copied {
-  opacity: 1;
+.turn-control:hover { color: var(--fg); }
+.turn-control.copied {
   color: var(--accent);
   border-color: var(--accent);
 }
