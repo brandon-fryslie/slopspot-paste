@@ -424,31 +424,58 @@ const sourceUrl = sourceUrlOf(origin);
       const permalinkOf = (el: HTMLElement): string =>
         location.origin + location.pathname + "#" + el.id;
 
+      // [LAW:one-source-of-truth] The quoted text is a prose block's rendered text,
+      // read from the DOM the renderer emitted — but stripped of the interactive
+      // CHROME the renderer also puts INSIDE prose. A code block carries a "Copy"
+      // button and a language tag; the reader does not read those as content, so a
+      // quote that includes them drifts from what is on screen. They are hidden for
+      // the single innerText read (which forces layout but no paint — nothing
+      // flickers), then restored: the same measure-by-transient-toggle pattern
+      // clampBlocks uses. innerText (not textContent) keeps paragraph breaks, and
+      // with the chrome gone a <pre>'s own whitespace (code indentation) survives.
+      // Only leading/trailing blank LINES are stripped — never spaces, which would
+      // eat a code block's indentation.
+      const proseText = (src: HTMLElement): string => {
+        const chrome = [
+          ...src.querySelectorAll<HTMLElement>(".copy-code, .code-lang"),
+        ];
+        const restore = chrome.map((c) => c.style.display);
+        for (const c of chrome) c.style.display = "none";
+        try {
+          return src.innerText.replace(/^\n+/, "").replace(/\n+$/, "");
+        } finally {
+          chrome.forEach((c, i) => (c.style.display = restore[i]!));
+        }
+      };
+
       // [LAW:one-source-of-truth] A quote is the turn's OWN rendered prose plus its
       // permalink — read from the DOM the renderer emitted, never a re-serialization,
       // so it can't drift from what the reader sees. Spine prose only: every
       // .bubble-body NOT nested inside a collapsed detail (thinking/tool-call/
       // subagent) — the readable moment of the turn, not its folded machinery. The
       // prose sits in .clamp-content when a block is clampable (whose wrapper also
-      // holds the Show-more toggle, which this skips), else in the body itself.
-      // innerText is the rendered text — paragraph breaks preserved, the exact
-      // characters on screen. Each prose line becomes a blockquote line; a blank line
-      // becomes a bare '>' so a multi-paragraph quote stays one blockquote.
+      // holds the Show-more toggle, which reading .clamp-content skips), else in the
+      // body itself.
       const buildQuote = (el: HTMLElement): string => {
         const prose = [...el.querySelectorAll<HTMLElement>(".bubble-body")]
           .filter((b) => !b.closest(".condensed"))
           .map((b) =>
-            (
-              b.querySelector<HTMLElement>(":scope > .clamp-content") ?? b
-            ).innerText.trim(),
+            proseText(b.querySelector<HTMLElement>(":scope > .clamp-content") ?? b),
           )
-          .filter(Boolean)
+          .filter((t) => t.trim() !== "")
           .join("\n\n");
+        const url = permalinkOf(el);
+        // [LAW:dataflow-not-control-flow] Empty prose (a turn with no readable text —
+        // e.g. only tool calls) yields the bare permalink, never a lone '>' marker
+        // quoting nothing. The blockquote is a value present only when there is prose;
+        // each prose line becomes a blockquote line and a blank line a bare '>', so a
+        // multi-paragraph quote stays one blockquote.
+        if (!prose) return url;
         const quoted = prose
           .split("\n")
           .map((line) => (line ? "> " + line : ">"))
           .join("\n");
-        return quoted + "\n\n" + permalinkOf(el);
+        return quoted + "\n\n" + url;
       };
 
       // [LAW:one-type-per-behavior] copy-link and quote are ONE control type — a
