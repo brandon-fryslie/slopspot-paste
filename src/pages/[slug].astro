@@ -3,32 +3,23 @@ import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveDialogue } from "../dialogue";
-import { getConversation } from "../storage";
-import { isValidSlug } from "../slug";
-import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime, isHiddenFromPublic } from "../types";
+import { loadViewablePaste } from "../loadPaste";
+import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime } from "../types";
 
 export const prerender = false;
 
 const { slug } = Astro.params;
 
-// [LAW:dataflow-not-control-flow] Same handler shape: validate slug → fetch →
-// render. Variability is the conversation value or its absence.
-if (!slug || !isValidSlug(slug)) {
-  return new Response("Not found", { status: 404 });
+// [LAW:single-enforcer] loadViewablePaste is the one gate resolving a public paste
+// from a slug (bad slug / missing → 404, soft-deleted or expired → 410) — the SAME
+// gate the single-turn card route uses, so a hidden paste cannot leak on one surface
+// while it is gone on the other. [LAW:dataflow-not-control-flow] its result is a
+// value: the conversation or the exact response to emit.
+const load = await loadViewablePaste(env.PASTES, slug, Date.now());
+if (!load.ok) {
+  return new Response(load.message, { status: load.status });
 }
-
-const conversation = await getConversation(env.PASTES, slug);
-
-if (!conversation) {
-  return new Response("This paste has expired or never existed.", { status: 404 });
-}
-
-// [LAW:single-enforcer] isHiddenFromPublic is the one gate for soft-deleted and
-// naturally-expired pastes. 410 Gone distinguishes "it existed but is gone" from
-// 404 "never existed" — HTTP semantics for the tombstone state.
-if (isHiddenFromPublic(conversation, Date.now())) {
-  return new Response("This paste has expired or been deleted.", { status: 410 });
-}
+const conversation = load.conversation;
 
 const title = conversation.title ?? "Shared conversation";
 // [LAW:dataflow-not-control-flow] Both lifetime cases produce a meta string
