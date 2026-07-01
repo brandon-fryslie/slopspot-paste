@@ -540,6 +540,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ─── Bubbles — chat UI ─────────────────────────────────────────────── */
 .bubble {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 20px;
@@ -834,6 +835,62 @@ body.code-copy-ready pre.code-block:hover .code-lang {
   color: var(--fg);
 }
 .copy-code.copied {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ─── Per-turn permalinks ────────────────────────────────────────────────
+   Each top-level spine node carries id="t<index>" (the same index the minimap
+   navigates by), so /<slug>#t<N> is a native fragment link: the browser owns
+   scroll-on-load and the :target highlight — no JS timing [LAW:no-ambient-
+   temporal-coupling]. scroll-margin-top keeps the anchored turn off the very
+   top edge when jumped to. The highlight flashes an accent ring once, then
+   settles into a faint persistent ring so the linked-to turn stays identifiable. */
+.conversation > [data-index] { scroll-margin-top: 24px; }
+.conversation > [data-index]:target {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 3px;
+  animation: turn-target-flash 1.6s ease-out;
+}
+@keyframes turn-target-flash {
+  from { box-shadow: 0 0 0 3px var(--accent); }
+  to   { box-shadow: 0 0 0 3px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation > [data-index]:target { animation: none; }
+}
+
+/* The copy-link affordance mirrors .copy-code: inert until the client confirms
+   clipboard support (body.permalink-ready), revealed on hover, so a no-JS viewer
+   never sees a button that can't act. The permalink itself still works with no JS
+   — the button only copies it. */
+.copy-turn-link {
+  display: none;
+}
+body.permalink-ready .copy-turn-link {
+  display: inline-block;
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 2px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+body.permalink-ready .bubble:hover > .copy-turn-link,
+body.permalink-ready .copy-turn-link:focus-visible {
+  opacity: 1;
+}
+.copy-turn-link:hover { color: var(--fg); }
+.copy-turn-link.copied {
   opacity: 1;
   color: var(--accent);
   border-color: var(--accent);
