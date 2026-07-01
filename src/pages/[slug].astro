@@ -464,18 +464,19 @@ const sourceUrl = sourceUrlOf(origin);
           )
           .filter((t) => t.trim() !== "")
           .join("\n\n");
-        const url = permalinkOf(el);
-        // [LAW:dataflow-not-control-flow] Empty prose (a turn with no readable text —
-        // e.g. only tool calls) yields the bare permalink, never a lone '>' marker
-        // quoting nothing. The blockquote is a value present only when there is prose;
-        // each prose line becomes a blockquote line and a blank line a bare '>', so a
-        // multi-paragraph quote stays one blockquote.
-        if (!prose) return url;
+        // [LAW:dataflow-not-control-flow] The blockquote is a VALUE derived from the
+        // prose, not a branch that skips formatting: one return, the data decides its
+        // shape. Empty prose (a turn with no readable text — e.g. only tool calls) maps
+        // to an empty string, so the result is the bare permalink — never a lone '>'
+        // marker quoting nothing. Present prose becomes blockquote lines (a blank line
+        // → a bare '>', so a multi-paragraph quote stays one blockquote) plus the
+        // separator; the formatter only touches non-empty prose, so it never emits the
+        // empty marker.
         const quoted = prose
-          .split("\n")
-          .map((line) => (line ? "> " + line : ">"))
-          .join("\n");
-        return quoted + "\n\n" + url;
+          ? prose.split("\n").map((line) => (line ? "> " + line : ">")).join("\n") +
+            "\n\n"
+          : "";
+        return quoted + permalinkOf(el);
       };
 
       // [LAW:one-type-per-behavior] copy-link and quote are ONE control type — a
