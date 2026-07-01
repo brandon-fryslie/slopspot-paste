@@ -425,7 +425,6 @@ const sourceUrl = sourceUrlOf(origin);
       // already honors. Absolute-positioned, so it adds no height and never perturbs
       // the minimap's length measurement.
       for (const el of turns) {
-        const index = el.dataset.index ?? "";
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "copy-turn-link";
@@ -434,7 +433,11 @@ const sourceUrl = sourceUrlOf(origin);
         // [LAW:one-source-of-truth] Revert label read from the button, never re-typed.
         const label = btn.textContent;
         btn.addEventListener("click", async () => {
-          const url = location.origin + location.pathname + "#t" + index;
+          // [LAW:one-source-of-truth] The permalink is derived from the rendered
+          // anchor the server emitted (el.id, e.g. "t3"), never a re-encoding of the
+          // "#t"+index scheme — so the copied URL cannot drift from the id the
+          // browser actually honors for fragment navigation.
+          const url = location.origin + location.pathname + "#" + el.id;
           await navigator.clipboard.writeText(url);
           btn.classList.add("copied");
           btn.textContent = "Copied";
