@@ -6,7 +6,7 @@
 // any t<N> anchor, and — the security-critical assertion — that a redacted turn's /t<N>
 // permalink card shows "[redacted]" and NEVER the original content (no leak).
 
-import { applyOverlay, deriveViewableDialogue, outOfRangeTarget } from "../src/overlay";
+import { applyOverlay, deriveViewableDialogue, outOfRangeTarget, describeTargetFault } from "../src/overlay";
 import { deriveDialogue } from "../src/dialogue";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import { renderTurnCard } from "../src/turnCard";
@@ -83,8 +83,15 @@ assert("isOverlay accepts multiple directives", isOverlay([...hide(0), ...hide(2
 assert("isOverlay rejects a non-array", !isOverlay({ kind: "hide", target: { kind: "turn", index: 0 } }));
 assert("isOverlayDirective rejects an unknown kind", !isOverlayDirective({ kind: "nuke", target: { kind: "turn", index: 0 } }));
 assert("isOverlayDirective rejects a missing target", !isOverlayDirective({ kind: "hide" }));
-assert("isOverlayDirective rejects a non-turn target kind", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0 } }));
+assert("isOverlayDirective rejects an unknown target kind", !isOverlayDirective({ kind: "hide", target: { kind: "paragraph", index: 0 } }));
 assert("isOverlayDirective rejects a negative target index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: -1 } }));
+// span arm (slopspot-overlay-34a.5): a well-formed span is accepted; every malformed shape
+// (missing coordinate, inverted/empty range, negative offset) is rejected at the boundary.
+assert("isOverlayDirective accepts a well-formed span target", isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0, piece: 0, start: 2, end: 5 } }));
+assert("isOverlayDirective rejects a span missing start/end/piece", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0 } }));
+assert("isOverlayDirective rejects an inverted/empty span (start >= end)", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0, piece: 0, start: 5, end: 5 } }));
+assert("isOverlayDirective rejects a negative span offset", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0, piece: 0, start: -1, end: 3 } }));
+assert("isOverlayDirective rejects a fractional span offset", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0, piece: 0, start: 1.5, end: 3 } }));
 assert("isOverlayDirective rejects a fractional target index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: 1.5 } }));
 assert("isOverlay rejects an array containing one junk directive", !isOverlay([...hide(0), { kind: "hide" }]));
 
@@ -92,8 +99,142 @@ assert("isOverlay rejects an array containing one junk directive", !isOverlay([.
 assert("outOfRangeTarget passes an in-range hide (t1)", outOfRangeTarget(turns, hide(1)) === null);
 assert("outOfRangeTarget passes the last in-range hide (t2)", outOfRangeTarget(turns, hide(2)) === null);
 assert("outOfRangeTarget passes the empty overlay", outOfRangeTarget(turns, []) === null);
-assert("outOfRangeTarget flags a past-the-end index (t3 of a 3-node spine)", outOfRangeTarget(turns, hide(3)) === 3);
-assert("outOfRangeTarget reports the FIRST offending index", outOfRangeTarget(turns, [...hide(1), ...hide(9)]) === 9);
+const faultT3 = outOfRangeTarget(turns, hide(3));
+assert("outOfRangeTarget flags a past-the-end turn (t3 of a 3-node spine)",
+  faultT3?.kind === "turn-out-of-range" && faultT3.index === 3 && faultT3.spineLength === 3);
+const faultFirst = outOfRangeTarget(turns, [...hide(1), ...hide(9)]);
+assert("outOfRangeTarget reports the FIRST offending target",
+  faultFirst?.kind === "turn-out-of-range" && faultFirst.index === 9);
+
+// ── SUB-TURN SPAN REDACTION (slopspot-overlay-34a.5) ─────────────────────────
+// A fixture with a MULTI-PROSE-BLOCK assistant node: a thinking turn and an assistant
+// message between two user turns merge into ONE assistant spine node (t1) whose prose
+// pieces are, in order, piece 0 = the thinking content, piece 1 = the text content. This
+// lets a span redact ONE piece of a turn while its sibling piece renders verbatim — the
+// whole point of sub-turn granularity.
+const THINK_SECRET = "THINK-SECRET-xyz789";
+const spanTurns: ReadonlyArray<Turn> = [
+  { kind: "message", role: "user", content: "Explain the setup." },
+  { kind: "thinking", content: `Internally the key is ${THINK_SECRET} for now.` },
+  { kind: "message", role: "assistant", content: `Use token ${SECRET} in the header.` },
+  { kind: "message", role: "user", content: `Also my ${SENSITIVE} stays private.` },
+];
+const spanDialogue = deriveDialogue(spanTurns);
+assert("span fixture derives 3 spine nodes (t0 spoken, t1 assistant, t2 spoken)", spanDialogue.length === 3);
+const t1 = spanDialogue[1];
+assert("span fixture t1 is an assistant node with 2 prose blocks (thinking, text)",
+  t1?.kind === "assistant" && t1.blocks.length === 2);
+
+const span = (index: number, piece: number, start: number, end: number): Overlay => [
+  { kind: "hide", target: { kind: "span", index, piece, start, end } },
+];
+// Offsets are computed from the raw source strings — exactly the coordinate system the
+// authoring UI (.7) will capture by selecting into the revealed raw prose.
+const thinkSrc = `Internally the key is ${THINK_SECRET} for now.`;
+const textSrc = `Use token ${SECRET} in the header.`;
+const tStart = thinkSrc.indexOf(THINK_SECRET);
+const sStart = textSrc.indexOf(SECRET);
+const sensSrc = `Also my ${SENSITIVE} stays private.`;
+const senStart = sensSrc.indexOf(SENSITIVE);
+
+// ── span redacts ONE piece; the sibling piece of the SAME node is untouched ──
+const redThink = applyOverlay(spanDialogue, span(1, 0, tStart, tStart + THINK_SECRET.length));
+assert("span preserves spine length", redThink.length === spanDialogue.length);
+const rn1 = redThink[1];
+assert("span preserves t1's block count (piece count stable)", rn1?.kind === "assistant" && rn1.blocks.length === 2);
+const redThinkHtml = renderDialogueHtml(redThink);
+assert("span redacts the targeted thinking-piece secret", !redThinkHtml.includes(THINK_SECRET) && redThinkHtml.includes("[redacted]"));
+assert("span leaves the SAME node's OTHER piece (text) verbatim", redThinkHtml.includes(SECRET));
+assert("span keeps every t<N> anchor intact", ['id="t0"', 'id="t1"', 'id="t2"'].every((a) => redThinkHtml.includes(a)));
+
+// THE LEAK TEST for spans: the redacted turn's own /t<N> permalink cannot leak the span.
+const spanCard = renderTurnCard(redThink, "t1");
+assert("span /t1 card redacts the thinking secret, never leaks it",
+  spanCard !== null && !spanCard.includes(THINK_SECRET) && spanCard.includes("[redacted]"));
+
+// ── a span on piece 1 (the text block) redacts it, leaving thinking verbatim ──
+const redText = renderDialogueHtml(applyOverlay(spanDialogue, span(1, 1, sStart, sStart + SECRET.length)));
+assert("span on piece 1 redacts the text secret, leaves the thinking piece", !redText.includes(SECRET) && redText.includes(THINK_SECRET));
+
+// ── a span on a SPOKEN node (single piece 0) ─────────────────────────────────
+const redSpoken = renderTurnCard(applyOverlay(spanDialogue, span(2, 0, senStart, senStart + SENSITIVE.length)), "t2");
+assert("span on a spoken node redacts its content substring", redSpoken !== null && !redSpoken.includes(SENSITIVE) && redSpoken.includes("[redacted]"));
+
+// ── multiple non-overlapping spans on one piece (right-to-left splice) ────────
+// Redact two disjoint words in the text piece; both vanish, the rest stays. Applied
+// rightmost-first so the marker's length never shifts a not-yet-applied range.
+const useStart = textSrc.indexOf("token");
+const headStart = textSrc.indexOf("header");
+const twoSpans: Overlay = [
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: useStart, end: useStart + "token".length } },
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: headStart, end: headStart + "header".length } },
+];
+const redTwo = renderDialogueHtml(applyOverlay(spanDialogue, twoSpans));
+assert("two spans on one piece both redact (right-to-left offsets stay valid)",
+  !redTwo.includes("token") && !redTwo.includes("header") && redTwo.includes(SECRET) && redTwo.includes("in the"));
+
+// ── OVERLAPPING and ADJACENT spans on one piece merge to their union ─────────
+// The splice is correct only for disjoint ranges, so applySpansToString normalizes first.
+// Proof: overlapping/adjacent spans render byte-identical to a SINGLE span over their union
+// (never a garbled "[redacted]...ed]..." from splicing into an already-inserted marker).
+const a1 = textSrc.indexOf("token");
+const overlapSpans: Overlay = [
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1, end: a1 + 15 } },
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1 + 10, end: a1 + 20 } },
+];
+const unionSpan = (start: number, end: number): Overlay => [
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start, end } },
+];
+assert("overlapping spans redact exactly their union (no garbling)",
+  renderDialogueHtml(applyOverlay(spanDialogue, overlapSpans)) === renderDialogueHtml(applyOverlay(spanDialogue, unionSpan(a1, a1 + 20))));
+const adjacentSpans: Overlay = [
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1, end: a1 + 5 } },
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1 + 5, end: a1 + 10 } },
+];
+assert("adjacent spans collapse to one marker (== the union span)",
+  renderDialogueHtml(applyOverlay(spanDialogue, adjacentSpans)) === renderDialogueHtml(applyOverlay(spanDialogue, unionSpan(a1, a1 + 10))));
+
+// ── whole-turn hide is the SUPERSET: it overrides any span on the same node ──
+const wholeT1 = applyOverlay(spanDialogue, hide(1));
+assert("whole-turn hide + span on same node ⇒ whole (span moot)",
+  eq(applyOverlay(spanDialogue, [...hide(1), ...span(1, 0, tStart, tStart + 4)]), wholeT1));
+assert("span + whole-turn hide ⇒ whole (order-independent superset)",
+  eq(applyOverlay(spanDialogue, [...span(1, 0, tStart, tStart + 4), ...hide(1)]), wholeT1));
+
+// ── span validation faults at the write boundary (reject a no-op redaction) ──
+const pieceFault = outOfRangeTarget(spanTurns, span(1, 2, 0, 1));
+assert("t1 exposes exactly 2 prose pieces (piece 2 is out of range)",
+  pieceFault?.kind === "piece-out-of-range" && pieceFault.pieceCount === 2);
+const spokenPieceFault = outOfRangeTarget(spanTurns, span(0, 1, 0, 1));
+assert("a spoken node exposes exactly 1 prose piece",
+  spokenPieceFault?.kind === "piece-out-of-range" && spokenPieceFault.pieceCount === 1);
+const boundsFault = outOfRangeTarget(spanTurns, span(1, 1, 0, 9999));
+assert("a span past the piece length is span-out-of-bounds",
+  boundsFault?.kind === "span-out-of-bounds" && boundsFault.pieceLength === textSrc.length);
+const spanTurnFault = outOfRangeTarget(spanTurns, span(9, 0, 0, 1));
+assert("a span on a non-existent turn is turn-out-of-range",
+  spanTurnFault?.kind === "turn-out-of-range" && spanTurnFault.index === 9);
+assert("an in-bounds span passes outOfRangeTarget", outOfRangeTarget(spanTurns, span(1, 0, tStart, tStart + THINK_SECRET.length)) === null);
+
+// ── describeTargetFault: each fault surfaces a legible reason at the boundary ─
+assert("describeTargetFault names the turn for a turn fault",
+  describeTargetFault({ kind: "turn-out-of-range", index: 3, spineLength: 3 }).includes("turn 3"));
+assert("describeTargetFault names the piece for a piece fault",
+  describeTargetFault({ kind: "piece-out-of-range", index: 1, piece: 2, pieceCount: 2 }).includes("piece 2"));
+assert("describeTargetFault names the char range for a span fault",
+  describeTargetFault({ kind: "span-out-of-bounds", index: 1, piece: 1, start: 0, end: 99, pieceLength: 34 }).includes("99"));
+// A zero-turn paste (Conversation.turns is ReadonlyArray, so empty is representable) has no
+// t<N> range to name — the message must not render the nonsensical "t0–t-1".
+const zeroTurnMsg = describeTargetFault({ kind: "turn-out-of-range", index: 0, spineLength: 0 });
+assert("describeTargetFault says 'no turns' for a zero-turn paste (not t0–t-1)",
+  zeroTurnMsg.includes("turn 0") && zeroTurnMsg.includes("no turns") && !zeroTurnMsg.includes("t-1"));
+
+// ── a span overlay survives JSON storage + read validation, then redacts ─────
+const spanWire: unknown = JSON.parse(JSON.stringify(span(1, 0, tStart, tStart + THINK_SECRET.length)));
+assert("a span overlay survives JSON round-trip + isOverlay validation", isOverlay(spanWire));
+const spanViewable = deriveViewableDialogue({ turns: spanTurns, overlay: isOverlay(spanWire) ? spanWire : undefined });
+assert("a stored span redacts on the viewable dialogue like applyOverlay",
+  eq(spanViewable, applyOverlay(spanDialogue, span(1, 0, tStart, tStart + THINK_SECRET.length))));
 
 // ── Read-boundary round-trip: an overlay survives JSON storage, then redacts ──
 // This is the store -> load -> render chain the endpoint drives, off-network: the overlay
