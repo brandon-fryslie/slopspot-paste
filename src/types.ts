@@ -233,8 +233,15 @@ export type Lifetime =
 // (tool calls, subagent transcripts) is not span-addressable — whole-turn `hide` is its
 // superset. `start < end` (below) makes an empty or inverted range — one that would redact
 // nothing — unrepresentable [LAW:no-silent-failure].
+//
+// [LAW:types-are-the-program] TurnTarget is named because it is the target shape the
+// WHOLE-turn directives (collapse, feature — below) share: they fold or omit an entire
+// spine node, so a sub-turn span target is nonsensical for them and is made unrepresentable
+// by typing their `target` as TurnTarget, not the wider OverlayTarget. Only `hide` (content
+// redaction) reaches inside a turn, so only `hide` carries the span arm.
+export type TurnTarget = { readonly kind: "turn"; readonly index: number };
 export type OverlayTarget =
-  | { readonly kind: "turn"; readonly index: number }
+  | TurnTarget
   | {
       readonly kind: "span";
       readonly index: number;
@@ -243,11 +250,18 @@ export type OverlayTarget =
       readonly end: number;
     };
 
-// [LAW:one-type-per-behavior] Redact/fold/feature are INSTANCES of one range-directive,
-// not three features. This ships `hide` (redaction); `collapse` and `feature` join the
-// kind union as later value-additions, each compiler-forced to be handled where
-// directives are dispatched (overlay.ts) — never a parallel code path.
-export type OverlayDirective = { readonly kind: "hide"; readonly target: OverlayTarget };
+// [LAW:one-type-per-behavior] Redact/fold/feature are INSTANCES of one range-directive
+// family, not three unrelated features — each names a range (a turn, or a sub-turn span)
+// and one display effect. `hide` replaces content in place (length/anchor preserving, zero
+// renderer branch); `collapse` folds a whole spine node behind a disclosure; `feature`
+// whitelists — the presence of ANY feature directive shows ONLY the featured turns
+// (highlight reel). collapse/feature operate on whole turns (TurnTarget); only hide reaches
+// sub-turn spans. [LAW:types-are-the-program] The kind is the discriminator applyOverlay's
+// exhaustive dispatch (overlay.ts) is compiler-forced to handle — never a parallel path.
+export type OverlayDirective =
+  | { readonly kind: "hide"; readonly target: OverlayTarget }
+  | { readonly kind: "collapse"; readonly target: TurnTarget }
+  | { readonly kind: "feature"; readonly target: TurnTarget };
 
 export type Overlay = ReadonlyArray<OverlayDirective>;
 
@@ -268,12 +282,20 @@ export type Overlay = ReadonlyArray<OverlayDirective>;
 const isNonNegInt = (v: unknown): v is number =>
   typeof v === "number" && Number.isInteger(v) && v >= 0;
 
+// A whole-turn target: the `turn` arm alone, for the directives that address a node and
+// never a span. Shared by isOverlayTarget's turn case so the two cannot disagree.
+const isTurnTarget = (v: unknown): v is TurnTarget => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; index?: unknown };
+  return o.kind === "turn" && isNonNegInt(o.index);
+};
+
 const isOverlayTarget = (v: unknown): v is OverlayTarget => {
   if (!v || typeof v !== "object") return false;
   const o = v as { kind?: unknown; index?: unknown; piece?: unknown; start?: unknown; end?: unknown };
   switch (o.kind) {
     case "turn":
-      return isNonNegInt(o.index);
+      return isTurnTarget(o);
     case "span":
       return (
         isNonNegInt(o.index) &&
@@ -288,15 +310,19 @@ const isOverlayTarget = (v: unknown): v is OverlayTarget => {
 };
 
 // [LAW:dataflow-not-control-flow] One switch on the discriminator; the default closes
-// the enumeration gap — an unknown kind is rejected, never silently accepted. When
-// `collapse`/`feature` join the kind union (later slices) this validator learns them by
-// adding an arm, exactly as applyOverlay's exhaustive dispatch is compiler-forced to.
+// the enumeration gap — an unknown kind is rejected, never silently accepted. hide accepts
+// either target arm (turn or span); collapse/feature accept the whole-turn target only, so
+// a stored `{kind:"collapse", target:{kind:"span",…}}` is rejected at the boundary rather
+// than reaching a renderer that cannot fold a char range.
 export const isOverlayDirective = (v: unknown): v is OverlayDirective => {
   if (!v || typeof v !== "object") return false;
   const o = v as { kind?: unknown; target?: unknown };
   switch (o.kind) {
     case "hide":
       return isOverlayTarget(o.target);
+    case "collapse":
+    case "feature":
+      return isTurnTarget(o.target);
     default:
       return false;
   }

@@ -23,7 +23,7 @@ import {
 } from "../src/render";
 import { highlightCode } from "../src/highlight";
 import { renderDialogueHtml } from "../src/renderDialogue";
-import { deriveDialogue, blockVisibility } from "../src/dialogue";
+import { deriveDialogue, blockVisibility, plainView } from "../src/dialogue";
 import type { AssistantBlock, SpineNode } from "../src/dialogue";
 import { condenseToolCall, primaryArgValue, TOOL_PRIMARY_ARG } from "../src/toolCall";
 import {
@@ -985,7 +985,7 @@ console.log("\nclaude-jsonl token usage (display-tba):");
       u2.kind === "usage" && u2.usage.output === 50);
 
     // Running total folds across usage turns: 100, then 100+50=150.
-    const html = renderDialogueHtml(deriveDialogue(r.turns));
+    const html = renderDialogueHtml(plainView(deriveDialogue(r.turns)));
     assert("per-message output rendered", html.includes("100 tokens") && html.includes("50 tokens"));
     assert("running total rendered (100 then 150)",
       html.includes("100 total") && html.includes("150 total"));
@@ -2459,7 +2459,7 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
     { kind: "usage", usage: { input: 1, output: 50, cacheCreation: 0, cacheRead: 0 } },
     { kind: "message", role: "system", content: "system note" },
   ];
-  const html = renderDialogueHtml(deriveDialogue(turns));
+  const html = renderDialogueHtml(plainView(deriveDialogue(turns)));
   const has = (label: string, needle: string) => assert(label, html.includes(needle));
 
   // ── Acceptance 1: collapsed by default = thinking, tool-call; always visible =
@@ -2550,7 +2550,7 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   // ── [LAW:one-source-of-truth] The render is a pure projection of the original:
   // dialogue from stored turns renders identically to dialogue re-derived from a
   // reprojected origin (proven for deriveDialogue in cbm.1; here for the renderer).
-  const empty = renderDialogueHtml(deriveDialogue([]));
+  const empty = renderDialogueHtml(plainView(deriveDialogue([])));
   assertEq("empty dialogue → empty render", empty, "");
 }
 
@@ -2633,7 +2633,7 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     }
 
     // Render: the subagent is a collapsed detail row that expands to the nested run.
-    const html = renderDialogueHtml(deriveDialogue(r.turns));
+    const html = renderDialogueHtml(plainView(deriveDialogue(r.turns)));
     assert("subagent renders as a condensed detail row",
       html.includes('<details class="condensed condensed-subagent" data-kind="subagent"'));
     assert("subagent collapsed by default (no open attribute)",
@@ -2690,7 +2690,7 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
     }
     assert("step count survives without the transcript",
       sub.kind === "subagent" && sub.stepCount === 2);
-    const html = renderDialogueHtml(deriveDialogue(rg.turns));
+    const html = renderDialogueHtml(plainView(deriveDialogue(rg.turns)));
     assert("degraded body names the gap honestly", html.includes("Nested transcript not captured"));
     assert("degraded body is the cbm.7 backfill seam", html.includes('data-subagent-degraded="true"'));
     assert("degraded body still shows the final result", html.includes("Found 2 configs"));
@@ -2723,7 +2723,7 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
       orphan.kind === "subagent" && orphan.agentType === "general-purpose");
     assert("orphan surfaces its folded description",
       orphan.kind === "subagent" && orphan.description === "do the recap");
-    const html = renderDialogueHtml(deriveDialogue(rt.turns));
+    const html = renderDialogueHtml(plainView(deriveDialogue(rt.turns)));
     assert("typed orphan renders its agent-type chip",
       html.includes('<span class="subagent-type">general-purpose</span>'));
   }
@@ -2740,7 +2740,7 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
       orphan.kind === "subagent" && orphan.transcript.kind === "captured");
     assert("untyped orphan (no folded meta) carries honest null type/description",
       orphan.kind === "subagent" && orphan.agentType === null && orphan.description === null);
-    const html = renderDialogueHtml(deriveDialogue(ro.turns));
+    const html = renderDialogueHtml(plainView(deriveDialogue(ro.turns)));
     assert("orphan renders as a condensed subagent row",
       html.includes('condensed condensed-subagent'));
   }
@@ -2768,7 +2768,7 @@ console.log("\nSubagent reattachment + recursive nesting (cbm.4):");
       const sub = ra.turns[2]!;
       assert("the once-degraded subagent is now CAPTURED",
         sub.kind === "subagent" && sub.transcript.kind === "captured");
-      const html = renderDialogueHtml(deriveDialogue(ra.turns));
+      const html = renderDialogueHtml(plainView(deriveDialogue(ra.turns)));
       assert("the backfill seam (button) is gone once captured",
         !html.includes('data-subagent-degraded="true"'));
       assert("captured nested transcript now renders", html.includes('<div class="subagent-transcript">'));

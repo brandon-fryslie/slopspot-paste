@@ -89,6 +89,32 @@ export type SpineNode =
 // turns.
 export type Dialogue = ReadonlyArray<SpineNode>;
 
+// [LAW:types-are-the-program] The renderer's input contract: a spine node paired with the
+// two display facts an authored overlay decides about it — WHERE it sits (its original spine
+// index, carried as a VALUE) and WHETHER it is folded. Carrying the index is what lets the
+// overlay OMIT nodes (feature / highlight-reel) without renumbering the survivors: t<N> is
+// read off `index`, never recomputed from array position, so a filtered projection keeps
+// every permalink stable [LAW:one-source-of-truth]. `collapsed` is the fold state hide never
+// needed (hide replaces content in place); the renderer draws a collapsed node behind a
+// native disclosure. A HIDDEN node is not a state here — it is simply ABSENT from the
+// projection (applyOverlay filters it out), so the renderer never grows a "draw nothing"
+// branch [LAW:dataflow-not-control-flow].
+export type DisplayNode = {
+  readonly index: number;
+  readonly node: SpineNode;
+  readonly collapsed: boolean;
+};
+export type ViewableDialogue = ReadonlyArray<DisplayNode>;
+
+// [LAW:one-source-of-truth] Lift a plain Dialogue to a ViewableDialogue with no overlay
+// applied: every node shown, un-folded, at its positional index. The identity view the
+// NON-overlaid render paths use — the editor preview (author's raw working turns) and a
+// nested subagent transcript (never overlay-targeted) — so those keep rendering through the
+// one renderer without inventing a second entry point. applyOverlay produces the same shape
+// for the overlaid paths.
+export const plainView = (dialogue: Dialogue): ViewableDialogue =>
+  dialogue.map((node, index) => ({ index, node, collapsed: false }));
+
 // [LAW:one-source-of-truth] The single MINTER of a spine node's stable anchor id.
 // A top-level spine node at position N is addressed as "t<N>" everywhere: the in-page
 // permalink (renderDialogueHtml emits id="t<N>"), the single-turn card URL, the
