@@ -232,6 +232,40 @@ export type OverlayDirective = { readonly kind: "hide"; readonly target: Overlay
 
 export type Overlay = ReadonlyArray<OverlayDirective>;
 
+// [LAW:types-are-the-program] The runtime witnesses of the overlay types. A stored
+// overlay (KV) and a POSTed directives body are both unknown JSON until classified
+// here; every illegal shape is rejected by construction, so no caller downstream
+// re-defends. [LAW:single-enforcer] this ONE validator is shared by the read boundary
+// (storage.normalizeOverlay) and the write boundary (the /api/overlay handler) — the two
+// cannot disagree about what a legal overlay is.
+//
+// A target index is a NON-NEGATIVE INTEGER: it names a top-level spine node (t0, t1, …).
+// A fractional or negative index addresses no node — an illegal state made
+// unrepresentable at the boundary rather than a silent no-op downstream.
+const isOverlayTarget = (v: unknown): v is OverlayTarget => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; index?: unknown };
+  return o.kind === "turn" && typeof o.index === "number" && Number.isInteger(o.index) && o.index >= 0;
+};
+
+// [LAW:dataflow-not-control-flow] One switch on the discriminator; the default closes
+// the enumeration gap — an unknown kind is rejected, never silently accepted. When
+// `collapse`/`feature` join the kind union (later slices) this validator learns them by
+// adding an arm, exactly as applyOverlay's exhaustive dispatch is compiler-forced to.
+export const isOverlayDirective = (v: unknown): v is OverlayDirective => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { kind?: unknown; target?: unknown };
+  switch (o.kind) {
+    case "hide":
+      return isOverlayTarget(o.target);
+    default:
+      return false;
+  }
+};
+
+export const isOverlay = (v: unknown): v is Overlay =>
+  Array.isArray(v) && v.every(isOverlayDirective);
+
 export interface Conversation {
   readonly slug: string;
   readonly createdAt: number;

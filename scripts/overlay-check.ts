@@ -6,10 +6,12 @@
 // any t<N> anchor, and — the security-critical assertion — that a redacted turn's /t<N>
 // permalink card shows "[redacted]" and NEVER the original content (no leak).
 
-import { applyOverlay, deriveViewableDialogue } from "../src/overlay";
+import { applyOverlay, deriveViewableDialogue, outOfRangeTarget } from "../src/overlay";
 import { deriveDialogue } from "../src/dialogue";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import { renderTurnCard } from "../src/turnCard";
+import { isOverlay, isOverlayDirective } from "../src/types";
+import { decodeSlug } from "../src/http";
 import type { Overlay, Turn } from "../src/types";
 
 const assert = (label: string, cond: boolean): void => {
@@ -72,4 +74,80 @@ assert("t2 card does NOT leak the sensitive content", cardT2 !== null && !cardT2
 assert("no overlay field ⇒ equals plain deriveDialogue", eq(deriveViewableDialogue({ turns }), dialogue));
 assert("overlay field ⇒ equals applyOverlay", eq(deriveViewableDialogue({ turns, overlay: hide(1) }), hidT1));
 
-console.log("overlay-check complete");
+// ── isOverlay / isOverlayDirective: the shared read+write validator (slopspot-overlay-34a.3) ──
+// One validator gates BOTH the KV read boundary (storage.normalizeOverlay) and the
+// /api/overlay write boundary, so a stored overlay and a POSTed one are judged identically.
+assert("isOverlay([]) accepts the empty (clear-redactions) overlay", isOverlay([]));
+assert("isOverlay accepts a well-formed hide directive", isOverlay(hide(1)));
+assert("isOverlay accepts multiple directives", isOverlay([...hide(0), ...hide(2)]));
+assert("isOverlay rejects a non-array", !isOverlay({ kind: "hide", target: { kind: "turn", index: 0 } }));
+assert("isOverlayDirective rejects an unknown kind", !isOverlayDirective({ kind: "nuke", target: { kind: "turn", index: 0 } }));
+assert("isOverlayDirective rejects a missing target", !isOverlayDirective({ kind: "hide" }));
+assert("isOverlayDirective rejects a non-turn target kind", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0 } }));
+assert("isOverlayDirective rejects a negative target index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: -1 } }));
+assert("isOverlayDirective rejects a fractional target index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: 1.5 } }));
+assert("isOverlay rejects an array containing one junk directive", !isOverlay([...hide(0), { kind: "hide" }]));
+
+// ── outOfRangeTarget: reject a redaction that would protect nothing ───────────
+assert("outOfRangeTarget passes an in-range hide (t1)", outOfRangeTarget(turns, hide(1)) === null);
+assert("outOfRangeTarget passes the last in-range hide (t2)", outOfRangeTarget(turns, hide(2)) === null);
+assert("outOfRangeTarget passes the empty overlay", outOfRangeTarget(turns, []) === null);
+assert("outOfRangeTarget flags a past-the-end index (t3 of a 3-node spine)", outOfRangeTarget(turns, hide(3)) === 3);
+assert("outOfRangeTarget reports the FIRST offending index", outOfRangeTarget(turns, [...hide(1), ...hide(9)]) === 9);
+
+// ── Read-boundary round-trip: an overlay survives JSON storage, then redacts ──
+// This is the store -> load -> render chain the endpoint drives, off-network: the overlay
+// is serialized (as putConversation would), re-read and re-validated exactly as
+// storage.normalizeOverlay does (isOverlay(raw) ? raw : undefined), then rendered.
+const overlayWire: unknown = JSON.parse(JSON.stringify(hide(1)));
+const normalized: Overlay | undefined = isOverlay(overlayWire) ? overlayWire : undefined;
+assert("stored overlay survives JSON round-trip + read validation", eq(normalized, hide(1)));
+const viewableFromStore = deriveViewableDialogue({ turns, overlay: normalized });
+assert("loaded overlay redacts the same turn applyOverlay does", eq(viewableFromStore, hidT1));
+const storedCardT1 = renderTurnCard(viewableFromStore, "t1");
+assert("loaded redaction's /t1 card shows the marker, never the secret",
+  storedCardT1 !== null && storedCardT1.includes("[redacted]") && !storedCardT1.includes(SECRET));
+
+// A present-but-corrupt stored overlay is DROPPED to undefined (never leaked) — the
+// read boundary un-redacts loudly (logged in storage), it does not silently trust junk.
+const junkWire: unknown = JSON.parse(JSON.stringify([{ kind: "hide" }]));
+const droppedOverlay: Overlay | undefined = isOverlay(junkWire) ? junkWire : undefined;
+assert("corrupt stored overlay normalizes to undefined (dropped, not trusted)", droppedOverlay === undefined);
+// Absent overlay is the common legacy/no-redaction case: undefined, zero migration.
+const absentWire: unknown = JSON.parse(JSON.stringify({ turns })) as { overlay?: unknown };
+assert("absent overlay field normalizes to undefined",
+  (isOverlay((absentWire as { overlay?: unknown }).overlay) ? (absentWire as { overlay?: unknown }).overlay : undefined) === undefined);
+
+// ── Write-boundary decode: what /api/overlay accepts, driven by real Requests ─
+// The endpoint decodes the slug via the shared decodeSlug (on a clone) and validates the
+// directives body via isOverlay. Assert both gates on real Request objects, off-network.
+const overlayReq = (body: unknown): Request =>
+  new Request("https://x/api/overlay", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+void (async () => {
+  const good = overlayReq({ slug: "abcdefghjk", directives: hide(1) });
+  assert("valid POST body: slug decodes", (await decodeSlug(good.clone())) === "abcdefghjk");
+  assert("valid POST body: directives pass isOverlay",
+    isOverlay(((await good.json()) as { directives?: unknown }).directives));
+
+  const noSlug = overlayReq({ directives: hide(1) });
+  assert("missing slug decodes to null (endpoint 400s)", (await decodeSlug(noSlug)) === null);
+
+  const junkDirectives = overlayReq({ slug: "abcdefghjk", directives: [{ kind: "nuke", target: { kind: "turn", index: 0 } }] });
+  assert("junk directive fails isOverlay (endpoint 400s)",
+    !isOverlay(((await junkDirectives.json()) as { directives?: unknown }).directives));
+
+  const notArray = overlayReq({ slug: "abcdefghjk", directives: { kind: "hide", target: { kind: "turn", index: 0 } } });
+  assert("non-array directives fails isOverlay (endpoint 400s)",
+    !isOverlay(((await notArray.json()) as { directives?: unknown }).directives));
+
+  const emptyOk = overlayReq({ slug: "abcdefghjk", directives: [] });
+  assert("empty directives array passes isOverlay (clear-redactions write)",
+    isOverlay(((await emptyOk.json()) as { directives?: unknown }).directives));
+
+  console.log("overlay-check complete");
+})();

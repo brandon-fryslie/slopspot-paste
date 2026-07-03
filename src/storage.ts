@@ -1,5 +1,5 @@
 import type { Conversation, DraftRecord, Lifetime } from "./types";
-import { isOrigin, isPlatform, isTurns, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
+import { isOrigin, isOverlay, isPlatform, isTurns, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
 // to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
@@ -32,6 +32,21 @@ const normalizeOrigin = (raw: unknown): Conversation["origin"] => {
     if (isOrigin(inner)) return inner;
   }
   return null;
+};
+
+// [LAW:types-are-the-program] KV is a trust boundary: the stored `overlay` is unknown
+// JSON until classified. Absent (the common case — every legacy record and every paste
+// with no redactions) normalizes to undefined: zero migration, and deriveViewableDialogue
+// reads `overlay ?? []` so undefined renders exactly as captured. A PRESENT-but-invalid
+// overlay is dropped to undefined AND logged: in a redaction feature a silently-dropped
+// overlay un-redacts, so the drop must be observable [LAW:no-silent-failure] — never a
+// silent leak. (Records are written through putConversation with an already-validated
+// Overlay, so this only fires on corruption or a hand-edited record.)
+const normalizeOverlay = (raw: unknown, slug: string): Conversation["overlay"] => {
+  if (raw === undefined) return undefined;
+  if (isOverlay(raw)) return raw;
+  console.error(`normalizeOverlay: stored overlay failed validation for slug ${slug}, dropping:`, raw);
+  return undefined;
 };
 
 const KEY_PREFIX = "paste:";
@@ -128,6 +143,10 @@ export const getConversation = async (
       // is derived from origin on read. [LAW:no-silent-failure]
       origin: normalizeOrigin(parsed.origin),
       platformOverride: isPlatform(parsed.platformOverride) ? parsed.platformOverride : undefined,
+      // [LAW:types-are-the-program] The authored overlay is validated at this read
+      // boundary like origin/platformOverride; absence normalizes to undefined so legacy
+      // records need no migration, and a corrupt overlay is dropped loudly, never leaked.
+      overlay: normalizeOverlay((parsed as { overlay?: unknown }).overlay, slug),
     } as Conversation;
   } catch {
     return null;

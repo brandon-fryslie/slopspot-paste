@@ -16,6 +16,7 @@ const ADMIN_ROUTES = new Set([
   "/api/refresh",
   "/api/reproject",
   "/api/refetch",
+  "/api/overlay",
 ]);
 
 // Timing-safe compare: always runs max(a.length, b.length) iterations.

@@ -69,6 +69,26 @@ export const applyOverlay = (dialogue: Dialogue, overlay: Overlay): Dialogue => 
   return dialogue.map((node, index) => (hidden.has(index) ? redactNode(node) : node));
 };
 
+// [LAW:no-silent-failure] A `hide` directive whose target index is past the end of the
+// derived spine (or, defensively, below zero) would redact NOTHING — an authoring mistake
+// that, in a redaction feature, silently protects nothing. Return the first such index so
+// the write boundary can reject it loudly rather than store a no-op redaction and report
+// success. null = every directive targets a real spine node.
+// [LAW:effects-at-boundaries] Pure: it derives the spine from the turns and compares
+// indices; the caller owns the KV read/write. The spine length is exactly what
+// renderDialogue numbers positionally (t0…t<len-1>), so this bound matches the anchors.
+export const outOfRangeTarget = (
+  turns: Conversation["turns"],
+  overlay: Overlay,
+): number | null => {
+  const spineLength = deriveDialogue(turns).length;
+  for (const directive of overlay) {
+    const { index } = directive.target;
+    if (index < 0 || index >= spineLength) return index;
+  }
+  return null;
+};
+
 // [LAW:single-enforcer] The one derivation of a paste's viewable spine: derive the
 // dialogue from the stored turns, then apply the authored overlay. It asks only for the
 // two fields it reads [LAW:composability], so any caller holding those can produce the
