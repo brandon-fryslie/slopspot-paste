@@ -1046,6 +1046,13 @@ const outline = deriveSpineOutline(dialogue);
       };
       const addSpan = (index: number, span: SpanRange): void => {
         const existing = redactions.get(index);
+        // [LAW:one-source-of-truth] Whole is the superset — a span on a whole-hidden turn is
+        // moot, exactly as the seed loop (`if (existing?.kind === "whole") continue;`) and the
+        // machinery's displayPlan already treat it. Enforcing that rule HERE keeps addSpan
+        // honest to the whole/spans exclusivity its type states, rather than leaning on the UI
+        // (disabled toggle) to never call it under whole. Not a defensive skip: it is the same
+        // domain superset rule applied consistently, so the state stays legal by construction.
+        if (existing?.kind === "whole") return;
         const spans = existing?.kind === "spans" ? [...existing.spans, span] : [span];
         redactions.set(index, { kind: "spans", spans });
         render();
