@@ -43,6 +43,16 @@ import type { ParseResult, Turn } from "../src/types";
 import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
 import { readFileSync } from "node:fs";
 import { scrapeRequestBody } from "../src/firecrawl";
+import {
+  buildSummaryPrompt,
+  renderDialogueForPrompt,
+  summaryRequestBody,
+  extractSummary,
+  turnsContentHash,
+  summarize,
+  SUMMARY_SYSTEM_PROMPT,
+} from "../src/summary";
+import { isJsonRequest, decodeSlug } from "../src/http";
 import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
 
 const CC_SAMPLE = `❯ deleted
@@ -2877,6 +2887,140 @@ console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — per-provid
     "fallback wait carries NO selector",
     fallbackWait !== undefined && !("selector" in fallbackWait),
   );
+}
+
+console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
+{
+  // A small derived Dialogue: two human turns around one assistant turn whose
+  // blocks mix spine-visible prose (text) with a collapsed detail block (thinking).
+  const dialogueTurns: Turn[] = [
+    { kind: "message", role: "user", content: "How do I reverse a linked list in place?" },
+    { kind: "thinking", content: "SECRET-REASONING-THAT-MUST-NOT-LEAK-INTO-THE-PROMPT" },
+    { kind: "message", role: "assistant", content: "Walk it with three pointers and rewire each node." },
+    { kind: "message", role: "user", content: "What is the time complexity?" },
+    { kind: "message", role: "assistant", content: "O(n) time, O(1) space." },
+  ];
+  const dialogue = deriveDialogue(dialogueTurns);
+
+  // [LAW:behavior-not-structure] The pure prompt is testable with no fetch: it
+  // carries the system instruction and a user message flattening the transcript.
+  const messages = buildSummaryPrompt(dialogue);
+  assertEq("buildSummaryPrompt emits system + user messages", messages.length, 2);
+  const [sysMsg, userMsg] = messages;
+  assertEq("first message is the shared system instruction", sysMsg?.content, SUMMARY_SYSTEM_PROMPT);
+  assert("system role", sysMsg?.role === "system");
+  assert("user role", userMsg?.role === "user");
+  // [LAW:behavior-not-structure] Assert what the LLM actually RECEIVES, not just the
+  // message shape: the user message must carry non-empty content that embeds both the
+  // preamble and the flattened transcript. Without this, a template literal broken to
+  // content:"" would pass every structural check while silently sending an empty
+  // prompt — the function would look fully tested while carrying nothing.
+  const userContent = userMsg?.content ?? "";
+  assert("user message content is a non-empty string", userContent.length > 0);
+  assert("user message carries the prompt preamble", userContent.includes("Summarize this conversation"));
+  assert("user message embeds the flattened transcript (the human question)", userContent.includes("How do I reverse a linked list"));
+
+  const transcript = renderDialogueForPrompt(dialogue);
+  assert("transcript includes the human question", transcript.includes("How do I reverse a linked list"));
+  assert("transcript includes assistant spine prose", transcript.includes("three pointers"));
+  assert("transcript includes the second exchange", transcript.includes("O(n) time"));
+  // [LAW:effects-at-boundaries] The summary is built from the READER-facing
+  // conversation: collapsed detail (thinking) is NOT sent to the model, so private
+  // reasoning cannot leak into a shared TL;DR. This reuses BLOCK_VISIBILITY, so it
+  // cannot drift from what the reader actually sees on the page.
+  assert("collapsed thinking is EXCLUDED from the prompt", !transcript.includes("SECRET-REASONING"));
+
+  const body = summaryRequestBody(dialogue);
+  assert("request body targets deepseek-chat", body.model === "deepseek-chat");
+  assert("request body is non-streaming", body.stream === false);
+  assertEq("request body carries the built messages", body.messages.length, 2);
+
+  // [FRAMING:representation] FIXTURE FIRST — this is the VERBATIM envelope captured
+  // from a real DeepSeek call (POST https://api.deepseek.com/chat/completions), not
+  // an assumed shape. extractSummary is exercised against the exact wire payload the
+  // edge will hand it, so the parser can never be written against fiction.
+  const realResponse = {
+    id: "9b2e753d-d7d5-454f-a8b2-9b63d495335e",
+    object: "chat.completion",
+    created: 1783079563,
+    model: "deepseek-v4-flash",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: "The user asked how to reverse a linked list; the assistant gave the three-pointer method and confirmed O(n) time, O(1) space." },
+        logprobs: null,
+        finish_reason: "stop",
+      },
+    ],
+    usage: { prompt_tokens: 99, completion_tokens: 11, total_tokens: 110 },
+  };
+  const extracted = extractSummary(realResponse);
+  assert("extractSummary reads choices[0].message.content from the real envelope", extracted.ok);
+  assert(
+    "extracted summary is the model's content",
+    extracted.ok && extracted.summary.startsWith("The user asked how to reverse"),
+  );
+
+  // [LAW:no-silent-failure] A malformed / empty envelope is a typed configured
+  // failure, never a throw and never an empty ok:true summary.
+  const emptyContent = extractSummary({ choices: [{ message: { content: "   " } }] });
+  assert("blank content → ok:false", !emptyContent.ok);
+  assert("blank content is a configured failure (provider misbehaved)", !emptyContent.ok && emptyContent.configured);
+  const noChoices = extractSummary({});
+  assert("missing choices → ok:false", !noChoices.ok);
+  const nullBody = extractSummary(null);
+  assert("null body → ok:false, no throw", !nullBody.ok);
+
+  // [LAW:one-source-of-truth] The content hash is deterministic in the turns and
+  // changes when the turns change — this is what makes the cache serve a summary
+  // only for the exact content it describes.
+  await (async () => {
+    const h1 = await turnsContentHash(dialogueTurns);
+    const h2 = await turnsContentHash(dialogueTurns);
+    assertEq("turnsContentHash is deterministic", h1, h2);
+    assert("hash is a 64-char sha-256 hex string", /^[0-9a-f]{64}$/.test(h1));
+    const editedTurns: Turn[] = [...dialogueTurns, { kind: "message", role: "user", content: "thanks" }];
+    const h3 = await turnsContentHash(editedTurns);
+    assert("editing the turns mints a NEW hash (cache-busting)", h3 !== h1);
+
+    // [LAW:no-silent-failure] A missing key is surfaced as configured:false BEFORE
+    // any network call — no throw, no 500. summarize short-circuits on the empty env.
+    const notConfigured = await summarize(dialogue, {});
+    assert("missing DEEPSEEK_API_TOKEN → ok:false", !notConfigured.ok);
+    assert("missing key is reported as configured:false (not a crash)", !notConfigured.ok && !notConfigured.configured);
+
+    // [LAW:behavior-not-structure] The shared slug decoder's content-type sniff is
+    // case-insensitive (RFC 7231 §3.1.1.1): a client sending `Application/JSON` must
+    // still be decoded as JSON, not mis-routed to formData and rejected with a
+    // misleading 400. Pin the behavior every slug endpoint now shares.
+    assert("isJsonRequest treats Application/JSON as JSON (case-insensitive)",
+      isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "Application/JSON" } })));
+    assert("isJsonRequest accepts application/json with charset params",
+      isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/json; charset=utf-8" } })));
+    assert("isJsonRequest accepts a +json structured-suffix type (RFC 6839)",
+      isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/ld+json" } })));
+    assert("isJsonRequest rejects a form content-type",
+      !isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" } })));
+    // [FRAMING:representation] The predicate parses the MEDIA TYPE, not a substring of
+    // the whole header: a multipart boundary that merely contains "application/json"
+    // must NOT be read as JSON, or a valid form body would be mis-routed into json().
+    assert("isJsonRequest rejects multipart whose boundary contains 'application/json'",
+      !isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "multipart/form-data; boundary=--application/json" } })));
+    const decodedUpper = await decodeSlug(new Request("https://x.test", {
+      method: "POST", headers: { "content-type": "Application/JSON" }, body: JSON.stringify({ slug: "abcdefghjk" }),
+    }));
+    assertEq("decodeSlug parses a slug from an upper-cased JSON content-type", decodedUpper, "abcdefghjk");
+    // [LAW:types-are-the-program] An empty slug is not a slug: decodeSlug yields null so
+    // the caller's 400 fires, not a misleading 404 for a nonexistent paste.
+    const decodedEmpty = await decodeSlug(new Request("https://x.test", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "" }),
+    }));
+    assertEq("decodeSlug treats an empty-string slug as absent (null)", decodedEmpty, null);
+    const decodedBlank = await decodeSlug(new Request("https://x.test", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "   " }),
+    }));
+    assertEq("decodeSlug treats a whitespace-only slug as absent (null)", decodedBlank, null);
+  })();
 }
 
 console.log("\nFallback parser for unclaimed hosts (url-ingestion-wfd.4):");

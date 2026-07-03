@@ -179,13 +179,111 @@ export const getDraft = async (kv: KVNamespace, id: string): Promise<DraftRecord
   }
 };
 
-// Permanently remove a KV record — called only by the purge path after the
-// grace window. [LAW:no-silent-failure]: callers log what they delete.
+// [LAW:decomposition] Cached summaries are a SEPARATE concern from published
+// conversations and drafts: a DISPOSABLE derived projection, never authority. They
+// live under their own key prefix, keyed by slug PLUS a content hash of the turns —
+// so a summary is served only for the exact turns it describes, and any edit/refetch
+// (new hash) simply misses and regenerates. [LAW:single-enforcer] all summary-cache
+// reads/writes own the prefix and key format here, the way paste:/draft: are owned
+// above; a caller supplies (slug, hash) and never assembles the KV key itself.
+const SUMMARY_KEY_PREFIX = "summary:";
+
+// A generous backstop TTL. The hash busts the cache on content change, but a summary
+// is disposable and the model improves over time with no content change to bust it —
+// so the cache self-refreshes within this window, letting an improved model be picked
+// up WITHOUT baking the model version into the key (which would couple a disposable
+// cache to its writer). [LAW:no-ambient-temporal-coupling]
+const SUMMARY_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+const summaryKey = (slug: string, hash: string): string => `${SUMMARY_KEY_PREFIX}${slug}:${hash}`;
+
+// [LAW:types-are-the-program] KV is a trust boundary, but a cached summary is a plain
+// string with no schema to validate — a hit is the string, a miss (or transient KV
+// error surfaced as absence) is null, and the caller regenerates. There is nothing to
+// corrupt: the authority is the turns, and the summary is re-derivable from them.
+//
+// [LAW:single-enforcer] The "a disposable cache is best-effort, never fatal" invariant
+// is owned HERE, in the cache ops, not scattered into every caller. A transient KV
+// error must not become a Worker 500 for either operation, because the summary can
+// always be regenerated. This is the deliberate OPPOSITE of loadViewablePaste's 503:
+// an AUTHORITY read that fails surfaces loudly (it cannot be worked around), but a
+// DISPOSABLE cache read/write that fails is worked around by regenerating the exact
+// same value. [LAW:no-silent-failure] neither error vanishes — both are logged.
+export const getCachedSummary = async (
+  kv: KVNamespace,
+  slug: string,
+  hash: string,
+): Promise<string | null> => {
+  try {
+    return await kv.get(summaryKey(slug, hash), "text");
+  } catch (err) {
+    // Surfaced as a cache miss so the caller regenerates the identical summary.
+    console.error(`getCachedSummary: KV read failed for slug ${slug}:`, err);
+    return null;
+  }
+};
+
+export const putCachedSummary = async (
+  kv: KVNamespace,
+  slug: string,
+  hash: string,
+  summary: string,
+): Promise<void> => {
+  try {
+    await kv.put(summaryKey(slug, hash), summary, { expirationTtl: SUMMARY_TTL_SECONDS });
+  } catch (err) {
+    // The summary was already produced and is being returned to the caller; a failed
+    // write must not discard it. The write simply doesn't persist — the next request
+    // regenerates and re-attempts the cache.
+    console.error(`putCachedSummary: KV write failed for slug ${slug}:`, err);
+  }
+};
+
+// [LAW:one-way-deps] Sweep every cached summary derived from a slug. The summary
+// cache is a derived projection OF the paste (keyed summary:<slug>:<hash>), so when
+// the authority is hard-deleted its derivations must go too — otherwise a TL;DR of
+// deleted content lingers until its TTL. Paginated like listConversations because a
+// slug can accrue several summaries (one per content hash across edits/refetches).
+export const deleteCachedSummaries = async (
+  kv: KVNamespace,
+  slug: string,
+): Promise<void> => {
+  // [LAW:no-silent-failure] Best-effort, like the other cache ops: a kv.list/kv.delete
+  // rejection here must not propagate through deleteConversation (which has already
+  // removed the paste) and crash the purge loop for every subsequent record. Log
+  // loudly and return — orphaned summaries self-evict via SUMMARY_TTL_SECONDS anyway.
+  try {
+    const prefix = `${SUMMARY_KEY_PREFIX}${slug}:`;
+    let cursor: string | undefined;
+    do {
+      const page = await kv.list({ prefix, cursor });
+      // [LAW:no-silent-failure] allSettled, not all: one failed delete must not abandon
+      // the rest of the page (and every later page) — independent deletions proceed and
+      // each rejection is logged, so a transient flake orphans at most a few keys (which
+      // self-evict via TTL), never an unbounded set.
+      const results = await Promise.allSettled(page.keys.map((k) => kv.delete(k.name)));
+      for (const r of results) {
+        if (r.status === "rejected") {
+          console.error(`deleteCachedSummaries: KV delete failed for slug ${slug}:`, r.reason);
+        }
+      }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  } catch (err) {
+    console.error(`deleteCachedSummaries: KV list failed for slug ${slug}:`, err);
+  }
+};
+
+// Permanently remove a paste record AND its derived summary cache — called only by
+// the purge path after the grace window. [LAW:one-way-deps] deleting the authority
+// sweeps its derivations, so a hard delete leaves no orphaned summary behind.
+// [LAW:no-silent-failure]: callers log what they delete.
 export const deleteConversation = async (
   kv: KVNamespace,
   slug: string,
 ): Promise<void> => {
   await kv.delete(KEY_PREFIX + slug);
+  await deleteCachedSummaries(kv, slug);
 };
 
 // [LAW:decomposition] The draft-prefix counterpart of deleteConversation: revoke a

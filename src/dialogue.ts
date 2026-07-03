@@ -131,7 +131,11 @@ const LABEL_MAX = 80;
 
 // The readable text a block contributes to a label, "" when it carries none (usage).
 // [LAW:dataflow-not-control-flow] one exhaustive map over kinds, no branch that skips.
-const blockText = (block: AssistantBlock): string => {
+// [LAW:one-source-of-truth] The single authority for "the readable text of a block."
+// Exported so the summary prompt builder extracts prose from THIS exhaustive switch
+// rather than re-listing which kinds carry text — a new kind is compiler-forced to be
+// handled here, so it can never silently contribute "" to a label or a summary.
+export const blockText = (block: AssistantBlock): string => {
   switch (block.kind) {
     case "text":
     case "insight":
