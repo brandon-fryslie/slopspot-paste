@@ -1128,6 +1128,9 @@ body.overlay-editing .overlay-reel-excluded::after {
   top: 12px;
   left: 14px;
   z-index: 2;
+  /* Purely a visual label — never intercept clicks or text-selection in the bubble
+     corner it overlays. A decorative pseudo-element must be transparent to the pointer. */
+  pointer-events: none;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.06em;
