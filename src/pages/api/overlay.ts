@@ -7,6 +7,27 @@ import { json, decodeSlug } from "../../http";
 
 export const prerender = false;
 
+// [LAW:single-enforcer] Reading the authored overlay rides the SAME admin gate as writing
+// it — /api/overlay is in middleware's ADMIN_ROUTES, so a 401 here is the one honest signal
+// "you are not the owner". The paste page's authoring UI uses that: it GETs this before
+// revealing any authoring chrome, so the reveal is gated by the existing enforcer, not a
+// second per-paste scheme. The response is also the authoring editor's prefill — the stored
+// overlay is the ONE source the editor loads its current directive set from, never
+// re-derived from the redacted DOM (a hidden turn shows only "[redacted]" there, by design).
+export const GET: APIRoute = async ({ url }) => {
+  const raw = url.searchParams.get("slug");
+  const slug = (raw ?? "").trim();
+  if (slug.length === 0) return json(400, { error: "Missing or invalid 'slug'." });
+
+  const existing = await getConversation(env.PASTES, slug);
+  if (existing === null) return json(404, { error: "No such paste." });
+
+  // [LAW:one-source-of-truth] getConversation normalizes the stored overlay on read
+  // (storage.normalizeOverlay), so what we return here is exactly what render applies —
+  // the editor and the public render read the same directives.
+  return json(200, { slug: existing.slug, directives: existing.overlay ?? [] });
+};
+
 // [LAW:one-source-of-truth] Writing an authored display-overlay is the FOURTH member of
 // the getConversation -> {...existing, field} -> putConversation admin-mutation family
 // (refresh/reproject/refetch). The overlay is AUTHORED source data that CANNOT be

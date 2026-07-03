@@ -157,6 +157,9 @@ const previewOf = (c: (typeof rows)[number]): string => {
                     </form>
                   )}
                   {!hidden && (
+                    <a class="overlay-link" href={`/${c.slug}#edit`}>Overlay</a>
+                  )}
+                  {!hidden && (
                     <>
                       <form class="refresh-form" method="POST" action="/api/refresh">
                         <input type="hidden" name="slug" value={c.slug} />
