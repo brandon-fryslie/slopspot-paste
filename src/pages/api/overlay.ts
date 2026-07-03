@@ -1,7 +1,7 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
-import { outOfRangeTarget, describeTargetFault } from "../../overlay";
+import { outOfRangeTarget, describeTargetFault, spanPiecesByTurn } from "../../overlay";
 import { isOverlay } from "../../types";
 import { json, decodeSlug } from "../../http";
 
@@ -14,6 +14,13 @@ export const prerender = false;
 // second per-paste scheme. The response is also the authoring editor's prefill — the stored
 // overlay is the ONE source the editor loads its current directive set from, never
 // re-derived from the redacted DOM (a hidden turn shows only "[redacted]" there, by design).
+//
+// [LAW:one-source-of-truth] The response also carries `pieces` — each turn's raw prose
+// pieces (spanPiecesByTurn) — the leak-proof coordinate space the SPAN-authoring UI selects
+// into. It is the exact string applyOverlay slices, sourced here (owner-gated) rather than
+// remapped from the markdown-rendered / redacted DOM, so a captured offset cannot silently
+// mis-map and miss a secret [LAW:no-silent-failure]. This route is admin-gated, so the raw
+// prose reaches only the owner (of their own already-public paste), never a reader.
 export const GET: APIRoute = async ({ url }) => {
   const raw = url.searchParams.get("slug");
   const slug = (raw ?? "").trim();
@@ -24,8 +31,13 @@ export const GET: APIRoute = async ({ url }) => {
 
   // [LAW:one-source-of-truth] getConversation normalizes the stored overlay on read
   // (storage.normalizeOverlay), so what we return here is exactly what render applies —
-  // the editor and the public render read the same directives.
-  return json(200, { slug: existing.slug, directives: existing.overlay ?? [] });
+  // the editor and the public render read the same directives. `pieces` is derived from the
+  // same stored turns the renderer projects, so its offsets are the renderer's offsets.
+  return json(200, {
+    slug: existing.slug,
+    directives: existing.overlay ?? [],
+    pieces: spanPiecesByTurn(existing.turns),
+  });
 };
 
 // [LAW:one-source-of-truth] Writing an authored display-overlay is the FOURTH member of
