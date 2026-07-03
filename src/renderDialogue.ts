@@ -16,8 +16,8 @@
 // back on it. The shared tool-output body lives in render.ts, so this is the sole
 // renderer — the flat Turn renderer it replaced (renderTurns.ts) is gone.
 
-import type { Dialogue, AssistantBlock } from "./dialogue";
-import { turnAnchorId, spineNodeLabel } from "./dialogue";
+import type { AssistantBlock, ViewableDialogue } from "./dialogue";
+import { turnAnchorId, spineNodeLabel, plainView } from "./dialogue";
 import type { Role, Usage } from "./types";
 import { condenseToolCall, type ToolStatus } from "./toolCall";
 import { escapeHtml, escapeAttr, renderMarkdown, toolOutputHtml } from "./render";
@@ -61,28 +61,39 @@ const clampableBody = (leadingClass: string, content: string, clampable: boolean
       `</div>`
     : `<div class="${leadingClass}">${renderMarkdown(content)}</div>`;
 
-// [LAW:types-are-the-program] A spoken node is always visible — it is the readable
-// conversation, never collapsible. So it is a plain article, not a <details>: the
-// "collapsed" state it would carry is unrepresentable, not merely defaulted-off.
-// data-index/data-kind/data-role/data-topic are the navigational contract the page's
-// minimap reads (`:scope > [data-index]`); only top-level spine nodes carry them, so
-// the minimap projects the conversation spine and skips the nested detail blocks.
-// data-topic is the node's derived label (spineNodeLabel) — the SAME text the static
-// topic outline shows, so the marker and the outline row name a turn identically.
-// anchorAttr is the permalink id (`id="t<index>"`), emitted for the same top-level
-// spine nodes and empty for nested ones — see renderDialogueHtml.
-const spokenHtml = (
-  role: Exclude<Role, "assistant">,
-  content: string,
+// [LAW:types-are-the-program] The spine-node chrome, shared by every top-level node. It
+// carries the ONE navigational contract the page's minimap reads (`:scope > [data-index]`)
+// and the permalink anchor: data-index/data-kind/data-role/data-topic + the `id="t<index>"`.
+// data-topic is the node's derived label (spineNodeLabel) — the SAME text the static topic
+// outline shows, so the marker and the outline row name a turn identically. Only top-level
+// spine nodes carry these; nested detail blocks and subagent transcripts do not.
+//
+// [LAW:one-type-per-behavior] A shown node is an <article>; a COLLAPSED node is a native
+// <details> WEARING THE SAME attrs — so a folded turn stays navigable and keeps its single
+// t<N> id (the id lives on the wrapper, never duplicated onto a nested article), and the
+// browser owns the fold with no client timing [LAW:no-ambient-temporal-coupling], exactly as
+// the detail blocks do. The summary shows the node's label so the reader sees WHAT is folded.
+const spineNode = (
+  bubbleClass: string,
+  role: Role,
   index: number,
-  clampable: boolean,
+  collapsed: boolean,
   anchorAttr: string,
   topicAttr: string,
-): string =>
-  `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}"${topicAttr}${anchorAttr}>` +
-  roleHeader(role, SPOKEN_LABEL[role]) +
-  clampableBody("bubble-body", content, clampable) +
-  `</article>`;
+  label: string,
+  inner: string,
+): string => {
+  const attrs = `data-kind="message" data-role="${role}" data-index="${index}"${topicAttr}${anchorAttr}`;
+  return collapsed
+    ? `<details class="${bubbleClass} collapsed-turn" ${attrs}>` +
+      `<summary class="collapsed-turn-summary">` +
+      `<span class="collapsed-turn-label">${escapeHtml(label)}</span>` +
+      `<span class="condensed-caret" aria-hidden="true">▸</span>` +
+      `</summary>` +
+      `<div class="collapsed-turn-body">${inner}</div>` +
+      `</details>`
+    : `<article class="${bubbleClass}" ${attrs}>${inner}</article>`;
+};
 
 // Assistant TEXT and INSIGHT are spine: always-visible prose inside the turn.
 const textHtml = (content: string, clampable: boolean): string =>
@@ -224,8 +235,10 @@ const subagentHtml = (
         // must NOT be marked clampable (a closed <details> measures at zero height
         // and would never clamp), AND its spine nodes must carry no permalink id
         // (they would repeat t0,t1,… and collide with the outer conversation). Both
-        // fall out of the one nested fact, asserted here where we know the depth.
-        `<div class="subagent-transcript">${renderDialogueHtml(block.body.transcript, false)}</div>`
+        // fall out of the one nested fact. The plain nested transcript is lifted to
+        // the renderer's ViewableDialogue via plainView — never overlay-targeted, so
+        // every node is shown at its positional index.
+        `<div class="subagent-transcript">${renderDialogueHtml(plainView(block.body.transcript), false)}</div>`
       : subagentDegradedHtml(block.body.prompt, block.body.result);
   const attrs = block.agentType ? ` data-agent-type="${escapeAttr(block.agentType)}"` : "";
   return condensedRow("subagent", attrs, subagentSummary(block), body);
@@ -259,40 +272,35 @@ const usageHtml = (usage: Usage, cumulative: number): string => {
 // [LAW:dataflow-not-control-flow] One dispatch on block.kind; each arm emits the
 // fields that kind carries. The switch is exhaustive over AssistantBlock — adding
 // a block arm stops compiling until it is handled here. The `subagent` arm renders
-// one level nested through the SAME function (renderDialogueHtml). The usage fold
-// is threaded by closure so a usage block reads the running total accumulated by
-// the blocks before it; a nested subagent transcript folds its OWN total because
-// it renders through a fresh renderDialogueHtml call (cumulativeOutput resets).
-// [LAW:one-source-of-truth] `topLevel` defaults true for the outer call (the
-// permalink page and the editor preview both render the outer conversation).
-// subagentHtml re-enters with false, so depth is not threaded as a number — the
-// single fact that matters is "is this the outer render," and the nested call is
-// the one place that is false. TWO behaviors derive from that one fact: spine
-// prose is clampable only when always-laid-out (top level), and a spine node gets
-// a permalink `id="t<index>"` only at the top level. [LAW:types-are-the-program]
-// Emitting the id only here makes duplicate DOM ids unrepresentable: a nested
-// subagent transcript renders through this same function with topLevel=false, so
-// its nodes (which would repeat t0,t1,…) carry no id at all — not deduped after
-// the fact, simply never minted.
-// [LAW:composability] baseIndex is the spine position of the FIRST node in this
-// array — the fact the array position stands in for. It defaults to 0, so the full
-// page (which renders the whole spine from the start) and nested transcripts are
-// byte-identical. The single-turn card render target passes [node] sliced from
-// index N with baseIndex=N, so the node keeps its TRUE identity id="t<N>"/data-index
-// N instead of the t0 a bare 1-element slice would reset it to [LAW:one-source-of-
-// truth] — the card URL and the in-page permalink then name the same turn by one
-// scheme.
-const renderDialogueHtml = (
-  dialogue: Dialogue,
-  topLevel: boolean = true,
-  baseIndex: number = 0,
-): string => {
-  const clampable = topLevel;
+// one level nested through the SAME function (renderDialogueHtml), lifting the plain
+// nested transcript through plainView (it is never overlay-targeted, so every node
+// is shown at its positional index). The usage fold is threaded by closure so a
+// usage block reads the running total accumulated by the blocks before it; a nested
+// subagent transcript folds its OWN total because it renders through a fresh call
+// (cumulativeOutput resets).
+//
+// [LAW:types-are-the-program] The input is a ViewableDialogue — each node paired with
+// its ORIGINAL spine index and fold state (dialogue.ts). Reading the anchor off that
+// carried `index` (never the array position) is what lets an overlay OMIT nodes
+// (feature) without renumbering the survivors: a filtered projection keeps every
+// permalink stable [LAW:one-source-of-truth]. This subsumes the old positional
+// baseIndex — the single-turn card now passes a one-element view whose node still
+// carries its true index, so a sliced render keeps its `id="t<N>"` with no offset arg.
+//
+// [LAW:one-source-of-truth] `topLevel` defaults true for the outer render (the
+// permalink page and the editor preview). subagentHtml re-enters false, so depth is
+// not a number — the one fact that matters is "is this the outer render". A permalink
+// `id` is emitted only at top level, so a nested transcript's nodes (which would
+// repeat t0,t1,…) carry no id at all — duplicate DOM ids are unrepresentable, never
+// minted rather than deduped. Prose is clampable only when it is always laid out:
+// top-level AND not folded — a closed <details> measures at zero height, so a
+// collapsed turn's prose (like a nested transcript's) must not carry the clamp marker.
+const renderDialogueHtml = (view: ViewableDialogue, topLevel: boolean = true): string => {
   // Usage is a running fold scoped to THIS dialogue — a nested subagent transcript
   // (cbm.4) folds its own total, since it renders through a fresh call below.
   let cumulativeOutput = 0;
 
-  const renderBlock = (block: AssistantBlock): string => {
+  const renderBlock = (block: AssistantBlock, clampable: boolean): string => {
     switch (block.kind) {
       case "text":
         return textHtml(block.content, clampable);
@@ -312,30 +320,32 @@ const renderDialogueHtml = (
     }
   };
 
-  return dialogue
-    .map((node, index) => {
-      // [LAW:dataflow-not-control-flow] The permalink anchor is a value carried off
-      // each top-level spine node (empty when nested), never a branch: `#t<index>`
-      // names the same spine position the minimap already navigates by, so both
-      // read one navigational contract [LAW:one-source-of-truth]. spineIndex is the
-      // node's absolute position (baseIndex + array position), so a sliced card
-      // render keeps its true t<N> identity — see baseIndex above.
-      const spineIndex = baseIndex + index;
-      const anchorAttr = topLevel ? ` id="${turnAnchorId(spineIndex)}"` : "";
+  return view
+    .map(({ index, node, collapsed }) => {
+      const clampable = topLevel && !collapsed;
+      const anchorAttr = topLevel ? ` id="${turnAnchorId(index)}"` : "";
       // [LAW:one-source-of-truth] The label the outline and the minimap both show,
       // carried on the node as data — derived once here from the node's own text.
-      const topicAttr = ` data-topic="${escapeAttr(spineNodeLabel(node))}"`;
-      if (node.kind === "spoken") {
-        return spokenHtml(node.role, node.content, spineIndex, clampable, anchorAttr, topicAttr);
-      }
-      // The assistant turn is one always-visible card carrying its interleaved
-      // blocks in source order. data-index marks it as one navigable spine node.
-      return (
-        `<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="${spineIndex}"${topicAttr}${anchorAttr}>` +
-        roleHeader("assistant", "Assistant") +
-        `<div class="assistant-blocks">${node.blocks.map(renderBlock).join("")}</div>` +
-        `</article>`
-      );
+      const label = spineNodeLabel(node);
+      const topicAttr = ` data-topic="${escapeAttr(label)}"`;
+      // [LAW:dataflow-not-control-flow] The two node kinds differ only in three values —
+      // the bubble class, the data-role, and the inner HTML — which the shared spineNode
+      // chrome then wraps identically (article, or <details> when folded).
+      const { bubbleClass, role, inner } =
+        node.kind === "spoken"
+          ? {
+              bubbleClass: `bubble bubble-${node.role}`,
+              role: node.role as Role,
+              inner: roleHeader(node.role, SPOKEN_LABEL[node.role]) + clampableBody("bubble-body", node.content, clampable),
+            }
+          : {
+              bubbleClass: "bubble bubble-assistant assistant-turn",
+              role: "assistant" as Role,
+              inner:
+                roleHeader("assistant", "Assistant") +
+                `<div class="assistant-blocks">${node.blocks.map((b) => renderBlock(b, clampable)).join("")}</div>`,
+            };
+      return spineNode(bubbleClass, role, index, collapsed, anchorAttr, topicAttr, label, inner);
     })
     .join("");
 };

@@ -307,19 +307,22 @@ console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");
   // renderer the full page uses, keeping the turn's TRUE t<N> identity; an
   // out-of-range or non-canonical segment is an honest absence (404), never a
   // fallback to turn 0 or the whole paste.
-  const { deriveDialogue } = await import("../src/dialogue");
+  const { deriveDialogue, plainView } = await import("../src/dialogue");
   const { renderDialogueHtml } = await import("../src/renderDialogue");
   const { renderTurnCard } = await import("../src/turnCard");
 
-  // Three spine turns: user(0), assistant(1), user(2).
+  // Three spine turns: user(0), assistant(1), user(2). The renderer/card consume the
+  // ViewableDialogue contract, so the plain dialogue is lifted through plainView (no
+  // overlay — every node shown at its positional index).
   const dialogue = deriveDialogue([
     { kind: "message", role: "user", content: "first question" } as const,
     { kind: "message", role: "assistant", content: "an answer" } as const,
     { kind: "message", role: "user", content: "second question" } as const,
   ]);
+  const view = plainView(dialogue);
 
-  const t0 = renderTurnCard(dialogue, "t0");
-  const t2 = renderTurnCard(dialogue, "t2");
+  const t0 = renderTurnCard(view, "t0");
+  const t2 = renderTurnCard(view, "t2");
 
   assert("card t0 renders and carries its content", t0 !== null && t0.includes("first question"));
   assert("card t0 carries id=\"t0\"", t0 !== null && t0.includes('id="t0"'));
@@ -332,16 +335,16 @@ console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");
 
   // [LAW:single-enforcer] The card is drawn by the SAME renderer, so turn 2's card
   // markup is byte-identical to turn 2 inside the full page — a substring of it.
-  const full = renderDialogueHtml(dialogue);
+  const full = renderDialogueHtml(view);
   assert("card t2 is a verbatim substring of the full-page render (one renderer)", t2 !== null && full.includes(t2));
 
   // [LAW:no-silent-failure] Out-of-range and non-canonical segments are null (404),
   // never a fallback.
-  assert("index past the spine → null (out-of-range 404)", renderTurnCard(dialogue, "t3") === null);
-  assert("non-canonical leading-zero segment → null", renderTurnCard(dialogue, "t007") === null);
-  assert("non-numeric segment → null", renderTurnCard(dialogue, "tx") === null);
-  assert("missing t prefix → null", renderTurnCard(dialogue, "2") === null);
-  assert("bare prefix → null", renderTurnCard(dialogue, "t") === null);
+  assert("index past the spine → null (out-of-range 404)", renderTurnCard(view, "t3") === null);
+  assert("non-canonical leading-zero segment → null", renderTurnCard(view, "t007") === null);
+  assert("non-numeric segment → null", renderTurnCard(view, "tx") === null);
+  assert("missing t prefix → null", renderTurnCard(view, "2") === null);
+  assert("bare prefix → null", renderTurnCard(view, "t") === null);
 }
 
 console.log("\nTopic spine outline (slopspot-summary-daf.1):");
@@ -352,7 +355,7 @@ console.log("\nTopic spine outline (slopspot-summary-daf.1):");
   // outline's anchor EQUALS the id the renderer emits, and its label EQUALS the
   // data-topic the renderer emits — so the static outline, the permalink, and the
   // minimap marker all name a turn identically and cannot drift.
-  const { deriveDialogue } = await import("../src/dialogue");
+  const { deriveDialogue, plainView } = await import("../src/dialogue");
   const { renderDialogueHtml } = await import("../src/renderDialogue");
   const { deriveSpineOutline } = await import("../src/spineOutline");
   const { escapeAttr } = await import("../src/render");
@@ -367,8 +370,11 @@ console.log("\nTopic spine outline (slopspot-summary-daf.1):");
     { kind: "message", role: "assistant", content: "an answer" } as const,
     { kind: "message", role: "user", content: specialLabel } as const,
   ]);
-  const outline = deriveSpineOutline(dialogue);
-  const full = renderDialogueHtml(dialogue);
+  // The outline and renderer consume the ViewableDialogue contract — lift the plain,
+  // un-overlaid dialogue through plainView (every node visible at its positional index).
+  const view = plainView(dialogue);
+  const outline = deriveSpineOutline(view);
+  const full = renderDialogueHtml(view);
 
   assert("outline has one entry per spine node", outline.length === 3);
   assert(
@@ -391,10 +397,10 @@ console.log("\nTopic spine outline (slopspot-summary-daf.1):");
   // [LAW:no-silent-failure] An assistant turn carrying no prose (only a tool call)
   // still yields a NON-EMPTY, honest label (the tool name) — never a blank row.
   const toolOnly = deriveSpineOutline(
-    deriveDialogue([
+    plainView(deriveDialogue([
       { kind: "message", role: "user", content: "run it" } as const,
       { kind: "tool-call", tool: "bash", args: "{}", output: null } as const,
-    ]),
+    ])),
   );
   assert(
     "assistant turn with only a tool call labels from the tool name (non-empty)",
@@ -405,7 +411,7 @@ console.log("\nTopic spine outline (slopspot-summary-daf.1):");
   // bounded length with an ellipsis — a legible topic, not a paragraph.
   const long = "x".repeat(200);
   const shaped = deriveSpineOutline(
-    deriveDialogue([{ kind: "message", role: "user", content: `line one\n\n  ${long}` } as const]),
+    plainView(deriveDialogue([{ kind: "message", role: "user", content: `line one\n\n  ${long}` } as const])),
   );
   const label = shaped[0]?.label ?? "";
   assert("over-long label is truncated with an ellipsis", label.length <= 80 && label.endsWith("…"));

@@ -7,7 +7,7 @@
 // permalink card shows "[redacted]" and NEVER the original content (no leak).
 
 import { applyOverlay, deriveViewableDialogue, outOfRangeTarget, describeTargetFault } from "../src/overlay";
-import { deriveDialogue } from "../src/dialogue";
+import { deriveDialogue, plainView } from "../src/dialogue";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import { renderTurnCard } from "../src/turnCard";
 import { isOverlay, isOverlayDirective } from "../src/types";
@@ -38,17 +38,21 @@ const turns: ReadonlyArray<Turn> = [
 const dialogue = deriveDialogue(turns);
 assert("fixture derives 3 top-level spine nodes (t0,t1,t2)", dialogue.length === 3);
 
-// ── Empty overlay is an exact no-op ──────────────────────────────────────────
+// ── Empty overlay is the identity view ───────────────────────────────────────
+// applyOverlay now returns a ViewableDialogue (each node paired with its carried index +
+// fold state); the empty-overlay no-op is the all-shown identity view plainView produces,
+// and it renders byte-identical to the un-overlaid dialogue.
 const hide = (index: number): Overlay => [{ kind: "hide", target: { kind: "turn", index } }];
-assert("applyOverlay(d, []) === d (reference identity)", applyOverlay(dialogue, []) === dialogue);
-assert("empty overlay renders byte-identical", renderDialogueHtml(applyOverlay(dialogue, [])) === renderDialogueHtml(dialogue));
+assert("applyOverlay(d, []) is the identity view (== plainView)", eq(applyOverlay(dialogue, []), plainView(dialogue)));
+assert("empty overlay renders byte-identical", renderDialogueHtml(applyOverlay(dialogue, [])) === renderDialogueHtml(plainView(dialogue)));
 
 // ── hide an assistant turn (t1): content replaced, others untouched ──────────
 const hidT1 = applyOverlay(dialogue, hide(1));
 assert("hide preserves spine length (no removal)", hidT1.length === dialogue.length);
-assert("hide t1 leaves t0 unchanged", eq(hidT1[0], dialogue[0]));
-assert("hide t1 leaves t2 unchanged", eq(hidT1[2], dialogue[2]));
-assert("hidden t1 keeps its kind (assistant)", hidT1[1]?.kind === "assistant");
+assert("hide t1 leaves t0's node unchanged", eq(hidT1[0]?.node, dialogue[0]));
+assert("hide t1 leaves t2's node unchanged", eq(hidT1[2]?.node, dialogue[2]));
+assert("hide t1 carries the original index (t1 stays t1)", hidT1[1]?.index === 1);
+assert("hidden t1 keeps its kind (assistant)", hidT1[1]?.node.kind === "assistant");
 const t1Html = renderDialogueHtml(hidT1);
 assert("hidden t1 renders the redaction marker", t1Html.includes("[redacted]"));
 assert("hidden t1 no longer renders the secret", !t1Html.includes(SECRET));
@@ -62,17 +66,61 @@ assert("t1 card still resolves (index preserved, not null)", cardT1 !== null);
 assert("t1 card shows the redaction marker", cardT1 !== null && cardT1.includes("[redacted]"));
 assert("t1 card does NOT leak the secret", cardT1 !== null && !cardT1.includes(SECRET));
 // A non-hidden turn's card is byte-identical to the un-overlaid render.
-assert("t0 card byte-identical to un-overlaid", renderTurnCard(hidT1, "t0") === renderTurnCard(dialogue, "t0"));
+assert("t0 card byte-identical to un-overlaid", renderTurnCard(hidT1, "t0") === renderTurnCard(plainView(dialogue), "t0"));
 
 // ── hide a spoken turn (t2) ──────────────────────────────────────────────────
 const hidT2 = applyOverlay(dialogue, hide(2));
-assert("hidden t2 keeps its kind (spoken)", hidT2[2]?.kind === "spoken");
+assert("hidden t2 keeps its kind (spoken)", hidT2[2]?.node.kind === "spoken");
 const cardT2 = renderTurnCard(hidT2, "t2");
 assert("t2 card does NOT leak the sensitive content", cardT2 !== null && !cardT2.includes(SENSITIVE) && cardT2.includes("[redacted]"));
 
 // ── deriveViewableDialogue enforcer: reads conversation.overlay ──────────────
-assert("no overlay field ⇒ equals plain deriveDialogue", eq(deriveViewableDialogue({ turns }), dialogue));
+assert("no overlay field ⇒ equals the identity view", eq(deriveViewableDialogue({ turns }), plainView(dialogue)));
 assert("overlay field ⇒ equals applyOverlay", eq(deriveViewableDialogue({ turns, overlay: hide(1) }), hidT1));
+
+// ── COLLAPSE: fold a whole spine node, WITHOUT redacting its content ──────────
+// collapse is a DISPLAY state, not content replacement: the node stays in the view at its
+// index, flagged folded, and its content is still present (behind the disclosure) — the
+// opposite of hide, which replaces content. t<N> anchors are untouched.
+const collapse = (index: number): Overlay => [{ kind: "collapse", target: { kind: "turn", index } }];
+const colT1 = applyOverlay(dialogue, collapse(1));
+assert("collapse keeps the node in the view (folded, not omitted)", colT1.length === dialogue.length);
+assert("collapse flags exactly the target node folded", colT1[1]?.collapsed === true && colT1[0]?.collapsed === false && colT1[2]?.collapsed === false);
+assert("collapse leaves the node's content unchanged (fold ≠ redact)", eq(colT1[1]?.node, dialogue[1]));
+const colHtml = renderDialogueHtml(colT1);
+assert("collapsed turn renders a fold (collapsed-turn wrapper)", colHtml.includes("collapsed-turn"));
+assert("a non-collapsed render has NO fold wrapper", !renderDialogueHtml(plainView(dialogue)).includes("collapsed-turn"));
+assert("collapse folds WITHOUT redacting: the content is still in the HTML", colHtml.includes(SECRET) && !colHtml.includes("[redacted]"));
+assert("collapsed turn keeps every t<N> anchor on its fold wrapper", ['id="t0"', 'id="t1"', 'id="t2"'].every((a) => colHtml.includes(a)));
+
+// ── FEATURE (highlight reel): show ONLY featured turns; survivors keep their t<N> ──
+// The load-bearing permalink-stability property: feature OMITS non-featured nodes, but each
+// survivor carries its ORIGINAL index, so t<N> is NOT renumbered by the omission. Feature t0
+// and t2 of a 3-node spine ⇒ t1 gone, yet t2 stays "t2" (never collapsed to "t1").
+const feature = (index: number): Overlay => [{ kind: "feature", target: { kind: "turn", index } }];
+const featured = applyOverlay(dialogue, [...feature(0), ...feature(2)]);
+assert("feature shows ONLY featured turns (2 of 3)", featured.length === 2);
+assert("feature survivors carry their ORIGINAL indices (0 and 2, not 0 and 1)",
+  featured[0]?.index === 0 && featured[1]?.index === 2);
+const featHtml = renderDialogueHtml(featured);
+assert("feature survivor keeps its true t2 anchor (permalink-stable, NOT renumbered to t1)",
+  featHtml.includes('id="t0"') && featHtml.includes('id="t2"') && !featHtml.includes('id="t1"'));
+assert("feature drops the omitted turn's content entirely (t1 secret gone)", !featHtml.includes(SECRET));
+assert("a featured-OUT turn's /t1 card is null (404 — absent from the view, never a leak)",
+  renderTurnCard(featured, "t1") === null);
+assert("a featured turn's /t2 card still resolves with its true identity",
+  renderTurnCard(featured, "t2") !== null);
+assert("NO feature directive ⇒ every turn shown (featured===null path)",
+  applyOverlay(dialogue, hide(1)).length === dialogue.length);
+
+// ── COLLAPSE + FEATURE compose: a featured turn can also be folded ────────────
+const featCol = applyOverlay(dialogue, [...feature(1), ...collapse(1)]);
+assert("feature+collapse on one node ⇒ shown (featured) AND folded, carrying its index",
+  featCol.length === 1 && featCol[0]?.index === 1 && featCol[0]?.collapsed === true);
+// feature-omission is the superset over collapse: collapsing a NON-featured node is moot.
+const featColOther = applyOverlay(dialogue, [...feature(0), ...collapse(2)]);
+assert("collapse on a featured-OUT node is moot (t2 omitted, not shown-folded)",
+  featColOther.length === 1 && featColOther[0]?.index === 0);
 
 // ── isOverlay / isOverlayDirective: the shared read+write validator (slopspot-overlay-34a.3) ──
 // One validator gates BOTH the KV read boundary (storage.normalizeOverlay) and the
@@ -94,6 +142,17 @@ assert("isOverlayDirective rejects a negative span offset", !isOverlayDirective(
 assert("isOverlayDirective rejects a fractional span offset", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0, piece: 0, start: 1.5, end: 3 } }));
 assert("isOverlayDirective rejects a fractional target index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: 1.5 } }));
 assert("isOverlay rejects an array containing one junk directive", !isOverlay([...hide(0), { kind: "hide" }]));
+// collapse/feature kinds (slopspot-overlay-34a.6): accepted on a whole-turn target, REJECTED
+// on a span target — folding or omitting a sub-turn char range is unrepresentable by design.
+assert("isOverlay accepts a collapse directive", isOverlay(collapse(1)));
+assert("isOverlay accepts a feature directive", isOverlay(feature(0)));
+assert("isOverlay accepts a mixed hide/collapse/feature overlay", isOverlay([...hide(0), ...collapse(1), ...feature(2)]));
+assert("isOverlayDirective rejects collapse on a SPAN target (whole-turn only)",
+  !isOverlayDirective({ kind: "collapse", target: { kind: "span", index: 0, piece: 0, start: 0, end: 3 } }));
+assert("isOverlayDirective rejects feature on a SPAN target (whole-turn only)",
+  !isOverlayDirective({ kind: "feature", target: { kind: "span", index: 0, piece: 0, start: 0, end: 3 } }));
+assert("isOverlayDirective rejects a collapse missing its target", !isOverlayDirective({ kind: "collapse" }));
+assert("isOverlayDirective rejects a feature with a negative index", !isOverlayDirective({ kind: "feature", target: { kind: "turn", index: -1 } }));
 
 // ── outOfRangeTarget: reject a redaction that would protect nothing ───────────
 assert("outOfRangeTarget passes an in-range hide (t1)", outOfRangeTarget(turns, hide(1)) === null);
@@ -105,6 +164,13 @@ assert("outOfRangeTarget flags a past-the-end turn (t3 of a 3-node spine)",
 const faultFirst = outOfRangeTarget(turns, [...hide(1), ...hide(9)]);
 assert("outOfRangeTarget reports the FIRST offending target",
   faultFirst?.kind === "turn-out-of-range" && faultFirst.index === 9);
+// collapse/feature share the whole-turn range check (their TurnTarget carries only an index).
+assert("outOfRangeTarget passes an in-range collapse", outOfRangeTarget(turns, collapse(1)) === null);
+assert("outOfRangeTarget passes an in-range feature", outOfRangeTarget(turns, feature(2)) === null);
+const colFault = outOfRangeTarget(turns, collapse(9));
+assert("outOfRangeTarget flags a past-the-end collapse", colFault?.kind === "turn-out-of-range" && colFault.index === 9);
+assert("outOfRangeTarget flags a past-the-end feature",
+  outOfRangeTarget(turns, feature(9))?.kind === "turn-out-of-range");
 
 // ── SUB-TURN SPAN REDACTION (slopspot-overlay-34a.5) ─────────────────────────
 // A fixture with a MULTI-PROSE-BLOCK assistant node: a thinking turn and an assistant
@@ -141,7 +207,7 @@ const senStart = sensSrc.indexOf(SENSITIVE);
 const redThink = applyOverlay(spanDialogue, span(1, 0, tStart, tStart + THINK_SECRET.length));
 assert("span preserves spine length", redThink.length === spanDialogue.length);
 const rn1 = redThink[1];
-assert("span preserves t1's block count (piece count stable)", rn1?.kind === "assistant" && rn1.blocks.length === 2);
+assert("span preserves t1's block count (piece count stable)", rn1?.node.kind === "assistant" && rn1.node.blocks.length === 2);
 const redThinkHtml = renderDialogueHtml(redThink);
 assert("span redacts the targeted thinking-piece secret", !redThinkHtml.includes(THINK_SECRET) && redThinkHtml.includes("[redacted]"));
 assert("span leaves the SAME node's OTHER piece (text) verbatim", redThinkHtml.includes(SECRET));
