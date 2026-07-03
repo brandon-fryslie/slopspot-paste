@@ -440,22 +440,24 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   background: var(--bg-elev);
   padding: 14px 16px;
 }
-.tldr-trigger {
+/* [LAW:one-type-per-behavior] The trigger, Regenerate, and retry buttons are ONE
+   control type — a mono pill over the card — differing only by size and where they
+   sit in their row. The shared chrome + hover + focus live here once, so a token
+   change can never drift between them [LAW:one-source-of-truth]; each class below
+   layers only what differs (the JS gives every one the `tldr-btn` base class). */
+.tldr-btn {
   font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  padding: 5px 14px;
-  border-radius: 8px;
+  letter-spacing: 0.03em;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--fg-muted);
   cursor: pointer;
   transition: color 0.12s ease, border-color 0.12s ease;
 }
-.tldr-trigger:hover { color: var(--fg); border-color: var(--accent); }
-.tldr-trigger:focus-visible,
-.tldr-regen:focus-visible,
-.tldr-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tldr-btn:hover { color: var(--fg); border-color: var(--accent); }
+.tldr-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Primary call-to-action: larger, softer corner, slightly wider tracking. */
+.tldr-trigger { font-size: 12px; letter-spacing: 0.04em; padding: 5px 14px; border-radius: 8px; }
 .tldr-status {
   font-size: 13px;
   color: var(--fg-muted);
@@ -490,20 +492,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   text-transform: uppercase;
   color: var(--accent);
 }
-.tldr-regen {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  padding: 3px 11px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
-}
-.tldr-regen:hover { color: var(--fg); border-color: var(--accent); }
+/* Secondary actions: the smaller pill. Size is grouped so the two can't drift;
+   each then sits differently in its flex row. */
+.tldr-regen,
+.tldr-retry { font-size: 11px; padding: 3px 11px; border-radius: 6px; }
+.tldr-regen { margin-left: auto; }
 .tldr-body {
   margin: 0;
   font-size: 14.5px;
@@ -518,20 +511,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   color: var(--fg-muted);
 }
 .tldr-error-msg { flex: 1 1 auto; }
-.tldr-retry {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  padding: 3px 11px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
-}
-.tldr-retry:hover { color: var(--fg); border-color: var(--accent); }
+.tldr-retry { flex: 0 0 auto; }
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A vertical rail of one marker per turn. Built client-side from the rendered

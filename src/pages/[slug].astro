@@ -765,7 +765,7 @@ const outline = deriveSpineOutline(dialogue);
       switch (s.kind) {
         case "idle":
           return [
-            makeButton("tldr-trigger", "TL;DR — summarize this conversation", () =>
+            makeButton("tldr-btn tldr-trigger", "TL;DR — summarize this conversation", () =>
               void generate(false),
             ),
           ];
@@ -784,7 +784,7 @@ const outline = deriveSpineOutline(dialogue);
           // [LAW:one-source-of-truth] Regenerate re-derives past the cache; the same
           // control both times, differing only in the `force` value it carries.
           head.appendChild(label);
-          head.appendChild(makeButton("tldr-regen", "Regenerate", () => void generate(true)));
+          head.appendChild(makeButton("tldr-btn tldr-regen", "Regenerate", () => void generate(true)));
           const p = document.createElement("p");
           p.className = "tldr-body";
           p.textContent = s.summary;
@@ -798,7 +798,7 @@ const outline = deriveSpineOutline(dialogue);
           msg.className = "tldr-error-msg";
           msg.textContent = s.reason;
           box.appendChild(msg);
-          box.appendChild(makeButton("tldr-retry", "Try again", () => void generate(false)));
+          box.appendChild(makeButton("tldr-btn tldr-retry", "Try again", () => void generate(false)));
           return [box];
         }
       }
