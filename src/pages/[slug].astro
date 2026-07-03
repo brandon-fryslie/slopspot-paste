@@ -840,7 +840,21 @@ const outline = deriveSpineOutline(dialogue);
     // /<slug> and /<slug>/t<N>, so this client never re-implements redaction (that second
     // renderer would be a source of truth that drifts from the server's).
 
-    type OverlayDirective = { kind: "hide"; target: { kind: "turn"; index: number } };
+    // [LAW:types-are-the-program] The client's mirror of the server OverlayDirective union
+    // (types.ts). It must be the FULL union, not a hide-turn narrowing: opening the editor on
+    // a paste that already carries span redactions, collapses, or features must ROUND-TRIP
+    // them on Save. A narrower type would coerce every stored directive to a whole-turn hide
+    // on re-emit — silently coarsening spans and dropping collapse/feature the owner never
+    // touched [LAW:no-silent-failure]. Only `hide` reaches sub-turn spans; collapse/feature
+    // address whole turns (TurnTarget), exactly as the server type.
+    type TurnTarget = { kind: "turn"; index: number };
+    type OverlayTarget =
+      | TurnTarget
+      | { kind: "span"; index: number; piece: number; start: number; end: number };
+    type OverlayDirective =
+      | { kind: "hide"; target: OverlayTarget }
+      | { kind: "collapse"; target: TurnTarget }
+      | { kind: "feature"; target: TurnTarget };
 
     const EDIT_HASH = "#edit";
 
@@ -922,7 +936,7 @@ const outline = deriveSpineOutline(dialogue);
       }).catch(() => null);
       const body = res
         ? ((await res.json().catch(() => null)) as
-            | { directives?: OverlayDirective[]; error?: string }
+            | { directives?: OverlayDirective[]; pieces?: string[][]; error?: string }
             | null)
         : null;
 
@@ -930,7 +944,7 @@ const outline = deriveSpineOutline(dialogue);
       // build: a denial/error yields only a notice (reader view untouched); success yields
       // the full editor. [LAW:no-silent-failure] every non-owner / network / server outcome
       // is a legible message, never a silent no-op.
-      if (!res || !res.ok || !Array.isArray(body?.directives)) {
+      if (!res || !res.ok || !Array.isArray(body?.directives) || !Array.isArray(body?.pieces)) {
         showNotice(
           !res
             ? "Network error — could not reach the overlay endpoint."
@@ -957,49 +971,240 @@ const outline = deriveSpineOutline(dialogue);
       for (const child of [title, status, save, exitButton()]) bar.appendChild(child);
       mountBar(bar);
 
-      // [LAW:one-source-of-truth] The hidden set is seeded from the stored directives the
-      // gate returned — never re-derived from the redacted DOM (a hidden turn shows only
-      // "[redacted]" there, by design, so the DOM cannot tell us what is hidden).
-      const hidden = new Set<number>(body.directives.map((d) => d.target.index));
+      // [LAW:types-are-the-program] A turn's authored redaction: the WHOLE turn, or a set of
+      // sub-turn spans. Mutually exclusive by construction — whole is the machinery's superset
+      // (overlay.ts:displayPlan), so "whole AND spans" is not a state the editor can hold.
+      type SpanRange = { piece: number; start: number; end: number };
+      type TurnRedaction = { kind: "whole" } | { kind: "spans"; spans: SpanRange[] };
 
-      // [LAW:one-source-of-truth] The editable turns are the SAME spine enumeration the
-      // minimap and permalink controls project — top-level nodes carrying data-index —
-      // never a second list. data-index IS the overlay target index (t<N>), so a toggle
-      // here names exactly the node applyOverlay and the /t<N> permalink address.
+      // [LAW:one-source-of-truth] State seeds from the stored directives the gate returned —
+      // never re-derived from the redacted DOM (a hidden turn shows only "[redacted]" there).
+      // Two disjoint stores: `redactions` are the hides THIS editor authors (whole/span);
+      // `passthrough` are directives it does NOT author (collapse/feature — .8/API own them),
+      // held verbatim and re-emitted unchanged so authoring a span never silently drops them
+      // [LAW:no-silent-failure]. `pieces` is the leak-proof coordinate space from the server —
+      // pieces[index][p] is the EXACT raw source a span's offsets index into.
+      const redactions = new Map<number, TurnRedaction>();
+      const passthrough: OverlayDirective[] = [];
+      const pieces = body.pieces;
+      for (const d of body.directives) {
+        if (d.kind === "collapse" || d.kind === "feature") {
+          passthrough.push(d);
+          continue;
+        }
+        const t = d.target;
+        if (t.kind === "turn") {
+          redactions.set(t.index, { kind: "whole" });
+          continue;
+        }
+        // A span: fold into the turn's span set, unless a whole hide already supersedes it.
+        // [LAW:effects-at-boundaries] Accumulate immutably (spread, not in-place push) — the
+        // same way addSpan does — so the fold never mutates a spans array it has already handed
+        // to the Map. Both span-accumulation sites then read identically [LAW:one-source-of-truth].
+        const existing = redactions.get(t.index);
+        if (existing?.kind === "whole") continue;
+        const spans = existing?.kind === "spans" ? [...existing.spans] : [];
+        spans.push({ piece: t.piece, start: t.start, end: t.end });
+        redactions.set(t.index, { kind: "spans", spans });
+      }
+
+      // Which turns' span panels are open — a UI-only projection, not authored state.
+      const expanded = new Set<number>();
+
+      // [LAW:no-silent-failure] Resolve the current selection to a span, or a LEGIBLE reason
+      // it could not. Offsets are exact ONLY when both endpoints are the SAME raw piece's lone
+      // text node: textContent minted exactly one Text child per piece, so startOffset/endOffset
+      // are then character indices into that verbatim source string — never a rendered-DOM offset
+      // needing a silent remap that could miss the secret. A selection spanning pieces, or
+      // touching non-piece chrome, is rejected loudly rather than mis-captured.
+      const captureSelectedSpan = (
+        pieceEls: ReadonlyArray<{ el: HTMLElement; piece: number }>,
+      ): SpanRange | string => {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+          return "Select the text to redact inside a raw piece below.";
+        }
+        const range = sel.getRangeAt(0);
+        const match = pieceEls.find(({ el }) => el.firstChild === range.startContainer);
+        if (
+          match === undefined ||
+          range.startContainer !== range.endContainer ||
+          range.startContainer.nodeType !== Node.TEXT_NODE
+        ) {
+          return "Keep the selection inside a single raw piece.";
+        }
+        const start = Math.min(range.startOffset, range.endOffset);
+        const end = Math.max(range.startOffset, range.endOffset);
+        if (start >= end) return "Empty selection — nothing to redact.";
+        return { piece: match.piece, start, end };
+      };
+
+      // [LAW:dataflow-not-control-flow] Every mutator changes the state VALUE then re-renders;
+      // none touches the DOM directly — render is the one projection of state to chrome.
+      const toggleWhole = (index: number): void => {
+        redactions.get(index)?.kind === "whole"
+          ? redactions.delete(index)
+          : redactions.set(index, { kind: "whole" });
+        render();
+      };
+      const addSpan = (index: number, span: SpanRange): void => {
+        const existing = redactions.get(index);
+        // [LAW:one-source-of-truth] Whole is the superset — a span on a whole-hidden turn is
+        // moot, exactly as the seed loop (`if (existing?.kind === "whole") continue;`) and the
+        // machinery's displayPlan already treat it. Enforcing that rule HERE keeps addSpan
+        // honest to the whole/spans exclusivity its type states, rather than leaning on the UI
+        // (disabled toggle) to never call it under whole. Not a defensive skip: it is the same
+        // domain superset rule applied consistently, so the state stays legal by construction.
+        if (existing?.kind === "whole") return;
+        const spans = existing?.kind === "spans" ? [...existing.spans, span] : [span];
+        redactions.set(index, { kind: "spans", spans });
+        render();
+      };
+      const removeSpan = (index: number, at: number): void => {
+        const existing = redactions.get(index);
+        if (existing?.kind !== "spans") return;
+        const spans = existing.spans.filter((_, i) => i !== at);
+        spans.length === 0 ? redactions.delete(index) : redactions.set(index, { kind: "spans", spans });
+        render();
+      };
+
+      // [LAW:one-source-of-truth] The editable turns are the SAME spine enumeration the minimap
+      // and permalink controls project — top-level nodes carrying data-index — never a second
+      // list. data-index IS the overlay target index (t<N>), so a control here names exactly the
+      // node applyOverlay and the /t<N> permalink address; pieces[index] is that node's raw prose.
       const turns = [...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")];
 
       const controls = turns.map((el) => {
         const index = Number(el.dataset.index);
-        const btn = makeEl("button", "overlay-turn-toggle");
-        btn.type = "button";
         const holder = makeEl("div", "overlay-turn-control");
-        holder.appendChild(btn);
+        const whole = makeEl("button", "overlay-turn-toggle");
+        whole.type = "button";
+        whole.addEventListener("click", () => toggleWhole(index));
+        holder.appendChild(whole);
         el.appendChild(holder);
-        // [LAW:dataflow-not-control-flow] A click flips this index's membership in the
-        // hidden set; the render below is a pure projection of that set. There is no
-        // per-turn "is it hidden" branch in the click — the value changes, one render runs.
-        btn.addEventListener("click", () => {
-          hidden.has(index) ? hidden.delete(index) : hidden.add(index);
+
+        // A turn with no span-addressable prose (only a tool call, say) yields an empty pieces
+        // array — its ONLY redaction is a whole hide, so it grows no span chrome. The presence
+        // of pieces is a value that decides whether the span UI exists, not a guard hiding a bug.
+        // [LAW:types-are-the-program] The span chrome is ONE nullable field, not four parallel
+        // nullables — so "toggle present but panel absent" is unrepresentable; render narrows once.
+        const turnPieces = pieces[index] ?? [];
+        if (turnPieces.length === 0) {
+          return { el, index, whole, span: null };
+        }
+
+        const spanToggle = makeEl("button", "overlay-span-toggle");
+        spanToggle.type = "button";
+        spanToggle.textContent = "Redact part…";
+        spanToggle.addEventListener("click", () => {
+          expanded.has(index) ? expanded.delete(index) : expanded.add(index);
           render();
         });
-        return { el, index, btn };
+        holder.appendChild(spanToggle);
+
+        const panel = makeEl("div", "overlay-span-panel");
+        const hint = makeEl("p", "overlay-span-hint");
+        hint.textContent = "Select the exact text to redact, then Redact selection.";
+        panel.appendChild(hint);
+        // [LAW:one-source-of-truth] Each raw piece is its verbatim source string set as
+        // textContent — exactly one Text node, so a selection's offsets ARE source offsets.
+        const pieceEls = turnPieces.map((text, piece) => {
+          const pieceEl = makeEl("div", "overlay-raw-piece");
+          pieceEl.dataset.piece = String(piece);
+          pieceEl.textContent = text;
+          panel.appendChild(pieceEl);
+          return { el: pieceEl, piece };
+        });
+        const addRow = makeEl("div", "overlay-span-addrow");
+        const add = makeEl("button", "overlay-span-add");
+        add.type = "button";
+        add.textContent = "Redact selection";
+        const msg = makeEl("span", "overlay-span-msg");
+        msg.setAttribute("aria-live", "polite");
+        add.addEventListener("click", () => {
+          const result = captureSelectedSpan(pieceEls);
+          if (typeof result === "string") {
+            msg.textContent = result;
+            return;
+          }
+          msg.textContent = "";
+          window.getSelection()?.removeAllRanges();
+          addSpan(index, result);
+        });
+        addRow.appendChild(add);
+        addRow.appendChild(msg);
+        panel.appendChild(addRow);
+        const spanList = makeEl("div", "overlay-span-list");
+        panel.appendChild(spanList);
+        el.appendChild(panel);
+
+        return { el, index, whole, span: { toggle: spanToggle, panel, list: spanList } };
       });
 
       // [LAW:dataflow-not-control-flow] The whole editor surface is a pure projection of the
-      // hidden set: every turn's toggle label/pressed-state/pending class and the bar's
-      // count are recomputed from it on each change, never mutated incrementally per event.
+      // state: each turn's toggle labels/pending class, its span panel visibility, its span
+      // list, and the bar's summary are recomputed from `redactions`/`expanded` on every
+      // change — never mutated incrementally per event.
       const render = (): void => {
-        for (const { el, index, btn } of controls) {
-          const isHidden = hidden.has(index);
-          el.classList.toggle("overlay-pending-hide", isHidden);
-          btn.classList.toggle("is-hiding", isHidden);
-          btn.textContent = isHidden ? "Unhide" : "Hide";
-          btn.setAttribute("aria-pressed", String(isHidden));
+        let spanCount = 0;
+        let wholeCount = 0;
+        for (const c of controls) {
+          const state = redactions.get(c.index);
+          const isWhole = state?.kind === "whole";
+          const spans = state?.kind === "spans" ? state.spans : [];
+          if (isWhole) wholeCount += 1;
+          spanCount += spans.length;
+
+          c.el.classList.toggle("overlay-pending-hide", isWhole);
+          c.el.classList.toggle("overlay-pending-spans", spans.length > 0);
+          c.whole.classList.toggle("is-hiding", isWhole);
+          c.whole.textContent = isWhole ? "Unhide" : "Hide turn";
+          c.whole.setAttribute("aria-pressed", String(isWhole));
+
+          // A whole hide supersedes spans, so its panel is closed and its span toggle inert.
+          if (c.span) {
+            const open = expanded.has(c.index) && !isWhole;
+            c.span.toggle.disabled = isWhole;
+            c.span.toggle.setAttribute("aria-expanded", String(open));
+            c.span.panel.hidden = !open;
+            c.span.list.replaceChildren(
+              ...spans.map((s, i) => {
+                const item = makeEl("div", "overlay-span-item");
+                const coord = makeEl("span", "overlay-span-coord");
+                coord.textContent = `piece ${s.piece} · chars ${s.start}–${s.end}`;
+                const rm = makeEl("button", "overlay-span-remove");
+                rm.type = "button";
+                rm.textContent = "Remove";
+                rm.addEventListener("click", () => removeSpan(c.index, i));
+                item.appendChild(coord);
+                item.appendChild(rm);
+                return item;
+              }),
+            );
+          }
         }
-        status.textContent =
-          hidden.size === 0
-            ? "No turns hidden"
-            : `${hidden.size} turn${hidden.size === 1 ? "" : "s"} hidden`;
+        const summary: string[] = [];
+        if (wholeCount > 0) summary.push(`${wholeCount} turn${wholeCount === 1 ? "" : "s"} hidden`);
+        if (spanCount > 0) summary.push(`${spanCount} span${spanCount === 1 ? "" : "s"}`);
+        status.textContent = summary.length === 0 ? "No redactions" : summary.join(" · ");
+      };
+
+      // [LAW:one-source-of-truth] The COMPLETE directive set to persist: the passthrough
+      // directives (collapse/feature preserved verbatim) plus the authored hides — whole turns
+      // as turn targets, spans as span targets. Order is irrelevant (displayPlan folds it), so
+      // authored hides are emitted in turn order for a stable, legible write.
+      const emitDirectives = (): OverlayDirective[] => {
+        const authored: OverlayDirective[] = [];
+        for (const [index, r] of [...redactions.entries()].sort((a, b) => a[0] - b[0])) {
+          if (r.kind === "whole") {
+            authored.push({ kind: "hide", target: { kind: "turn", index } });
+          } else {
+            for (const s of r.spans) {
+              authored.push({ kind: "hide", target: { kind: "span", index, piece: s.piece, start: s.start, end: s.end } });
+            }
+          }
+        }
+        return [...passthrough, ...authored];
       };
 
       // [LAW:effects-at-boundaries] Save is the one world-touch: POST the COMPLETE desired
@@ -1008,9 +1213,7 @@ const outline = deriveSpineOutline(dialogue);
       // the /t<N> permalink. #edit is preserved by reload, so the editor reopens showing the
       // now-applied state.
       const performSave = async (): Promise<void> => {
-        const directives: OverlayDirective[] = [...hidden]
-          .sort((a, b) => a - b)
-          .map((index) => ({ kind: "hide", target: { kind: "turn", index } }));
+        const directives = emitDirectives();
         save.disabled = true;
         status.textContent = "Saving…";
         const saveRes = await fetch("/api/overlay", {

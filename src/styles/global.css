@@ -1065,7 +1065,8 @@ body.permalink-ready .turn-controls:focus-within {
    hidden unless body.overlay-editing is set. */
 .overlay-turn-control { display: none; }
 body.overlay-editing .overlay-turn-control {
-  display: block;
+  display: flex;
+  gap: 6px;
   position: absolute;
   top: 12px;
   right: 14px;
@@ -1099,6 +1100,94 @@ body.overlay-editing .overlay-pending-hide {
   outline: 2px dashed var(--accent);
   outline-offset: 3px;
 }
+/* A turn with pending sub-turn spans reads as a lighter pending state than a whole hide —
+   a subtler frame, since only part of it will be redacted on save. */
+body.overlay-editing .overlay-pending-spans:not(.overlay-pending-hide) {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 3px;
+}
+/* The corner control holds both the whole-turn toggle and the span-panel toggle. */
+.overlay-span-toggle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 2px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.overlay-span-toggle:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); }
+.overlay-span-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.overlay-span-toggle:disabled { opacity: 0.4; cursor: default; }
+
+/* The span panel flows at the bottom of the turn: the raw source pieces (verbatim, selectable),
+   the add control, and the current span list. Hidden until the owner expands it. */
+.overlay-span-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+}
+.overlay-span-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.overlay-raw-piece {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  user-select: text;
+}
+.overlay-raw-piece::selection { background: var(--accent); color: var(--accent-fg); }
+.overlay-span-addrow { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.overlay-span-add {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+}
+.overlay-span-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.overlay-span-msg { font-size: 12px; color: var(--fg-muted); }
+.overlay-span-list { display: flex; flex-direction: column; gap: 6px; }
+.overlay-span-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.overlay-span-remove {
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.overlay-span-remove:hover { color: var(--fg); border-color: var(--accent); }
+.overlay-span-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .overlay-editor-bar {
   position: fixed;

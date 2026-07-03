@@ -294,3 +294,21 @@ export const describeTargetFault = (fault: TargetFault): string => {
 export const deriveViewableDialogue = (
   conversation: Pick<Conversation, "turns" | "overlay">,
 ): ViewableDialogue => applyOverlay(deriveDialogue(conversation.turns), conversation.overlay ?? []);
+
+// [LAW:one-source-of-truth] The span-authoring coordinate space, in ONE derivation: for
+// each top-level spine node (t0, t1, …), its ordered raw prose pieces — the EXACT strings
+// a span's [start,end) offsets index into and applySpansToString slices. It reuses the same
+// deriveDialogue + spanPieces that outOfRangeTarget validates against and redactSpansInNode
+// rebuilds from, so the authoring UI cannot capture offsets into a coordinate space that has
+// drifted from the one the renderer applies [LAW:single-enforcer].
+//
+// This is the leak-proof source the /api/overlay authoring probe returns: the raw prose the
+// owner selects into MUST be these verbatim strings, never the markdown-rendered / redacted
+// DOM (a rendered->source offset remap could silently mis-map and miss the secret — the exact
+// failure a redaction feature cannot have [LAW:no-silent-failure]). A turn with no span-
+// addressable prose (only a tool call, say) contributes an empty inner array — an honest "no
+// pieces here", not a missing entry, so pieces[i] aligns with spine node i by construction.
+// [LAW:effects-at-boundaries] Pure: derives from the turns and returns; the caller owns IO.
+export const spanPiecesByTurn = (
+  turns: Conversation["turns"],
+): ReadonlyArray<ReadonlyArray<string>> => deriveDialogue(turns).map(spanPieces);
