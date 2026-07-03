@@ -95,14 +95,30 @@ const redactionPlan = (overlay: Overlay): ReadonlyMap<number, NodeRedaction> => 
   return plan;
 };
 
-// [LAW:dataflow-not-control-flow] Replace each [start,end) range with the marker, applied
-// from the RIGHTMOST range first so every splice uses coordinates into the ORIGINAL string
-// — the marker's differing length never shifts a not-yet-applied range. Offsets are
-// in-bounds by construction (outOfRangeTarget rejected any that weren't at the write edge).
+// Normalize a piece's spans into MAXIMAL DISJOINT ranges: sort by start, then fold each
+// range into the previous when they overlap or merely touch (start <= prev.end). Overlapping
+// spans express one intent — redact their union — so folding is the correct meaning, not an
+// error; adjacent spans collapse to a single marker rather than two abutting ones. This makes
+// the splice below total: after merging, no two ranges share coordinates.
+const mergeRanges = (
+  spans: ReadonlyArray<Span>,
+): ReadonlyArray<{ readonly start: number; readonly end: number }> => {
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const { start, end } of [...spans].sort((a, b) => a.start - b.start)) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && start <= last.end) last.end = Math.max(last.end, end);
+    else merged.push({ start, end });
+  }
+  return merged;
+};
+
+// [LAW:dataflow-not-control-flow] Replace each range with the marker, applied from the
+// RIGHTMOST range first (reduceRight over the ascending merged ranges) so every splice uses
+// coordinates into the ORIGINAL string — with the ranges now disjoint, the marker's differing
+// length never shifts a not-yet-applied range. Offsets are in-bounds by construction
+// (outOfRangeTarget rejected any that weren't at the write edge).
 const applySpansToString = (source: string, spans: ReadonlyArray<Span>): string =>
-  [...spans]
-    .sort((a, b) => b.start - a.start)
-    .reduce((s, { start, end }) => s.slice(0, start) + REDACTED + s.slice(end), source);
+  mergeRanges(spans).reduceRight((s, { start, end }) => s.slice(0, start) + REDACTED + s.slice(end), source);
 
 // Replace a spine node's readable content with the redaction marker, PRESERVING its kind
 // and position. A spoken node keeps its role; an assistant turn collapses its interleaved
@@ -224,7 +240,11 @@ const plural = (n: number): string => (n === 1 ? "" : "s");
 export const describeTargetFault = (fault: TargetFault): string => {
   switch (fault.kind) {
     case "turn-out-of-range":
-      return `Directive targets turn ${fault.index}, but this paste has only ${fault.spineLength} turn${plural(fault.spineLength)} (t0–t${fault.spineLength - 1}).`;
+      // A zero-turn paste (Conversation.turns is ReadonlyArray, so empty is representable)
+      // has no t<N> range to name — the parenthetical would render a nonsensical "t0–t-1".
+      return fault.spineLength === 0
+        ? `Directive targets turn ${fault.index}, but this paste has no turns.`
+        : `Directive targets turn ${fault.index}, but this paste has only ${fault.spineLength} turn${plural(fault.spineLength)} (t0–t${fault.spineLength - 1}).`;
     case "piece-out-of-range":
       return `Directive targets prose piece ${fault.piece} of turn ${fault.index}, but that turn has only ${fault.pieceCount} redactable piece${plural(fault.pieceCount)}.`;
     case "span-out-of-bounds":

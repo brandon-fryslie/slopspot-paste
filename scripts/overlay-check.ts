@@ -173,6 +173,27 @@ const redTwo = renderDialogueHtml(applyOverlay(spanDialogue, twoSpans));
 assert("two spans on one piece both redact (right-to-left offsets stay valid)",
   !redTwo.includes("token") && !redTwo.includes("header") && redTwo.includes(SECRET) && redTwo.includes("in the"));
 
+// ── OVERLAPPING and ADJACENT spans on one piece merge to their union ─────────
+// The splice is correct only for disjoint ranges, so applySpansToString normalizes first.
+// Proof: overlapping/adjacent spans render byte-identical to a SINGLE span over their union
+// (never a garbled "[redacted]...ed]..." from splicing into an already-inserted marker).
+const a1 = textSrc.indexOf("token");
+const overlapSpans: Overlay = [
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1, end: a1 + 15 } },
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1 + 10, end: a1 + 20 } },
+];
+const unionSpan = (start: number, end: number): Overlay => [
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start, end } },
+];
+assert("overlapping spans redact exactly their union (no garbling)",
+  renderDialogueHtml(applyOverlay(spanDialogue, overlapSpans)) === renderDialogueHtml(applyOverlay(spanDialogue, unionSpan(a1, a1 + 20))));
+const adjacentSpans: Overlay = [
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1, end: a1 + 5 } },
+  { kind: "hide", target: { kind: "span", index: 1, piece: 1, start: a1 + 5, end: a1 + 10 } },
+];
+assert("adjacent spans collapse to one marker (== the union span)",
+  renderDialogueHtml(applyOverlay(spanDialogue, adjacentSpans)) === renderDialogueHtml(applyOverlay(spanDialogue, unionSpan(a1, a1 + 10))));
+
 // ── whole-turn hide is the SUPERSET: it overrides any span on the same node ──
 const wholeT1 = applyOverlay(spanDialogue, hide(1));
 assert("whole-turn hide + span on same node ⇒ whole (span moot)",
@@ -202,6 +223,11 @@ assert("describeTargetFault names the piece for a piece fault",
   describeTargetFault({ kind: "piece-out-of-range", index: 1, piece: 2, pieceCount: 2 }).includes("piece 2"));
 assert("describeTargetFault names the char range for a span fault",
   describeTargetFault({ kind: "span-out-of-bounds", index: 1, piece: 1, start: 0, end: 99, pieceLength: 34 }).includes("99"));
+// A zero-turn paste (Conversation.turns is ReadonlyArray, so empty is representable) has no
+// t<N> range to name — the message must not render the nonsensical "t0–t-1".
+const zeroTurnMsg = describeTargetFault({ kind: "turn-out-of-range", index: 0, spineLength: 0 });
+assert("describeTargetFault says 'no turns' for a zero-turn paste (not t0–t-1)",
+  zeroTurnMsg === "Directive targets turn 0, but this paste has no turns." && !zeroTurnMsg.includes("t-1"));
 
 // ── a span overlay survives JSON storage + read validation, then redacts ─────
 const spanWire: unknown = JSON.parse(JSON.stringify(span(1, 0, tStart, tStart + THINK_SECRET.length)));
