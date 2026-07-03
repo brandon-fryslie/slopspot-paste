@@ -344,6 +344,74 @@ console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");
   assert("bare prefix → null", renderTurnCard(dialogue, "t") === null);
 }
 
+console.log("\nTopic spine outline (slopspot-summary-daf.1):");
+{
+  // [LAW:verifiable-goals] The outline is a pure projection of the derived Dialogue:
+  // one entry per spine node, each anchored to that node's t<N> id and labeled from
+  // its own text. The load-bearing invariant is [LAW:one-source-of-truth] — the
+  // outline's anchor EQUALS the id the renderer emits, and its label EQUALS the
+  // data-topic the renderer emits — so the static outline, the permalink, and the
+  // minimap marker all name a turn identically and cannot drift.
+  const { deriveDialogue } = await import("../src/dialogue");
+  const { renderDialogueHtml } = await import("../src/renderDialogue");
+  const { deriveSpineOutline } = await import("../src/spineOutline");
+  const { escapeAttr } = await import("../src/render");
+
+  // The second user message carries HTML-attribute-special characters so the
+  // data-topic escaping boundary is actually exercised — without a label like this
+  // the labelsMatchTopic assertion below would never see a char that distinguishes
+  // the raw label from its escaped form [LAW:behavior-not-structure].
+  const specialLabel = `she said "hi" & <ok>`;
+  const dialogue = deriveDialogue([
+    { kind: "message", role: "user", content: "first question" } as const,
+    { kind: "message", role: "assistant", content: "an answer" } as const,
+    { kind: "message", role: "user", content: specialLabel } as const,
+  ]);
+  const outline = deriveSpineOutline(dialogue);
+  const full = renderDialogueHtml(dialogue);
+
+  assert("outline has one entry per spine node", outline.length === 3);
+  assert(
+    "entries carry index/anchor/role/label in source order",
+    outline[0]?.index === 0 && outline[0]?.anchor === "t0" && outline[0]?.role === "user" && outline[0]?.label === "first question" &&
+    outline[1]?.role === "assistant" && outline[1]?.label === "an answer" &&
+    outline[2]?.anchor === "t2" && outline[2]?.role === "user" && outline[2]?.label === specialLabel,
+  );
+
+  // [LAW:one-source-of-truth] Every entry's anchor is an id the renderer actually
+  // emitted, and every entry's label is the data-topic the renderer actually emitted.
+  // The label is compared against escapeAttr(label) — the SAME escape the renderer
+  // applies (render.ts) — so the assertion reads one escaping scheme, not a second
+  // that could disagree; a raw substring match would false-negative on specialLabel.
+  const anchorsResolve = outline.every((e) => full.includes(`id="${e.anchor}"`));
+  const labelsMatchTopic = outline.every((e) => full.includes(`data-topic="${escapeAttr(e.label)}"`));
+  assert("every outline anchor resolves to a rendered t<N> id", anchorsResolve);
+  assert("every outline label equals the node's rendered data-topic", labelsMatchTopic);
+
+  // [LAW:no-silent-failure] An assistant turn carrying no prose (only a tool call)
+  // still yields a NON-EMPTY, honest label (the tool name) — never a blank row.
+  const toolOnly = deriveSpineOutline(
+    deriveDialogue([
+      { kind: "message", role: "user", content: "run it" } as const,
+      { kind: "tool-call", tool: "bash", args: "{}", output: null } as const,
+    ]),
+  );
+  assert(
+    "assistant turn with only a tool call labels from the tool name (non-empty)",
+    toolOnly[1]?.role === "assistant" && toolOnly[1]?.label === "bash",
+  );
+
+  // Structural snippet: whitespace collapses and an over-long label is truncated to a
+  // bounded length with an ellipsis — a legible topic, not a paragraph.
+  const long = "x".repeat(200);
+  const shaped = deriveSpineOutline(
+    deriveDialogue([{ kind: "message", role: "user", content: `line one\n\n  ${long}` } as const]),
+  );
+  const label = shaped[0]?.label ?? "";
+  assert("over-long label is truncated with an ellipsis", label.length <= 80 && label.endsWith("…"));
+  assert("whitespace collapses (no newline survives in the label)", !label.includes("\n"));
+}
+
 if (process.exitCode) {
   console.error("\nFAILED");
 } else {
