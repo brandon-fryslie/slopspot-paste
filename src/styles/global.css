@@ -1075,7 +1075,9 @@ body.overlay-editing .overlay-turn-control {
 /* While authoring redactions, the reader-oriented copy/quote controls share the
    top-right corner — hide them so the one control per turn is the hide toggle. */
 body.overlay-editing .turn-controls { display: none !important; }
-.overlay-turn-toggle {
+/* The per-turn KIND selector: none / hide / collapse / feature. One control replaces the
+   .4 binary toggle; the directive kind is carried as the select's value, not a button state. */
+.overlay-kind-select {
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.05em;
@@ -1085,15 +1087,10 @@ body.overlay-editing .turn-controls { display: none !important; }
   background: var(--bg-elev);
   color: var(--fg-muted);
   cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  transition: color 0.12s ease, border-color 0.12s ease;
 }
-.overlay-turn-toggle:hover { color: var(--fg); border-color: var(--accent); }
-.overlay-turn-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.overlay-turn-toggle.is-hiding {
-  color: var(--accent-fg);
-  background: var(--accent);
-  border-color: var(--accent);
-}
+.overlay-kind-select:hover { color: var(--fg); border-color: var(--accent); }
+.overlay-kind-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* A turn marked to be hidden reads as pending redaction — a dashed accent frame,
    distinct from the server-applied "[redacted]" content it will become on save. */
 body.overlay-editing .overlay-pending-hide {
@@ -1106,6 +1103,43 @@ body.overlay-editing .overlay-pending-spans:not(.overlay-pending-hide) {
   outline: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
   outline-offset: 3px;
 }
+/* A turn marked to collapse reads as a pending fold — a muted dashed frame, distinct from
+   the accent redaction frame: it changes shape, not content. */
+body.overlay-editing .overlay-pending-collapse {
+  outline: 2px dashed var(--fg-muted);
+  outline-offset: 3px;
+}
+/* A featured turn reads as INCLUDED in the highlight reel — a solid role-hue frame, the
+   positive counterpart to the dashed "pending removal" frames above. */
+body.overlay-editing .overlay-pending-feature {
+  outline: 2px solid var(--role-assistant);
+  outline-offset: 3px;
+}
+/* Feature is a WHITELIST: once any turn is featured, every NON-featured turn will vanish from
+   the published reel. Dim them and label them so that flip is legible before Save — the one
+   non-obvious UX (a single feature hides everything else). */
+body.overlay-editing .overlay-reel-excluded {
+  opacity: 0.4;
+  transition: opacity 0.12s ease;
+}
+body.overlay-editing .overlay-reel-excluded::after {
+  content: "Hidden from reel";
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  z-index: 2;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+/* The reader minimap projects the server-rendered (feature-filtered) spine; in edit mode the
+   spine is swapped for the unfiltered authoring copy, so the rail's markers reference detached
+   nodes. Hide it — authoring does not need the reader rail — rather than leave a dead control. */
+body.overlay-editing .minimap,
+body.overlay-editing .minimap-toggle,
+body.overlay-editing .minimap-scrim { display: none; }
 /* The corner control holds both the whole-turn toggle and the span-panel toggle. */
 .overlay-span-toggle {
   font-family: var(--font-mono);

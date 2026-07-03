@@ -6,7 +6,7 @@
 // any t<N> anchor, and — the security-critical assertion — that a redacted turn's /t<N>
 // permalink card shows "[redacted]" and NEVER the original content (no leak).
 
-import { applyOverlay, deriveViewableDialogue, outOfRangeTarget, describeTargetFault, spanPiecesByTurn } from "../src/overlay";
+import { applyOverlay, deriveViewableDialogue, outOfRangeTarget, describeTargetFault, spanPiecesByTurn, editSpine } from "../src/overlay";
 import { deriveDialogue, plainView } from "../src/dialogue";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import { renderTurnCard } from "../src/turnCard";
@@ -112,6 +112,22 @@ assert("a featured turn's /t2 card still resolves with its true identity",
   renderTurnCard(featured, "t2") !== null);
 assert("NO feature directive ⇒ every turn shown (featured===null path)",
   applyOverlay(dialogue, hide(1)).length === dialogue.length);
+
+// ── editSpine: the UNFILTERED authoring spine (slopspot-overlay-34a.8) ────────
+// The #edit editor must render EVERY turn so a feature paste's non-featured turns are still
+// selectable (whitelist authoring). editSpine is the unfiltered spine regardless of overlay —
+// it takes only turns, so it CANNOT filter — and equals the empty-overlay identity view.
+assert("editSpine returns ALL turns (never feature-filtered)", editSpine(turns).length === dialogue.length);
+assert("editSpine carries every original index in order", editSpine(turns).every((n, i) => n.index === i));
+assert("editSpine equals the identity view (== plainView(deriveDialogue(turns)))",
+  eq(editSpine(turns), plainView(dialogue)));
+assert("editSpine keeps content verbatim — the secret is present to author against, un-redacted",
+  renderDialogueHtml(editSpine(turns)).includes(SECRET));
+// The load-bearing contrast: given a feature overlay that OMITS turns from the public view,
+// editSpine still exposes every one — so the owner can un-feature or whitelist the missing turns.
+assert("under a feature overlay the public view omits turns, but editSpine still shows them all",
+  deriveViewableDialogue({ turns, overlay: [...feature(0), ...feature(2)] }).length === 2 &&
+    editSpine(turns).length === dialogue.length);
 
 // ── COLLAPSE + FEATURE compose: a featured turn can also be folded ────────────
 const featCol = applyOverlay(dialogue, [...feature(1), ...collapse(1)]);
