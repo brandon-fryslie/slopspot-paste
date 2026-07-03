@@ -962,7 +962,23 @@ const outline = deriveSpineOutline(dialogue);
         return;
       }
 
-      // [LAW:single-enforcer] Owner confirmed — swap the reader's server-rendered spine for the
+      // [LAW:no-silent-failure] Validate the authoring spine BEFORE mutating the DOM. The spine
+      // and body.pieces are two projections of the SAME server deriveDialogue(turns) — span
+      // authoring is leak-safe ONLY while pieces[index] aligns with the DOM node at that index.
+      // Parse the spineHtml OFF the live DOM (a detached <template>) and count its top-level
+      // turns; on a mismatch (a drifted renderer, a truncated response), bail to the notice bar
+      // with the reader view STILL INTACT — the swap below never runs — rather than destroy the
+      // reader DOM and then discover the spine is unusable. The else is meaningful (a legible
+      // dead-end), not a silent skip.
+      const parsedSpine = document.createElement("template");
+      parsedSpine.innerHTML = body.spineHtml;
+      const spineTurnCount = [...parsedSpine.content.children].filter((el) => el.hasAttribute("data-index")).length;
+      if (spineTurnCount !== body.pieces.length) {
+        showNotice("The editor could not load: the authoring spine drifted from its source. Reload and try again.");
+        return;
+      }
+
+      // [LAW:single-enforcer] Validated — swap the reader's server-rendered spine for the
       // UNFILTERED authoring spine (editSpine, admin-gated). The public render applies the
       // overlay, and a FEATURE overlay OMITS non-featured turns, so the reader DOM has only the
       // featured turns — the per-turn controls below (built from ':scope > [data-index]') would
@@ -972,18 +988,6 @@ const outline = deriveSpineOutline(dialogue);
       // every reference above stay valid. [LAW:one-source-of-truth] pieces[index] aligns with
       // this spine by construction — both derive from the same full deriveDialogue(turns).
       conversation.innerHTML = body.spineHtml;
-
-      // [LAW:no-silent-failure] The swapped spine and body.pieces are two projections of the SAME
-      // server deriveDialogue(turns) — span authoring is leak-safe ONLY while pieces[index] aligns
-      // with the DOM node at that index. Assert that invariant loudly here: if the counts disagree
-      // (a drifted renderer, a truncated response), bail to the notice bar rather than build the
-      // editor on a misaligned DOM where a span could map to the wrong prose. The else is meaningful
-      // (a legible dead-end, reader view intact), not a silent skip.
-      const spineTurnCount = conversation.querySelectorAll(":scope > [data-index]").length;
-      if (spineTurnCount !== body.pieces.length) {
-        showNotice("The editor could not load: the authoring spine drifted from its source. Reload and try again.");
-        return;
-      }
 
       // Owner confirmed — build the editor bar. The reader-degrading overlay-editing class
       // (which hides the copy controls and reveals the per-turn controls) is added only at the
