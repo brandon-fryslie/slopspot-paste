@@ -201,11 +201,27 @@ const summaryKey = (slug: string, hash: string): string => `${SUMMARY_KEY_PREFIX
 // string with no schema to validate — a hit is the string, a miss (or transient KV
 // error surfaced as absence) is null, and the caller regenerates. There is nothing to
 // corrupt: the authority is the turns, and the summary is re-derivable from them.
+//
+// [LAW:single-enforcer] The "a disposable cache is best-effort, never fatal" invariant
+// is owned HERE, in the cache ops, not scattered into every caller. A transient KV
+// error must not become a Worker 500 for either operation, because the summary can
+// always be regenerated. This is the deliberate OPPOSITE of loadViewablePaste's 503:
+// an AUTHORITY read that fails surfaces loudly (it cannot be worked around), but a
+// DISPOSABLE cache read/write that fails is worked around by regenerating the exact
+// same value. [LAW:no-silent-failure] neither error vanishes — both are logged.
 export const getCachedSummary = async (
   kv: KVNamespace,
   slug: string,
   hash: string,
-): Promise<string | null> => kv.get(summaryKey(slug, hash), "text");
+): Promise<string | null> => {
+  try {
+    return await kv.get(summaryKey(slug, hash), "text");
+  } catch (err) {
+    // Surfaced as a cache miss so the caller regenerates the identical summary.
+    console.error(`getCachedSummary: KV read failed for slug ${slug}:`, err);
+    return null;
+  }
+};
 
 export const putCachedSummary = async (
   kv: KVNamespace,
@@ -213,7 +229,14 @@ export const putCachedSummary = async (
   hash: string,
   summary: string,
 ): Promise<void> => {
-  await kv.put(summaryKey(slug, hash), summary, { expirationTtl: SUMMARY_TTL_SECONDS });
+  try {
+    await kv.put(summaryKey(slug, hash), summary, { expirationTtl: SUMMARY_TTL_SECONDS });
+  } catch (err) {
+    // The summary was already produced and is being returned to the caller; a failed
+    // write must not discard it. The write simply doesn't persist — the next request
+    // regenerates and re-attempts the cache.
+    console.error(`putCachedSummary: KV write failed for slug ${slug}:`, err);
+  }
 };
 
 // Permanently remove a KV record — called only by the purge path after the
