@@ -39,15 +39,14 @@ export const isJsonRequest = (request: Request): boolean => {
 // per endpoint drifts. [LAW:no-silent-failure] a malformed body yields null (the
 // caller surfaces a 400), never a silently-wrong slug.
 export const decodeSlug = async (request: Request): Promise<string | null> => {
-  // An empty string is not a usable slug — returning "" would misrepresent "no slug
-  // supplied" as a slug, bypassing the caller's `slug === null` 400 guard and yielding
-  // a misleading 404 downstream. Absent-or-empty both decode to null, so the caller's
-  // "Missing or invalid slug" 400 fires with the correct semantics.
-  if (isJsonRequest(request)) {
-    const body = (await request.json().catch(() => null)) as { slug?: unknown } | null;
-    return body && typeof body.slug === "string" && body.slug.length > 0 ? body.slug : null;
-  }
-  const form = await request.formData().catch(() => null);
-  const slug = form?.get("slug");
-  return typeof slug === "string" && slug.length > 0 ? slug : null;
+  // A blank (empty or whitespace-only) slug is not a usable slug — returning it would
+  // misrepresent "no slug supplied" as a slug, bypassing the caller's `slug === null`
+  // 400 guard and yielding a misleading 404 downstream. Trim, then null-out when
+  // nothing remains, so the caller's "Missing or invalid slug" 400 fires with the
+  // correct semantics. A real slug carries no whitespace, so trimming one is a no-op.
+  const raw = isJsonRequest(request)
+    ? ((await request.json().catch(() => null)) as { slug?: unknown } | null)?.slug
+    : (await request.formData().catch(() => null))?.get("slug");
+  const slug = typeof raw === "string" ? raw.trim() : "";
+  return slug.length > 0 ? slug : null;
 };

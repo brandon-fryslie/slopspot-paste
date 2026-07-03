@@ -25,9 +25,14 @@ import type { Dialogue } from "./dialogue";
 // whether it came from cache) or the exact HTTP status+message the endpoint must
 // emit. The gate's 404/410/503 flow straight through; a provider failure becomes a
 // 502, a missing key a 503 — three distinct truths the endpoint never re-derives.
+// [LAW:types-are-the-program] The status arm lists exactly what resolveSummary
+// produces: 404/410 from the gate, and 502 (provider failed) / 503 (not configured)
+// from the summarize path. 400 (missing slug) is NOT here — that is the HTTP handler's
+// concern, produced before this function is called, so the type never advertises a
+// status this function cannot return.
 export type SummaryOutcome =
   | { readonly ok: true; readonly summary: string; readonly cached: boolean }
-  | { readonly ok: false; readonly status: 400 | 404 | 410 | 502 | 503; readonly error: string };
+  | { readonly ok: false; readonly status: 404 | 410 | 502 | 503; readonly error: string };
 
 // The injectable shape of the LLM boundary — exactly summarize's signature, so the
 // real function is assignable with no adapter.

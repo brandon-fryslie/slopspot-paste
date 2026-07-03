@@ -2915,9 +2915,10 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
   // preamble and the flattened transcript. Without this, a template literal broken to
   // content:"" would pass every structural check while silently sending an empty
   // prompt — the function would look fully tested while carrying nothing.
-  assert("user message content is a non-empty string", typeof userMsg?.content === "string" && userMsg.content.length > 0);
-  assert("user message carries the prompt preamble", userMsg?.content.includes("Summarize this conversation") ?? false);
-  assert("user message embeds the flattened transcript (the human question)", userMsg?.content.includes("How do I reverse a linked list") ?? false);
+  const userContent = userMsg?.content ?? "";
+  assert("user message content is a non-empty string", userContent.length > 0);
+  assert("user message carries the prompt preamble", userContent.includes("Summarize this conversation"));
+  assert("user message embeds the flattened transcript (the human question)", userContent.includes("How do I reverse a linked list"));
 
   const transcript = renderDialogueForPrompt(dialogue);
   assert("transcript includes the human question", transcript.includes("How do I reverse a linked list"));
@@ -2996,6 +2997,8 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
       isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "Application/JSON" } })));
     assert("isJsonRequest accepts application/json with charset params",
       isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/json; charset=utf-8" } })));
+    assert("isJsonRequest accepts a +json structured-suffix type (RFC 6839)",
+      isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/ld+json" } })));
     assert("isJsonRequest rejects a form content-type",
       !isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" } })));
     // [FRAMING:representation] The predicate parses the MEDIA TYPE, not a substring of
@@ -3013,6 +3016,10 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "" }),
     }));
     assertEq("decodeSlug treats an empty-string slug as absent (null)", decodedEmpty, null);
+    const decodedBlank = await decodeSlug(new Request("https://x.test", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "   " }),
+    }));
+    assertEq("decodeSlug treats a whitespace-only slug as absent (null)", decodedBlank, null);
   })();
 }
 

@@ -248,13 +248,21 @@ export const deleteCachedSummaries = async (
   kv: KVNamespace,
   slug: string,
 ): Promise<void> => {
-  const prefix = `${SUMMARY_KEY_PREFIX}${slug}:`;
-  let cursor: string | undefined;
-  do {
-    const page = await kv.list({ prefix, cursor });
-    await Promise.all(page.keys.map((k) => kv.delete(k.name)));
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+  // [LAW:no-silent-failure] Best-effort, like the other cache ops: a kv.list/kv.delete
+  // rejection here must not propagate through deleteConversation (which has already
+  // removed the paste) and crash the purge loop for every subsequent record. Log
+  // loudly and return — orphaned summaries self-evict via SUMMARY_TTL_SECONDS anyway.
+  try {
+    const prefix = `${SUMMARY_KEY_PREFIX}${slug}:`;
+    let cursor: string | undefined;
+    do {
+      const page = await kv.list({ prefix, cursor });
+      await Promise.all(page.keys.map((k) => kv.delete(k.name)));
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  } catch (err) {
+    console.error(`deleteCachedSummaries: KV sweep failed for slug ${slug}:`, err);
+  }
 };
 
 // Permanently remove a paste record AND its derived summary cache — called only by
