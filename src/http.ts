@@ -39,11 +39,15 @@ export const isJsonRequest = (request: Request): boolean => {
 // per endpoint drifts. [LAW:no-silent-failure] a malformed body yields null (the
 // caller surfaces a 400), never a silently-wrong slug.
 export const decodeSlug = async (request: Request): Promise<string | null> => {
+  // An empty string is not a usable slug — returning "" would misrepresent "no slug
+  // supplied" as a slug, bypassing the caller's `slug === null` 400 guard and yielding
+  // a misleading 404 downstream. Absent-or-empty both decode to null, so the caller's
+  // "Missing or invalid slug" 400 fires with the correct semantics.
   if (isJsonRequest(request)) {
     const body = (await request.json().catch(() => null)) as { slug?: unknown } | null;
-    return body && typeof body.slug === "string" ? body.slug : null;
+    return body && typeof body.slug === "string" && body.slug.length > 0 ? body.slug : null;
   }
   const form = await request.formData().catch(() => null);
   const slug = form?.get("slug");
-  return typeof slug === "string" ? slug : null;
+  return typeof slug === "string" && slug.length > 0 ? slug : null;
 };

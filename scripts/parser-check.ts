@@ -3007,6 +3007,12 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
       method: "POST", headers: { "content-type": "Application/JSON" }, body: JSON.stringify({ slug: "abcdefghjk" }),
     }));
     assertEq("decodeSlug parses a slug from an upper-cased JSON content-type", decodedUpper, "abcdefghjk");
+    // [LAW:types-are-the-program] An empty slug is not a slug: decodeSlug yields null so
+    // the caller's 400 fires, not a misleading 404 for a nonexistent paste.
+    const decodedEmpty = await decodeSlug(new Request("https://x.test", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "" }),
+    }));
+    assertEq("decodeSlug treats an empty-string slug as absent (null)", decodedEmpty, null);
   })();
 }
 
