@@ -111,7 +111,13 @@ const outline = deriveSpineOutline(dialogue);
     </details>
   )}
 
-  <section class="conversation" aria-label="Conversation" set:html={renderDialogueHtml(dialogue)} />
+  {/*
+    [LAW:one-source-of-truth] data-slug is the ONE client-readable slug: a projection of
+    the server `slug` (Astro.params), carried on the section every client script here
+    already depends on. The scripts read it rather than each re-deriving the slug from
+    location.pathname — a second derivation that would drift if the URL scheme ever changed.
+  */}
+  <section class="conversation" aria-label="Conversation" data-slug={slug} set:html={renderDialogueHtml(dialogue)} />
 
   <script>
     import { enhanceClampBlocks } from "../clampBlocks";
@@ -595,9 +601,10 @@ const outline = deriveSpineOutline(dialogue);
       // prompt that tells a coding agent — running in the repo where THIS session
       // ran — to send the missing subagents/agent-*.jsonl to /api/augment. The
       // server validates session membership and rejects foreign lines loudly, so
-      // the recipe is safe to run blindly. [LAW:one-source-of-truth] slug and
-      // origin come from location (the page IS at /<slug>), never re-stored fields.
-      const slug = location.pathname.replace(/^\/+|\/+$/g, "");
+      // the recipe is safe to run blindly. [LAW:one-source-of-truth] slug is read from
+      // the one server-rendered data-slug on .conversation (already queried above), not
+      // re-derived from location — origin is a genuine browser fact and stays from location.
+      const slug = conversation.dataset.slug ?? "";
       const apiOrigin = location.origin;
       const pasteUrl = apiOrigin + "/" + slug;
       // Built as line strings (not a template literal) so the bash ${...} inside
@@ -835,9 +842,6 @@ const outline = deriveSpineOutline(dialogue);
 
     type OverlayDirective = { kind: "hide"; target: { kind: "turn"; index: number } };
 
-    // [LAW:one-source-of-truth] slug is read from the URL — the page IS at /<slug> — never
-    // a re-stored field, exactly as the augment-prompt code above derives it.
-    const slug = location.pathname.replace(/^\/+|\/+$/g, "");
     const EDIT_HASH = "#edit";
 
     const makeEl = <K extends keyof HTMLElementTagNameMap>(
@@ -872,10 +876,15 @@ const outline = deriveSpineOutline(dialogue);
       const exit = makeEl("button", "overlay-editor-exit");
       exit.type = "button";
       exit.textContent = "Exit";
-      // [LAW:single-enforcer] Exit leaves edit mode by navigating to the clean paste URL —
-      // the server re-renders the public view (applied overlay, zero authoring chrome), the
-      // same render every reader gets. No client-side teardown that could leave chrome behind.
-      exit.addEventListener("click", () => location.assign(location.pathname));
+      // [LAW:single-enforcer] Exit leaves edit mode via a full server re-render of the
+      // public view (applied overlay, zero authoring chrome) — no client-side teardown that
+      // could leave chrome behind. Assigning the bare pathname would only differ from
+      // /<slug>#edit in the fragment, which is a same-document navigation (no reload); so
+      // strip the hash with replaceState first, then reload to force the fresh render.
+      exit.addEventListener("click", () => {
+        history.replaceState(null, "", location.pathname);
+        location.reload();
+      });
       for (const child of [title, status, save, exit]) bar.appendChild(child);
       return { bar, status, save };
     };
@@ -883,6 +892,15 @@ const outline = deriveSpineOutline(dialogue);
     const activate = async (): Promise<void> => {
       if (active || location.hash !== EDIT_HASH) return;
       active = true;
+
+      // [LAW:one-source-of-truth] slug is read from the one server-rendered data-slug on
+      // .conversation — the SAME element whose spine nodes are the editable turns below —
+      // never re-derived from location.pathname. [LAW:no-defensive-null-guards] .conversation
+      // is rendered unconditionally, so its absence is a broken template invariant: assert
+      // once, loudly, and every use below gets a typed non-null root.
+      const conversation = document.querySelector<HTMLElement>(".conversation");
+      if (!conversation) throw new Error("required .conversation section missing");
+      const slug = conversation.dataset.slug ?? "";
 
       const { bar, status, save } = buildBar();
       document.body.appendChild(bar);
@@ -921,8 +939,6 @@ const outline = deriveSpineOutline(dialogue);
       // minimap and permalink controls project — top-level nodes carrying data-index —
       // never a second list. data-index IS the overlay target index (t<N>), so a toggle
       // here names exactly the node applyOverlay and the /t<N> permalink address.
-      const conversation = document.querySelector<HTMLElement>(".conversation");
-      if (!conversation) throw new Error("required .conversation section missing");
       const turns = [...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")];
 
       const controls = turns.map((el) => {
