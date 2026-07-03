@@ -427,6 +427,92 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   white-space: nowrap;
 }
 
+/* ─── On-demand TL;DR ─────────────────────────────────────────────────────
+   A client-revealed enrichment card ([slug].astro): server-rendered empty and
+   hidden, so a no-JS page is byte-identical. Shares the outline card's frame
+   (bordered, elevated, rounded) since it sits in the same header stack. Its
+   inner content is a projection of the client state machine — idle trigger,
+   loading status, ready summary + Regenerate, or an error with Try again. */
+.tldr {
+  margin-bottom: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  padding: 14px 16px;
+}
+/* [LAW:one-type-per-behavior] The trigger, Regenerate, and retry buttons are ONE
+   control type — a mono pill over the card — differing only by size and where they
+   sit in their row. The shared chrome + hover + focus live here once, so a token
+   change can never drift between them [LAW:one-source-of-truth]; each class below
+   layers only what differs (the JS gives every one the `tldr-btn` base class). */
+.tldr-btn {
+  font-family: var(--font-mono);
+  letter-spacing: 0.03em;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.tldr-btn:hover { color: var(--fg); border-color: var(--accent); }
+.tldr-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Primary call-to-action: larger, softer corner, slightly wider tracking. */
+.tldr-trigger { font-size: 12px; letter-spacing: 0.04em; padding: 5px 14px; border-radius: 8px; }
+.tldr-status {
+  font-size: 13px;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+/* A quiet pulsing dot marks the in-flight fetch — the browser owns the timing
+   (CSS animation), no JS clock. prefers-reduced-motion drops it to steady. */
+.tldr-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: tldr-pulse 1s ease-in-out infinite;
+}
+@keyframes tldr-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .tldr-status::before { animation: none; opacity: 0.7; }
+}
+.tldr-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.tldr-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+/* Secondary actions: the smaller pill. Size is grouped so the two can't drift;
+   each then sits differently in its flex row. */
+.tldr-regen,
+.tldr-retry { font-size: 11px; padding: 3px 11px; border-radius: 6px; }
+.tldr-regen { margin-left: auto; }
+.tldr-body {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.tldr-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.tldr-error-msg { flex: 1 1 auto; }
+.tldr-retry { flex: 0 0 auto; }
+
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A vertical rail of one marker per turn. Built client-side from the rendered
    turn elements (see [slug].astro). One rail, two placements: on a wide viewport

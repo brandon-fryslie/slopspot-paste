@@ -43,6 +43,12 @@ export const resolveSummary = async (
   slug: string,
   now: number,
   env: SummaryEnv,
+  // [LAW:dataflow-not-control-flow] Regenerate is not a second flow — it is this
+  // same resolve with the cache READ bypassed. `force` is a value, not a mode: it
+  // collapses `cached` to null below, feeding the one existing miss path
+  // (generate → overwrite). A forced call is exactly a call that treats every read
+  // as a miss. Defaults false so the endpoint's normal path serves the cache.
+  force: boolean = false,
   summarizeFn: SummarizeFn = realSummarize,
 ): Promise<SummaryOutcome> => {
   // [LAW:single-enforcer] The one viewable-paste gate. Its rejection carries the
@@ -56,7 +62,13 @@ export const resolveSummary = async (
   // projects); the Dialogue the prompt reads derives from the same turns.
   const hash = await turnsContentHash(turns);
 
-  const cached = await getCachedSummary(kv, slug, hash);
+  // [LAW:one-source-of-truth] `force` bypasses the cache READ, never the WRITE. A
+  // regenerate re-derives from the authoritative turns and overwrites the SAME
+  // disposable key (same turns → same hash → same key) below, replacing the stale
+  // projection in place rather than minting a second entry. This is the sanctioned
+  // regenerate path precisely because the cache is disposable by design — the model
+  // improves with no content change to bust the key, so a reader forces a fresh one.
+  const cached = force ? null : await getCachedSummary(kv, slug, hash);
   if (cached !== null) return { ok: true, summary: cached, cached: true };
 
   // [LAW:effects-at-boundaries] The LLM call happens exactly here, only on a miss.
