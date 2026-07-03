@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveDialogue } from "../dialogue";
+import { deriveSpineOutline } from "../spineOutline";
 import { loadViewablePaste } from "../loadPaste";
 import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime } from "../types";
 
@@ -46,6 +47,14 @@ const platformLabel = PLATFORM_LABEL[platform];
 // the absence is a value the template skips, not a branch that conditionally
 // builds a header). The URL was validated as a claude.ai/share link at ingest.
 const sourceUrl = sourceUrlOf(origin);
+
+// [LAW:one-source-of-truth] Derive the nested Dialogue ONCE, then take two disposable
+// projections of it: the rendered conversation HTML and the topic outline. Both are
+// pure functions of the same stored original — nothing here is persisted, and a paste
+// with no turns yields an empty outline that renders nothing (a value, not a branch
+// that special-cases empty).
+const dialogue = deriveDialogue(conversation.turns);
+const outline = deriveSpineOutline(dialogue);
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -67,7 +76,26 @@ const sourceUrl = sourceUrlOf(origin);
     )}
   </section>
 
-  <section class="conversation" aria-label="Conversation" set:html={renderDialogueHtml(deriveDialogue(conversation.turns))} />
+  {outline.length > 0 && (
+    <details class="spine-outline">
+      <summary class="spine-outline-summary">
+        <span class="spine-outline-title">Outline</span>
+        <span class="spine-outline-count">{outline.length} turns</span>
+      </summary>
+      <ol class="spine-outline-list">
+        {outline.map((entry) => (
+          <li class="spine-outline-item">
+            <a class="spine-outline-link" href={`#${entry.anchor}`}>
+              <span class="spine-outline-dot" data-role={entry.role} aria-hidden="true"></span>
+              <span class="spine-outline-label">{entry.label}</span>
+            </a>
+          </li>
+        ))}
+      </ol>
+    </details>
+  )}
+
+  <section class="conversation" aria-label="Conversation" set:html={renderDialogueHtml(dialogue)} />
 
   <script>
     import { enhanceClampBlocks } from "../clampBlocks";
@@ -109,17 +137,19 @@ const sourceUrl = sourceUrlOf(origin);
     // share one behaviour. No-JS leaves the prose fully expanded (this never runs).
     enhanceClampBlocks(conversation);
 
-    // aria-label text per role — a value→string map, not a behaviour branch.
-    // Every spine node is a data-kind="message" with one of these three roles
-    // (the inclusion rule above guarantees nothing else reaches the rail), so the
-    // label is a pure lookup on role — no per-kind dispatch.
+    // [LAW:one-source-of-truth] The marker's label is the node's derived topic
+    // (data-topic) — the SAME text the static outline shows, emitted by the renderer
+    // from spineNodeLabel — so hovering a marker and reading the outline row name one
+    // turn identically. The per-role word is only a fallback for the impossible case
+    // of a node the renderer emitted without a topic; every real spine node carries a
+    // non-empty data-topic, so this degrades honestly rather than lying about a turn.
     const roleName: Record<string, string> = {
       user: "User",
       assistant: "Assistant",
       system: "System",
     };
     const markerLabel = (el: HTMLElement): string =>
-      roleName[el.dataset.role ?? ""] ?? "Message";
+      el.dataset.topic || roleName[el.dataset.role ?? ""] || "Message";
 
     const nav = document.createElement("nav");
     nav.className = "minimap";

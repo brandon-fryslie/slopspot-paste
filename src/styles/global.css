@@ -357,6 +357,76 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 }
 .source-origin a:hover { border-bottom-color: currentColor; }
 
+/* ─── Topic spine outline ─────────────────────────────────────────────────
+   A server-rendered, no-JS table of contents: one row per spine node, each a
+   real anchor into the turn's t<N> id (see spineOutline.ts / [slug].astro). It
+   is the labeled companion to the minimap — same turns, same derived labels —
+   collapsed by default via native <details> so it never pushes the conversation
+   down until the reader opens it. */
+.spine-outline {
+  margin-bottom: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.spine-outline-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 11px 15px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  list-style: none;
+  user-select: none;
+}
+.spine-outline-summary::-webkit-details-marker { display: none; }
+.spine-outline-summary::before {
+  content: "▸";
+  color: var(--fg-muted);
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+.spine-outline[open] .spine-outline-summary::before { transform: rotate(90deg); }
+.spine-outline-count { color: var(--fg-muted); font-weight: 400; }
+.spine-outline-list {
+  margin: 0;
+  padding: 4px 0 6px;
+  list-style: none;
+  border-top: 1px solid var(--border);
+  max-height: min(52vh, 460px);
+  overflow-y: auto;
+}
+.spine-outline-item { margin: 0; }
+.spine-outline-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 15px;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.spine-outline-link:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.spine-outline-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--fg-muted);
+}
+.spine-outline-dot[data-role="user"] { background: var(--role-user); }
+.spine-outline-dot[data-role="assistant"] { background: var(--role-assistant); }
+.spine-outline-dot[data-role="system"] { background: var(--role-system); }
+.spine-outline-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A vertical rail of one marker per turn. Built client-side from the rendered
    turn elements (see [slug].astro). One rail, two placements: on a wide viewport
