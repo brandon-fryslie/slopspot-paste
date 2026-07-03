@@ -52,6 +52,7 @@ import {
   summarize,
   SUMMARY_SYSTEM_PROMPT,
 } from "../src/summary";
+import { isJsonRequest, decodeSlug } from "../src/http";
 import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
 
 const CC_SAMPLE = `❯ deleted
@@ -2986,6 +2987,19 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
     const notConfigured = await summarize(dialogue, {});
     assert("missing DEEPSEEK_API_TOKEN → ok:false", !notConfigured.ok);
     assert("missing key is reported as configured:false (not a crash)", !notConfigured.ok && !notConfigured.configured);
+
+    // [LAW:behavior-not-structure] The shared slug decoder's content-type sniff is
+    // case-insensitive (RFC 7231 §3.1.1.1): a client sending `Application/JSON` must
+    // still be decoded as JSON, not mis-routed to formData and rejected with a
+    // misleading 400. Pin the behavior every slug endpoint now shares.
+    assert("isJsonRequest treats Application/JSON as JSON (case-insensitive)",
+      isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "Application/JSON" } })));
+    assert("isJsonRequest rejects a form content-type",
+      !isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" } })));
+    const decodedUpper = await decodeSlug(new Request("https://x.test", {
+      method: "POST", headers: { "content-type": "Application/JSON" }, body: JSON.stringify({ slug: "abcdefghjk" }),
+    }));
+    assertEq("decodeSlug parses a slug from an upper-cased JSON content-type", decodedUpper, "abcdefghjk");
   })();
 }
 

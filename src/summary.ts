@@ -15,7 +15,7 @@
 // endpoint can answer "not configured" cleanly instead of 500ing.
 
 import type { Dialogue, SpineNode, AssistantBlock } from "./dialogue";
-import { blockVisibility } from "./dialogue";
+import { blockVisibility, blockText } from "./dialogue";
 import type { Turn } from "./types";
 
 export type SummaryResult =
@@ -67,14 +67,17 @@ export interface ChatMessage {
 
 // [LAW:effects-at-boundaries] Pure: the readable-text projection of one spine node
 // the summary prompt shows the model. An assistant turn contributes only its
-// spine-visible prose (text + insight) — the same blocks BLOCK_VISIBILITY marks as
-// the reader-facing conversation, so the summary is built from what a human reads,
-// not from collapsed thinking/tool noise. [LAW:one-source-of-truth] visibility is
-// read from the single classifier, never re-decided here.
+// spine-visible prose — the blocks BLOCK_VISIBILITY marks as the reader-facing
+// conversation — so the summary is built from what a human reads, not from collapsed
+// thinking/tool noise. [LAW:one-source-of-truth] BOTH judgments come from single
+// authorities: `blockVisibility` decides which blocks are spine, and `blockText` (the
+// exhaustive extractor dialogue.ts owns) yields each block's prose. There is no second
+// list of "which kinds carry text" here — a new spine-visible kind is compiler-forced
+// to be handled in blockText, so it can never silently map to "".
 const spineVisibleProse = (blocks: ReadonlyArray<AssistantBlock>): string =>
   blocks
     .filter((b) => blockVisibility(b) === "spine")
-    .map((b) => (b.kind === "text" || b.kind === "insight" ? b.content : ""))
+    .map(blockText)
     .filter((s) => s.length > 0)
     .join("\n\n");
 

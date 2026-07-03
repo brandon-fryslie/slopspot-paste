@@ -1,7 +1,7 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { resolveSummary } from "../../summaryService";
-import { json } from "../../http";
+import { json, decodeSlug } from "../../http";
 
 export const prerender = false;
 
@@ -14,18 +14,8 @@ export const prerender = false;
 //
 // [LAW:single-enforcer] resolveSummary routes through loadViewablePaste, so a
 // hidden/expired paste that 404/410s on /<slug> cannot be summarized here.
-
-// [LAW:dataflow-not-control-flow] One decode path, mirroring /api/refetch.
-const decodeSlug = async (request: Request): Promise<string | null> => {
-  const ct = request.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
-    const body = (await request.json().catch(() => null)) as { slug?: unknown } | null;
-    return body && typeof body.slug === "string" ? body.slug : null;
-  }
-  const form = await request.formData().catch(() => null);
-  const slug = form?.get("slug");
-  return typeof slug === "string" ? slug : null;
-};
+// decodeSlug is the shared HTTP decoder (http.ts) — one case-insensitive decode for
+// every slug endpoint, no per-handler copy.
 
 export const POST: APIRoute = async ({ request }) => {
   const slug = await decodeSlug(request);
