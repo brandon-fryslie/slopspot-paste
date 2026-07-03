@@ -84,8 +84,8 @@ assert("isOverlay rejects a non-array", !isOverlay({ kind: "hide", target: { kin
 assert("isOverlayDirective rejects an unknown kind", !isOverlayDirective({ kind: "nuke", target: { kind: "turn", index: 0 } }));
 assert("isOverlayDirective rejects a missing target", !isOverlayDirective({ kind: "hide" }));
 assert("isOverlayDirective rejects a non-turn target kind", !isOverlayDirective({ kind: "hide", target: { kind: "span", index: 0 } }));
-assert("isOverlayTarget rejects a negative index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: -1 } }));
-assert("isOverlayTarget rejects a fractional index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: 1.5 } }));
+assert("isOverlayDirective rejects a negative target index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: -1 } }));
+assert("isOverlayDirective rejects a fractional target index", !isOverlayDirective({ kind: "hide", target: { kind: "turn", index: 1.5 } }));
 assert("isOverlay rejects an array containing one junk directive", !isOverlay([...hide(0), { kind: "hide" }]));
 
 // ── outOfRangeTarget: reject a redaction that would protect nothing ───────────
