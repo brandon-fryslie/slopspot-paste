@@ -998,9 +998,12 @@ const outline = deriveSpineOutline(dialogue);
           continue;
         }
         // A span: fold into the turn's span set, unless a whole hide already supersedes it.
+        // [LAW:effects-at-boundaries] Accumulate immutably (spread, not in-place push) — the
+        // same way addSpan does — so the fold never mutates a spans array it has already handed
+        // to the Map. Both span-accumulation sites then read identically [LAW:one-source-of-truth].
         const existing = redactions.get(t.index);
         if (existing?.kind === "whole") continue;
-        const spans = existing?.kind === "spans" ? existing.spans : [];
+        const spans = existing?.kind === "spans" ? [...existing.spans] : [];
         spans.push({ piece: t.piece, start: t.start, end: t.end });
         redactions.set(t.index, { kind: "spans", spans });
       }
