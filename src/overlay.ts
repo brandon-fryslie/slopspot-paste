@@ -14,8 +14,8 @@
 // through here.
 
 import type { Conversation, Overlay } from "./types";
-import type { AssistantBlock, Dialogue, SpineNode } from "./dialogue";
-import { deriveDialogue } from "./dialogue";
+import type { AssistantBlock, Dialogue, SpineNode, ViewableDialogue } from "./dialogue";
+import { deriveDialogue, plainView } from "./dialogue";
 
 // [LAW:no-silent-failure] The visible marker a redacted turn shows in place. A hidden
 // turn is REPLACED here, never removed — so its t<N> anchor, and every following turn's
@@ -58,26 +58,43 @@ type NodeRedaction =
   | { readonly kind: "whole" }
   | { readonly kind: "spans"; readonly spans: ReadonlyArray<Span> };
 
-// [LAW:dataflow-not-control-flow] Fold the flat directive list into a per-index redaction
-// plan the one render pass reads — variability captured as data, not a branch per node.
-// Both switches are exhaustive: a new directive kind, or a new OverlayTarget arm, is
-// compiler-forced to declare its effect here (the seam the epic wants).
-const redactionPlan = (overlay: Overlay): ReadonlyMap<number, NodeRedaction> => {
-  const plan = new Map<number, NodeRedaction>();
+// [LAW:types-are-the-program] The three display facts an overlay decides, folded out of the
+// flat directive list: which nodes have redacted CONTENT (hide), which are FOLDED (collapse),
+// and — if any feature directive exists — which are FEATURED (the highlight-reel whitelist).
+// `featured === null` is the honest "no feature directive ⇒ show every node" state, distinct
+// from an empty set (feature directives present but none matched, ⇒ show nothing). Keeping it
+// a value here means applyOverlay's filter is a data test, not a mode flag [LAW:dataflow-not-
+// control-flow].
+type DisplayPlan = {
+  readonly redactions: ReadonlyMap<number, NodeRedaction>;
+  readonly collapsed: ReadonlySet<number>;
+  readonly featured: ReadonlySet<number> | null;
+};
+
+// [LAW:dataflow-not-control-flow] Fold the flat directive list into the plan the one render
+// pass reads — variability captured as data, not a branch per node. Every switch is
+// exhaustive: a new directive kind, or a new OverlayTarget arm, is compiler-forced to declare
+// its effect here (the seam the epic wants). collapse/feature target whole turns (their
+// TurnTarget carries only an index), so they need no inner target switch.
+const displayPlan = (overlay: Overlay): DisplayPlan => {
+  const redactions = new Map<number, NodeRedaction>();
+  const collapsed = new Set<number>();
+  const featured = new Set<number>();
+  let hasFeature = false;
   for (const directive of overlay) {
     switch (directive.kind) {
       case "hide": {
         const { target } = directive;
         switch (target.kind) {
           case "turn":
-            plan.set(target.index, { kind: "whole" });
+            redactions.set(target.index, { kind: "whole" });
             break;
           case "span": {
-            const existing = plan.get(target.index);
+            const existing = redactions.get(target.index);
             // A whole-turn hide already at this index is the superset; the span is moot.
             if (existing?.kind === "whole") break;
             const spans = existing?.kind === "spans" ? existing.spans : [];
-            plan.set(target.index, {
+            redactions.set(target.index, {
               kind: "spans",
               spans: [...spans, { piece: target.piece, start: target.start, end: target.end }],
             });
@@ -88,11 +105,18 @@ const redactionPlan = (overlay: Overlay): ReadonlyMap<number, NodeRedaction> => 
         }
         break;
       }
+      case "collapse":
+        collapsed.add(directive.target.index);
+        break;
+      case "feature":
+        hasFeature = true;
+        featured.add(directive.target.index);
+        break;
       default:
-        return assertNever(directive.kind);
+        return assertNever(directive);
     }
   }
-  return plan;
+  return { redactions, collapsed, featured: hasFeature ? featured : null };
 };
 
 // Normalize a piece's spans into MAXIMAL DISJOINT ranges: sort by start, then fold each
@@ -151,21 +175,32 @@ const redactSpansInNode = (node: SpineNode, spans: ReadonlyArray<Span>): SpineNo
   return { kind: "assistant", blocks };
 };
 
-// [LAW:dataflow-not-control-flow] One pass over the spine, in source order: each node is
-// redacted per the plan (whole node, or its spans), else passed through — variability lives
-// in the VALUE (this index's redaction), never in whether the map runs. Length AND per-node
-// piece count are preserved, so downstream anchors are byte-identical to the un-overlaid
-// render.
-export const applyOverlay = (dialogue: Dialogue, overlay: Overlay): Dialogue => {
-  if (overlay.length === 0) return dialogue;
-  const plan = redactionPlan(overlay);
-  return dialogue.map((node, index) => {
-    const redaction = plan.get(index);
-    if (redaction === undefined) return node;
-    return redaction.kind === "whole"
-      ? redactWholeNode(node)
-      : redactSpansInNode(node, redaction.spans);
-  });
+// Apply a node's content redaction (whole node, or its sub-turn spans). The node's kind and
+// position are preserved either way, so its t<N> identity is unchanged [LAW:one-source-of-truth].
+const applyRedaction = (node: SpineNode, redaction: NodeRedaction): SpineNode =>
+  redaction.kind === "whole" ? redactWholeNode(node) : redactSpansInNode(node, redaction.spans);
+
+// [LAW:dataflow-not-control-flow] One pass over the spine, in source order, producing the
+// renderer's ViewableDialogue. Each node carries its ORIGINAL index as a value, so the
+// feature FILTER can drop non-featured nodes without renumbering the survivors — t<N> stays
+// stable by construction, never recomputed from array position. Content redaction and the
+// collapse flag are read per index off the plan; a HIDDEN node is expressed as ABSENCE (the
+// filter removes it), not a render-time skip. An empty overlay is the identity view — the
+// same all-shown shape plainView produces for the non-overlaid paths.
+export const applyOverlay = (dialogue: Dialogue, overlay: Overlay): ViewableDialogue => {
+  if (overlay.length === 0) return plainView(dialogue);
+  const { redactions, collapsed, featured } = displayPlan(overlay);
+  return dialogue
+    .map((node, index) => ({ node, index }))
+    .filter(({ index }) => featured === null || featured.has(index))
+    .map(({ node, index }) => {
+      const redaction = redactions.get(index);
+      return {
+        index,
+        node: redaction === undefined ? node : applyRedaction(node, redaction),
+        collapsed: collapsed.has(index),
+      };
+    });
 };
 
 // [LAW:types-are-the-program] Why a target addresses nothing in a given paste — a directive
@@ -258,4 +293,4 @@ export const describeTargetFault = (fault: TargetFault): string => {
 // same viewable dialogue every public render path shows.
 export const deriveViewableDialogue = (
   conversation: Pick<Conversation, "turns" | "overlay">,
-): Dialogue => applyOverlay(deriveDialogue(conversation.turns), conversation.overlay ?? []);
+): ViewableDialogue => applyOverlay(deriveDialogue(conversation.turns), conversation.overlay ?? []);

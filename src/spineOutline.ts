@@ -1,16 +1,18 @@
 // [LAW:decomposition] The topic spine outline: a clickable, no-JS navigation derived
-// PURELY from the Dialogue. One entry per top-level spine node, each anchored to that
-// node's existing t<N> id and labeled from its own text — a projection of the stored
-// original computed at render time, so it re-derives for every existing paste for free
-// with zero migration [LAW:no-ambient-temporal-coupling]. [LAW:one-way-deps] it depends
-// on the model (dialogue); the model never depends on it.
+// PURELY from the viewable dialogue. One entry per VISIBLE top-level spine node, each
+// anchored to that node's existing t<N> id and labeled from its own text — a projection of
+// the stored original computed at render time, so it re-derives for every existing paste
+// for free with zero migration [LAW:no-ambient-temporal-coupling]. [LAW:one-way-deps] it
+// depends on the model (dialogue); the model never depends on it.
 //
-// [LAW:one-source-of-truth] The anchor is turnAnchorId(index) — the SAME string the
-// renderer emits as the node's id — and the label is spineNodeLabel(node) — the SAME
-// text the minimap markers read via data-topic. The outline is one more consumer of
-// those two derivations, never a second scheme that could drift from them.
+// [LAW:one-source-of-truth] It consumes the SAME ViewableDialogue the renderer draws, so an
+// overlay's effects reach the outline by construction: a feature-omitted turn is absent from
+// the view and so from the outline, and each entry's index/anchor is the node's CARRIED
+// index — never the array position — so omission never renumbers a survivor's anchor. The
+// anchor is turnAnchorId(index) — the SAME string the renderer emits as the node's id — and
+// the label is spineNodeLabel(node) — the SAME text the minimap markers read via data-topic.
 
-import type { Dialogue } from "./dialogue";
+import type { ViewableDialogue } from "./dialogue";
 import { turnAnchorId, spineNodeLabel } from "./dialogue";
 
 // [LAW:types-are-the-program] One entry per spine node. role is the discriminant the
@@ -25,9 +27,9 @@ export interface OutlineEntry {
 }
 
 export const deriveSpineOutline = (
-  dialogue: Dialogue,
+  view: ViewableDialogue,
 ): ReadonlyArray<OutlineEntry> =>
-  dialogue.map((node, index) => ({
+  view.map(({ index, node }) => ({
     index,
     anchor: turnAnchorId(index),
     role: node.kind === "spoken" ? node.role : "assistant",

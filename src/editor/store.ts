@@ -22,7 +22,7 @@ import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurn
 import { detectSources, parseInput } from "../parser";
 import { claudeCodeSessionId } from "../url";
 import { renderDialogueHtml } from "../renderDialogue";
-import { deriveDialogue } from "../dialogue";
+import { deriveDialogue, plainView } from "../dialogue";
 
 export type View = "blocks" | "preview";
 
@@ -175,7 +175,10 @@ export class EditorStore {
   }
 
   get previewHtml(): string {
-    return renderDialogueHtml(deriveDialogue(this.turns));
+    // The editor preview renders the author's raw working turns — no overlay is applied
+    // here (the author edits unredacted content), so the plain Dialogue is lifted to the
+    // renderer's ViewableDialogue via plainView: every node shown, un-folded, positional.
+    return renderDialogueHtml(plainView(deriveDialogue(this.turns)));
   }
 
   get counts(): Record<Kind, number> {
