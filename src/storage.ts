@@ -179,6 +179,43 @@ export const getDraft = async (kv: KVNamespace, id: string): Promise<DraftRecord
   }
 };
 
+// [LAW:decomposition] Cached summaries are a SEPARATE concern from published
+// conversations and drafts: a DISPOSABLE derived projection, never authority. They
+// live under their own key prefix, keyed by slug PLUS a content hash of the turns —
+// so a summary is served only for the exact turns it describes, and any edit/refetch
+// (new hash) simply misses and regenerates. [LAW:single-enforcer] all summary-cache
+// reads/writes own the prefix and key format here, the way paste:/draft: are owned
+// above; a caller supplies (slug, hash) and never assembles the KV key itself.
+const SUMMARY_KEY_PREFIX = "summary:";
+
+// A generous backstop TTL. The hash busts the cache on content change, but a summary
+// is disposable and the model improves over time with no content change to bust it —
+// so the cache self-refreshes within this window, letting an improved model be picked
+// up WITHOUT baking the model version into the key (which would couple a disposable
+// cache to its writer). [LAW:no-ambient-temporal-coupling]
+const SUMMARY_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+const summaryKey = (slug: string, hash: string): string => `${SUMMARY_KEY_PREFIX}${slug}:${hash}`;
+
+// [LAW:types-are-the-program] KV is a trust boundary, but a cached summary is a plain
+// string with no schema to validate — a hit is the string, a miss (or transient KV
+// error surfaced as absence) is null, and the caller regenerates. There is nothing to
+// corrupt: the authority is the turns, and the summary is re-derivable from them.
+export const getCachedSummary = async (
+  kv: KVNamespace,
+  slug: string,
+  hash: string,
+): Promise<string | null> => kv.get(summaryKey(slug, hash), "text");
+
+export const putCachedSummary = async (
+  kv: KVNamespace,
+  slug: string,
+  hash: string,
+  summary: string,
+): Promise<void> => {
+  await kv.put(summaryKey(slug, hash), summary, { expirationTtl: SUMMARY_TTL_SECONDS });
+};
+
 // Permanently remove a KV record — called only by the purge path after the
 // grace window. [LAW:no-silent-failure]: callers log what they delete.
 export const deleteConversation = async (
