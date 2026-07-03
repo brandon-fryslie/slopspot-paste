@@ -2994,8 +2994,15 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
     // misleading 400. Pin the behavior every slug endpoint now shares.
     assert("isJsonRequest treats Application/JSON as JSON (case-insensitive)",
       isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "Application/JSON" } })));
+    assert("isJsonRequest accepts application/json with charset params",
+      isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/json; charset=utf-8" } })));
     assert("isJsonRequest rejects a form content-type",
       !isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" } })));
+    // [FRAMING:representation] The predicate parses the MEDIA TYPE, not a substring of
+    // the whole header: a multipart boundary that merely contains "application/json"
+    // must NOT be read as JSON, or a valid form body would be mis-routed into json().
+    assert("isJsonRequest rejects multipart whose boundary contains 'application/json'",
+      !isJsonRequest(new Request("https://x.test", { method: "POST", headers: { "content-type": "multipart/form-data; boundary=--application/json" } })));
     const decodedUpper = await decodeSlug(new Request("https://x.test", {
       method: "POST", headers: { "content-type": "Application/JSON" }, body: JSON.stringify({ slug: "abcdefghjk" }),
     }));

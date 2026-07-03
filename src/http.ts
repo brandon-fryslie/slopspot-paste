@@ -24,8 +24,15 @@ export const seeOther = (location: string): Response =>
 // refresh, paste-request) currently inline a case-SENSITIVE check; migrating them onto
 // this predicate is tracked in slopspot-http-88l. Until then this comment states the
 // goal and the current reach, not a universal claim.
-export const isJsonRequest = (request: Request): boolean =>
-  (request.headers.get("content-type") ?? "").toLowerCase().includes("application/json");
+export const isJsonRequest = (request: Request): boolean => {
+  // Parse the MEDIA TYPE, not a substring of the whole header: the media type is the
+  // part before any `;` parameters. A bare `.includes("application/json")` would also
+  // match a parameter value — e.g. `multipart/form-data; boundary=--application/json`
+  // — and mis-route a form body into request.json(). Accept application/json or any
+  // structured-suffix +json type (RFC 6839).
+  const mediaType = ((request.headers.get("content-type") ?? "").split(";")[0] ?? "").trim().toLowerCase();
+  return mediaType === "application/json" || mediaType.endsWith("+json");
+};
 
 // [LAW:single-enforcer] The ONE decoder for "a slug from a JSON-or-form POST",
 // shared by every endpoint that acts on a slug (refetch, summarize). A second copy
