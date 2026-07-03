@@ -816,4 +816,185 @@ const outline = deriveSpineOutline(dialogue);
     region.hidden = false;
     render({ kind: "idle" });
   </script>
+
+  <script>
+    // [LAW:decomposition] The overlay authoring editor is its own part, cut apart from the
+    // minimap/copy and TL;DR scripts: it owns exactly the owner's redaction authoring and
+    // shares nothing with reader navigation. It is INERT for every reader — it touches
+    // neither the DOM nor the network until the owner opts into edit mode (#edit) — so the
+    // public page stays byte-identical and carries zero authoring chrome. Only 'hide'
+    // (redaction) is authorable today; collapse/feature join as later kinds.
+    //
+    // [LAW:single-enforcer] "Are you the owner?" is answered by the ONE auth gate, never a
+    // second per-paste scheme: GET /api/overlay is admin-gated middleware, so a 200 both
+    // proves the viewer is the owner AND returns the authoritative current directive set to
+    // prefill. On save the owner POSTs the COMPLETE desired set (empty = clear) and the page
+    // RELOADS — the server's deriveViewableDialogue re-renders the applied overlay on BOTH
+    // /<slug> and /<slug>/t<N>, so this client never re-implements redaction (that second
+    // renderer would be a source of truth that drifts from the server's).
+
+    type OverlayDirective = { kind: "hide"; target: { kind: "turn"; index: number } };
+
+    // [LAW:one-source-of-truth] slug is read from the URL — the page IS at /<slug> — never
+    // a re-stored field, exactly as the augment-prompt code above derives it.
+    const slug = location.pathname.replace(/^\/+|\/+$/g, "");
+    const EDIT_HASH = "#edit";
+
+    const makeEl = <K extends keyof HTMLElementTagNameMap>(
+      tag: K,
+      className: string,
+    ): HTMLElementTagNameMap[K] => {
+      const el = document.createElement(tag);
+      el.className = className;
+      return el;
+    };
+
+    // Edit mode activates once per load: the first time the owner is in #edit. Kept active
+    // across later hash changes (no teardown) — Exit navigates to the clean pathname, which
+    // reloads out of edit mode entirely.
+    let active = false;
+
+    const buildBar = (): {
+      bar: HTMLElement;
+      status: HTMLElement;
+      save: HTMLButtonElement;
+    } => {
+      const bar = makeEl("div", "overlay-editor-bar");
+      bar.setAttribute("role", "region");
+      bar.setAttribute("aria-label", "Overlay editor");
+      const title = makeEl("span", "overlay-editor-title");
+      title.textContent = "Redact";
+      const status = makeEl("span", "overlay-editor-status");
+      status.setAttribute("aria-live", "polite");
+      const save = makeEl("button", "overlay-editor-save");
+      save.type = "button";
+      save.textContent = "Save redactions";
+      const exit = makeEl("button", "overlay-editor-exit");
+      exit.type = "button";
+      exit.textContent = "Exit";
+      // [LAW:single-enforcer] Exit leaves edit mode by navigating to the clean paste URL —
+      // the server re-renders the public view (applied overlay, zero authoring chrome), the
+      // same render every reader gets. No client-side teardown that could leave chrome behind.
+      exit.addEventListener("click", () => location.assign(location.pathname));
+      for (const child of [title, status, save, exit]) bar.appendChild(child);
+      return { bar, status, save };
+    };
+
+    const activate = async (): Promise<void> => {
+      if (active || location.hash !== EDIT_HASH) return;
+      active = true;
+
+      const { bar, status, save } = buildBar();
+      document.body.appendChild(bar);
+      document.body.classList.add("overlay-editing");
+
+      // [LAW:single-enforcer] The admin gate answers the probe: 401 → not the owner (no
+      // chrome revealed beyond this notice); 200 → owner, with the current directives to
+      // prefill. [LAW:no-silent-failure] every non-owner / network / server outcome is a
+      // legible message, never a silent dead editor.
+      status.textContent = "Checking…";
+      const res = await fetch("/api/overlay?slug=" + encodeURIComponent(slug), {
+        headers: { accept: "application/json" },
+      }).catch(() => null);
+      if (!res) {
+        status.textContent = "Network error — could not reach the overlay endpoint.";
+        return;
+      }
+      if (res.status === 401) {
+        status.textContent = "Not the owner — sign in via /sloppy to author redactions.";
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as
+        | { directives?: OverlayDirective[]; error?: string }
+        | null;
+      if (!res.ok || !Array.isArray(body?.directives)) {
+        status.textContent = body?.error ?? `Could not load overlay (HTTP ${res.status}).`;
+        return;
+      }
+
+      // [LAW:one-source-of-truth] The hidden set is seeded from the stored directives the
+      // gate returned — never re-derived from the redacted DOM (a hidden turn shows only
+      // "[redacted]" there, by design, so the DOM cannot tell us what is hidden).
+      const hidden = new Set<number>(body.directives.map((d) => d.target.index));
+
+      // [LAW:one-source-of-truth] The editable turns are the SAME spine enumeration the
+      // minimap and permalink controls project — top-level nodes carrying data-index —
+      // never a second list. data-index IS the overlay target index (t<N>), so a toggle
+      // here names exactly the node applyOverlay and the /t<N> permalink address.
+      const conversation = document.querySelector<HTMLElement>(".conversation");
+      if (!conversation) throw new Error("required .conversation section missing");
+      const turns = [...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")];
+
+      const controls = turns.map((el) => {
+        const index = Number(el.dataset.index);
+        const btn = makeEl("button", "overlay-turn-toggle");
+        btn.type = "button";
+        const holder = makeEl("div", "overlay-turn-control");
+        holder.appendChild(btn);
+        el.appendChild(holder);
+        // [LAW:dataflow-not-control-flow] A click flips this index's membership in the
+        // hidden set; the render below is a pure projection of that set. There is no
+        // per-turn "is it hidden" branch in the click — the value changes, one render runs.
+        btn.addEventListener("click", () => {
+          hidden.has(index) ? hidden.delete(index) : hidden.add(index);
+          render();
+        });
+        return { el, index, btn };
+      });
+
+      // [LAW:dataflow-not-control-flow] The whole editor surface is a pure projection of the
+      // hidden set: every turn's toggle label/pressed-state/pending class and the bar's
+      // count are recomputed from it on each change, never mutated incrementally per event.
+      const render = (): void => {
+        for (const { el, index, btn } of controls) {
+          const isHidden = hidden.has(index);
+          el.classList.toggle("overlay-pending-hide", isHidden);
+          btn.classList.toggle("is-hiding", isHidden);
+          btn.textContent = isHidden ? "Unhide" : "Hide";
+          btn.setAttribute("aria-pressed", String(isHidden));
+        }
+        status.textContent =
+          hidden.size === 0
+            ? "No turns hidden"
+            : `${hidden.size} turn${hidden.size === 1 ? "" : "s"} hidden`;
+      };
+
+      // [LAW:effects-at-boundaries] Save is the one world-touch: POST the COMPLETE desired
+      // directive set (an empty array is the valid "clear all redactions" write), then let
+      // the server be the renderer — reload so it re-derives the applied overlay here and on
+      // the /t<N> permalink. #edit is preserved by reload, so the editor reopens showing the
+      // now-applied state.
+      const performSave = async (): Promise<void> => {
+        const directives: OverlayDirective[] = [...hidden]
+          .sort((a, b) => a - b)
+          .map((index) => ({ kind: "hide", target: { kind: "turn", index } }));
+        save.disabled = true;
+        status.textContent = "Saving…";
+        const saveRes = await fetch("/api/overlay", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ slug, directives }),
+        }).catch(() => null);
+        if (saveRes?.ok) {
+          location.reload();
+          return;
+        }
+        // [LAW:no-silent-failure] Surface the server's own reason (a 422 out-of-range, a 401
+        // expired session) so a failed save is legible, never a silent no-op.
+        save.disabled = false;
+        if (!saveRes) {
+          status.textContent = "Network error — not saved.";
+          return;
+        }
+        const errBody = (await saveRes.json().catch(() => null)) as { error?: string } | null;
+        status.textContent = errBody?.error ?? `Save failed (HTTP ${saveRes.status}).`;
+      };
+      save.addEventListener("click", () => void performSave());
+
+      render();
+    };
+
+    window.addEventListener("hashchange", () => void activate());
+    void activate();
+  </script>
 </Base>

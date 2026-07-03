@@ -1059,6 +1059,98 @@ body.permalink-ready .turn-controls:focus-within {
   border-color: var(--accent);
 }
 
+/* ─── Overlay authoring editor (owner-only, #edit) ───────────────────────
+   Inert for readers: none of this exists until the owner opts into edit mode
+   AND the admin gate confirms them (see [slug].astro). The per-turn toggle is
+   hidden unless body.overlay-editing is set. */
+.overlay-turn-control { display: none; }
+body.overlay-editing .overlay-turn-control {
+  display: block;
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 2;
+}
+/* While authoring redactions, the reader-oriented copy/quote controls share the
+   top-right corner — hide them so the one control per turn is the hide toggle. */
+body.overlay-editing .turn-controls { display: none !important; }
+.overlay-turn-toggle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 2px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.overlay-turn-toggle:hover { color: var(--fg); border-color: var(--accent); }
+.overlay-turn-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.overlay-turn-toggle.is-hiding {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* A turn marked to be hidden reads as pending redaction — a dashed accent frame,
+   distinct from the server-applied "[redacted]" content it will become on save. */
+body.overlay-editing .overlay-pending-hide {
+  outline: 2px dashed var(--accent);
+  outline-offset: 3px;
+}
+
+.overlay-editor-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 24px);
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  font-size: 13px;
+}
+.overlay-editor-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.overlay-editor-status {
+  color: var(--fg-muted);
+  min-width: 8ch;
+}
+.overlay-editor-save,
+.overlay-editor-exit {
+  font-size: 12px;
+  padding: 5px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.overlay-editor-save {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.overlay-editor-save:disabled { opacity: 0.55; cursor: default; }
+.overlay-editor-exit:hover { color: var(--fg); border-color: var(--accent); }
+.overlay-editor-save:focus-visible,
+.overlay-editor-exit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Keep the fixed bar from covering the last turn while editing. */
+body.overlay-editing { padding-bottom: 72px; }
+
 /* ─── Tool-call bubbles ──────────────────────────────────────────────── */
 .bubble-tool-call {
   background: var(--bg-elev);
@@ -1635,6 +1727,15 @@ body.agent-prompt-ready .copy-agent-prompt.copied {
 .admin-table .reproject-btn:hover,
 .admin-table .refetch-btn:hover,
 .admin-table .refresh-btn:hover { border-color: var(--fg-muted); }
+.admin-table .overlay-link {
+  font-size: 12.5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  text-decoration: none;
+}
+.admin-table .overlay-link:hover { border-color: var(--fg-muted); }
 .admin-table .pin-label {
   display: inline-flex;
   align-items: center;
