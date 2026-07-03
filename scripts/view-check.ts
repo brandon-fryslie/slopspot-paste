@@ -355,11 +355,17 @@ console.log("\nTopic spine outline (slopspot-summary-daf.1):");
   const { deriveDialogue } = await import("../src/dialogue");
   const { renderDialogueHtml } = await import("../src/renderDialogue");
   const { deriveSpineOutline } = await import("../src/spineOutline");
+  const { escapeAttr } = await import("../src/render");
 
+  // The second user message carries HTML-attribute-special characters so the
+  // data-topic escaping boundary is actually exercised — without a label like this
+  // the labelsMatchTopic assertion below would never see a char that distinguishes
+  // the raw label from its escaped form [LAW:behavior-not-structure].
+  const specialLabel = `she said "hi" & <ok>`;
   const dialogue = deriveDialogue([
     { kind: "message", role: "user", content: "first question" } as const,
     { kind: "message", role: "assistant", content: "an answer" } as const,
-    { kind: "message", role: "user", content: "second question" } as const,
+    { kind: "message", role: "user", content: specialLabel } as const,
   ]);
   const outline = deriveSpineOutline(dialogue);
   const full = renderDialogueHtml(dialogue);
@@ -369,13 +375,16 @@ console.log("\nTopic spine outline (slopspot-summary-daf.1):");
     "entries carry index/anchor/role/label in source order",
     outline[0]?.index === 0 && outline[0]?.anchor === "t0" && outline[0]?.role === "user" && outline[0]?.label === "first question" &&
     outline[1]?.role === "assistant" && outline[1]?.label === "an answer" &&
-    outline[2]?.anchor === "t2" && outline[2]?.role === "user" && outline[2]?.label === "second question",
+    outline[2]?.anchor === "t2" && outline[2]?.role === "user" && outline[2]?.label === specialLabel,
   );
 
   // [LAW:one-source-of-truth] Every entry's anchor is an id the renderer actually
   // emitted, and every entry's label is the data-topic the renderer actually emitted.
+  // The label is compared against escapeAttr(label) — the SAME escape the renderer
+  // applies (render.ts) — so the assertion reads one escaping scheme, not a second
+  // that could disagree; a raw substring match would false-negative on specialLabel.
   const anchorsResolve = outline.every((e) => full.includes(`id="${e.anchor}"`));
-  const labelsMatchTopic = outline.every((e) => full.includes(`data-topic="${e.label}"`));
+  const labelsMatchTopic = outline.every((e) => full.includes(`data-topic="${escapeAttr(e.label)}"`));
   assert("every outline anchor resolves to a rendered t<N> id", anchorsResolve);
   assert("every outline label equals the node's rendered data-topic", labelsMatchTopic);
 
