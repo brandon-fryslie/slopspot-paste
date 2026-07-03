@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import Base from "../layouts/Base.astro";
 import { renderDialogueHtml } from "../renderDialogue";
-import { deriveDialogue } from "../dialogue";
+import { deriveViewableDialogue } from "../overlay";
 import { deriveSpineOutline } from "../spineOutline";
 import { loadViewablePaste } from "../loadPaste";
 import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime } from "../types";
@@ -53,7 +53,10 @@ const sourceUrl = sourceUrlOf(origin);
 // pure functions of the same stored original — nothing here is persisted, and a paste
 // with no turns yields an empty outline that renders nothing (a value, not a branch
 // that special-cases empty).
-const dialogue = deriveDialogue(conversation.turns);
+// [LAW:single-enforcer] The one viewable-spine derivation: turns → dialogue → apply the
+// authored overlay. Both the rendered conversation AND the topic outline read this one
+// `dialogue`, so a redacted turn cannot leak through the outline label either.
+const dialogue = deriveViewableDialogue(conversation);
 const outline = deriveSpineOutline(dialogue);
 ---
 
