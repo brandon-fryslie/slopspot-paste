@@ -219,10 +219,29 @@ export type Lifetime =
 // at render by applyOverlay (overlay.ts) to the derived Dialogue; the stored
 // turns/origin are never mutated.
 //
-// [LAW:types-are-the-program] The target is a union so a future sub-turn character span
-// is a NEW arm, not a rework of the whole-turn shape. The turn index names a top-level
-// spine node the t<N> permalink already addresses.
-export type OverlayTarget = { readonly kind: "turn"; readonly index: number };
+// [LAW:types-are-the-program] The target is a union: the `turn` arm names a whole
+// top-level spine node (the t<N> permalink already addresses it); the `span` arm names a
+// HALF-OPEN [start,end) character range WITHIN one of that node's prose pieces, so a
+// redaction can hide a leaked secret INSIDE a turn without hiding the turn. A span is a
+// finer target of the SAME `hide` directive, not a new directive kind — sub-turn and
+// whole-turn redaction are one behavior differing only in the target value
+// [LAW:one-type-per-behavior].
+//
+// `piece` is a 0-based index into the node's ordered prose pieces (overlay.ts:spanPieces):
+// a spoken node has exactly one piece (its content); an assistant node has one per
+// free-prose block (text/insight/thinking) in block order. Structured/nested content
+// (tool calls, subagent transcripts) is not span-addressable — whole-turn `hide` is its
+// superset. `start < end` (below) makes an empty or inverted range — one that would redact
+// nothing — unrepresentable [LAW:no-silent-failure].
+export type OverlayTarget =
+  | { readonly kind: "turn"; readonly index: number }
+  | {
+      readonly kind: "span";
+      readonly index: number;
+      readonly piece: number;
+      readonly start: number;
+      readonly end: number;
+    };
 
 // [LAW:one-type-per-behavior] Redact/fold/feature are INSTANCES of one range-directive,
 // not three features. This ships `hide` (redaction); `collapse` and `feature` join the
@@ -239,13 +258,33 @@ export type Overlay = ReadonlyArray<OverlayDirective>;
 // (storage.normalizeOverlay) and the write boundary (the /api/overlay handler) — the two
 // cannot disagree about what a legal overlay is.
 //
-// A target index is a NON-NEGATIVE INTEGER: it names a top-level spine node (t0, t1, …).
-// A fractional or negative index addresses no node — an illegal state made
-// unrepresentable at the boundary rather than a silent no-op downstream.
+// Every coordinate is a NON-NEGATIVE INTEGER: index names a top-level spine node (t0, t1,
+// …), piece a prose piece within it, start/end offsets into that piece. A fractional or
+// negative coordinate addresses nothing — an illegal state made unrepresentable at the
+// boundary rather than a silent no-op downstream. The span arm additionally requires
+// start < end, so an empty or inverted range (which would redact nothing) cannot be stored
+// [LAW:no-silent-failure]. Whether the coordinates point at a REAL node/piece/range of a
+// given paste is a per-paste fact outOfRangeTarget (overlay.ts) checks at the write edge.
+const isNonNegInt = (v: unknown): v is number =>
+  typeof v === "number" && Number.isInteger(v) && v >= 0;
+
 const isOverlayTarget = (v: unknown): v is OverlayTarget => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; index?: unknown };
-  return o.kind === "turn" && typeof o.index === "number" && Number.isInteger(o.index) && o.index >= 0;
+  const o = v as { kind?: unknown; index?: unknown; piece?: unknown; start?: unknown; end?: unknown };
+  switch (o.kind) {
+    case "turn":
+      return isNonNegInt(o.index);
+    case "span":
+      return (
+        isNonNegInt(o.index) &&
+        isNonNegInt(o.piece) &&
+        isNonNegInt(o.start) &&
+        isNonNegInt(o.end) &&
+        o.start < o.end
+      );
+    default:
+      return false;
+  }
 };
 
 // [LAW:dataflow-not-control-flow] One switch on the discriminator; the default closes

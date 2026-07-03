@@ -1,7 +1,7 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
-import { outOfRangeTarget } from "../../overlay";
+import { outOfRangeTarget, describeTargetFault } from "../../overlay";
 import { isOverlay } from "../../types";
 import { json, decodeSlug } from "../../http";
 
@@ -64,15 +64,14 @@ export const POST: APIRoute = async ({ request }) => {
   const existing = await getConversation(env.PASTES, slug);
   if (existing === null) return json(404, { error: "No such paste." });
 
-  // [LAW:no-silent-failure] A structurally-valid directive can still target a turn the
-  // paste does not have — a redaction that would protect nothing. Reject it loudly (422)
-  // rather than persist a no-op redaction and report success. An empty overlay is the
-  // valid "clear all redactions" write and passes straight through.
-  const missing = outOfRangeTarget(existing.turns, directives);
-  if (missing !== null) {
-    return json(422, {
-      error: `Directive targets turn ${missing}, but this paste has no such turn.`,
-    });
+  // [LAW:no-silent-failure] A structurally-valid directive can still target a turn, prose
+  // piece, or character range this paste does not have — a redaction that would protect
+  // nothing. Reject it loudly (422) with the fault's own reason rather than persist a no-op
+  // redaction and report success. An empty overlay is the valid "clear all redactions"
+  // write and passes straight through.
+  const fault = outOfRangeTarget(existing.turns, directives);
+  if (fault !== null) {
+    return json(422, { error: describeTargetFault(fault) });
   }
 
   // [LAW:one-source-of-truth] Replace only the authored overlay; slug, createdAt,
