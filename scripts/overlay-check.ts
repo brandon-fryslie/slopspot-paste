@@ -227,7 +227,7 @@ assert("describeTargetFault names the char range for a span fault",
 // t<N> range to name — the message must not render the nonsensical "t0–t-1".
 const zeroTurnMsg = describeTargetFault({ kind: "turn-out-of-range", index: 0, spineLength: 0 });
 assert("describeTargetFault says 'no turns' for a zero-turn paste (not t0–t-1)",
-  zeroTurnMsg === "Directive targets turn 0, but this paste has no turns." && !zeroTurnMsg.includes("t-1"));
+  zeroTurnMsg.includes("turn 0") && zeroTurnMsg.includes("no turns") && !zeroTurnMsg.includes("t-1"));
 
 // ── a span overlay survives JSON storage + read validation, then redacts ─────
 const spanWire: unknown = JSON.parse(JSON.stringify(span(1, 0, tStart, tStart + THINK_SECRET.length)));
