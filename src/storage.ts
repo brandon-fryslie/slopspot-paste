@@ -239,13 +239,34 @@ export const putCachedSummary = async (
   }
 };
 
-// Permanently remove a KV record — called only by the purge path after the
-// grace window. [LAW:no-silent-failure]: callers log what they delete.
+// [LAW:one-way-deps] Sweep every cached summary derived from a slug. The summary
+// cache is a derived projection OF the paste (keyed summary:<slug>:<hash>), so when
+// the authority is hard-deleted its derivations must go too — otherwise a TL;DR of
+// deleted content lingers until its TTL. Paginated like listConversations because a
+// slug can accrue several summaries (one per content hash across edits/refetches).
+export const deleteCachedSummaries = async (
+  kv: KVNamespace,
+  slug: string,
+): Promise<void> => {
+  const prefix = `${SUMMARY_KEY_PREFIX}${slug}:`;
+  let cursor: string | undefined;
+  do {
+    const page = await kv.list({ prefix, cursor });
+    await Promise.all(page.keys.map((k) => kv.delete(k.name)));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+};
+
+// Permanently remove a paste record AND its derived summary cache — called only by
+// the purge path after the grace window. [LAW:one-way-deps] deleting the authority
+// sweeps its derivations, so a hard delete leaves no orphaned summary behind.
+// [LAW:no-silent-failure]: callers log what they delete.
 export const deleteConversation = async (
   kv: KVNamespace,
   slug: string,
 ): Promise<void> => {
   await kv.delete(KEY_PREFIX + slug);
+  await deleteCachedSummaries(kv, slug);
 };
 
 // [LAW:decomposition] The draft-prefix counterpart of deleteConversation: revoke a
