@@ -257,11 +257,20 @@ export const deleteCachedSummaries = async (
     let cursor: string | undefined;
     do {
       const page = await kv.list({ prefix, cursor });
-      await Promise.all(page.keys.map((k) => kv.delete(k.name)));
+      // [LAW:no-silent-failure] allSettled, not all: one failed delete must not abandon
+      // the rest of the page (and every later page) — independent deletions proceed and
+      // each rejection is logged, so a transient flake orphans at most a few keys (which
+      // self-evict via TTL), never an unbounded set.
+      const results = await Promise.allSettled(page.keys.map((k) => kv.delete(k.name)));
+      for (const r of results) {
+        if (r.status === "rejected") {
+          console.error(`deleteCachedSummaries: KV delete failed for slug ${slug}:`, r.reason);
+        }
+      }
       cursor = page.list_complete ? undefined : page.cursor;
     } while (cursor);
   } catch (err) {
-    console.error(`deleteCachedSummaries: KV sweep failed for slug ${slug}:`, err);
+    console.error(`deleteCachedSummaries: KV list failed for slug ${slug}:`, err);
   }
 };
 
