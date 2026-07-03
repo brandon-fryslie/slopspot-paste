@@ -858,35 +858,36 @@ const outline = deriveSpineOutline(dialogue);
     // reloads out of edit mode entirely.
     let active = false;
 
-    const buildBar = (): {
-      bar: HTMLElement;
-      status: HTMLElement;
-      save: HTMLButtonElement;
-    } => {
-      const bar = makeEl("div", "overlay-editor-bar");
-      bar.setAttribute("role", "region");
-      bar.setAttribute("aria-label", "Overlay editor");
-      const title = makeEl("span", "overlay-editor-title");
-      title.textContent = "Redact";
-      const status = makeEl("span", "overlay-editor-status");
-      status.setAttribute("aria-live", "polite");
-      const save = makeEl("button", "overlay-editor-save");
-      save.type = "button";
-      save.textContent = "Save redactions";
+    // [LAW:single-enforcer] Exit always leaves edit mode the same way: a full server
+    // re-render of the public view (applied overlay, zero authoring chrome). Assigning the
+    // bare pathname would differ from /<slug>#edit only in the fragment — a same-document
+    // navigation that does NOT reload — so strip the hash with replaceState first, then
+    // reload to force the fresh render. No client teardown that could leave chrome behind.
+    const exitButton = (): HTMLButtonElement => {
       const exit = makeEl("button", "overlay-editor-exit");
       exit.type = "button";
       exit.textContent = "Exit";
-      // [LAW:single-enforcer] Exit leaves edit mode via a full server re-render of the
-      // public view (applied overlay, zero authoring chrome) — no client-side teardown that
-      // could leave chrome behind. Assigning the bare pathname would only differ from
-      // /<slug>#edit in the fragment, which is a same-document navigation (no reload); so
-      // strip the hash with replaceState first, then reload to force the fresh render.
       exit.addEventListener("click", () => {
         history.replaceState(null, "", location.pathname);
         location.reload();
       });
-      for (const child of [title, status, save, exit]) bar.appendChild(child);
-      return { bar, status, save };
+      return exit;
+    };
+
+    // A minimal notice bar — a message and an Exit, nothing else — shown when the probe
+    // denies or fails. [LAW:no-silent-failure] a non-owner who types #edit gets a legible
+    // dead-end, but WITHOUT the overlay-editing class, so their reader copy controls are
+    // never hidden. Deliberately NOT the editor bar: no Redact title, no Save, no toggles.
+    const showNotice = (message: string): void => {
+      const bar = makeEl("div", "overlay-editor-bar");
+      bar.setAttribute("role", "region");
+      bar.setAttribute("aria-label", "Overlay editor");
+      const status = makeEl("span", "overlay-editor-status");
+      status.setAttribute("aria-live", "polite");
+      status.textContent = message;
+      bar.appendChild(status);
+      bar.appendChild(exitButton());
+      document.body.appendChild(bar);
     };
 
     const activate = async (): Promise<void> => {
@@ -902,33 +903,49 @@ const outline = deriveSpineOutline(dialogue);
       if (!conversation) throw new Error("required .conversation section missing");
       const slug = conversation.dataset.slug ?? "";
 
-      const { bar, status, save } = buildBar();
-      document.body.appendChild(bar);
-      document.body.classList.add("overlay-editing");
-
-      // [LAW:single-enforcer] The admin gate answers the probe: 401 → not the owner (no
-      // chrome revealed beyond this notice); 200 → owner, with the current directives to
-      // prefill. [LAW:no-silent-failure] every non-owner / network / server outcome is a
-      // legible message, never a silent dead editor.
-      status.textContent = "Checking…";
+      // [LAW:no-ambient-temporal-coupling] Probe the admin gate BEFORE any chrome touches the
+      // DOM — the reveal is gated on the result VALUE, never on execution order. So a
+      // non-owner who types #edit never sees editor chrome flash and never loses their reader
+      // controls; only a confirmed owner (200, with the current directives) gets the editor.
       const res = await fetch("/api/overlay?slug=" + encodeURIComponent(slug), {
         headers: { accept: "application/json" },
       }).catch(() => null);
-      if (!res) {
-        status.textContent = "Network error — could not reach the overlay endpoint.";
+      const body = res
+        ? ((await res.json().catch(() => null)) as
+            | { directives?: OverlayDirective[]; error?: string }
+            | null)
+        : null;
+
+      // [LAW:dataflow-not-control-flow] The probe outcome is a value that selects what to
+      // build: a denial/error yields only a notice (reader view untouched); success yields
+      // the full editor. [LAW:no-silent-failure] every non-owner / network / server outcome
+      // is a legible message, never a silent no-op.
+      if (!res || !res.ok || !Array.isArray(body?.directives)) {
+        showNotice(
+          !res
+            ? "Network error — could not reach the overlay endpoint."
+            : res.status === 401
+              ? "Not the owner — sign in via /sloppy to author redactions."
+              : (body?.error ?? `Could not load overlay (HTTP ${res.status}).`),
+        );
         return;
       }
-      if (res.status === 401) {
-        status.textContent = "Not the owner — sign in via /sloppy to author redactions.";
-        return;
-      }
-      const body = (await res.json().catch(() => null)) as
-        | { directives?: OverlayDirective[]; error?: string }
-        | null;
-      if (!res.ok || !Array.isArray(body?.directives)) {
-        status.textContent = body?.error ?? `Could not load overlay (HTTP ${res.status}).`;
-        return;
-      }
+
+      // Owner confirmed — build the editor bar. The reader-degrading overlay-editing class
+      // (which hides the copy controls and reveals the per-turn toggles) is added only at the
+      // end of this success path, never before auth.
+      const bar = makeEl("div", "overlay-editor-bar");
+      bar.setAttribute("role", "region");
+      bar.setAttribute("aria-label", "Overlay editor");
+      const title = makeEl("span", "overlay-editor-title");
+      title.textContent = "Redact";
+      const status = makeEl("span", "overlay-editor-status");
+      status.setAttribute("aria-live", "polite");
+      const save = makeEl("button", "overlay-editor-save");
+      save.type = "button";
+      save.textContent = "Save redactions";
+      for (const child of [title, status, save, exitButton()]) bar.appendChild(child);
+      document.body.appendChild(bar);
 
       // [LAW:one-source-of-truth] The hidden set is seeded from the stored directives the
       // gate returned — never re-derived from the redacted DOM (a hidden turn shows only
@@ -1007,6 +1024,9 @@ const outline = deriveSpineOutline(dialogue);
       };
       save.addEventListener("click", () => void performSave());
 
+      // Reveal the editing chrome — toggles shown, reader copy controls hidden — only now,
+      // after the owner is confirmed. Before this line the page is the untouched reader view.
+      document.body.classList.add("overlay-editing");
       render();
     };
 
