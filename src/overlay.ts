@@ -312,3 +312,19 @@ export const deriveViewableDialogue = (
 export const spanPiecesByTurn = (
   turns: Conversation["turns"],
 ): ReadonlyArray<ReadonlyArray<string>> => deriveDialogue(turns).map(spanPieces);
+
+// [LAW:one-source-of-truth] The UNFILTERED authoring spine: every turn, no overlay applied —
+// the owner-only #edit surface. The public render applies the overlay, and a FEATURE overlay
+// OMITS non-featured turns (applyOverlay's filter), so the owner could not see a turn to
+// whitelist, collapse, or hide it. This re-derives the full spine so every turn is selectable
+// in edit mode; the applied (feature-filtered) view returns on Exit. It is the SAME shape
+// applyOverlay yields for an empty overlay (its `overlay.length === 0` branch), reusing the
+// one deriveDialogue + plainView the renderer already lifts non-overlaid paths through, so the
+// edit spine cannot drift from what the public render projects [LAW:single-enforcer].
+//
+// The /api/overlay probe (admin-gated) renders this and returns it as HTML: the raw turns
+// reach only the owner, never a reader — rendering the unfiltered spine into the PUBLIC page
+// would leak the very turns a feature overlay hides [LAW:no-silent-failure]. Renderer-free
+// here [LAW:one-way-deps]: this returns the model projection; the caller applies the renderer.
+export const editSpine = (turns: Conversation["turns"]): ViewableDialogue =>
+  plainView(deriveDialogue(turns));

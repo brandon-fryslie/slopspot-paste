@@ -1,7 +1,8 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
-import { outOfRangeTarget, describeTargetFault, spanPiecesByTurn } from "../../overlay";
+import { outOfRangeTarget, describeTargetFault, spanPiecesByTurn, editSpine } from "../../overlay";
+import { renderDialogueHtml } from "../../renderDialogue";
 import { isOverlay } from "../../types";
 import { json, decodeSlug } from "../../http";
 
@@ -21,6 +22,13 @@ export const prerender = false;
 // remapped from the markdown-rendered / redacted DOM, so a captured offset cannot silently
 // mis-map and miss a secret [LAW:no-silent-failure]. This route is admin-gated, so the raw
 // prose reaches only the owner (of their own already-public paste), never a reader.
+//
+// [LAW:one-source-of-truth] It also carries `spineHtml` — the UNFILTERED authoring spine
+// (editSpine → every turn, no overlay applied) rendered through the ONE renderer. A FEATURE
+// overlay OMITS non-featured turns from the public render, so the #edit editor must swap this
+// in to make every turn selectable (else a feature paste hides the turns the owner must
+// whitelist). Owner-gated here for the same reason as `pieces`: rendering the unfiltered spine
+// into the public page would leak the turns a feature overlay hides.
 export const GET: APIRoute = async ({ url }) => {
   const raw = url.searchParams.get("slug");
   const slug = (raw ?? "").trim();
@@ -37,6 +45,7 @@ export const GET: APIRoute = async ({ url }) => {
     slug: existing.slug,
     directives: existing.overlay ?? [],
     pieces: spanPiecesByTurn(existing.turns),
+    spineHtml: renderDialogueHtml(editSpine(existing.turns)),
   });
 };
 

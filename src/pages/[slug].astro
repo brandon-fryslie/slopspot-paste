@@ -826,11 +826,11 @@ const outline = deriveSpineOutline(dialogue);
 
   <script>
     // [LAW:decomposition] The overlay authoring editor is its own part, cut apart from the
-    // minimap/copy and TL;DR scripts: it owns exactly the owner's redaction authoring and
+    // minimap/copy and TL;DR scripts: it owns exactly the owner's overlay authoring and
     // shares nothing with reader navigation. It is INERT for every reader — it touches
     // neither the DOM nor the network until the owner opts into edit mode (#edit) — so the
-    // public page stays byte-identical and carries zero authoring chrome. Only 'hide'
-    // (redaction) is authorable today; collapse/feature join as later kinds.
+    // public page stays byte-identical and carries zero authoring chrome. A per-turn kind
+    // selector authors all three directive kinds — hide (whole/span), collapse, feature.
     //
     // [LAW:single-enforcer] "Are you the owner?" is answered by the ONE auth gate, never a
     // second per-paste scheme: GET /api/overlay is admin-gated middleware, so a 200 both
@@ -936,15 +936,22 @@ const outline = deriveSpineOutline(dialogue);
       }).catch(() => null);
       const body = res
         ? ((await res.json().catch(() => null)) as
-            | { directives?: OverlayDirective[]; pieces?: string[][]; error?: string }
+            | { directives?: OverlayDirective[]; pieces?: string[][]; spineHtml?: string; error?: string }
             | null)
         : null;
 
       // [LAW:dataflow-not-control-flow] The probe outcome is a value that selects what to
       // build: a denial/error yields only a notice (reader view untouched); success yields
       // the full editor. [LAW:no-silent-failure] every non-owner / network / server outcome
-      // is a legible message, never a silent no-op.
-      if (!res || !res.ok || !Array.isArray(body?.directives) || !Array.isArray(body?.pieces)) {
+      // is a legible message, never a silent no-op. spineHtml is required — without the
+      // unfiltered spine a feature paste would hide the turns the owner must whitelist.
+      if (
+        !res ||
+        !res.ok ||
+        !Array.isArray(body?.directives) ||
+        !Array.isArray(body?.pieces) ||
+        typeof body?.spineHtml !== "string"
+      ) {
         showNotice(
           !res
             ? "Network error — could not reach the overlay endpoint."
@@ -955,57 +962,95 @@ const outline = deriveSpineOutline(dialogue);
         return;
       }
 
+      // [LAW:no-silent-failure] Validate the authoring spine BEFORE mutating the DOM. The spine
+      // and body.pieces are two projections of the SAME server deriveDialogue(turns) — span
+      // authoring is leak-safe ONLY while pieces[index] aligns with the DOM node at that index.
+      // Parse the spineHtml OFF the live DOM (a detached <template>) and count its top-level
+      // turns; on a mismatch (a drifted renderer, a truncated response), bail to the notice bar
+      // with the reader view STILL INTACT — the swap below never runs — rather than destroy the
+      // reader DOM and then discover the spine is unusable. The else is meaningful (a legible
+      // dead-end), not a silent skip.
+      const parsedSpine = document.createElement("template");
+      parsedSpine.innerHTML = body.spineHtml;
+      const spineTurnCount = [...parsedSpine.content.children].filter((el) => el.hasAttribute("data-index")).length;
+      if (spineTurnCount !== body.pieces.length) {
+        showNotice("The editor could not load: the authoring spine drifted from its source. Reload and try again.");
+        return;
+      }
+
+      // [LAW:single-enforcer] Validated — swap the reader's server-rendered spine for the
+      // UNFILTERED authoring spine (editSpine, admin-gated). The public render applies the
+      // overlay, and a FEATURE overlay OMITS non-featured turns, so the reader DOM has only the
+      // featured turns — the per-turn controls below (built from ':scope > [data-index]') would
+      // then cover only those, and the owner could never whitelist a hidden turn. Swapping in
+      // every turn makes them all selectable; Exit reloads the applied (filtered) view. The
+      // same `conversation` element is reused (only its children change), so its data-slug and
+      // every reference above stay valid. [LAW:one-source-of-truth] pieces[index] aligns with
+      // this spine by construction — both derive from the same full deriveDialogue(turns).
+      conversation.innerHTML = body.spineHtml;
+
       // Owner confirmed — build the editor bar. The reader-degrading overlay-editing class
-      // (which hides the copy controls and reveals the per-turn toggles) is added only at the
+      // (which hides the copy controls and reveals the per-turn controls) is added only at the
       // end of this success path, never before auth.
       const bar = makeEl("div", "overlay-editor-bar");
       bar.setAttribute("role", "region");
       bar.setAttribute("aria-label", "Overlay editor");
       const title = makeEl("span", "overlay-editor-title");
-      title.textContent = "Redact";
+      title.textContent = "Overlay";
       const status = makeEl("span", "overlay-editor-status");
       status.setAttribute("aria-live", "polite");
       const save = makeEl("button", "overlay-editor-save");
       save.type = "button";
-      save.textContent = "Save redactions";
+      save.textContent = "Save overlay";
       for (const child of [title, status, save, exitButton()]) bar.appendChild(child);
       mountBar(bar);
 
-      // [LAW:types-are-the-program] A turn's authored redaction: the WHOLE turn, or a set of
-      // sub-turn spans. Mutually exclusive by construction — whole is the machinery's superset
-      // (overlay.ts:displayPlan), so "whole AND spans" is not a state the editor can hold.
+      // [LAW:types-are-the-program] A turn's authored display directive — ONE kind per turn:
+      // a WHOLE-turn hide, a set of sub-turn span hides (a refinement of hide), a collapse, or
+      // a feature. These are mutually exclusive by construction, mirroring the per-turn KIND
+      // selector: the editor holds one directive per turn, so "hidden AND collapsed" is not a
+      // state it can express (the machinery could, but the authoring surface is single-kind).
       type SpanRange = { piece: number; start: number; end: number };
-      type TurnRedaction = { kind: "whole" } | { kind: "spans"; spans: SpanRange[] };
+      type TurnDirective =
+        | { kind: "hide" }
+        | { kind: "spans"; spans: SpanRange[] }
+        | { kind: "collapse" }
+        | { kind: "feature" };
 
       // [LAW:one-source-of-truth] State seeds from the stored directives the gate returned —
       // never re-derived from the redacted DOM (a hidden turn shows only "[redacted]" there).
-      // Two disjoint stores: `redactions` are the hides THIS editor authors (whole/span);
-      // `passthrough` are directives it does NOT author (collapse/feature — .8/API own them),
-      // held verbatim and re-emitted unchanged so authoring a span never silently drops them
-      // [LAW:no-silent-failure]. `pieces` is the leak-proof coordinate space from the server —
-      // pieces[index][p] is the EXACT raw source a span's offsets index into.
-      const redactions = new Map<number, TurnRedaction>();
-      const passthrough: OverlayDirective[] = [];
+      // ONE store now: `byTurn` holds every authored kind (hide/spans/collapse/feature) — no
+      // blind passthrough, because the editor now authors every kind [LAW:no-silent-failure].
+      // `pieces` is the leak-proof coordinate space from the server — pieces[index][p] is the
+      // EXACT raw source a span's offsets index into.
+      //
+      // [LAW:dataflow-not-control-flow] Folding the flat directive list into one kind per turn
+      // is order-independent via a precedence RANK: a well-formed editor-authored overlay has
+      // one kind per turn (faithful round-trip), and a hand-authored overlay with several kinds
+      // on one turn NORMALIZES to the highest-ranked — VISIBLE in the selector before Save, not
+      // a silent drop. whole-hide is the redaction superset (> spans, matching displayPlan);
+      // redaction outranks feature (whitelist) outranks collapse (fold).
+      const KIND_RANK: Record<TurnDirective["kind"], number> = { hide: 4, spans: 3, feature: 2, collapse: 1 };
+      const byTurn = new Map<number, TurnDirective>();
+      const seed = (index: number, candidate: TurnDirective): void => {
+        const cur = byTurn.get(index);
+        // Two span directives on one turn accumulate (same kind, same rank) rather than one
+        // replacing the other. [LAW:effects-at-boundaries] spread, never in-place push.
+        if (cur?.kind === "spans" && candidate.kind === "spans") {
+          byTurn.set(index, { kind: "spans", spans: [...cur.spans, ...candidate.spans] });
+          return;
+        }
+        if (cur === undefined || KIND_RANK[candidate.kind] > KIND_RANK[cur.kind]) byTurn.set(index, candidate);
+      };
       const pieces = body.pieces;
       for (const d of body.directives) {
-        if (d.kind === "collapse" || d.kind === "feature") {
-          passthrough.push(d);
-          continue;
+        if (d.kind === "collapse") seed(d.target.index, { kind: "collapse" });
+        else if (d.kind === "feature") seed(d.target.index, { kind: "feature" });
+        else if (d.target.kind === "turn") seed(d.target.index, { kind: "hide" });
+        else {
+          const t = d.target;
+          seed(t.index, { kind: "spans", spans: [{ piece: t.piece, start: t.start, end: t.end }] });
         }
-        const t = d.target;
-        if (t.kind === "turn") {
-          redactions.set(t.index, { kind: "whole" });
-          continue;
-        }
-        // A span: fold into the turn's span set, unless a whole hide already supersedes it.
-        // [LAW:effects-at-boundaries] Accumulate immutably (spread, not in-place push) — the
-        // same way addSpan does — so the fold never mutates a spans array it has already handed
-        // to the Map. Both span-accumulation sites then read identically [LAW:one-source-of-truth].
-        const existing = redactions.get(t.index);
-        if (existing?.kind === "whole") continue;
-        const spans = existing?.kind === "spans" ? [...existing.spans] : [];
-        spans.push({ piece: t.piece, start: t.start, end: t.end });
-        redactions.set(t.index, { kind: "spans", spans });
       }
 
       // Which turns' span panels are open — a UI-only projection, not authored state.
@@ -1041,30 +1086,34 @@ const outline = deriveSpineOutline(dialogue);
 
       // [LAW:dataflow-not-control-flow] Every mutator changes the state VALUE then re-renders;
       // none touches the DOM directly — render is the one projection of state to chrome.
-      const toggleWhole = (index: number): void => {
-        redactions.get(index)?.kind === "whole"
-          ? redactions.delete(index)
-          : redactions.set(index, { kind: "whole" });
+      // setKind is the per-turn selector's whole effect: "none" clears the turn; every other
+      // value sets that single directive. "hide" is the WHOLE-turn redaction — spans are reached
+      // by refining a hide in the span panel (addSpan), so the selector reads "hide" for both.
+      const setKind = (index: number, kind: "none" | "hide" | "collapse" | "feature"): void => {
+        if (kind === "none") byTurn.delete(index);
+        else byTurn.set(index, { kind });
         render();
       };
+      // A span refines a hide into sub-turn redaction: whole → spans, or append to an existing
+      // span set. [LAW:single-enforcer] The guard states the SAME hide-ish contract the span
+      // panel's visibility uses (render below) — positively, so it cannot drift: a span refines
+      // ONLY a hide/spans turn. Enumerating the forbidden kinds instead would leave a gap (an
+      // unset turn), silently minting a span the owner never picked "Hide" for [LAW:no-silent-failure].
       const addSpan = (index: number, span: SpanRange): void => {
-        const existing = redactions.get(index);
-        // [LAW:one-source-of-truth] Whole is the superset — a span on a whole-hidden turn is
-        // moot, exactly as the seed loop (`if (existing?.kind === "whole") continue;`) and the
-        // machinery's displayPlan already treat it. Enforcing that rule HERE keeps addSpan
-        // honest to the whole/spans exclusivity its type states, rather than leaning on the UI
-        // (disabled toggle) to never call it under whole. Not a defensive skip: it is the same
-        // domain superset rule applied consistently, so the state stays legal by construction.
-        if (existing?.kind === "whole") return;
-        const spans = existing?.kind === "spans" ? [...existing.spans, span] : [span];
-        redactions.set(index, { kind: "spans", spans });
+        const existing = byTurn.get(index);
+        if (existing?.kind !== "hide" && existing?.kind !== "spans") return;
+        const spans = existing.kind === "spans" ? [...existing.spans, span] : [span];
+        byTurn.set(index, { kind: "spans", spans });
         render();
       };
+      // Removing the last span reverts the turn to a WHOLE hide (still hide-ish), never to
+      // "none" — the owner chose hide via the selector; emptying the span set narrows the
+      // redaction back to the whole turn rather than un-hiding it.
       const removeSpan = (index: number, at: number): void => {
-        const existing = redactions.get(index);
+        const existing = byTurn.get(index);
         if (existing?.kind !== "spans") return;
         const spans = existing.spans.filter((_, i) => i !== at);
-        spans.length === 0 ? redactions.delete(index) : redactions.set(index, { kind: "spans", spans });
+        byTurn.set(index, spans.length === 0 ? { kind: "hide" } : { kind: "spans", spans });
         render();
       };
 
@@ -1074,23 +1123,43 @@ const outline = deriveSpineOutline(dialogue);
       // node applyOverlay and the /t<N> permalink address; pieces[index] is that node's raw prose.
       const turns = [...conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")];
 
+      // [LAW:one-type-per-behavior] The four kinds are one selector, differing only in value —
+      // none/hide/collapse/feature map 1:1 to the directive kinds (hide→whole-turn hide; spans
+      // refine hide in the panel below). "Show" is the none label — the turn shows unchanged.
+      const KIND_OPTIONS = [
+        { value: "none", label: "Show" },
+        { value: "hide", label: "Hide" },
+        { value: "collapse", label: "Collapse" },
+        { value: "feature", label: "Feature" },
+      ] as const;
+
       const controls = turns.map((el) => {
         const index = Number(el.dataset.index);
         const holder = makeEl("div", "overlay-turn-control");
-        const whole = makeEl("button", "overlay-turn-toggle");
-        whole.type = "button";
-        whole.addEventListener("click", () => toggleWhole(index));
-        holder.appendChild(whole);
+        // [LAW:no-ambient-temporal-coupling] Plain DOM <select>: setting .value in render is
+        // reliable here (the lit-html cold-render `.value` gotcha applies only to lit-html's
+        // declarative binding, not to a createElement'd select whose options exist eagerly).
+        const select = makeEl("select", "overlay-kind-select");
+        for (const opt of KIND_OPTIONS) {
+          const option = document.createElement("option");
+          option.value = opt.value;
+          option.textContent = opt.label;
+          select.appendChild(option);
+        }
+        select.addEventListener("change", () =>
+          setKind(index, select.value as "none" | "hide" | "collapse" | "feature"),
+        );
+        holder.appendChild(select);
         el.appendChild(holder);
 
         // A turn with no span-addressable prose (only a tool call, say) yields an empty pieces
-        // array — its ONLY redaction is a whole hide, so it grows no span chrome. The presence
+        // array — its redaction can only be a whole hide, so it grows no span chrome. The presence
         // of pieces is a value that decides whether the span UI exists, not a guard hiding a bug.
         // [LAW:types-are-the-program] The span chrome is ONE nullable field, not four parallel
         // nullables — so "toggle present but panel absent" is unrepresentable; render narrows once.
         const turnPieces = pieces[index] ?? [];
         if (turnPieces.length === 0) {
-          return { el, index, whole, span: null };
+          return { el, index, select, span: null };
         }
 
         const spanToggle = makeEl("button", "overlay-span-toggle");
@@ -1138,33 +1207,43 @@ const outline = deriveSpineOutline(dialogue);
         panel.appendChild(spanList);
         el.appendChild(panel);
 
-        return { el, index, whole, span: { toggle: spanToggle, panel, list: spanList } };
+        return { el, index, select, span: { toggle: spanToggle, panel, list: spanList } };
       });
 
       // [LAW:dataflow-not-control-flow] The whole editor surface is a pure projection of the
-      // state: each turn's toggle labels/pending class, its span panel visibility, its span
-      // list, and the bar's summary are recomputed from `redactions`/`expanded` on every
-      // change — never mutated incrementally per event.
+      // state: each turn's selector value/pending class, its span panel visibility and list, the
+      // feature-whitelist marks, and the bar's summary are recomputed from `byTurn`/`expanded`
+      // on every change — never mutated incrementally per event.
       const render = (): void => {
-        let spanCount = 0;
         let wholeCount = 0;
+        let spanCount = 0;
+        let collapseCount = 0;
+        let featureCount = 0;
         for (const c of controls) {
-          const state = redactions.get(c.index);
-          const isWhole = state?.kind === "whole";
+          const state = byTurn.get(c.index);
+          const kind = state?.kind;
+          const isWhole = kind === "hide";
           const spans = state?.kind === "spans" ? state.spans : [];
+          const isHideish = kind === "hide" || kind === "spans";
           if (isWhole) wholeCount += 1;
           spanCount += spans.length;
+          if (kind === "collapse") collapseCount += 1;
+          if (kind === "feature") featureCount += 1;
+
+          // The selector shows "hide" for both whole and spans (spans is a refinement of hide);
+          // an unset turn shows "none". Plain-DOM .value assignment, reliable on cold render.
+          c.select.value = kind === "spans" ? "hide" : (kind ?? "none");
 
           c.el.classList.toggle("overlay-pending-hide", isWhole);
           c.el.classList.toggle("overlay-pending-spans", spans.length > 0);
-          c.whole.classList.toggle("is-hiding", isWhole);
-          c.whole.textContent = isWhole ? "Unhide" : "Hide turn";
-          c.whole.setAttribute("aria-pressed", String(isWhole));
+          c.el.classList.toggle("overlay-pending-collapse", kind === "collapse");
+          c.el.classList.toggle("overlay-pending-feature", kind === "feature");
 
-          // A whole hide supersedes spans, so its panel is closed and its span toggle inert.
+          // The span panel refines a hide — available only when the turn is hide-ish. On any
+          // other kind the "Redact part…" toggle is hidden and its panel closed.
           if (c.span) {
-            const open = expanded.has(c.index) && !isWhole;
-            c.span.toggle.disabled = isWhole;
+            c.span.toggle.hidden = !isHideish;
+            const open = expanded.has(c.index) && isHideish;
             c.span.toggle.setAttribute("aria-expanded", String(open));
             c.span.panel.hidden = !open;
             c.span.list.replaceChildren(
@@ -1183,28 +1262,66 @@ const outline = deriveSpineOutline(dialogue);
             );
           }
         }
+
+        // [LAW:dataflow-not-control-flow] Feature is a WHITELIST: the PRESENCE of any feature
+        // directive flips the paste to show-ONLY-featured. Make that legible — mark the body so
+        // non-featured turns visibly read as excluded from the reel (CSS dims them + notes it).
+        // featureCount === 0 ⇒ no reel, show all, so every mark clears. This is the one
+        // non-obvious UX the epic flagged: a single feature hides every other turn.
+        const hasFeature = featureCount > 0;
+        document.body.classList.toggle("overlay-has-feature", hasFeature);
+        for (const c of controls) {
+          c.el.classList.toggle(
+            "overlay-reel-excluded",
+            hasFeature && byTurn.get(c.index)?.kind !== "feature",
+          );
+        }
+
         const summary: string[] = [];
         if (wholeCount > 0) summary.push(`${wholeCount} turn${wholeCount === 1 ? "" : "s"} hidden`);
         if (spanCount > 0) summary.push(`${spanCount} span${spanCount === 1 ? "" : "s"}`);
-        status.textContent = summary.length === 0 ? "No redactions" : summary.join(" · ");
+        if (collapseCount > 0) summary.push(`${collapseCount} collapsed`);
+        if (hasFeature) {
+          summary.push(`reel: ${featureCount} turn${featureCount === 1 ? "" : "s"} shown, rest hidden`);
+        }
+        status.textContent = summary.length === 0 ? "No overlay" : summary.join(" · ");
       };
 
-      // [LAW:one-source-of-truth] The COMPLETE directive set to persist: the passthrough
-      // directives (collapse/feature preserved verbatim) plus the authored hides — whole turns
-      // as turn targets, spans as span targets. Order is irrelevant (displayPlan folds it), so
-      // authored hides are emitted in turn order for a stable, legible write.
+      // [LAW:one-source-of-truth] The COMPLETE directive set to persist, folded from the one
+      // per-turn state: whole → turn-target hide, spans → span-target hides, collapse/feature →
+      // whole-turn directives. Order is irrelevant (displayPlan folds it), so emit in turn order
+      // for a stable, legible write. No passthrough — the editor authors every kind, so nothing
+      // is held blind [LAW:no-silent-failure]. The switch is exhaustive: a new TurnDirective
+      // kind is compiler-forced to declare how it serializes.
       const emitDirectives = (): OverlayDirective[] => {
-        const authored: OverlayDirective[] = [];
-        for (const [index, r] of [...redactions.entries()].sort((a, b) => a[0] - b[0])) {
-          if (r.kind === "whole") {
-            authored.push({ kind: "hide", target: { kind: "turn", index } });
-          } else {
-            for (const s of r.spans) {
-              authored.push({ kind: "hide", target: { kind: "span", index, piece: s.piece, start: s.start, end: s.end } });
+        const out: OverlayDirective[] = [];
+        for (const [index, d] of [...byTurn.entries()].sort((a, b) => a[0] - b[0])) {
+          switch (d.kind) {
+            case "hide":
+              out.push({ kind: "hide", target: { kind: "turn", index } });
+              break;
+            case "spans":
+              for (const s of d.spans) {
+                out.push({ kind: "hide", target: { kind: "span", index, piece: s.piece, start: s.start, end: s.end } });
+              }
+              break;
+            case "collapse":
+              out.push({ kind: "collapse", target: { kind: "turn", index } });
+              break;
+            case "feature":
+              out.push({ kind: "feature", target: { kind: "turn", index } });
+              break;
+            default: {
+              // [LAW:no-silent-failure] `setKind` reaches this fold through an `as` cast of
+              // select.value, so a cast violation (a stray option, DOM tampering) could store an
+              // unrecognized kind. Pin exhaustiveness at compile time (`_never`) AND fail loudly
+              // at runtime, mirroring overlay.ts's assertNever — a dropped directive is never silent.
+              const _never: never = d;
+              throw new Error(`emitDirectives: unhandled TurnDirective kind: ${String((_never as { kind: string }).kind)}`);
             }
           }
         }
-        return [...passthrough, ...authored];
+        return out;
       };
 
       // [LAW:effects-at-boundaries] Save is the one world-touch: POST the COMPLETE desired
