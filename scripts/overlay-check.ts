@@ -6,7 +6,7 @@
 // any t<N> anchor, and — the security-critical assertion — that a redacted turn's /t<N>
 // permalink card shows "[redacted]" and NEVER the original content (no leak).
 
-import { applyOverlay, deriveViewableDialogue, outOfRangeTarget, describeTargetFault } from "../src/overlay";
+import { applyOverlay, deriveViewableDialogue, outOfRangeTarget, describeTargetFault, spanPiecesByTurn } from "../src/overlay";
 import { deriveDialogue, plainView } from "../src/dialogue";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import { renderTurnCard } from "../src/turnCard";
@@ -281,6 +281,47 @@ const spanTurnFault = outOfRangeTarget(spanTurns, span(9, 0, 0, 1));
 assert("a span on a non-existent turn is turn-out-of-range",
   spanTurnFault?.kind === "turn-out-of-range" && spanTurnFault.index === 9);
 assert("an in-bounds span passes outOfRangeTarget", outOfRangeTarget(spanTurns, span(1, 0, tStart, tStart + THINK_SECRET.length)) === null);
+
+// ── SPAN AUTHORING COORDINATE SPACE (slopspot-overlay-34a.7) ─────────────────
+// spanPiecesByTurn is the ONE derivation of the raw prose a span's offsets index into —
+// the leak-proof source the authoring UI selects into (returned by GET /api/overlay). It
+// MUST be byte-identical to the coordinate space outOfRangeTarget validates and
+// redactSpansInNode splices, or a captured offset would silently mis-map and miss a secret.
+const pieces = spanPiecesByTurn(spanTurns);
+assert("spanPiecesByTurn aligns one entry per spine node (3 turns)", pieces.length === spanDialogue.length);
+assert("a spoken node exposes exactly its one content piece",
+  pieces[0]?.length === 1 && pieces[0][0] === "Explain the setup.");
+assert("an assistant node exposes one raw piece per prose block, IN BLOCK ORDER",
+  pieces[1]?.length === 2 && pieces[1][0] === thinkSrc && pieces[1][1] === textSrc);
+assert("the last spoken node exposes its verbatim content piece",
+  pieces[2]?.length === 1 && pieces[2][0] === sensSrc);
+
+// THE AUTHORING ROUND-TRIP: a span cut from spanPiecesByTurn's own output — exactly what the
+// UI does when the owner selects THINK_SECRET inside the revealed raw piece — validates at the
+// write boundary AND redacts precisely that slice, leaving the sibling piece verbatim. This is
+// the proof the UI's selection offsets are the machinery's offsets, not a drifting parallel.
+const authoredPiece = pieces[1]?.[0] ?? "";
+const authoredStart = authoredPiece.indexOf(THINK_SECRET);
+const authoredSpan = span(1, 0, authoredStart, authoredStart + THINK_SECRET.length);
+assert("a span authored from spanPiecesByTurn's slice passes outOfRangeTarget",
+  outOfRangeTarget(spanTurns, authoredSpan) === null);
+const authoredHtml = renderDialogueHtml(applyOverlay(spanDialogue, authoredSpan));
+assert("a span authored from the raw piece redacts exactly that slice, sibling piece verbatim",
+  !authoredHtml.includes(THINK_SECRET) && authoredHtml.includes(SECRET) && authoredHtml.includes("[redacted]"));
+assert("the authored slice IS the secret (offsets index the exact raw source)",
+  authoredPiece.slice(authoredStart, authoredStart + THINK_SECRET.length) === THINK_SECRET);
+
+// A turn with no span-addressable prose (only a tool call) yields an EMPTY inner array —
+// an honest "no pieces here" aligned to its spine index, not a missing entry. The authoring
+// UI reads this as "no span chrome for this turn" (whole hide is its only redaction).
+const toolTurns: ReadonlyArray<Turn> = [
+  { kind: "message", role: "user", content: "Run it." },
+  { kind: "tool-call", tool: "bash", args: "ls", output: { kind: "terminal", text: "ok", isError: false } },
+];
+const toolPieces = spanPiecesByTurn(toolTurns);
+assert("spanPiecesByTurn aligns to the spine for a tool-only turn (2 nodes)", toolPieces.length === 2);
+assert("a tool-call-only assistant node exposes ZERO span-addressable pieces (empty, not missing)",
+  Array.isArray(toolPieces[1]) && toolPieces[1].length === 0);
 
 // ── describeTargetFault: each fault surfaces a legible reason at the boundary ─
 assert("describeTargetFault names the turn for a turn fault",
