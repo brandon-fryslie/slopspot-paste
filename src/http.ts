@@ -15,12 +15,15 @@ export const json = (status: number, body: Record<string, unknown>): Response =>
 export const seeOther = (location: string): Response =>
   new Response(null, { status: 303, headers: { Location: location } });
 
-// [LAW:single-enforcer] The ONE predicate for "is this request's body JSON". Media
-// types are case-insensitive (RFC 7231 §3.1.1.1), so `Application/JSON` counts — a
-// case-sensitive sniff would mis-route it. Every endpoint that branches JSON-vs-form
-// (which body decoder to run, whether to redirect or return JSON) asks this, so the
-// case rule lives in one place and the parse branch and the response-modality branch
-// can never disagree.
+// The canonical predicate for "is this request's body JSON". Media types are
+// case-insensitive (RFC 7231 §3.1.1.1), so `Application/JSON` counts — a case-sensitive
+// sniff would mis-route it. This is the intended [LAW:single-enforcer] home for that
+// rule: /api/summarize and /api/refetch delegate to it (both their parse branch and
+// their redirect branch), so those two cannot disagree with themselves. Adoption is
+// still partial — the other JSON endpoints (paste, delete, purge, reproject, augment,
+// refresh, paste-request) currently inline a case-SENSITIVE check; migrating them onto
+// this predicate is tracked in slopspot-http-88l. Until then this comment states the
+// goal and the current reach, not a universal claim.
 export const isJsonRequest = (request: Request): boolean =>
   (request.headers.get("content-type") ?? "").toLowerCase().includes("application/json");
 
