@@ -973,6 +973,18 @@ const outline = deriveSpineOutline(dialogue);
       // this spine by construction — both derive from the same full deriveDialogue(turns).
       conversation.innerHTML = body.spineHtml;
 
+      // [LAW:no-silent-failure] The swapped spine and body.pieces are two projections of the SAME
+      // server deriveDialogue(turns) — span authoring is leak-safe ONLY while pieces[index] aligns
+      // with the DOM node at that index. Assert that invariant loudly here: if the counts disagree
+      // (a drifted renderer, a truncated response), bail to the notice bar rather than build the
+      // editor on a misaligned DOM where a span could map to the wrong prose. The else is meaningful
+      // (a legible dead-end, reader view intact), not a silent skip.
+      const spineTurnCount = conversation.querySelectorAll(":scope > [data-index]").length;
+      if (spineTurnCount !== body.pieces.length) {
+        showNotice("The editor could not load: the authoring spine drifted from its source. Reload and try again.");
+        return;
+      }
+
       // Owner confirmed — build the editor bar. The reader-degrading overlay-editing class
       // (which hides the copy controls and reveals the per-turn controls) is added only at the
       // end of this success path, never before auth.
@@ -1079,12 +1091,14 @@ const outline = deriveSpineOutline(dialogue);
         render();
       };
       // A span refines a hide into sub-turn redaction: whole → spans, or append to an existing
-      // span set. Only reachable while the turn is hide-ish (the panel shows only then), so a
-      // collapse/feature turn is never silently converted [LAW:no-silent-failure].
+      // span set. [LAW:single-enforcer] The guard states the SAME hide-ish contract the span
+      // panel's visibility uses (render below) — positively, so it cannot drift: a span refines
+      // ONLY a hide/spans turn. Enumerating the forbidden kinds instead would leave a gap (an
+      // unset turn), silently minting a span the owner never picked "Hide" for [LAW:no-silent-failure].
       const addSpan = (index: number, span: SpanRange): void => {
         const existing = byTurn.get(index);
-        if (existing?.kind === "collapse" || existing?.kind === "feature") return;
-        const spans = existing?.kind === "spans" ? [...existing.spans, span] : [span];
+        if (existing?.kind !== "hide" && existing?.kind !== "spans") return;
+        const spans = existing.kind === "spans" ? [...existing.spans, span] : [span];
         byTurn.set(index, { kind: "spans", spans });
         render();
       };
@@ -1293,6 +1307,14 @@ const outline = deriveSpineOutline(dialogue);
             case "feature":
               out.push({ kind: "feature", target: { kind: "turn", index } });
               break;
+            default: {
+              // [LAW:no-silent-failure] `setKind` reaches this fold through an `as` cast of
+              // select.value, so a cast violation (a stray option, DOM tampering) could store an
+              // unrecognized kind. Pin exhaustiveness at compile time (`_never`) AND fail loudly
+              // at runtime, mirroring overlay.ts's assertNever — a dropped directive is never silent.
+              const _never: never = d;
+              throw new Error(`emitDirectives: unhandled TurnDirective kind: ${String((_never as { kind: string }).kind)}`);
+            }
           }
         }
         return out;
