@@ -1,7 +1,7 @@
 ---
 import { env } from "cloudflare:workers";
 import Base from "../../layouts/Base.astro";
-import { deriveDialogue } from "../../dialogue";
+import { deriveViewableDialogue } from "../../overlay";
 import { renderTurnCard } from "../../turnCard";
 import { loadViewablePaste } from "../../loadPaste";
 import { PLATFORM_LABEL, platformOf, sourceOf } from "../../types";
@@ -25,7 +25,10 @@ const conversation = load.conversation;
 // the same turn in the full conversation. [LAW:no-silent-failure] a non-canonical
 // segment or an index past the spine returns null → an honest 404, never a fallback
 // to turn 0 or the whole paste. `turn` is always present on this route.
-const card = renderTurnCard(deriveDialogue(conversation.turns), turn ?? "");
+// [LAW:single-enforcer] The card renders the SAME overlay-applied spine the full page
+// does (deriveViewableDialogue), so a redacted turn cannot leak through its /t<N>
+// permalink while the full page hides it.
+const card = renderTurnCard(deriveViewableDialogue(conversation), turn ?? "");
 if (card === null) {
   return new Response("Not found", { status: 404 });
 }

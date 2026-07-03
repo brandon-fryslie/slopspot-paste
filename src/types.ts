@@ -210,6 +210,28 @@ export type Lifetime =
   | { readonly kind: "expires"; readonly expiresAt: number }
   | { readonly kind: "pinned" };
 
+// [LAW:types-are-the-program] An author display-overlay: directives that alter how the
+// stored conversation is DISPLAYED without touching the verbatim original
+// (ARCHITECTURE.md). Each directive targets a range. The overlay is AUTHORED intent — it
+// cannot be re-derived from the turns, so it is authoritative source data stored ON the
+// record [LAW:one-source-of-truth], never a turns-hash cache (which would silently drop
+// redactions on an edit — [LAW:no-silent-failure] in a security feature). It is applied
+// at render by applyOverlay (overlay.ts) to the derived Dialogue; the stored
+// turns/origin are never mutated.
+//
+// [LAW:types-are-the-program] The target is a union so a future sub-turn character span
+// is a NEW arm, not a rework of the whole-turn shape. The turn index names a top-level
+// spine node the t<N> permalink already addresses.
+export type OverlayTarget = { readonly kind: "turn"; readonly index: number };
+
+// [LAW:one-type-per-behavior] Redact/fold/feature are INSTANCES of one range-directive,
+// not three features. This ships `hide` (redaction); `collapse` and `feature` join the
+// kind union as later value-additions, each compiler-forced to be handled where
+// directives are dispatched (overlay.ts) — never a parallel code path.
+export type OverlayDirective = { readonly kind: "hide"; readonly target: OverlayTarget };
+
+export type Overlay = ReadonlyArray<OverlayDirective>;
+
 export interface Conversation {
   readonly slug: string;
   readonly createdAt: number;
@@ -238,6 +260,13 @@ export interface Conversation {
   // theme choice meaningful on the shared link. Absent = derive from source as
   // always. `source` remains authoritative; this is a display override only.
   readonly platformOverride?: Platform;
+  // [LAW:one-source-of-truth] Optional AUTHORED display-overlay (redact/fold/feature
+  // directives) applied to the derived display at render — it never mutates the verbatim
+  // turns/origin. Authored intent, not a derivation, so it lives ON the record rather
+  // than in a derived cache. Absent = no overlay = the paste renders exactly as
+  // captured. Normalized on read (like deletedAt/platformOverride), so legacy records
+  // need no migration.
+  readonly overlay?: Overlay;
 }
 
 // [LAW:single-enforcer] Three distinct time windows, stated once:
