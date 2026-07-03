@@ -2909,6 +2909,14 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
   assertEq("first message is the shared system instruction", sysMsg?.content, SUMMARY_SYSTEM_PROMPT);
   assert("system role", sysMsg?.role === "system");
   assert("user role", userMsg?.role === "user");
+  // [LAW:behavior-not-structure] Assert what the LLM actually RECEIVES, not just the
+  // message shape: the user message must carry non-empty content that embeds both the
+  // preamble and the flattened transcript. Without this, a template literal broken to
+  // content:"" would pass every structural check while silently sending an empty
+  // prompt — the function would look fully tested while carrying nothing.
+  assert("user message content is a non-empty string", typeof userMsg?.content === "string" && userMsg.content.length > 0);
+  assert("user message carries the prompt preamble", userMsg?.content.includes("Summarize this conversation") ?? false);
+  assert("user message embeds the flattened transcript (the human question)", userMsg?.content.includes("How do I reverse a linked list") ?? false);
 
   const transcript = renderDialogueForPrompt(dialogue);
   assert("transcript includes the human question", transcript.includes("How do I reverse a linked list"));
