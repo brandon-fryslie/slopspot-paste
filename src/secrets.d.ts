@@ -9,5 +9,10 @@ declare namespace Cloudflare {
     // [LAW:single-enforcer] Auth gate password for the admin surface. Absent in
     // dev (passthrough); set via `wrangler secret put ADMIN_SECRET` in production.
     readonly ADMIN_SECRET?: string;
+    // [LAW:single-enforcer] DeepSeek API token for on-demand summarization (the
+    // app's first LLM effect, quarantined in summary.ts). Absent => summarize
+    // returns configured:false rather than crashing; set via
+    // `wrangler secret put DEEPSEEK_API_TOKEN` in production.
+    readonly DEEPSEEK_API_TOKEN?: string;
   }
 }
