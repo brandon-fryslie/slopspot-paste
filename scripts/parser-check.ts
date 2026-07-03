@@ -2458,9 +2458,9 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   // same index the minimap navigates by (permalinks-64g.1). It is emitted only at
   // the top level; a nested subagent transcript carries none (asserted below).
   has("user message is an always-visible article (not a details)",
-    '<article class="bubble bubble-user" data-kind="message" data-role="user" data-index="0" id="t0">');
+    '<article class="bubble bubble-user" data-kind="message" data-role="user" data-index="0" data-topic="build it" id="t0">');
   has("assistant turn is an always-visible article",
-    '<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="1" id="t1">');
+    '<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="1" data-topic="On it." id="t1">');
   has("assistant TEXT renders always-visible (no details wrapper)",
     '<div class="assistant-text bubble-body clampable">');
   assert("no spine bubble is a <details> (user/assistant text never collapse)",
@@ -2527,7 +2527,7 @@ console.log("\nDisclosure renderer (renderDialogueHtml — cbm.3):");
   // ── Spine grouping: the two assistant message.ids merge into ONE assistant
   // node (index 1); the trailing system message is its own spine node (index 2).
   has("trailing system message is its own spine node",
-    '<article class="bubble bubble-system" data-kind="message" data-role="system" data-index="2" id="t2">');
+    '<article class="bubble bubble-system" data-kind="message" data-role="system" data-index="2" data-topic="system note" id="t2">');
   assert("the merged run yields exactly one assistant turn",
     (html.match(/class="bubble bubble-assistant assistant-turn"/g) ?? []).length === 1);
 

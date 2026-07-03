@@ -89,6 +89,15 @@ export type SpineNode =
 // turns.
 export type Dialogue = ReadonlyArray<SpineNode>;
 
+// [LAW:one-source-of-truth] The single MINTER of a spine node's stable anchor id.
+// A top-level spine node at position N is addressed as "t<N>" everywhere: the in-page
+// permalink (renderDialogueHtml emits id="t<N>"), the single-turn card URL, the
+// minimap, and the topic outline all name a turn by this one string. Minting it here
+// means the outline's hrefs cannot drift from the ids the renderer emits — both call
+// this one function. (The inverse parse of the same token lives in turnCard's
+// TURN_SEGMENT; this is its counterpart, the produce side.)
+export const turnAnchorId = (index: number): string => `t${index}`;
+
 // [LAW:dataflow-not-control-flow] Visibility is a property of a block's KIND,
 // fixed once here as data — never a branch the renderer re-decides per block.
 //   spine  — always visible; the readable conversation (assistant prose, insights)
@@ -111,6 +120,68 @@ export const BLOCK_VISIBILITY: { readonly [K in AssistantBlock["kind"]]: Visibil
 
 export const blockVisibility = (block: AssistantBlock): Visibility =>
   BLOCK_VISIBILITY[block.kind];
+
+// [LAW:dataflow-not-control-flow] A spine node's navigation label is a VALUE derived
+// from the node's own text — a lossy, structural snippet the topic outline and the
+// minimap markers both display. It is never model-generated: semantic topic labeling,
+// if ever wanted, is a later value on this same seam, not a rewrite of this.
+// [LAW:one-source-of-truth] Deriving it here once means the static outline and the
+// client minimap read ONE label, never two that can disagree.
+const LABEL_MAX = 80;
+
+// The readable text a block contributes to a label, "" when it carries none (usage).
+// [LAW:dataflow-not-control-flow] one exhaustive map over kinds, no branch that skips.
+const blockText = (block: AssistantBlock): string => {
+  switch (block.kind) {
+    case "text":
+    case "insight":
+    case "thinking":
+      return block.content;
+    case "turn-summary":
+      return block.text;
+    case "tool-call":
+      return block.tool;
+    case "subagent":
+      return block.description ?? block.agentType ?? "";
+    case "usage":
+      return "";
+  }
+};
+
+const snippet = (text: string): string => {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length > LABEL_MAX
+    ? collapsed.slice(0, LABEL_MAX - 1).trimEnd() + "…"
+    : collapsed;
+};
+
+// [LAW:no-silent-failure] Total: every node yields a NON-EMPTY label. A spoken node
+// labels from its content; an assistant turn from its first VISIBLE spine prose (the
+// text/insight the reader actually sees — thinking and tool calls are collapsed, so
+// labeling a row with them would name something off-screen). A turn with no visible
+// prose (only a tool call, say) falls back to the first block that carries any text,
+// and a wholly text-less node to its role word — never an empty outline row.
+export const spineNodeLabel = (node: SpineNode): string => {
+  if (node.kind === "spoken") {
+    return snippet(node.content) || (node.role === "user" ? "User" : "System");
+  }
+  const fromVisible = firstBlockLabel(node.blocks, (b) => blockVisibility(b) === "spine");
+  if (fromVisible) return fromVisible;
+  const fromAny = firstBlockLabel(node.blocks, () => true);
+  return fromAny || "Assistant";
+};
+
+const firstBlockLabel = (
+  blocks: ReadonlyArray<AssistantBlock>,
+  eligible: (block: AssistantBlock) => boolean,
+): string => {
+  for (const block of blocks) {
+    if (!eligible(block)) continue;
+    const label = snippet(blockText(block));
+    if (label) return label;
+  }
+  return "";
+};
 
 // [LAW:types-are-the-program] Exhaustiveness witness: callable only with a value
 // the type system has narrowed to `never`. In the deriveDialogue switch below it

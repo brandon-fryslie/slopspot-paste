@@ -17,6 +17,7 @@
 // renderer — the flat Turn renderer it replaced (renderTurns.ts) is gone.
 
 import type { Dialogue, AssistantBlock } from "./dialogue";
+import { turnAnchorId, spineNodeLabel } from "./dialogue";
 import type { Role, Usage } from "./types";
 import { condenseToolCall, type ToolStatus } from "./toolCall";
 import { escapeHtml, escapeAttr, renderMarkdown, toolOutputHtml } from "./render";
@@ -63,9 +64,11 @@ const clampableBody = (leadingClass: string, content: string, clampable: boolean
 // [LAW:types-are-the-program] A spoken node is always visible — it is the readable
 // conversation, never collapsible. So it is a plain article, not a <details>: the
 // "collapsed" state it would carry is unrepresentable, not merely defaulted-off.
-// data-index/data-kind/data-role are the navigational contract the page's minimap
-// reads (`:scope > [data-index]`); only top-level spine nodes carry them, so the
-// minimap projects the conversation spine and skips the nested detail blocks.
+// data-index/data-kind/data-role/data-topic are the navigational contract the page's
+// minimap reads (`:scope > [data-index]`); only top-level spine nodes carry them, so
+// the minimap projects the conversation spine and skips the nested detail blocks.
+// data-topic is the node's derived label (spineNodeLabel) — the SAME text the static
+// topic outline shows, so the marker and the outline row name a turn identically.
 // anchorAttr is the permalink id (`id="t<index>"`), emitted for the same top-level
 // spine nodes and empty for nested ones — see renderDialogueHtml.
 const spokenHtml = (
@@ -74,8 +77,9 @@ const spokenHtml = (
   index: number,
   clampable: boolean,
   anchorAttr: string,
+  topicAttr: string,
 ): string =>
-  `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}"${anchorAttr}>` +
+  `<article class="bubble bubble-${role}" data-kind="message" data-role="${role}" data-index="${index}"${topicAttr}${anchorAttr}>` +
   roleHeader(role, SPOKEN_LABEL[role]) +
   clampableBody("bubble-body", content, clampable) +
   `</article>`;
@@ -317,14 +321,17 @@ const renderDialogueHtml = (
       // node's absolute position (baseIndex + array position), so a sliced card
       // render keeps its true t<N> identity — see baseIndex above.
       const spineIndex = baseIndex + index;
-      const anchorAttr = topLevel ? ` id="t${spineIndex}"` : "";
+      const anchorAttr = topLevel ? ` id="${turnAnchorId(spineIndex)}"` : "";
+      // [LAW:one-source-of-truth] The label the outline and the minimap both show,
+      // carried on the node as data — derived once here from the node's own text.
+      const topicAttr = ` data-topic="${escapeAttr(spineNodeLabel(node))}"`;
       if (node.kind === "spoken") {
-        return spokenHtml(node.role, node.content, spineIndex, clampable, anchorAttr);
+        return spokenHtml(node.role, node.content, spineIndex, clampable, anchorAttr, topicAttr);
       }
       // The assistant turn is one always-visible card carrying its interleaved
       // blocks in source order. data-index marks it as one navigable spine node.
       return (
-        `<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="${spineIndex}"${anchorAttr}>` +
+        `<article class="bubble bubble-assistant assistant-turn" data-kind="message" data-role="assistant" data-index="${spineIndex}"${topicAttr}${anchorAttr}>` +
         roleHeader("assistant", "Assistant") +
         `<div class="assistant-blocks">${node.blocks.map(renderBlock).join("")}</div>` +
         `</article>`
