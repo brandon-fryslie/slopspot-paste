@@ -76,6 +76,19 @@ const outline = deriveSpineOutline(dialogue);
     )}
   </section>
 
+  {/*
+    [LAW:one-source-of-truth] The TL;DR region carries NO summary content — it is an
+    empty mount the client reveals and fills from /api/summarize. The summary is the
+    most disposable projection of all (regenerated on demand, never stored authority),
+    so nothing about it belongs in the stored paste or in this server render.
+    [LAW:dataflow-not-control-flow] `hidden` until JS reveals it: with JavaScript
+    disabled the page is byte-identical (an on-demand LLM enrichment is never required
+    to read the conversation), and a no-JS viewer never meets a dead Summarize button —
+    the same render-hidden-then-reveal move the copy controls make. aria-live announces
+    each state transition (loading → summary / error) to assistive tech.
+  */}
+  <section class="tldr" hidden aria-live="polite" data-slug={slug}></section>
+
   {outline.length > 0 && (
     <details class="spine-outline">
       <summary class="spine-outline-summary">
@@ -669,5 +682,135 @@ const outline = deriveSpineOutline(dialogue);
       }
       document.body.classList.add("agent-prompt-ready");
     }
+  </script>
+
+  <script>
+    // [LAW:decomposition] The TL;DR enrichment is its own part, cut apart from the
+    // minimap/copy script above: it owns exactly the on-demand summary region and
+    // shares nothing with navigation. [LAW:effects-at-boundaries] the summary is a
+    // network fact the browser fetches on demand; the server emitted only an empty
+    // mount, and this is the single edge that talks to /api/summarize.
+    //
+    // [LAW:no-defensive-null-guards] The page renders .tldr unconditionally, so its
+    // absence is a broken template invariant — assert once, loudly (as the minimap
+    // mount does), never thread a silent skip.
+    const region = document.querySelector<HTMLElement>(".tldr");
+    if (!region) throw new Error("required .tldr region missing");
+    const slug = region.dataset.slug ?? "";
+
+    // [LAW:types-are-the-program] The region's total state is a discriminated union —
+    // every screen it can show is one representable value, so "loading with a live
+    // button" or "ready with no summary" are unrepresentable rather than defended
+    // against. The loading state carries NO control, which is what makes a double
+    // Regenerate structurally impossible: setState swaps the button out of the DOM
+    // before the in-flight fetch resolves, so there is no in-flight boolean to track
+    // [LAW:no-ambient-temporal-coupling].
+    type TldrState =
+      | { kind: "idle" }
+      | { kind: "loading" }
+      | { kind: "ready"; summary: string; cached: boolean }
+      | { kind: "error"; reason: string };
+
+    const makeButton = (
+      className: string,
+      label: string,
+      onClick: () => void,
+    ): HTMLButtonElement => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = className;
+      btn.textContent = label;
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+
+    // [LAW:effects-at-boundaries] The one network edge. [LAW:dataflow-not-control-flow]
+    // Regenerate vs. first-summarize is a single value — `force` — that rides the query
+    // (?force=1), the same directive resolveSummary reads to bypass the cache read. The
+    // fetch always posts {slug}; only the value of force differs.
+    const generate = async (force: boolean): Promise<void> => {
+      render({ kind: "loading" });
+      const url = "/api/summarize" + (force ? "?force=1" : "");
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug }),
+      }).catch(() => null);
+      // [LAW:no-silent-failure] A dropped connection is a visible error with a reason,
+      // never a silent return that leaves the reader staring at a spinner forever.
+      if (!res) {
+        render({ kind: "error", reason: "Network error — could not reach the summarizer." });
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as
+        | { summary?: string; cached?: boolean; error?: string }
+        | null;
+      if (res.ok && typeof body?.summary === "string") {
+        render({ kind: "ready", summary: body.summary, cached: body.cached === true });
+        return;
+      }
+      // [LAW:no-silent-failure] Surface the server's own reason — the 503 not-configured
+      // message, a 502 provider failure, a 410 expired — so a failure is legible, never a
+      // blank region. Only if the body carried none do we fall back to the bare status.
+      render({ kind: "error", reason: body?.error ?? `Summarize failed (HTTP ${res.status}).` });
+    };
+
+    // [LAW:dataflow-not-control-flow] The region's markup is a pure projection of the
+    // state value: one exhaustive switch, rebuilt whole on every transition. A new
+    // state kind is compiler-forced to add its arm (the Node[] return leaves no
+    // implicit fall-through). The summary and error text are inserted as textContent,
+    // never innerHTML — the summary is plain prose by the system-prompt contract, and
+    // textContent means even a misbehaving model can never inject markup here.
+    const tldrChildren = (s: TldrState): Node[] => {
+      switch (s.kind) {
+        case "idle":
+          return [
+            makeButton("tldr-trigger", "TL;DR — summarize this conversation", () =>
+              void generate(false),
+            ),
+          ];
+        case "loading": {
+          const status = document.createElement("div");
+          status.className = "tldr-status";
+          status.textContent = "Summarizing…";
+          return [status];
+        }
+        case "ready": {
+          const head = document.createElement("div");
+          head.className = "tldr-head";
+          const label = document.createElement("span");
+          label.className = "tldr-label";
+          label.textContent = "TL;DR";
+          // [LAW:one-source-of-truth] Regenerate re-derives past the cache; the same
+          // control both times, differing only in the `force` value it carries.
+          head.appendChild(label);
+          head.appendChild(makeButton("tldr-regen", "Regenerate", () => void generate(true)));
+          const p = document.createElement("p");
+          p.className = "tldr-body";
+          p.textContent = s.summary;
+          return [head, p];
+        }
+        case "error": {
+          const box = document.createElement("div");
+          box.className = "tldr-error";
+          box.setAttribute("role", "alert");
+          const msg = document.createElement("span");
+          msg.className = "tldr-error-msg";
+          msg.textContent = s.reason;
+          box.appendChild(msg);
+          box.appendChild(makeButton("tldr-retry", "Try again", () => void generate(false)));
+          return [box];
+        }
+      }
+    };
+
+    const render = (s: TldrState): void => {
+      region.replaceChildren(...tldrChildren(s));
+    };
+
+    // Reveal the until-now hidden mount and seat it in the idle state. A no-JS viewer
+    // never reaches here, so the region stays display:none and the page is unchanged.
+    region.hidden = false;
+    render({ kind: "idle" });
   </script>
 </Base>

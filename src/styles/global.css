@@ -427,6 +427,112 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   white-space: nowrap;
 }
 
+/* ─── On-demand TL;DR ─────────────────────────────────────────────────────
+   A client-revealed enrichment card ([slug].astro): server-rendered empty and
+   hidden, so a no-JS page is byte-identical. Shares the outline card's frame
+   (bordered, elevated, rounded) since it sits in the same header stack. Its
+   inner content is a projection of the client state machine — idle trigger,
+   loading status, ready summary + Regenerate, or an error with Try again. */
+.tldr {
+  margin-bottom: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  padding: 14px 16px;
+}
+.tldr-trigger {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 5px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.tldr-trigger:hover { color: var(--fg); border-color: var(--accent); }
+.tldr-trigger:focus-visible,
+.tldr-regen:focus-visible,
+.tldr-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tldr-status {
+  font-size: 13px;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+/* A quiet pulsing dot marks the in-flight fetch — the browser owns the timing
+   (CSS animation), no JS clock. prefers-reduced-motion drops it to steady. */
+.tldr-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: tldr-pulse 1s ease-in-out infinite;
+}
+@keyframes tldr-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .tldr-status::before { animation: none; opacity: 0.7; }
+}
+.tldr-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.tldr-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.tldr-regen {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  padding: 3px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.tldr-regen:hover { color: var(--fg); border-color: var(--accent); }
+.tldr-body {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.tldr-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.tldr-error-msg { flex: 1 1 auto; }
+.tldr-retry {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  padding: 3px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.tldr-retry:hover { color: var(--fg); border-color: var(--accent); }
+
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A vertical rail of one marker per turn. Built client-side from the rendered
    turn elements (see [slug].astro). One rail, two placements: on a wide viewport
