@@ -874,6 +874,16 @@ const outline = deriveSpineOutline(dialogue);
       return exit;
     };
 
+    // [LAW:decomposition] Mounting the fixed bar and reserving body space for it are one
+    // concern — the bar's PRESENCE — kept apart from edit mode (which reveals toggles and
+    // hides the reader copy controls, owner-only). Both the editor bar and the notice bar
+    // are fixed at the bottom, so both need the clearance; only the owner path additionally
+    // adds overlay-editing. overlay-bar-present owns the padding for either bar.
+    const mountBar = (bar: HTMLElement): void => {
+      document.body.appendChild(bar);
+      document.body.classList.add("overlay-bar-present");
+    };
+
     // A minimal notice bar — a message and an Exit, nothing else — shown when the probe
     // denies or fails. [LAW:no-silent-failure] a non-owner who types #edit gets a legible
     // dead-end, but WITHOUT the overlay-editing class, so their reader copy controls are
@@ -887,7 +897,7 @@ const outline = deriveSpineOutline(dialogue);
       status.textContent = message;
       bar.appendChild(status);
       bar.appendChild(exitButton());
-      document.body.appendChild(bar);
+      mountBar(bar);
     };
 
     const activate = async (): Promise<void> => {
@@ -945,7 +955,7 @@ const outline = deriveSpineOutline(dialogue);
       save.type = "button";
       save.textContent = "Save redactions";
       for (const child of [title, status, save, exitButton()]) bar.appendChild(child);
-      document.body.appendChild(bar);
+      mountBar(bar);
 
       // [LAW:one-source-of-truth] The hidden set is seeded from the stored directives the
       // gate returned — never re-derived from the redacted DOM (a hidden turn shows only

@@ -1148,8 +1148,10 @@ body.overlay-editing .overlay-pending-hide {
 .overlay-editor-exit:hover { color: var(--fg); border-color: var(--accent); }
 .overlay-editor-save:focus-visible,
 .overlay-editor-exit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* Keep the fixed bar from covering the last turn while editing. */
-body.overlay-editing { padding-bottom: 72px; }
+/* Keep the fixed bar from covering the last turn. Gated on the bar's PRESENCE, not on
+   edit mode — the notice bar (non-owner/error) is fixed at the bottom too, and needs the
+   same clearance even though it never adds overlay-editing. */
+body.overlay-bar-present { padding-bottom: 72px; }
 
 /* ─── Tool-call bubbles ──────────────────────────────────────────────── */
 .bubble-tool-call {
