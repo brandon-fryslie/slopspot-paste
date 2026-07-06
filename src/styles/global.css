@@ -2074,6 +2074,11 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   border-bottom: 1px solid var(--border);
   z-index: 1;
 }
+/* The full-width heads bar owns the single divider; suppress each header cell's own
+   border-bottom inside it (align-items:start means the cells don't stretch, so the two
+   borders would otherwise render as two rules at different heights). The one-sided layout's
+   .diff-column-header lives outside .diff-heads and keeps its per-header border. */
+.diff-heads .diff-column-header { border-bottom: none; }
 
 /* A gap: this side has no counterpart for the node opposite it. A faint dashed placeholder
    holds the grid slot so the reader sees the divergence [LAW:no-silent-failure] rather than

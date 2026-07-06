@@ -72,12 +72,14 @@ const rows = outcome.kind === "aligned" ? outcome.rows.map(renderDiffRow) : [];
             class="diff-cell conversation"
             data-platform={outcome.left.platform}
             data-gap={row.left === null ? "true" : undefined}
+            aria-label={`Conversation ${outcome.left.slug}`}
             set:html={row.left ?? ""}
           />
           <div
             class="diff-cell conversation"
             data-platform={outcome.right.platform}
             data-gap={row.right === null ? "true" : undefined}
+            aria-label={`Conversation ${outcome.right.slug}`}
             set:html={row.right ?? ""}
           />
         </div>

@@ -12,7 +12,7 @@
 
 import { deriveViewableDialogue } from "./overlay";
 import { renderDialogueHtml } from "./renderDialogue";
-import type { DisplayNode, ViewableDialogue } from "./dialogue";
+import type { DisplayNode, SpineNode, ViewableDialogue } from "./dialogue";
 import {
   DEFAULT_TITLE,
   PLATFORM_LABEL,
@@ -105,13 +105,20 @@ export type DiffRow =
   | { readonly kind: "left-only"; readonly left: DisplayNode }
   | { readonly kind: "right-only"; readonly right: DisplayNode };
 
+// [LAW:types-are-the-program] A display node the type system knows is SPOKEN — the segment
+// lead is always a prompt (or absent), never an assistant node. Encoding that here means
+// segKey reads role/content off the node with no runtime kind re-check: a non-spoken lead is
+// unrepresentable, not defended against.
+type SpokenDisplay = DisplayNode & { readonly node: Extract<SpineNode, { readonly kind: "spoken" }> };
+const isSpoken = (dn: DisplayNode): dn is SpokenDisplay => dn.node.kind === "spoken";
+
 // A segment of the spine: the leading spoken (user/system) node — the prompt the alignment
 // keys on — and the agent activity that follows it before the next prompt. `lead` is null
 // only for a leading segment of assistant activity with no preceding prompt (a dialogue that
 // opens mid-agent-turn); it pairs only with another lead-less segment. `rest` is provably at
 // most one assistant node (deriveDialogue merges all agent activity between two prompts into
 // one), but the pairing below zips it generally rather than assuming that count.
-type Segment = { readonly lead: DisplayNode | null; readonly rest: ReadonlyArray<DisplayNode> };
+type Segment = { readonly lead: SpokenDisplay | null; readonly rest: ReadonlyArray<DisplayNode> };
 
 // [LAW:dataflow-not-control-flow] One pass over the spine, cutting a new segment at each
 // spoken node. Non-spoken (assistant) nodes accumulate into the open segment's `rest`;
@@ -122,14 +129,14 @@ type Segment = { readonly lead: DisplayNode | null; readonly rest: ReadonlyArray
 // push does not depend on a reference staying reassigned before the next iteration.
 const segments = (view: ViewableDialogue): ReadonlyArray<Segment> => {
   const segs: Segment[] = [];
-  let lead: DisplayNode | null = null;
+  let lead: SpokenDisplay | null = null;
   let rest: DisplayNode[] = [];
   let open = false;
   const flush = (): void => {
     if (open) segs.push({ lead, rest });
   };
   for (const dn of view) {
-    if (dn.node.kind === "spoken") {
+    if (isSpoken(dn)) {
       flush();
       lead = dn;
       rest = [];
@@ -155,9 +162,9 @@ const segments = (view: ViewableDialogue): ReadonlyArray<Segment> => {
 // segments pair and a lead-less segment on only one side opens a gap.
 const NUL = "\u0000";
 const segKey = (seg: Segment): string =>
-  seg.lead !== null && seg.lead.node.kind === "spoken"
-    ? `${seg.lead.node.role}${NUL}${seg.lead.node.content.replace(/\s+/g, " ").trim()}`
-    : "";
+  seg.lead === null
+    ? ""
+    : `${seg.lead.node.role}${NUL}${seg.lead.node.content.replace(/\s+/g, " ").trim()}`;
 
 // [LAW:composability] Classic LCS backtrack over two sequences by a string key, emitting an
 // ordered edit script: a matched pair, a left-only, or a right-only step. This is where the
