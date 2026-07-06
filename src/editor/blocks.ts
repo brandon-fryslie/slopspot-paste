@@ -13,6 +13,7 @@
 // stored shape. [LAW:one-source-of-truth]
 
 import type { Role, Turn } from "../types";
+import { scrubText } from "../secret-scrub";
 
 // [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. Both `usage`
 // (token accounting) and `subagent` (a reattached nested run) are source-DERIVED,
@@ -177,6 +178,34 @@ export const splitTurn = (
 // name) are dropped: one merged block keeps exactly one shape.
 export const mergeTurns = (prev: AuthorableTurn, next: AuthorableTurn): AuthorableTurn =>
   withPrimaryText(prev, [primaryText(prev), primaryText(next)].join("\n\n"));
+
+// [LAW:no-silent-failure] Remove every flagged secret from a turn's STORED text — the scrub
+// half of the scan .3 warns with. It rewrites EVERY text-bearing field (not just the caret's
+// primaryText, nor only prose): a tool-call's tool/args/output.text each carry a leak the
+// author cannot always reach with the caret, so all are scrubbed here. The field surface is
+// exactly the one secret-warnings.turnScanText SCANS (content / turn-summary text /
+// tool+args+output), so scan-surface == scrub-surface — a secret that is warned is a secret
+// that is removed; the secret-scrub-check "scrub then scan finds nothing" test proves it
+// [LAW:verifiable-goals]. Exhaustive over AuthorableTurn: a new author-able kind fails to
+// compile until it declares how it is scrubbed. Kind and every non-text field ride through
+// unchanged, so a scrub is a content edit, never a shape change.
+export const scrubTurn = (turn: AuthorableTurn): AuthorableTurn => {
+  switch (turn.kind) {
+    case "message":
+    case "insight":
+    case "thinking":
+      return { ...turn, content: scrubText(turn.content) };
+    case "turn-summary":
+      return { ...turn, text: scrubText(turn.text) };
+    case "tool-call":
+      return {
+        ...turn,
+        tool: scrubText(turn.tool),
+        args: scrubText(turn.args),
+        output: turn.output === null ? null : { ...turn.output, text: scrubText(turn.output.text) },
+      };
+  }
+};
 
 // [LAW:single-enforcer] The only seam between the stored Turn[] and the editing
 // Block[]. Parse/fetch produce Turn[]; toBlocks attaches identity for editing;
