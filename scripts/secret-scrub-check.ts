@@ -77,10 +77,10 @@ console.log("secret-scrub: multiple distinct secrets each get their own marker, 
 
 console.log("secret-scrub: mergeFindings folds overlapping/abutting ranges into one redaction");
 {
-  // The scanner cannot emit overlaps, so this fold arm (secret-scrub.ts `f.start <= last.end`)
-  // is coverable only by feeding mergeFindings ranges directly — the defensive case a future
-  // rule that CAN overlap would hit. mergeFindings sorts internally, so no input-order
-  // precondition (the unsorted case is asserted below).
+  // This block feeds mergeFindings ranges directly to pin its sort/abut/gap edges in isolation;
+  // the fold arm is ALSO exercised end-to-end through scrubText below (an assigned-secret match
+  // wrapping a structured value overlaps on the same bytes). mergeFindings sorts internally, so
+  // there is no input-order precondition (the unsorted case is asserted below).
   const overlap = mergeFindings([
     { kind: "openai-key", start: 0, end: 10 },
     { kind: "email", start: 5, end: 15 },
@@ -110,6 +110,57 @@ console.log("secret-scrub: mergeFindings folds overlapping/abutting ranges into 
     { kind: "openai-key", start: 0, end: 5 },
   ]);
   assert("unsorted disjoint input stays two ranges, in sorted order", unsorted.length === 2 && unsorted[0]?.start === 0 && unsorted[1]?.start === 10);
+}
+
+console.log("secret-scrub: an assignment-anchored secret is removed WHOLE and the result scans clean");
+{
+  // The critical invariant for the assigned-secret rule: it matches the whole `key = "value"`, so
+  // scrub replaces the key + quotes too. If it matched only the value, the inert marker would sit
+  // after the key (`api_key = "[redacted …]"`) and RE-TRIGGER the rule — scan would not be clean.
+  const src = `config:\n  api_key = "a1b2c3d4e5f6g7h8i9j0"\n  keep this line`;
+  const out = scrubText(src);
+  assert("the assigned secret value is gone", !out.includes("a1b2c3d4e5f6g7h8i9j0"));
+  assert("scrubbing the assignment scans clean (marker does not re-trigger the rule)", clean(out));
+  assert("surrounding lines survive", out.includes("config:") && out.includes("keep this line"));
+  assert("scrub is idempotent on an assignment", scrubText(out) === out);
+}
+
+console.log("secret-scrub: a JSON-form assigned secret is removed and scans clean (key-quote before sep)");
+{
+  // The JSON form puts the key's closing " immediately before the : separator (matched by the
+  // rule's optional ['"]? arm) — structurally distinct from the plain form. Prove end-to-end that
+  // scrub removes it and the result scans clean, so a regression in the optional-quote match can't
+  // silently leave the JSON form dirty.
+  const out = scrubText(`{"api_secret": "longsecretvalue1234"}`);
+  assert("the JSON-form secret value is gone", !out.includes("longsecretvalue1234"));
+  assert("the scrubbed JSON form scans clean", clean(out));
+}
+
+console.log("secret-scrub: an assigned secret WRAPPING a structured secret folds to ONE marker");
+{
+  // api_key = "<AWS key>" trips BOTH the AWS rule (the value) and the assigned-secret rule (the
+  // whole assignment); their ranges overlap, so mergeFindings folds them — the fold arm is now
+  // reachable through scrubText, not only via direct mergeFindings calls.
+  const out = scrubText(`api_key = "${AWS}"`);
+  assert("no secret bytes remain", !out.includes(AWS));
+  assert("scans clean", clean(out));
+  const markers = out.match(/\[redacted [^\]]+\]/g) ?? [];
+  assert("overlapping findings fold to exactly one marker", markers.length === 1);
+}
+
+console.log("secret-scrub: an assigned-secret match cannot cross a tool-call field boundary");
+{
+  // turnScanText joins a tool-call's fields with "\n"; scrubTurn scrubs each field separately. If
+  // the pattern could span that newline, a secret-noun key in `tool` and a quoted value in `args`
+  // would warn on the joined text yet be un-scrubbable per field — breaking scan(scrub)===[].
+  // Horizontal-only whitespace around the separator confines every match to one line.
+  const split: AuthorableTurn = { kind: "tool-call", tool: "password", args: `: "secretvalue12345"`, output: null };
+  assert("a key/value split across fields does not warn (no newline-spanning match)", scanTurnsForSecrets([split]).length === 0);
+  assert("scrub-then-scan holds for the cross-field split", scanTurnsForSecrets([scrubTurn(split)]).length === 0);
+  // A single-line assignment INSIDE one field still warns and scrubs clean (the match is intra-line).
+  const inField: AuthorableTurn = { kind: "tool-call", tool: "Bash", args: `run\napi_key = "secretvalue12345"\n`, output: null };
+  assert("a single-line assignment within a field still warns", scanTurnsForSecrets([inField]).length === 1);
+  assert("and scrubs clean", scanTurnsForSecrets([scrubTurn(inField)]).length === 0);
 }
 
 console.log("secret-scrub: scrubTurn covers every warn-scanned field (prose, summary, tool-call)");
