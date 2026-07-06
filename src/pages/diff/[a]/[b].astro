@@ -1,0 +1,85 @@
+---
+import { env } from "cloudflare:workers";
+import Base from "../../../layouts/Base.astro";
+import { loadViewablePaste } from "../../../loadPaste";
+import { deriveDiffColumn, diffOutcome } from "../../../diff";
+
+export const prerender = false;
+
+// [LAW:effects-at-boundaries] The two KV reads are the only IO — performed here at the
+// route boundary, in parallel, once per slug. loadViewablePaste is the ONE visibility
+// gate [LAW:single-enforcer]: a hidden/expired paste is refused on each side exactly as
+// it is on /<slug>, so a diff can never leak a paste that is gone. Everything after is a
+// pure projection of the two PasteLoads (src/diff.ts).
+const { a, b } = Astro.params;
+const now = Date.now();
+const [loadA, loadB] = await Promise.all([
+  loadViewablePaste(env.PASTES, a, now),
+  loadViewablePaste(env.PASTES, b, now),
+]);
+
+// [LAW:dataflow-not-control-flow] The outcome is a VALUE: render both columns (each a
+// shown conversation or an honest absence), or — only when NEITHER side loaded — the
+// failure response carrying both reasons. A one-missing diff is NOT a page failure; it
+// renders the present side beside the absent side's status.
+const left = deriveDiffColumn(a ?? "", loadA);
+const right = deriveDiffColumn(b ?? "", loadB);
+const outcome = diffOutcome(left, right);
+if (outcome.kind === "fail") {
+  return new Response(outcome.message, { status: outcome.status });
+}
+
+// [LAW:one-source-of-truth] The page carries NO platform — each column themes its own
+// subtree via its own data-platform (the same per-element theming the editor preview
+// uses), so two conversations from different platforms keep their own colours side by
+// side instead of one page-level theme overriding both.
+const columns = [outcome.left, outcome.right];
+---
+
+<Base title="Side-by-side · slopspot paste">
+  <section class="conversation-header diff-header">
+    <h1>Side-by-side comparison</h1>
+    <p class="conversation-meta">
+      <span>Two shared conversations, compared</span>
+    </p>
+  </section>
+
+  {/*
+    [LAW:one-type-per-behavior] One column-rendering path over [left, right]: the two
+    sides differ only in their data, never in how they draw. A shown column carries its
+    own header (title links back to /<slug>) and the SAME .conversation markup the full
+    page renders — set from col.html, which came through deriveViewableDialogue, so a
+    redacted turn stays redacted here [LAW:single-enforcer]. A missing column is an
+    honest status box naming which slug and why [LAW:no-silent-failure], never a blank
+    or a silently-dropped side.
+  */}
+  <div class="diff-columns">
+    {columns.map((col) => (
+      <div class="diff-column" data-platform={col.ok ? col.platform : undefined} data-slug={col.slug}>
+        {col.ok ? (
+          <Fragment>
+            <header class="diff-column-header">
+              <h2 class="diff-column-title"><a href={`/${col.slug}`}>{col.title}</a></h2>
+              <p class="conversation-meta">
+                {col.platformLabel && <span class="platform-badge">{col.platformLabel}</span>}
+                {col.platformLabel && <span aria-hidden="true">·</span>}
+                <span>{col.turnCount} turns</span>
+              </p>
+            </header>
+            <section
+              class="conversation"
+              aria-label={`Conversation ${col.slug}`}
+              data-slug={col.slug}
+              set:html={col.html}
+            />
+          </Fragment>
+        ) : (
+          <div class="diff-column-missing" role="status">
+            <p class="diff-column-missing-slug">{col.slug}</p>
+            <p class="diff-column-missing-msg">{col.message}</p>
+          </div>
+        )}
+      </div>
+    ))}
+  </div>
+</Base>
