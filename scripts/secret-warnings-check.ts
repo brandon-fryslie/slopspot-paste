@@ -72,6 +72,20 @@ console.log("secret-warnings: a hardcoded secret assignment in prose is flagged 
   assert("the kind is assigned-secret", warnings[0]?.kinds.includes("assigned-secret") === true);
 }
 
+console.log("secret-warnings: assigned-secret survives the tool-call field boundary + does not over-fire");
+{
+  // turnScanText joins a tool-call's tool/args/output with "\n"; the assigned-secret value is
+  // newline-bounded ([^'"\n]+), so a secret on its own line inside args must still be flagged after
+  // the join. The clean thinking turn holds a JSON-form PLACEHOLDER — a near-miss that must NOT warn.
+  const turns: Turn[] = [
+    { kind: "tool-call", tool: "Bash", args: `cat config.yml\napi_key = "secretvalue12345"\n`, output: null }, // 0 — flagged
+    { kind: "thinking", content: `the template shows api_key = "YOUR_KEY_HERE" which is a placeholder` }, // 1 — not
+  ];
+  const warnings = scanTurnsForSecrets(turns);
+  assert("the tool-call args assignment is flagged across the field join", warnings.some((w) => w.turnIndex === 0 && w.kinds.includes("assigned-secret")));
+  assert("a JSON/placeholder near-miss in thinking does NOT warn", warnings.every((w) => w.turnIndex !== 1));
+}
+
 console.log("secret-warnings: clean turns and a reserved-domain near-miss produce NO warning");
 {
   const turns: Turn[] = [

@@ -65,6 +65,9 @@ const ACCEPT: ReadonlyArray<AcceptCase> = [
   { label: "prefixed uppercase key AUTH_TOKEN (token is final token)", text: `AUTH_TOKEN = "ghijklmnop1234567890"`, kind: "assigned-secret", secret: `AUTH_TOKEN = "ghijklmnop1234567890"` },
   { label: "db_password (prefix, no spaces around =)", text: `db_password="hunter2hunter2hunter2"`, kind: "assigned-secret", secret: `db_password="hunter2hunter2hunter2"` },
   { label: "camelCase apiKey (api[_-]?key matches under i-flag)", text: `apiKey = "aVeryLongRandomValue12"`, kind: "assigned-secret", secret: `apiKey = "aVeryLongRandomValue12"` },
+  // A real password that merely CONTAINS a template char is a leak, not a placeholder — the
+  // envelope reject is anchored on the whole value, so a brace mid-value does not drop it.
+  { label: "a real password containing braces is flagged (not treated as a template)", text: `password = "Pa{ss}word9900xk"`, kind: "assigned-secret", secret: `password = "Pa{ss}word9900xk"` },
 ];
 
 // ── REJECT: a near-miss that shares tokens but not the shape ──────────────────
@@ -118,8 +121,15 @@ const REJECT: ReadonlyArray<RejectCase> = [
   { label: "the placeholder xxx is not a leak", text: `token = "xxx"`, forbid: "assigned-secret" },
   { label: "an angle-bracket template <your-api-key> is not a leak", text: `api_key = "<your-api-key>"`, forbid: "assigned-secret" },
   { label: "a shell template ${API_KEY} is not a leak", text: `secret = "\${API_KEY}"`, forbid: "assigned-secret" },
+  { label: "a mustache template {{token}} is not a leak", text: `token = "{{token}}"`, forbid: "assigned-secret" },
+  { label: "a bare $VAR shell reference is not a leak", text: `secret = "$MY_SECRET_VALUE"`, forbid: "assigned-secret" },
   { label: "an ellipsis placeholder is not a leak", text: `api_key = "..."`, forbid: "assigned-secret" },
   { label: "a quoted env-var reference is still a reference, not a leak", text: `apiKey = "process.env.API_KEY"`, forbid: "assigned-secret" },
+  // JSON-form placeholders: the value extraction is $-anchored, so the key-closing quote is never
+  // taken as the value delimiter — the placeholder predicate sees the value, not ": value".
+  { label: "JSON-form placeholder YOUR_KEY_HERE is rejected", text: `{"api_secret": "YOUR_KEY_HERE"}`, forbid: "assigned-secret" },
+  { label: "JSON-form placeholder changeme is rejected", text: `{"api_secret": "changeme"}`, forbid: "assigned-secret" },
+  { label: "JSON-form quoted env reference is rejected", text: `{"api_secret": "process.env.KEY"}`, forbid: "assigned-secret" },
   // (too-short value)
   { label: "a value shorter than the minimum is not a leak", text: `token = "abc"`, forbid: "assigned-secret" },
   { label: "an empty quoted value is not a leak", text: `api_key = ""`, forbid: "assigned-secret" },

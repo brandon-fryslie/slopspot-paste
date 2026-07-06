@@ -108,16 +108,19 @@ const PLACEHOLDER_SECRET_VALUES = new Set([
   "foo", "bar", "foobar", "abc", "xxx", "yyy",
 ]);
 
-// A quoted assignment value is a PLACEHOLDER (not a leak) when it names a slot, is a template
-// (<x>, ${x}, {{x}}), an ellipsis, a your…here token, a single repeated char, or a quoted env-var
-// reference. Each arm is one enumerated reject family from the shape table — the value predicate is
-// total over the near-misses the quote anchor lets through, never patched in after a reviewer.
+// A quoted assignment value is a PLACEHOLDER (not a leak) when it names a slot, is WHOLLY a
+// template/reference envelope (${VAR} / {{VAR}} / <your-key> / $VAR), an ellipsis, a your…here
+// token, a single repeated char, or a quoted env-var reference. The envelope arms are anchored on
+// the WHOLE value (not "contains a brace") so a real password that merely includes a `{` or `$`
+// (Pa{ss}word99, sk_live_A$B) is still flagged — matching a template char anywhere would silently
+// drop a real leak. Each arm is one enumerated reject family from the shape table.
+const TEMPLATE_ENVELOPE = /^(?:\$\{[^}]*\}|\{\{.*\}\}|<[^>]*>|\$[A-Za-z_]\w*)$/;
 const isPlaceholderSecretValue = (value: string): boolean => {
   const normalized = value.toLowerCase().replace(/[\s_.-]/g, "");
   return (
     PLACEHOLDER_SECRET_VALUES.has(normalized) ||
     /^(.)\1*$/.test(value) ||
-    /[<>{}$]/.test(value) ||
+    TEMPLATE_ENVELOPE.test(value) ||
     /\.{3}|…/.test(value) ||
     /your.*here/i.test(value) ||
     /^(?:process\.env|import\.meta\.env|os\.environ)\b/i.test(value)
