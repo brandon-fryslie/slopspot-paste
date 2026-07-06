@@ -6,8 +6,10 @@
 // claude-share fixtures through the real parser [LAW:behavior-not-structure].
 //
 // ─── THE ACCEPT / REJECT SHAPE TABLE (verbatim) ──────────────────────────────
-// Turn kind -> contribution
-//   message | thinking | insight            -> fenced code blocks in prose -> snippet
+// Turn kind -> contribution  (extract() folds over deriveDialogue(turns), so a
+// `message` becomes a SPOKEN node for user/system or an assistant TEXT block for
+// assistant — both prose-bearing, both contributing their fenced snippets.)
+//   message (user/system/assistant) | thinking | insight -> fenced code blocks -> snippet
 //   tool-call                               -> a file operation, or nothing
 //   subagent (captured)                     -> RECURSE into the nested transcript
 //   subagent (summary-only)                 -> nothing
@@ -348,6 +350,15 @@ console.log("\nArtifact extraction — fenced snippets:");
   // ACCEPT: a fenced block nested in a list item is reached by the recursive walk.
   const inList = snippets(extract([msg("- ```ts\n  code\n  ```")]));
   assert("fence inside a list item -> snippet (nested walk)", inList.length === 1 && inList[0]?.lang === "ts" && inList[0]?.text === "code");
+
+  // SPOKEN nodes (user/system messages) contribute snippets too — deriveDialogue maps
+  // user/system messages to spoken nodes (assistant messages become assistant text
+  // blocks), so this exercises the fold's spoken-node branch, distinct from the
+  // assistant-message path every `msg(...)` fixture above drives.
+  const userSnip = snippets(extract([{ kind: "message", role: "user", content: "look:\n\n```ts\nuserCode()\n```" }]));
+  assert("user (spoken) message prose -> snippet", userSnip.length === 1 && userSnip[0]?.lang === "ts" && userSnip[0]?.text === "userCode()");
+  const sysSnip = snippets(extract([{ kind: "message", role: "system", content: "```sh\nsysCmd\n```" }]));
+  assert("system (spoken) message prose -> snippet", sysSnip.length === 1 && sysSnip[0]?.lang === "sh" && sysSnip[0]?.text === "sysCmd");
 
   // thinking and insight prose are snippet sources too.
   const think = snippets(extract([{ kind: "thinking", content: "```py\nprint(1)\n```" } as Turn]));
