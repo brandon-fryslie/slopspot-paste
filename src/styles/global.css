@@ -2005,7 +2005,8 @@ body:has(.admin-empty) main { max-width: 1100px; }
    verbatim inside each side; these rules only place two of them next to each other
    and widen the route to hold both. Each .diff-column carries its own data-platform,
    so the platform-theme vars above cascade per column, not per page. */
-body:has(.diff-columns) main { max-width: 1400px; }
+body:has(.diff-columns) main,
+body:has(.diff-aligned) main { max-width: 1400px; }
 
 .diff-header { text-align: center; }
 
@@ -2044,10 +2045,60 @@ body:has(.diff-columns) main { max-width: 1400px; }
 .diff-column-missing-slug { font-family: var(--font-mono); font-size: 13px; margin: 0 0 6px; }
 .diff-column-missing-msg { margin: 0; font-size: 14px; }
 
+/* Aligned diff (slopspot-diff-pcd.3): the two heads over a stack of paired rows.
+   [LAW:composability] A row is the same 1fr 1fr grid as the heads, so a left cell sits
+   directly under the left head and directly beside its right counterpart — the alignment
+   the pure core computed made visible. align-items:start keeps unequal-height cells top-
+   aligned so paired prompts share a baseline. */
+.diff-aligned {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.diff-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+/* min-width:0 lets a cell shrink below its content's intrinsic width (wide code scrolls
+   inside its own <pre> instead of stretching the cell). */
+.diff-row > .diff-cell { min-width: 0; }
+/* Opaque page-theme backdrop so platform-tinted bubbles don't bleed through the sticky bar
+   as they scroll under it; the bottom border reads it as a distinct header bar rather than an
+   extension of the content below (which carries its own per-column data-platform theming). */
+.diff-heads {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+/* The full-width heads bar owns the single divider; suppress each header cell's own
+   border-bottom inside it (align-items:start means the cells don't stretch, so the two
+   borders would otherwise render as two rules at different heights). The one-sided layout's
+   .diff-column-header lives outside .diff-heads and keeps its per-header border. */
+.diff-heads .diff-column-header { border-bottom: none; }
+
+/* A gap: this side has no counterpart for the node opposite it. A faint dashed placeholder
+   holds the grid slot so the reader sees the divergence [LAW:no-silent-failure] rather than
+   a silent blank that could read as "same on both sides". */
+.diff-cell[data-gap] {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  min-height: 32px;
+}
+
 /* Stack the two columns on a narrow viewport — no gutter to hold two reading
-   columns, so the comparison becomes vertical. */
+   columns, so the comparison becomes vertical. Aligned rows stack their two cells
+   (left above right) so a pair still reads as belonging together. The gap placeholder
+   STAYS visible here [LAW:no-silent-failure]: once stacked, a one-sided row is content
+   + an empty-counterpart marker — hiding it would collapse the row to a lone cell that
+   reads as a normal pair after the sticky heads scroll off, silently losing the divergence. */
 @media (max-width: 899px) {
-  .diff-columns { grid-template-columns: 1fr; }
+  .diff-columns,
+  .diff-row { grid-template-columns: 1fr; }
 }
 
 /* ─── Block editor chrome (index page) ───────────────────────────────────
