@@ -42,9 +42,19 @@
 
 import { readFileSync } from "node:fs";
 import { extractArtifacts, type CodeArtifact, type FileContent } from "../src/artifacts";
+import { deriveDialogue } from "../src/dialogue";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { argsAsText } from "../src/parsers/jsonl";
 import type { Turn, ToolOutput } from "../src/types";
+
+// extractArtifacts now folds over the derived Dialogue (the redaction substrate the
+// renderer draws), not the flat Turn[]. deriveDialogue is LOSSLESS (view-check.ts), so
+// this wrapper lets every shape-table row below stay verbatim: the fixtures are still
+// authored as Turn[] and the accept/reject contract is unchanged — only the traversal
+// source moved. [LAW:behavior-not-structure] the assertions test the classifier's
+// output, sourced through the one derivation the page uses.
+const extract = (turns: ReadonlyArray<Turn>): ReadonlyArray<CodeArtifact> =>
+  extractArtifacts(deriveDialogue(turns));
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -80,7 +90,7 @@ const fileAt = (arts: ReadonlyArray<CodeArtifact>, path: string): FileContent | 
 console.log("\nArtifact extraction — file fidelity by tool (slopspot-code-export-i0g.2):");
 {
   // ACCEPT: Write -> full(content).
-  const w = extractArtifacts([jsonTool("Write", { file_path: "/a.ts", content: "const a = 1;\n" })]);
+  const w = extract([jsonTool("Write", { file_path: "/a.ts", content: "const a = 1;\n" })]);
   const wc = fileAt(w, "/a.ts");
   assert(
     "Write {file_path,content} -> full(content)",
@@ -88,19 +98,19 @@ console.log("\nArtifact extraction — file fidelity by tool (slopspot-code-expo
   );
 
   // ACCEPT: Read -> full(output.text). Content is in the RESULT, never the args.
-  const r = extractArtifacts([jsonTool("Read", { file_path: "/b.ts" }, fileOut("read body\n"))]);
+  const r = extract([jsonTool("Read", { file_path: "/b.ts" }, fileOut("read body\n"))]);
   const rc = fileAt(r, "/b.ts");
   assert("Read {file_path} + output -> full(output.text)", rc !== null && rc.kind === "full" && rc.text === "read body\n");
 
   // ACCEPT: Read of an EMPTY file -> full(""). A real empty file is a genuine tree
   // node (unlike an empty fenced block, which is nothing to copy).
-  const rEmpty = extractArtifacts([jsonTool("Read", { file_path: "/empty.ts" }, fileOut(""))]);
+  const rEmpty = extract([jsonTool("Read", { file_path: "/empty.ts" }, fileOut(""))]);
   const rEmptyC = fileAt(rEmpty, "/empty.ts");
   assert("Read with empty output -> full('') (real empty file)", rEmptyC !== null && rEmptyC.kind === "full" && rEmptyC.text === "");
 
   // ACCEPT: a Read's output carries CC's line-number gutter (+ summary) -> the file
   // content is the gutter-stripped text, equal to what the renderer displays.
-  const rGutter = extractArtifacts([
+  const rGutter = extract([
     jsonTool("Read", { file_path: "/g.ts" }, fileOut("Read 2 lines\n     1  const x = 1;\n     2  return x;")),
   ]);
   const rGutterC = fileAt(rGutter, "/g.ts");
@@ -110,17 +120,17 @@ console.log("\nArtifact extraction — file fidelity by tool (slopspot-code-expo
   );
 
   // REJECT: Read with NO captured output knows no content -> no file.
-  const rNull = extractArtifacts([jsonTool("Read", { file_path: "/c.ts" }, null)]);
+  const rNull = extract([jsonTool("Read", { file_path: "/c.ts" }, null)]);
   assert("Read {file_path} + null output -> REJECT (no file)", files(rNull).length === 0);
 
   // REJECT: an ERRORED Read's output.text is an error message, not content -> no file.
-  const rErr = extractArtifacts([
+  const rErr = extract([
     jsonTool("Read", { file_path: "/missing.ts" }, { kind: "file-read", text: "ENOENT: no such file", isError: true }),
   ]);
   assert("Read with isError output -> REJECT (error text is not content)", files(rErr).length === 0);
 
   // ACCEPT: Edit -> diff-only, one old->new pair. NEVER a synthesized whole file.
-  const e = extractArtifacts([jsonTool("Edit", { file_path: "/d.ts", old_string: "x", new_string: "y" })]);
+  const e = extract([jsonTool("Edit", { file_path: "/d.ts", old_string: "x", new_string: "y" })]);
   const ec = fileAt(e, "/d.ts");
   assert(
     "Edit {old_string,new_string} -> diff([{old,new}]) (never full)",
@@ -128,7 +138,7 @@ console.log("\nArtifact extraction — file fidelity by tool (slopspot-code-expo
   );
 
   // ACCEPT: MultiEdit -> diff-only carrying every edit.
-  const m = extractArtifacts([
+  const m = extract([
     jsonTool("MultiEdit", {
       file_path: "/e.ts",
       edits: [
@@ -150,52 +160,52 @@ console.log("\nArtifact extraction — structured-args reject rows:");
   // REJECT: Write with no content — never fabricate content [LAW:no-silent-failure].
   assert(
     "Write JSON missing content -> REJECT",
-    files(extractArtifacts([jsonTool("Write", { file_path: "/a.ts" })])).length === 0,
+    files(extract([jsonTool("Write", { file_path: "/a.ts" })])).length === 0,
   );
   // REJECT: content present but non-string -> strField rejects, no fabricated file.
   assert(
     "Write JSON with non-string content -> REJECT",
-    files(extractArtifacts([jsonTool("Write", { file_path: "/a.ts", content: 42 })])).length === 0,
+    files(extract([jsonTool("Write", { file_path: "/a.ts", content: 42 })])).length === 0,
   );
   // REJECT: file_path missing/non-string/empty -> no honest path.
   assert(
     "Write JSON missing file_path -> REJECT",
-    files(extractArtifacts([jsonTool("Write", { content: "orphan" })])).length === 0,
+    files(extract([jsonTool("Write", { content: "orphan" })])).length === 0,
   );
   assert(
     "Edit JSON with non-string file_path -> REJECT",
-    files(extractArtifacts([jsonTool("Edit", { file_path: 42, old_string: "x", new_string: "y" })])).length === 0,
+    files(extract([jsonTool("Edit", { file_path: 42, old_string: "x", new_string: "y" })])).length === 0,
   );
   // REJECT: an empty-string file_path is a string but not a valid path — a pathless
   // file is nonsensical, so it must not slip past the path check.
   assert(
     "Write JSON with empty-string file_path -> REJECT",
-    files(extractArtifacts([jsonTool("Write", { file_path: "", content: "x" })])).length === 0,
+    files(extract([jsonTool("Write", { file_path: "", content: "x" })])).length === 0,
   );
   // REJECT: Edit missing a diff half -> no honest diff.
   assert(
     "Edit JSON missing new_string -> REJECT",
-    files(extractArtifacts([jsonTool("Edit", { file_path: "/d.ts", old_string: "x" })])).length === 0,
+    files(extract([jsonTool("Edit", { file_path: "/d.ts", old_string: "x" })])).length === 0,
   );
   // REJECT: MultiEdit with a malformed entry -> reject whole call (no partial diff).
   assert(
     "MultiEdit with a malformed edit entry -> REJECT (no partial diff)",
-    files(extractArtifacts([jsonTool("MultiEdit", { file_path: "/e.ts", edits: [{ old_string: "a" }] })])).length === 0,
+    files(extract([jsonTool("MultiEdit", { file_path: "/e.ts", edits: [{ old_string: "a" }] })])).length === 0,
   );
   // REJECT: NotebookEdit — a single cell's new_source is neither a whole file nor
   // an old->new diff; representing it as either would fabricate.
   assert(
     "NotebookEdit -> REJECT (cell source is neither whole file nor diff)",
-    files(extractArtifacts([jsonTool("NotebookEdit", { notebook_path: "/n.ipynb", new_source: "print(1)" })])).length === 0,
+    files(extract([jsonTool("NotebookEdit", { notebook_path: "/n.ipynb", new_source: "print(1)" })])).length === 0,
   );
   // REJECT: non-file tools and unknown tools produce no file artifact.
   assert(
     "Bash -> REJECT (not a file tool)",
-    files(extractArtifacts([jsonTool("Bash", { command: "ls" })])).length === 0,
+    files(extract([jsonTool("Bash", { command: "ls" })])).length === 0,
   );
   assert(
     "unknown tool -> REJECT (no file semantics)",
-    files(extractArtifacts([jsonTool("Frobnicate", { file_path: "/x", content: "y" })])).length === 0,
+    files(extract([jsonTool("Frobnicate", { file_path: "/x", content: "y" })])).length === 0,
   );
 }
 
@@ -204,7 +214,7 @@ console.log("\nArtifact extraction — format boundary (real claude-share fixtur
 {
   // A raw-text (claude-share) tool-call carries no structured args (parseJsonObject
   // -> null), so structured file extraction is impossible — a jsonl-only capability.
-  const raw = extractArtifacts([rawTool("Write", "Wrote the config file")]);
+  const raw = extract([rawTool("Write", "Wrote the config file")]);
   assert("raw-text 'Write' tool-call -> REJECT (format boundary, no file)", files(raw).length === 0);
 
   // The real captured fixture: every tool-call is condensed prose ("Ran a command",
@@ -216,7 +226,7 @@ console.log("\nArtifact extraction — format boundary (real claude-share fixtur
     assert("fixture has tool-calls to reject (guards a vacuous pass)", toolCalls > 0);
     assert(
       "no claude-share tool-call yields a file artifact (format boundary)",
-      files(extractArtifacts(fixture)).length === 0,
+      files(extract(fixture)).length === 0,
     );
   }
 }
@@ -225,7 +235,7 @@ console.log("\nArtifact extraction — format boundary (real claude-share fixtur
 console.log("\nArtifact extraction — per-path aggregation:");
 {
   // A path with a Write base is full-content even if later Edited (base exists).
-  const writeThenEdit = extractArtifacts([
+  const writeThenEdit = extract([
     jsonTool("Write", { file_path: "/f.ts", content: "v1\n" }),
     jsonTool("Edit", { file_path: "/f.ts", old_string: "v1", new_string: "v2" }),
   ]);
@@ -238,7 +248,7 @@ console.log("\nArtifact extraction — per-path aggregation:");
 
   // Edits BEFORE a Write on the same path -> full (the later base wins; the earlier
   // diffs are subordinate and dropped, not carried as dead state).
-  const editThenWrite = extractArtifacts([
+  const editThenWrite = extract([
     jsonTool("Edit", { file_path: "/ew.ts", old_string: "a", new_string: "b" }),
     jsonTool("Write", { file_path: "/ew.ts", content: "final\n" }),
   ]);
@@ -249,7 +259,7 @@ console.log("\nArtifact extraction — per-path aggregation:");
   );
 
   // Only-Edits path (no Write/Read base) -> diff-only, all edits in source order.
-  const onlyEdits = extractArtifacts([
+  const onlyEdits = extract([
     jsonTool("Edit", { file_path: "/g.ts", old_string: "a", new_string: "b" }),
     jsonTool("Edit", { file_path: "/g.ts", old_string: "b", new_string: "c" }),
   ]);
@@ -260,7 +270,7 @@ console.log("\nArtifact extraction — per-path aggregation:");
   );
 
   // Two full snapshots on one path -> the LAST snapshot in source order wins.
-  const twoFull = extractArtifacts([
+  const twoFull = extract([
     jsonTool("Read", { file_path: "/h.ts" }, fileOut("first\n")),
     jsonTool("Write", { file_path: "/h.ts", content: "second\n" }),
   ]);
@@ -271,7 +281,7 @@ console.log("\nArtifact extraction — per-path aggregation:");
 // ══ SUBAGENT RECURSION ════════════════════════════════════════════════════════
 console.log("\nArtifact extraction — subagent recursion:");
 {
-  const captured = extractArtifacts([
+  const captured = extract([
     msg("spawning"),
     {
       kind: "subagent",
@@ -287,7 +297,7 @@ console.log("\nArtifact extraction — subagent recursion:");
   const nc = fileAt(captured, "/nested.ts");
   assert("captured subagent -> its files fold into the tree", nc !== null && nc.kind === "full" && nc.text === "inner\n");
 
-  const summaryOnly = extractArtifacts([
+  const summaryOnly = extract([
     {
       kind: "subagent",
       agentType: null,
@@ -302,51 +312,51 @@ console.log("\nArtifact extraction — subagent recursion:");
 // ══ FENCED SNIPPETS (format-agnostic) ═════════════════════════════════════════
 console.log("\nArtifact extraction — fenced snippets:");
 {
-  const langed = snippets(extractArtifacts([msg("intro\n\n```ts\nconst x = 1;\n```\n")]));
+  const langed = snippets(extract([msg("intro\n\n```ts\nconst x = 1;\n```\n")]));
   assert("fenced ```lang -> snippet(lang=first word)", langed.length === 1 && langed[0]?.lang === "ts" && langed[0]?.text === "const x = 1;");
 
-  const bare = snippets(extractArtifacts([msg("```\nplain\n```\n")]));
+  const bare = snippets(extract([msg("```\nplain\n```\n")]));
   assert("fenced bare ``` -> snippet(lang=null)", bare.length === 1 && bare[0]?.lang === null && bare[0]?.text === "plain");
 
   // REJECT: an empty fenced block is zero bytes -> not an artifact.
-  assert("empty fenced block -> REJECT (no snippet)", snippets(extractArtifacts([msg("```ts\n```\n")])).length === 0);
+  assert("empty fenced block -> REJECT (no snippet)", snippets(extract([msg("```ts\n```\n")])).length === 0);
 
   // REJECT: an indented (4-space) code block carries no fence.
-  assert("indented code block -> REJECT (no fence)", snippets(extractArtifacts([msg("text\n\n    indented\n")])).length === 0);
+  assert("indented code block -> REJECT (no fence)", snippets(extract([msg("text\n\n    indented\n")])).length === 0);
 
   // REJECT: a 4-space-INDENTED block whose text contains backticks is still an
   // indented block per CommonMark (0–3 space fences only) — it must NOT become a
   // false snippet carrying literal ``` markers.
-  const indentedBackticks = snippets(extractArtifacts([msg("    ```python\n    print(1)\n    ```")]));
+  const indentedBackticks = snippets(extract([msg("    ```python\n    print(1)\n    ```")]));
   assert("4-space-indented block with backticks -> REJECT (not a fence)", indentedBackticks.length === 0);
 
   // ACCEPT boundary: a fence indented up to 3 spaces IS a valid opening fence.
-  const threeSpaceFence = snippets(extractArtifacts([msg("   ```js\n   ok\n   ```")]));
+  const threeSpaceFence = snippets(extract([msg("   ```js\n   ok\n   ```")]));
   assert("3-space-indented fence -> ACCEPT (valid opening fence)", threeSpaceFence.length === 1 && threeSpaceFence[0]?.lang === "js");
 
   // REJECT: inline codespan is not a block.
-  assert("inline codespan -> REJECT (not a block)", snippets(extractArtifacts([msg("use `x` inline")])).length === 0);
+  assert("inline codespan -> REJECT (not a block)", snippets(extract([msg("use `x` inline")])).length === 0);
 
   // ACCEPT: a tilde-fenced block (~~~) is a valid fence too, not just backticks.
-  const tilde = snippets(extractArtifacts([msg("~~~python\nprint(1)\n~~~\n")]));
+  const tilde = snippets(extract([msg("~~~python\nprint(1)\n~~~\n")]));
   assert("tilde fence ~~~ -> snippet", tilde.length === 1 && tilde[0]?.lang === "python" && tilde[0]?.text === "print(1)");
 
   // ACCEPT: a fenced block nested in a blockquote is reached by the recursive walk.
-  const inQuote = snippets(extractArtifacts([msg("> ```ts\n> code\n> ```")]));
+  const inQuote = snippets(extract([msg("> ```ts\n> code\n> ```")]));
   assert("fence inside a blockquote -> snippet (nested walk)", inQuote.length === 1 && inQuote[0]?.lang === "ts" && inQuote[0]?.text === "code");
 
   // ACCEPT: a fenced block nested in a list item is reached by the recursive walk.
-  const inList = snippets(extractArtifacts([msg("- ```ts\n  code\n  ```")]));
+  const inList = snippets(extract([msg("- ```ts\n  code\n  ```")]));
   assert("fence inside a list item -> snippet (nested walk)", inList.length === 1 && inList[0]?.lang === "ts" && inList[0]?.text === "code");
 
   // thinking and insight prose are snippet sources too.
-  const think = snippets(extractArtifacts([{ kind: "thinking", content: "```py\nprint(1)\n```" } as Turn]));
+  const think = snippets(extract([{ kind: "thinking", content: "```py\nprint(1)\n```" } as Turn]));
   assert("thinking prose -> snippet", think.length === 1 && think[0]?.lang === "py");
-  const insight = snippets(extractArtifacts([{ kind: "insight", content: "```sh\nls\n```" } as Turn]));
+  const insight = snippets(extract([{ kind: "insight", content: "```sh\nls\n```" } as Turn]));
   assert("insight prose -> snippet", insight.length === 1 && insight[0]?.lang === "sh");
 
   // turn-summary and usage carry no authored code.
-  const noneKinds = extractArtifacts([
+  const noneKinds = extract([
     { kind: "turn-summary", text: "```ts\nx\n```" } as Turn,
     { kind: "usage", usage: { input: 1, output: 1, cacheCreation: 0, cacheRead: 0 } } as Turn,
   ]);
@@ -356,14 +366,14 @@ console.log("\nArtifact extraction — fenced snippets:");
   const artifactFixture = parseClaudeShare(readFileSync("test/fixtures/claude-share-fenced-art.md", "utf8"));
   assert("fenced-art fixture parses", artifactFixture !== null);
   if (artifactFixture) {
-    assert("fenced code in claude-share prose IS extracted (format-agnostic)", snippets(extractArtifacts(artifactFixture)).length > 0);
+    assert("fenced code in claude-share prose IS extracted (format-agnostic)", snippets(extract(artifactFixture)).length > 0);
   }
 }
 
 // ══ OUTPUT ORDER ══════════════════════════════════════════════════════════════
 console.log("\nArtifact extraction — output order:");
 {
-  const mixed = extractArtifacts([
+  const mixed = extract([
     msg("```ts\nsnip1\n```"),
     jsonTool("Write", { file_path: "/z1.ts", content: "z1\n" }),
     jsonTool("Write", { file_path: "/z2.ts", content: "z2\n" }),
