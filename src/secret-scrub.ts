@@ -15,6 +15,10 @@
 
 import { scanSecrets, describeSecretKind, type SecretKind } from "./secret-scan";
 import type { Origin, ReplayableOrigin } from "./types";
+// [LAW:one-way-deps] Type-only: AuthorableTurn is the editor's turn refinement, imported for
+// scrubTurn's signature and erased at build. blocks.ts does NOT import this module, so the edge
+// is store.ts -> secret-scrub.ts (never blocks.ts -> the scanner) with no runtime cycle.
+import type { AuthorableTurn } from "./editor/blocks";
 
 // [LAW:no-silent-failure] The marker that REPLACES a matched range. It names the KIND(s) it
 // removed (from the one label source, describeSecretKind) so the reader sees WHAT was taken
@@ -88,3 +92,31 @@ export const scrubOrigin = (origin: Origin): Origin =>
       ? origin
       : { ...origin, input: scrubReplayable(origin.input) }
     : scrubReplayable(origin);
+
+// [LAW:no-silent-failure] Remove every flagged secret from a turn's STORED text — the SCRUB twin
+// of secret-warnings.scanTurnsForSecrets (the scan side lives one module over; both are pure,
+// top-level, and depend only on the scanner + domain types, never the editor). It rewrites EVERY
+// text-bearing field, not just prose or the caret's field: a tool-call's tool/args/output.text
+// each carry a leak, so all are scrubbed. That field surface is exactly the one
+// secret-warnings.turnScanText SCANS, so scan-surface == scrub-surface — a warned secret is a
+// removed secret; secret-scrub-check's "scrub then scan finds nothing" proves it
+// [LAW:verifiable-goals]. Exhaustive over AuthorableTurn: a new author-able kind fails to compile
+// until it declares how it is scrubbed. Kind and every non-text field ride through unchanged, so
+// a scrub is a content edit, never a shape change.
+export const scrubTurn = (turn: AuthorableTurn): AuthorableTurn => {
+  switch (turn.kind) {
+    case "message":
+    case "insight":
+    case "thinking":
+      return { ...turn, content: scrubText(turn.content) };
+    case "turn-summary":
+      return { ...turn, text: scrubText(turn.text) };
+    case "tool-call":
+      return {
+        ...turn,
+        tool: scrubText(turn.tool),
+        args: scrubText(turn.args),
+        output: turn.output === null ? null : { ...turn.output, text: scrubText(turn.output.text) },
+      };
+  }
+};

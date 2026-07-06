@@ -15,8 +15,8 @@
 //
 // Secret values are synthetic but shaped like the real producers. None is a live credential.
 
-import { scrubText, scrubOrigin, mergeFindings } from "../src/secret-scrub";
-import { scrubTurn, type AuthorableTurn } from "../src/editor/blocks";
+import { scrubText, scrubOrigin, scrubTurn, mergeFindings } from "../src/secret-scrub";
+import { type AuthorableTurn } from "../src/editor/blocks";
 import { scanSecrets } from "../src/secret-scan";
 import { scanTurnsForSecrets } from "../src/secret-warnings";
 import type { Origin, ReplayableOrigin } from "../src/types";

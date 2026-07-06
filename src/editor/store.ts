@@ -18,13 +18,13 @@ import { makeAutoObservable, runInAction } from "mobx";
 import type { DraftRecord, InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
 import { platformOf, sourceOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
-import { emptyTurn, isAuthorable, mergeTurns, newId, scrubTurn, splitTurn, toBlocks, toTurns } from "./blocks";
+import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
 import { claudeCodeSessionId } from "../url";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveDialogue, plainView } from "../dialogue";
 import { scanTurnsForSecrets, type TurnSecretWarning } from "../secret-warnings";
-import { scrubOrigin } from "../secret-scrub";
+import { scrubOrigin, scrubTurn } from "../secret-scrub";
 
 export type View = "blocks" | "preview";
 
