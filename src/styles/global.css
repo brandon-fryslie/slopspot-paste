@@ -1786,6 +1786,32 @@ body.agent-prompt-ready .copy-agent-prompt.copied {
   border-color: var(--accent);
 }
 
+/* ─── Document-scoped "Copy all code" ────────────────────────────────────
+   One control that copies every extracted code artifact (files + fenced
+   snippets) as a single legible payload. Hidden until the client confirms
+   clipboard support and wires it (body.copy-all-ready), mirroring .copy-code —
+   a no-JS viewer never sees a button that can't act. The payload lives in a
+   hidden sibling <pre> the button reads; the section is absent entirely when
+   the conversation carries no code. */
+.code-export { margin-bottom: 24px; }
+.copy-all-code { display: none; }
+body.copy-all-ready .copy-all-code {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 6px 15px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+body.copy-all-ready .copy-all-code:hover { color: var(--fg); border-color: var(--accent); }
+body.copy-all-ready .copy-all-code:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+body.copy-all-ready .copy-all-code.copied { color: var(--accent); border-color: var(--accent); }
+
 /* ─── Admin (/sloppy) — dense scannable list ─────────────────────────── */
 .admin-header { margin-bottom: 16px; }
 .admin-header h1 {
