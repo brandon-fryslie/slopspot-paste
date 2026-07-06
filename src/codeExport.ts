@@ -69,7 +69,12 @@ export const renderCodeExportControl = (artifacts: ReadonlyArray<CodeArtifact>):
   const label = `Copy all code · ${n} block${n === 1 ? "" : "s"}`;
   const payload = formatCodeArtifacts(artifacts);
   return (
-    `<button type="button" class="copy-all-code" data-copy-all-code aria-label="Copy all code">${escapeHtml(label)}</button>` +
+    // [LAW:one-source-of-truth] No separate aria-label: the visible text is the button's
+    // ONLY accessible name. A redundant aria-label would override the text for screen
+    // readers — hiding the block count and freezing the announced name at "Copy all code"
+    // while the text flips to "Copied". With the text as the sole name, that flip is the
+    // confirmation SR users hear too.
+    `<button type="button" class="copy-all-code" data-copy-all-code>${escapeHtml(label)}</button>` +
     `<pre class="copy-all-code-payload" hidden aria-hidden="true">${escapeHtml(payload)}</pre>`
   );
 };

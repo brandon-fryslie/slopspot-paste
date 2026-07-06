@@ -631,12 +631,16 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
         if (!payloadEl) throw new Error("copy-all-code button has no payload sibling");
         // [LAW:one-source-of-truth] Revert label read from the button the server rendered.
         const label = copyAll.textContent;
+        // [LAW:no-ambient-temporal-coupling] ONE revert timer owns the label. A rapid
+        // second click clears the first timer before arming its own, so an earlier timer
+        // can never flip the label back out from under a later "Copied".
+        let revert = 0;
         copyAll.addEventListener("click", async () => {
           await navigator.clipboard.writeText(payloadEl.textContent ?? "");
           copyAll.classList.add("copied");
           copyAll.textContent = "Copied";
-          // The button owns its own revert timer — no shared scheduler.
-          window.setTimeout(() => {
+          window.clearTimeout(revert);
+          revert = window.setTimeout(() => {
             copyAll.classList.remove("copied");
             copyAll.textContent = label;
           }, 1200);
