@@ -39,11 +39,9 @@ export type Redaction = { start: number; end: number; kinds: SecretKind[] };
 // it is total over any caller's order — the fold has no start-sorted precondition to violate
 // [LAW:types-are-the-program], and unsorted input can never silently mangle a redaction
 // [LAW:no-silent-failure]. scanSecrets already sorts for its own display determinism, so this
-// re-sort is a no-op on the scrubText path. Exported for direct unit testing: the anchored
-// scanner's word boundaries make scanSecrets output ALWAYS disjoint (two secrets are always
-// separated or collapse into one match), so the fold arm is unreachable through scrubText and is
-// coverable only by feeding overlapping ranges directly — the defensive case a future rule that
-// CAN produce overlaps would hit, inherited from overlay's mergeRanges.
+// re-sort is a no-op on the scrubText path. The fold arm IS reachable through scrubText: the
+// assigned-secret rule matches a whole `key = "value"` assignment while a structured rule matches
+// the value inside it, so the two findings overlap on the same bytes and fold to one marker.
 export const mergeFindings = (
   findings: ReadonlyArray<{ kind: SecretKind; start: number; end: number }>,
 ): Redaction[] => {

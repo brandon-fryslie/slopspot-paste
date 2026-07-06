@@ -29,11 +29,21 @@
 //                                                             the words "private key" in prose
 //  email               jane.doe@gmail.com                     @handle (no local part); foo@bar (no TLD);
 //                                                             user@example.com (RFC-2606 reserved doc domain)
+//  assigned-secret     a secret-NAMED key (…password/token/    a bare `apiKey` with no value; an unquoted
+//                      …api_key) + = / : + a QUOTED literal    ref (apiKey = process.env.X); a placeholder
+//                      value ≥8 chars that is not a placeholder (YOUR_KEY_HERE / changeme / xxx / <key> /
+//                                                              ${X}); a value < 8; secretary / tokenizer
+//                                                              (noun is not the key's final token)
 //
-// SCOPE (groom-on-pull refinement recorded on the ticket): a generic high-entropy /
-// assignment-anchored detector is deliberately NOT here. Its reject set (every hash, UUID,
-// base64 blob, env-var placeholder) is unbounded, so it cannot satisfy the enumeration-gap
-// discipline this module is built on — it is its own later slice, not a rule squeezed in.
+// The assigned-secret rule is the ONE generalization beyond an exact producer prefix. A bare
+// high-entropy detector is intractable — its reject set (every hash, UUID, base64 blob) is
+// unbounded. The tractable shape is ASSIGNMENT-ANCHORED: a secret-named key + separator + a
+// QUOTED literal value. The quote is the load-bearing anchor — it rejects every env-var reference
+// (apiKey = process.env.X is unquoted) by construction, collapsing the near-miss space to two
+// finite families (placeholder value, too-short value) a set + a few patterns enumerate; the
+// key's FINAL-token match (a \b after the noun) rejects secretary/tokenizer. It trades recall for
+// bounded noise (a warn, never a block), and can co-fire with a structured rule on the same value
+// — the two findings overlap and fold to one redaction downstream.
 
 // [LAW:types-are-the-program] The kinds are a closed set — each names one producer's shape,
 // so a finding's kind alone tells the consumer what was found (and, via describeSecretKind,
@@ -46,7 +56,8 @@ export type SecretKind =
   | "google-api-key"
   | "jwt"
   | "private-key-block"
-  | "email";
+  | "email"
+  | "assigned-secret";
 
 // [LAW:one-source-of-truth] A finding is its kind and the half-open [start,end) range INTO
 // THE SCANNED STRING — nothing more. The matched text is NOT carried: it is text.slice(start,
@@ -79,6 +90,69 @@ const isRealEmail = (match: string): boolean => {
   return !RESERVED_EMAIL_DOMAINS.has(domain) && !RESERVED_EMAIL_TLDS.has(tld);
 };
 
+// [LAW:types-are-the-program] A hardcoded credential has no fixed alphabet, so it cannot be
+// anchored on a producer prefix like the rules above. The tractable theorem is the ASSIGNMENT: a
+// secret-named key bound to a QUOTED literal value. The quote makes the reject set bounded — an
+// env-var reference or bare identifier is unquoted and fails the pattern outright, so the only
+// near-misses the predicate must still reject are placeholder and too-short values, both finite.
+const ASSIGNED_SECRET_MIN_LENGTH = 8;
+
+// Values that NAME a secret slot instead of holding one. Compared after lowercasing and stripping
+// separators so YOUR-API-KEY, your_api_key and yourApiKey collapse to one entry. Kept in sync with
+// the reject rows in scripts/secret-check.ts [LAW:verifiable-goals].
+// The secret NOUNS (secret/password/token/apikey/key) are deliberately NOT here: a value that IS
+// its own noun (password = "password") is a weak real credential worth warning on, not a slot the
+// author means to replace, and the noun would also swallow an obfuscated form (p.a.s.s.w.o.r.d
+// normalizes to "password"). Min length rejects the short noun values; these are the words that
+// genuinely name a slot.
+const PLACEHOLDER_SECRET_VALUES = new Set([
+  "changeme", "change", "placeholder", "example", "sample", "dummy", "redacted", "todo", "tbd",
+  "fixme", "none", "null", "nil", "na", "test", "testing", "value", "string", "default",
+  "yourkey", "yourapikey", "yoursecret", "yourtoken", "yourpassword", "yourpasswd",
+  "yourkeyhere", "yourapikeyhere", "yoursecrethere", "yourtokenhere", "yourpasswordhere",
+  "yourpasswdhere", "insertkeyhere", "replaceme",
+  "foo", "bar", "foobar", "abc", "xxx", "yyy",
+]);
+
+// A quoted assignment value is a PLACEHOLDER (not a leak) when it names a slot, is WHOLLY a
+// template/reference envelope (${VAR} / {{VAR}} / <your-key> / $VAR), an ellipsis, a your…here
+// token, a single repeated char, or a WHOLE-value env-var reference. Every arm is anchored on the
+// WHOLE value (a Set.has exact, or a ^…$ regex) so a real credential that merely CONTAINS one of
+// these shapes — Pa{ss}word99 (brace), PutYourTokenHereNow (your…here substring), or
+// process.env.X;realpass (reference prefix) — is still flagged. Matching any of them mid-value
+// would silently drop a real leak [LAW:no-silent-failure]. Each arm is one reject family from the
+// shape table.
+const TEMPLATE_ENVELOPE = /^(?:\$\{[^}]*\}|\{\{.*\}\}|<[^>]*>|\$[A-Za-z_]\w*)$/;
+// The tail admits property, subscript, AND method-call access (os.environ.get('K', 'D')) of the
+// SUPPORTED roots — a value that is wholly one of these is a reference, not a literal. New roots
+// (os.getenv, System.getenv, …) are an unbounded set the generic detector deliberately scopes out:
+// their fallout is a dismissible warn, the design's accepted bounded noise, never a missed leak.
+const ENV_REFERENCE =
+  /^(?:process\.env|import\.meta\.env|os\.environ)(?:[.[][\w.[\]'"]*)?(?:\([\w.,'"\s]*\))?$/i;
+const isPlaceholderSecretValue = (value: string): boolean => {
+  const normalized = value.toLowerCase().replace(/[\s_.-]/g, "");
+  return (
+    PLACEHOLDER_SECRET_VALUES.has(normalized) ||
+    /^(.)\1*$/.test(value) ||
+    TEMPLATE_ENVELOPE.test(value) ||
+    /^(?:\.{3,}|…+)$/.test(value) ||
+    // Fill-me-in template ("insert your key here" and its siblings), tested against the NORMALIZED
+    // value so it is delimiter-insensitive for free — INSERT_YOUR_KEY_HERE, INSERT-YOUR-KEY-HERE and
+    // insertyourkeyhere collapse to one form [LAW:single-enforcer], no bespoke word boundary needed.
+    /^(?:your|insert|replace|put|add|enter|paste|fill).*here$/.test(normalized) ||
+    ENV_REFERENCE.test(value)
+  );
+};
+
+// [LAW:no-defensive-null-guards] The rule matches the WHOLE `key = "value"` assignment, so accept
+// re-extracts the trailing quoted value the pattern guarantees is there; the `!== undefined` is not
+// a defensive guard but part of the accept-set ("has a real quoted value AND it is long and not a
+// placeholder"). Real iff it clears the min length and is not a named/template/reference slot.
+const isRealAssignedSecret = (match: string): boolean => {
+  const value = /(['"])((?:(?!\1)[^\n])+)\1$/.exec(match)?.[2];
+  return value !== undefined && value.length >= ASSIGNED_SECRET_MIN_LENGTH && !isPlaceholderSecretValue(value);
+};
+
 const SECRET_RULES: ReadonlyArray<SecretRule> = [
   // AWS access key ids are exactly AKIA/ASIA + 16 UPPERCASE alnum. \b at both ends rejects
   // an embedded or over-long run; the uppercase class rejects a scrubbed lowercase id.
@@ -106,6 +180,31 @@ const SECRET_RULES: ReadonlyArray<SecretRule> = [
     kind: "email",
     pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
     accept: isRealEmail,
+  },
+  // A hardcoded secret assignment: a key whose FINAL token is a secret noun, a : or = separator,
+  // then a QUOTED literal value. The \b after the noun makes it the key's last token, so
+  // secretary/tokenizer (noun is a prefix, not the token) fail by construction; ['"]? admits a
+  // JSON "key": form. Whitespace around the separator is HORIZONTAL-only ([^\S\n]*, never \n): an
+  // assignment is a single-line construct, and — critically — turnScanText joins a tool-call's
+  // fields with "\n" while scrubTurn scrubs each field separately, so a match allowed to cross a
+  // newline would be warn-visible on the joined text yet un-scrubbable per field, breaking the
+  // scan(scrub(x))===[] invariant. Confining the match to one line keeps scan-surface == scrub-surface.
+  // The value is (?:(?!\1)[^\n])+ — content up to the CAPTURED delimiter, so a
+  // double-quoted value may contain an apostrophe (and vice versa) without truncating the match.
+  // Known bounded-recall limit: NOT escape-aware, so a value with a backslash-escaped copy of its
+  // own delimiter (password = "val\"escaped") truncates at that quote and is dropped; escape
+  // handling would need a ReDoS-safe \\.-alternation, not worth the hot-path complexity for a
+  // pathological paste given this is an explicitly bounded-recall backstop.
+  // It matches the WHOLE assignment — not just the value — because scrub replaces a match with an
+  // inert marker, and a marker left where only the value was would sit after the key and re-trigger
+  // this rule; removing the key + quotes too keeps scrub idempotent. Checked LAST: it is the broad
+  // backstop and can co-fire with a structured rule on the same value (the ranges overlap and fold
+  // to one redaction downstream).
+  {
+    kind: "assigned-secret",
+    pattern:
+      /\b[A-Za-z0-9_]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|client[_-]?secret)\b['"]?[^\S\n]*[:=][^\S\n]*(['"])(?:(?!\1)[^\n])+\1/gi,
+    accept: isRealAssignedSecret,
   },
 ];
 
@@ -148,5 +247,7 @@ export const describeSecretKind = (kind: SecretKind): string => {
       return "private key block";
     case "email":
       return "email address";
+    case "assigned-secret":
+      return "hardcoded secret";
   }
 };
