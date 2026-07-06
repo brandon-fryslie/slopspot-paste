@@ -234,6 +234,18 @@ console.log("\nArtifact extraction — per-path aggregation:");
   );
   assert("aggregated path appears once, not per-op", files(writeThenEdit).length === 1);
 
+  // Edits BEFORE a Write on the same path -> full (the later base wins; the earlier
+  // diffs are subordinate and dropped, not carried as dead state).
+  const editThenWrite = extractArtifacts([
+    jsonTool("Edit", { file_path: "/ew.ts", old_string: "a", new_string: "b" }),
+    jsonTool("Write", { file_path: "/ew.ts", content: "final\n" }),
+  ]);
+  const ewc = fileAt(editThenWrite, "/ew.ts");
+  assert(
+    "Edit then Write same path -> full (pre-base diffs dropped)",
+    ewc !== null && ewc.kind === "full" && ewc.text === "final\n",
+  );
+
   // Only-Edits path (no Write/Read base) -> diff-only, all edits in source order.
   const onlyEdits = extractArtifacts([
     jsonTool("Edit", { file_path: "/g.ts", old_string: "a", new_string: "b" }),

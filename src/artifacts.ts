@@ -164,12 +164,14 @@ const FILE_EXTRACTORS: { readonly [tool: string]: FileExtractor } = {
   },
 };
 
-// The per-path accumulator: the last whole-file snapshot seen (null until a
-// Write/Read supplies one) and every edit seen, in source order. A path enters the
-// map only when an op is accepted, so at resolution one of the two is always present.
+// The per-path accumulator, carrying an honest invariant: `edits` is non-empty IFF
+// `fullText` is null. Once any Write/Read supplies a whole-file snapshot, diffs are
+// subordinate (never shown), so they are cleared and no further ones accumulate —
+// the accumulator never holds edits it will discard [LAW:no-silent-failure]. A path
+// enters the map only when an op is accepted, so at resolution one side is present.
 interface PathAcc {
   fullText: string | null;
-  readonly edits: FileEdit[];
+  edits: FileEdit[];
 }
 
 const resolvePath = (acc: PathAcc): FileContent =>
@@ -206,6 +208,15 @@ const fileOpOf = (
   return op === null ? null : { path, op };
 };
 
+// [LAW:types-are-the-program] Exhaustiveness witness, mirroring deriveDialogue's:
+// callable only with a value narrowed to `never`, so the fold's switch below stops
+// compiling if a new Turn kind is added without classifying it here — the new kind
+// can never silently contribute no artifacts. [LAW:no-silent-failure] it also throws
+// if a value somehow slips past the type system at runtime.
+const assertNever = (turn: never): never => {
+  throw new Error(`extractArtifacts: unhandled turn kind: ${(turn as { kind?: unknown }).kind}`);
+};
+
 // [LAW:dataflow-not-control-flow] A single in-source-order fold over the flat Turn
 // stream — the same shape as deriveDialogue. Snippets append in source order;
 // file ops aggregate into a path-keyed map whose insertion order is first-seen path
@@ -222,8 +233,12 @@ const fold = (
       acc = { fullText: null, edits: [] };
       files.set(path, acc);
     }
-    if (op.fidelity === "full") acc.fullText = op.text; // last full snapshot wins
-    else acc.edits.push(...op.edits);
+    if (op.fidelity === "full") {
+      acc.fullText = op.text; // last full snapshot wins
+      acc.edits = []; // a full base makes prior diffs subordinate — drop them
+    } else if (acc.fullText === null) {
+      acc.edits.push(...op.edits); // accumulate diffs only while there is no base
+    }
   };
 
   for (const turn of turns) {
@@ -250,6 +265,8 @@ const fold = (
       case "turn-summary":
       case "usage":
         break;
+      default:
+        return assertNever(turn);
     }
   }
 };
