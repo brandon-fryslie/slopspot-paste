@@ -43,6 +43,7 @@
 import { readFileSync } from "node:fs";
 import { extractArtifacts, type CodeArtifact, type FileContent } from "../src/artifacts";
 import { parseClaudeShare } from "../src/parsers/claude-share";
+import { argsAsText } from "../src/parsers/jsonl";
 import type { Turn, ToolOutput } from "../src/types";
 
 const assert = (label: string, cond: boolean): void => {
@@ -55,11 +56,12 @@ const assert = (label: string, cond: boolean): void => {
 };
 
 // ── Turn builders mirroring the two origins ───────────────────────────────────
-// jsonl-origin tool call: args is serialized JSON (argsAsText in jsonl.ts).
+// jsonl-origin tool call: args serialized through the SAME argsAsText production
+// uses, so the test's args shape cannot drift from the parser's.
 const jsonTool = (tool: string, input: unknown, output: ToolOutput | null = null): Turn => ({
   kind: "tool-call",
   tool,
-  args: JSON.stringify(input, null, 2),
+  args: argsAsText(input),
   output,
 });
 // cc/claude-share-origin tool call: args is raw prose text.

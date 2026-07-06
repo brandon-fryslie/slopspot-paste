@@ -124,7 +124,9 @@ const readEdits = (obj: JsonObject): ReadonlyArray<FileEdit> | null => {
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const edits: FileEdit[] = [];
   for (const entry of raw) {
-    if (entry === null || typeof entry !== "object") return null;
+    // An array is `typeof "object"` too, so it must be excluded before the cast —
+    // otherwise `entry as JsonObject` would be a lie the type system can't catch.
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
     const e = readEdit(entry as JsonObject);
     if (e === null) return null;
     edits.push(e);
@@ -163,21 +165,6 @@ const FILE_EXTRACTORS: { readonly [tool: string]: FileExtractor } = {
     return edits === null ? null : { fidelity: "diff", edits };
   },
 };
-
-// The per-path accumulator, carrying an honest invariant: `edits` is non-empty IFF
-// `fullText` is null. Once any Write/Read supplies a whole-file snapshot, diffs are
-// subordinate (never shown), so they are cleared and no further ones accumulate —
-// the accumulator never holds edits it will discard [LAW:no-silent-failure]. A path
-// enters the map only when an op is accepted, so at resolution one side is present.
-interface PathAcc {
-  fullText: string | null;
-  edits: FileEdit[];
-}
-
-const resolvePath = (acc: PathAcc): FileContent =>
-  acc.fullText !== null
-    ? { kind: "full", text: acc.fullText }
-    : { kind: "diff", edits: acc.edits };
 
 // Classify ONE tool-call turn into a FileOp for a path, or null to reject. Threads
 // the two honesty boundaries: the FORMAT boundary (parseJsonObject) then the TOOL
@@ -218,26 +205,30 @@ const assertNever = (turn: never): never => {
 };
 
 // [LAW:dataflow-not-control-flow] A single in-source-order fold over the flat Turn
-// stream — the same shape as deriveDialogue. Snippets append in source order;
-// file ops aggregate into a path-keyed map whose insertion order is first-seen path
-// order. A captured subagent turn recurses in place, so its files/snippets fold into
-// the SAME aggregation at the point the subagent ran — one flat working tree.
+// stream — the same shape as deriveDialogue. Snippets append in source order; file
+// ops aggregate into a path-keyed map (of FileContent) whose insertion order is
+// first-seen path order. A captured subagent turn recurses in place, so its
+// files/snippets fold into the SAME aggregation at the point the subagent ran.
 const fold = (
   turns: ReadonlyArray<Turn>,
   snippets: CodeArtifact[],
-  files: Map<string, PathAcc>,
+  files: Map<string, FileContent>,
 ): void => {
+  // [LAW:types-are-the-program] The map holds the resolved FileContent union itself,
+  // so the illegal "full base AND diffs both present" state is unrepresentable. A
+  // full op replaces the entry (last snapshot wins, prior diffs dropped as
+  // subordinate); a diff op starts or extends a diff entry, but is IGNORED once a
+  // full base exists — a diff is never applied onto a whole file.
   const accept = (path: string, op: FileOp): void => {
-    let acc = files.get(path);
-    if (acc === undefined) {
-      acc = { fullText: null, edits: [] };
-      files.set(path, acc);
-    }
     if (op.fidelity === "full") {
-      acc.fullText = op.text; // last full snapshot wins
-      acc.edits = []; // a full base makes prior diffs subordinate — drop them
-    } else if (acc.fullText === null) {
-      acc.edits.push(...op.edits); // accumulate diffs only while there is no base
+      files.set(path, { kind: "full", text: op.text });
+      return;
+    }
+    const existing = files.get(path);
+    if (existing === undefined) {
+      files.set(path, { kind: "diff", edits: op.edits });
+    } else if (existing.kind === "diff") {
+      files.set(path, { kind: "diff", edits: [...existing.edits, ...op.edits] });
     }
   };
 
@@ -276,11 +267,11 @@ const fold = (
 // .3/.4 present a file tree and loose code blocks through different affordances.
 export const extractArtifacts = (turns: ReadonlyArray<Turn>): ReadonlyArray<CodeArtifact> => {
   const snippets: CodeArtifact[] = [];
-  const files = new Map<string, PathAcc>();
+  const files = new Map<string, FileContent>();
   fold(turns, snippets, files);
   const fileArtifacts: CodeArtifact[] = [];
-  for (const [path, acc] of files) {
-    fileArtifacts.push({ kind: "file", path, content: resolvePath(acc) });
+  for (const [path, content] of files) {
+    fileArtifacts.push({ kind: "file", path, content });
   }
   return [...fileArtifacts, ...snippets];
 };

@@ -123,7 +123,10 @@ const parseUsage = (raw: unknown): Usage | null => {
   };
 };
 
-const argsAsText = (input: unknown): string => {
+// Exported so a test building a jsonl-shaped tool-call serializes its args through
+// the SAME function production uses — the test's args shape can't drift from the
+// parser's [LAW:one-source-of-truth].
+export const argsAsText = (input: unknown): string => {
   if (typeof input === "string") return input;
   if (input == null) return "";
   try { return JSON.stringify(input, null, 2); } catch { return String(input); }
