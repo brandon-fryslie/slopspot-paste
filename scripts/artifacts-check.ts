@@ -15,8 +15,8 @@
 //
 // tool-call -> file operation
 //   Write     {file_path, content:str}                    -> full(content)          ACCEPT
-//   Read      {file_path} + non-null output               -> full(output.text)      ACCEPT
-//   Read      {file_path} + null output                   -> (no content)           REJECT
+//   Read      {file_path} + ok output                     -> full(gutter-stripped)  ACCEPT
+//   Read      {file_path} + null or errored output        -> (no content)           REJECT
 //   Edit      {file_path, old_string, new_string}         -> diff([{old,new}])      ACCEPT
 //   MultiEdit {file_path, edits:[{old_string,new_string}]}-> diff(edits)            ACCEPT
 //   <file tool> args are RAW TEXT (parseJsonObject null)  -> (format boundary)      REJECT
@@ -96,9 +96,26 @@ console.log("\nArtifact extraction — file fidelity by tool (slopspot-code-expo
   const rEmptyC = fileAt(rEmpty, "/empty.ts");
   assert("Read with empty output -> full('') (real empty file)", rEmptyC !== null && rEmptyC.kind === "full" && rEmptyC.text === "");
 
+  // ACCEPT: a Read's output carries CC's line-number gutter (+ summary) -> the file
+  // content is the gutter-stripped text, equal to what the renderer displays.
+  const rGutter = extractArtifacts([
+    jsonTool("Read", { file_path: "/g.ts" }, fileOut("Read 2 lines\n     1  const x = 1;\n     2  return x;")),
+  ]);
+  const rGutterC = fileAt(rGutter, "/g.ts");
+  assert(
+    "Read with line-number gutter -> full(gutter-stripped content)",
+    rGutterC !== null && rGutterC.kind === "full" && rGutterC.text === "const x = 1;\nreturn x;",
+  );
+
   // REJECT: Read with NO captured output knows no content -> no file.
   const rNull = extractArtifacts([jsonTool("Read", { file_path: "/c.ts" }, null)]);
   assert("Read {file_path} + null output -> REJECT (no file)", files(rNull).length === 0);
+
+  // REJECT: an ERRORED Read's output.text is an error message, not content -> no file.
+  const rErr = extractArtifacts([
+    jsonTool("Read", { file_path: "/missing.ts" }, { kind: "file-read", text: "ENOENT: no such file", isError: true }),
+  ]);
+  assert("Read with isError output -> REJECT (error text is not content)", files(rErr).length === 0);
 
   // ACCEPT: Edit -> diff-only, one old->new pair. NEVER a synthesized whole file.
   const e = extractArtifacts([jsonTool("Edit", { file_path: "/d.ts", old_string: "x", new_string: "y" })]);

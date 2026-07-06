@@ -34,8 +34,8 @@
 //
 // ─── tool-call -> file operation ────────────────────────────────────────────
 //   Write     JSON {file_path, content:str}                -> full(content)
-//   Read      JSON {file_path}  + non-null output          -> full(output.text)
-//   Read      JSON {file_path}  + null output              -> REJECT (no content)
+//   Read      JSON {file_path} + ok output                 -> full(gutter-stripped text)
+//   Read      JSON {file_path} + null or errored output    -> REJECT (no content)
 //   Edit      JSON {file_path, old_string, new_string}     -> diff([{old,new}])
 //   MultiEdit JSON {file_path, edits:[{old_string,new_string}]} -> diff(edits)
 //   <file tool> args are RAW TEXT (parseJsonObject null)   -> REJECT (fmt boundary)
@@ -61,7 +61,15 @@
 
 import type { Turn, ToolOutput } from "./types";
 import { parseJsonObject, TOOL_PRIMARY_ARG, type JsonObject } from "./toolCall";
-import { fencedCodeBlocks } from "./render";
+import { fencedCodeBlocks, parseFileRead } from "./render";
+
+// [LAW:single-enforcer] The real file content of a Read's output — CC prefixes the
+// content with a line-number gutter (and a "Read N lines" summary), and parseFileRead
+// is the ONE authority that strips them for display. Deriving the artifact through
+// the SAME parser means the downloaded file equals what the renderer shows, never a
+// second gutter-stripping scheme that could disagree [LAW:one-source-of-truth].
+const readFileContent = (text: string): string =>
+  parseFileRead(text).lines.map((l) => l.content).join("\n");
 
 // [LAW:types-are-the-program] One edit is an old->new pair — the exact diff an Edit
 // stores. Neither side is optional: an edit missing either half is not a diff, so
@@ -139,8 +147,12 @@ const FILE_EXTRACTORS: { readonly [tool: string]: FileExtractor } = {
     return text === null ? null : { fidelity: "full", text };
   },
   // A Read's content lives in its RESULT, never its args; a Read with no captured
-  // output knows no content, so it produces no file. [BOUNDARY 1: full]
-  Read: (_obj, output) => (output === null ? null : { fidelity: "full", text: output.text }),
+  // output — or an ERRORED read, whose output.text is an error message, not content
+  // [LAW:no-silent-failure] — knows no content, so it produces no file. The content
+  // is gutter-stripped through parseFileRead so it equals the displayed file.
+  // [BOUNDARY 1: full]
+  Read: (_obj, output) =>
+    output === null || output.isError ? null : { fidelity: "full", text: readFileContent(output.text) },
   // An Edit carries only an old->new diff; never the whole file. [BOUNDARY 1: diff]
   Edit: (obj) => {
     const edit = readEdit(obj);
