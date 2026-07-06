@@ -100,21 +100,29 @@ const ASSIGNED_SECRET_MIN_LENGTH = 8;
 // Values that NAME a secret slot instead of holding one. Compared after lowercasing and stripping
 // separators so YOUR-API-KEY, your_api_key and yourApiKey collapse to one entry. Kept in sync with
 // the reject rows in scripts/secret-check.ts [LAW:verifiable-goals].
+// The secret NOUNS (secret/password/token/apikey/key) are deliberately NOT here: a value that IS
+// its own noun (password = "password") is a weak real credential worth warning on, not a slot the
+// author means to replace, and the noun would also swallow an obfuscated form (p.a.s.s.w.o.r.d
+// normalizes to "password"). Min length rejects the short noun values; these are the words that
+// genuinely name a slot.
 const PLACEHOLDER_SECRET_VALUES = new Set([
   "changeme", "change", "placeholder", "example", "sample", "dummy", "redacted", "todo", "tbd",
-  "fixme", "none", "null", "nil", "na", "test", "testing", "secret", "password", "token", "apikey",
-  "key", "value", "string", "default", "yourkey", "yourapikey", "yoursecret", "yourtoken",
+  "fixme", "none", "null", "nil", "na", "test", "testing", "value", "string", "default",
+  "yourkey", "yourapikey", "yoursecret", "yourtoken",
   "yourkeyhere", "yourapikeyhere", "yoursecrethere", "yourtokenhere", "insertkeyhere", "replaceme",
   "foo", "bar", "foobar", "abc", "xxx", "yyy",
 ]);
 
 // A quoted assignment value is a PLACEHOLDER (not a leak) when it names a slot, is WHOLLY a
 // template/reference envelope (${VAR} / {{VAR}} / <your-key> / $VAR), an ellipsis, a your…here
-// token, a single repeated char, or a quoted env-var reference. The envelope arms are anchored on
-// the WHOLE value (not "contains a brace") so a real password that merely includes a `{` or `$`
-// (Pa{ss}word99, sk_live_A$B) is still flagged — matching a template char anywhere would silently
-// drop a real leak. Each arm is one enumerated reject family from the shape table.
+// token, a single repeated char, or a WHOLE-value env-var reference. Every arm is anchored on the
+// WHOLE value (a Set.has exact, or a ^…$ regex) so a real credential that merely CONTAINS one of
+// these shapes — Pa{ss}word99 (brace), PutYourTokenHereNow (your…here substring), or
+// process.env.X;realpass (reference prefix) — is still flagged. Matching any of them mid-value
+// would silently drop a real leak [LAW:no-silent-failure]. Each arm is one reject family from the
+// shape table.
 const TEMPLATE_ENVELOPE = /^(?:\$\{[^}]*\}|\{\{.*\}\}|<[^>]*>|\$[A-Za-z_]\w*)$/;
+const ENV_REFERENCE = /^(?:process\.env|import\.meta\.env|os\.environ)(?:[.[][\w.[\]'"]*)?$/i;
 const isPlaceholderSecretValue = (value: string): boolean => {
   const normalized = value.toLowerCase().replace(/[\s_.-]/g, "");
   return (
@@ -122,8 +130,8 @@ const isPlaceholderSecretValue = (value: string): boolean => {
     /^(.)\1*$/.test(value) ||
     TEMPLATE_ENVELOPE.test(value) ||
     /\.{3}|…/.test(value) ||
-    /your.*here/i.test(value) ||
-    /^(?:process\.env|import\.meta\.env|os\.environ)\b/i.test(value)
+    /^your.*here$/i.test(value) ||
+    ENV_REFERENCE.test(value)
   );
 };
 
@@ -132,7 +140,7 @@ const isPlaceholderSecretValue = (value: string): boolean => {
 // a defensive guard but part of the accept-set ("has a real quoted value AND it is long and not a
 // placeholder"). Real iff it clears the min length and is not a named/template/reference slot.
 const isRealAssignedSecret = (match: string): boolean => {
-  const value = /(['"])([^'"\n]+)\1$/.exec(match)?.[2];
+  const value = /(['"])((?:(?!\1)[^\n])+)\1$/.exec(match)?.[2];
   return value !== undefined && value.length >= ASSIGNED_SECRET_MIN_LENGTH && !isPlaceholderSecretValue(value);
 };
 
@@ -167,15 +175,17 @@ const SECRET_RULES: ReadonlyArray<SecretRule> = [
   // A hardcoded secret assignment: a key whose FINAL token is a secret noun, a : or = separator,
   // then a QUOTED literal value. The \b after the noun makes it the key's last token, so
   // secretary/tokenizer (noun is a prefix, not the token) fail by construction; ['"]? admits a
-  // JSON "key": form. It matches the WHOLE assignment — not just the value — because scrub replaces
-  // a match with an inert marker, and a marker left where only the value was would sit after the
-  // key and re-trigger this rule; removing the key + quotes too keeps scrub idempotent. Checked
-  // LAST: it is the broad backstop and can co-fire with a structured rule on the same value (the
-  // ranges overlap and fold to one redaction downstream).
+  // JSON "key": form. The value is (?:(?!\1)[^\n])+ — content up to the CAPTURED delimiter, so a
+  // double-quoted value may contain an apostrophe (and vice versa) without truncating the match.
+  // It matches the WHOLE assignment — not just the value — because scrub replaces a match with an
+  // inert marker, and a marker left where only the value was would sit after the key and re-trigger
+  // this rule; removing the key + quotes too keeps scrub idempotent. Checked LAST: it is the broad
+  // backstop and can co-fire with a structured rule on the same value (the ranges overlap and fold
+  // to one redaction downstream).
   {
     kind: "assigned-secret",
     pattern:
-      /\b[A-Za-z0-9_]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|client[_-]?secret)\b['"]?\s*[:=]\s*(['"])[^'"\n]+\1/gi,
+      /\b[A-Za-z0-9_]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|client[_-]?secret)\b['"]?\s*[:=]\s*(['"])(?:(?!\1)[^\n])+\1/gi,
     accept: isRealAssignedSecret,
   },
 ];

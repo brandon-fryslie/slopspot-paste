@@ -70,6 +70,12 @@ const ACCEPT: ReadonlyArray<AcceptCase> = [
   { label: "a real password containing braces is flagged (not treated as a template)", text: `password = "Pa{ss}word9900xk"`, kind: "assigned-secret", secret: `password = "Pa{ss}word9900xk"` },
   // Min-length boundary: exactly 8 chars is the accept edge (7 rejects, below in the REJECT table).
   { label: "a value of exactly the minimum length (8) is accepted", text: `token = "aB3xK9mP"`, kind: "assigned-secret", secret: `token = "aB3xK9mP"` },
+  // A value that merely CONTAINS a your…here / reference / apostrophe is a real leak, not a
+  // placeholder — every placeholder arm is whole-value anchored, so embedded shapes stay flagged.
+  { label: "an embedded Your...Here inside a real secret is flagged (not a template)", text: `password = "PutYourTokenHereNow91234"`, kind: "assigned-secret", secret: `password = "PutYourTokenHereNow91234"` },
+  { label: "a reference prefix with a real secret appended is flagged", text: `api_key = "process.env.API_KEY;realPassw0rd"`, kind: "assigned-secret", secret: `api_key = "process.env.API_KEY;realPassw0rd"` },
+  { label: "a double-quoted value containing an apostrophe is not truncated", text: `token = "it's a longsecret12"`, kind: "assigned-secret", secret: `token = "it's a longsecret12"` },
+  { label: "a weak credential whose value IS the noun (password) is flagged", text: `password = "password"`, kind: "assigned-secret", secret: `password = "password"` },
 ];
 
 // ── REJECT: a near-miss that shares tokens but not the shape ──────────────────
