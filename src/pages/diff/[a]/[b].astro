@@ -2,7 +2,7 @@
 import { env } from "cloudflare:workers";
 import Base from "../../../layouts/Base.astro";
 import { loadViewablePaste } from "../../../loadPaste";
-import { deriveDiffColumn, diffOutcome } from "../../../diff";
+import { deriveDiffColumn, diffOutcome, renderDiffRow, renderColumnHtml } from "../../../diff";
 
 export const prerender = false;
 
@@ -18,10 +18,11 @@ const [loadA, loadB] = await Promise.all([
   loadViewablePaste(env.PASTES, b, now),
 ]);
 
-// [LAW:dataflow-not-control-flow] The outcome is a VALUE: render both columns (each a
-// shown conversation or an honest absence), or — only when NEITHER side loaded — the
-// failure response carrying both reasons. A one-missing diff is NOT a page failure; it
-// renders the present side beside the absent side's status.
+// [LAW:dataflow-not-control-flow] The outcome is a VALUE naming its display mode: an
+// `aligned` diff (both sides loaded — paired rows), a `one-sided` view (exactly one side
+// loaded — the present column beside the absent side's status), or a `fail` response (only
+// when NEITHER loaded), carrying both reasons. The template draws the mode; it never
+// re-decides which one applies.
 const left = deriveDiffColumn(a ?? "", loadA);
 const right = deriveDiffColumn(b ?? "", loadB);
 const outcome = diffOutcome(left, right);
@@ -29,11 +30,13 @@ if (outcome.kind === "fail") {
   return new Response(outcome.message, { status: outcome.status });
 }
 
-// [LAW:one-source-of-truth] The page carries NO platform — each column themes its own
-// subtree via its own data-platform (the same per-element theming the editor preview
-// uses), so two conversations from different platforms keep their own colours side by
-// side instead of one page-level theme overriding both.
-const columns = [outcome.left, outcome.right];
+// The two columns for the one-sided layout (substrate independent-column markup): exactly
+// one is a shown conversation, the other an honest status box. Unused in aligned mode.
+const columns = outcome.kind === "one-sided" ? [outcome.left, outcome.right] : [];
+// The pre-rendered aligned rows (each cell html, or null where this side has a gap), so the
+// template stays presentational. Empty in one-sided mode (the two column heads are read off
+// the narrowed `outcome` directly in the aligned branch below).
+const rows = outcome.kind === "aligned" ? outcome.rows.map(renderDiffRow) : [];
 ---
 
 <Base title="Side-by-side · slopspot paste">
@@ -44,42 +47,74 @@ const columns = [outcome.left, outcome.right];
     </p>
   </section>
 
-  {/*
-    [LAW:one-type-per-behavior] One column-rendering path over [left, right]: the two
-    sides differ only in their data, never in how they draw. A shown column carries its
-    own header (title links back to /<slug>) and the SAME .conversation markup the full
-    page renders — set from col.html, which came through deriveViewableDialogue, so a
-    redacted turn stays redacted here [LAW:single-enforcer]. A missing column is an
-    honest status box naming which slug and why [LAW:no-silent-failure], never a blank
-    or a silently-dropped side.
-  */}
-  <div class="diff-columns">
-    {columns.map((col) => (
-      <div class="diff-column" data-platform={col.ok ? col.platform : undefined} data-slug={col.slug}>
-        {col.ok ? (
-          <Fragment>
-            <header class="diff-column-header">
-              <h2 class="diff-column-title"><a href={`/${col.slug}`}>{col.title}</a></h2>
-              <p class="conversation-meta">
-                {col.platformLabel && <span class="platform-badge">{col.platformLabel}</span>}
-                {col.platformLabel && <span aria-hidden="true">·</span>}
-                <span>{col.turnCount} turns</span>
-              </p>
-            </header>
-            <section
-              class="conversation"
-              aria-label={`Conversation ${col.slug}`}
-              data-slug={col.slug}
-              set:html={col.html}
-            />
-          </Fragment>
-        ) : (
-          <div class="diff-column-missing" role="status">
-            <p class="diff-column-missing-slug">{col.slug}</p>
-            <p class="diff-column-missing-msg">{col.message}</p>
-          </div>
-        )}
+  {outcome.kind === "aligned" ? (
+    // [LAW:composability] The aligned diff: two column heads over a stack of paired rows.
+    // Each row is a 2-up grid; a cell carries one spine node's html (drawn by the ONE
+    // renderer at topLevel:false) or is an empty gap opposite its counterpart. Prompts that
+    // pair land on the same row; a prompt present on one side only opens a visible gap on
+    // the other [LAW:no-silent-failure] — never a silent shift of everything after it.
+    <div class="diff-aligned">
+      <div class="diff-row diff-heads">
+        {[outcome.left, outcome.right].map((head) => (
+          <header class="diff-column-header diff-cell" data-platform={head.platform} data-slug={head.slug}>
+            <h2 class="diff-column-title"><a href={`/${head.slug}`}>{head.title}</a></h2>
+            <p class="conversation-meta">
+              {head.platformLabel && <span class="platform-badge">{head.platformLabel}</span>}
+              {head.platformLabel && <span aria-hidden="true">·</span>}
+              <span>{head.turnCount} turns</span>
+            </p>
+          </header>
+        ))}
       </div>
-    ))}
-  </div>
+      {rows.map((row) => (
+        <div class="diff-row">
+          <div
+            class="diff-cell conversation"
+            data-platform={outcome.left.platform}
+            data-gap={row.left === null ? "true" : undefined}
+            set:html={row.left ?? ""}
+          />
+          <div
+            class="diff-cell conversation"
+            data-platform={outcome.right.platform}
+            data-gap={row.right === null ? "true" : undefined}
+            set:html={row.right ?? ""}
+          />
+        </div>
+      ))}
+    </div>
+  ) : (
+    // One-sided: exactly one side loaded. The substrate independent-column layout — the
+    // present conversation beside the absent side's honest status box [LAW:no-silent-failure].
+    // There is no second dialogue to align against, so nothing is paired.
+    <div class="diff-columns">
+      {columns.map((col) => (
+        <div class="diff-column" data-platform={col.ok ? col.platform : undefined} data-slug={col.slug}>
+          {col.ok ? (
+            <Fragment>
+              <header class="diff-column-header">
+                <h2 class="diff-column-title"><a href={`/${col.slug}`}>{col.title}</a></h2>
+                <p class="conversation-meta">
+                  {col.platformLabel && <span class="platform-badge">{col.platformLabel}</span>}
+                  {col.platformLabel && <span aria-hidden="true">·</span>}
+                  <span>{col.turnCount} turns</span>
+                </p>
+              </header>
+              <section
+                class="conversation"
+                aria-label={`Conversation ${col.slug}`}
+                data-slug={col.slug}
+                set:html={renderColumnHtml(col.view)}
+              />
+            </Fragment>
+          ) : (
+            <div class="diff-column-missing" role="status">
+              <p class="diff-column-missing-slug">{col.slug}</p>
+              <p class="diff-column-missing-msg">{col.message}</p>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )}
 </Base>
