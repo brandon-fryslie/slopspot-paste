@@ -1,4 +1,4 @@
-import { Marked } from "marked";
+import { Marked, type Token } from "marked";
 import type { ToolOutput } from "./types";
 import { highlightCode } from "./highlight";
 
@@ -215,6 +215,46 @@ export const renderMarkdown = (md: string): string => {
   });
 
   return m.parse(normalized, { async: false, gfm: true, breaks: false });
+};
+
+// [LAW:types-are-the-program] A fenced code block as DATA: the language label the
+// info string named (null when the fence carried none), and the block's verbatim
+// text. `lang` is the FIRST info-string word — the language — never the whole
+// info string, so `python title=x` labels as `python`.
+export interface FencedBlock {
+  readonly lang: string | null;
+  readonly text: string;
+}
+
+// [LAW:single-enforcer] Fenced code detection lives at the ONE marked boundary.
+// renderMarkdown already tokenizes prose to draw <pre> blocks; this exposes the
+// SAME tokenization as data so the code-artifact projection (artifacts.ts) reads
+// the exact blocks the page renders — never a second fence scanner that could
+// disagree [LAW:one-source-of-truth]. The discriminator is FENCE_RE (the table
+// normalizer's own fence test): an INDENTED code block carries no fence and is
+// excluded, matching the triple-backtick scope. An empty-text block is reported
+// faithfully (it renders as an empty <pre>); whether an empty block is an
+// artifact is the caller's policy, not this boundary's.
+// [LAW:dataflow-not-control-flow] One recursive walk over the token tree — code
+// blocks nest inside list items and blockquotes, so children and list items are
+// visited uniformly, never a special-case for the top level only.
+export const fencedCodeBlocks = (md: string): ReadonlyArray<FencedBlock> => {
+  const blocks: FencedBlock[] = [];
+  const visit = (tokens: readonly Token[]): void => {
+    for (const t of tokens) {
+      if (t.type === "code" && FENCE_RE.test(t.raw)) {
+        const info = (t.lang ?? "").trim();
+        const lang = info.length === 0 ? null : info.split(/\s+/)[0] ?? null;
+        blocks.push({ lang, text: t.text });
+      }
+      const children = (t as { tokens?: readonly Token[] }).tokens;
+      if (children) visit(children);
+      const items = (t as { items?: ReadonlyArray<{ tokens?: readonly Token[] }> }).items;
+      if (items) for (const it of items) if (it.tokens) visit(it.tokens);
+    }
+  };
+  visit(new Marked({ gfm: true }).lexer(md));
+  return blocks;
 };
 
 // ─── Tool-output sub-parsers ─────────────────────────────────────────
