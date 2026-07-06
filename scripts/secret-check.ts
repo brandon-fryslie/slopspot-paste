@@ -79,6 +79,9 @@ const ACCEPT: ReadonlyArray<AcceptCase> = [
   // One accept row per alternation noun that had no coverage, so a dropped arm is caught.
   { label: "access_key noun (access[_-]?key arm) is flagged", text: `access_key = "aV8dK2mP9xQ1zL3"`, kind: "assigned-secret", secret: `access_key = "aV8dK2mP9xQ1zL3"` },
   { label: "passwd noun is flagged", text: `passwd = "r3alPassw0rd99"`, kind: "assigned-secret", secret: `passwd = "r3alPassw0rd99"` },
+  // A real secret that merely CONTAINS an ellipsis mid-value is flagged (the ellipsis arm is now
+  // whole-value anchored, matching the function's documented contract).
+  { label: "a value containing a mid-string ellipsis is flagged (ellipsis arm anchored)", text: `token = "abc...def123456789"`, kind: "assigned-secret", secret: `token = "abc...def123456789"` },
 ];
 
 // ── REJECT: a near-miss that shares tokens but not the shape ──────────────────
@@ -141,6 +144,7 @@ const REJECT: ReadonlyArray<RejectCase> = [
   { label: "a your-password slot value is a placeholder, not a leak", text: `api_key = "Your-Password"`, forbid: "assigned-secret" },
   { label: "an 8-char repeated-character value is a pseudo-placeholder (isolates the ^(.)\\1*$ arm)", text: `token = "aaaaaaaa"`, forbid: "assigned-secret" },
   { label: "an INSERT-YOUR-KEY-HERE fill-me-in template is not a leak", text: `api_key = "INSERT-YOUR-KEY-HERE"`, forbid: "assigned-secret" },
+  { label: "the underscore variant INSERT_YOUR_KEY_HERE is also not a leak (normalized match)", text: `api_key = "INSERT_YOUR_KEY_HERE"`, forbid: "assigned-secret" },
   // JSON-form placeholders: the value extraction is $-anchored, so the key-closing quote is never
   // taken as the value delimiter — the placeholder predicate sees the value, not ": value".
   { label: "JSON-form placeholder YOUR_KEY_HERE is rejected", text: `{"api_secret": "YOUR_KEY_HERE"}`, forbid: "assigned-secret" },

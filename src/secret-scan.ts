@@ -134,8 +134,11 @@ const isPlaceholderSecretValue = (value: string): boolean => {
     PLACEHOLDER_SECRET_VALUES.has(normalized) ||
     /^(.)\1*$/.test(value) ||
     TEMPLATE_ENVELOPE.test(value) ||
-    /\.{3}|…/.test(value) ||
-    /^(?:your|insert|replace|put|add|enter|paste|fill)\b.*here$/i.test(value) ||
+    /^(?:\.{3,}|…+)$/.test(value) ||
+    // Fill-me-in template ("insert your key here" and its siblings), tested against the NORMALIZED
+    // value so it is delimiter-insensitive for free — INSERT_YOUR_KEY_HERE, INSERT-YOUR-KEY-HERE and
+    // insertyourkeyhere collapse to one form [LAW:single-enforcer], no bespoke word boundary needed.
+    /^(?:your|insert|replace|put|add|enter|paste|fill).*here$/.test(normalized) ||
     ENV_REFERENCE.test(value)
   );
 };
