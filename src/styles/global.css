@@ -2087,11 +2087,13 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 
 /* Stack the two columns on a narrow viewport — no gutter to hold two reading
    columns, so the comparison becomes vertical. Aligned rows stack their two cells
-   (left above right) so a pair still reads as belonging together. */
+   (left above right) so a pair still reads as belonging together. The gap placeholder
+   STAYS visible here [LAW:no-silent-failure]: once stacked, a one-sided row is content
+   + an empty-counterpart marker — hiding it would collapse the row to a lone cell that
+   reads as a normal pair after the sticky heads scroll off, silently losing the divergence. */
 @media (max-width: 899px) {
   .diff-columns,
   .diff-row { grid-template-columns: 1fr; }
-  .diff-cell[data-gap] { display: none; }
 }
 
 /* ─── Block editor chrome (index page) ───────────────────────────────────
