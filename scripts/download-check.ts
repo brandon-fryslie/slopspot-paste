@@ -75,6 +75,25 @@ assert(
 // empty in -> empty tree (a value, not a special case).
 assert("empty artifacts -> empty tree", downloadTree([]).length === 0);
 
+// ── robustness: no empty-named and no colliding archive members ───────────────
+console.log("downloadTree robustness (non-empty + unique names):");
+// A degenerate all-root/traversal path names no real location -> a stable non-empty
+// placeholder, never an empty-named archive member.
+const rootTree = downloadTree([{ kind: "file", path: "/", content: { kind: "full", text: "x" } }]);
+assert("degenerate '/' path -> non-empty placeholder entry", rootTree.length === 1 && rootTree[0]!.path.length > 0);
+
+// A real file colliding with a generated bucket path must NOT silently overwrite it:
+// files are emitted first, so the real file keeps its name and the later generated entry
+// is suffixed. Here a real full file sits at the exact path a snippet would take.
+const collide = downloadTree([
+  { kind: "file", path: "snippets/snippet-001.ts", content: { kind: "full", text: "REAL FILE" } },
+  { kind: "snippet", lang: "typescript", text: "GENERATED SNIPPET" },
+]);
+const collidePaths = collide.map((e) => e.path);
+assert("collision: real file keeps its name", collide[0]?.path === "snippets/snippet-001.ts" && collide[0]?.text === "REAL FILE");
+assert("collision: generated entry is renamed, not dropped", collidePaths.length === 2 && new Set(collidePaths).size === 2);
+assert("collision: rename keeps the extension (…-1.ts)", collidePaths[1] === "snippets/snippet-001-1.ts" && collide[1]?.text === "GENERATED SNIPPET");
+
 // ── zipArchive: validate the real bytes with the system unzip ─────────────────
 console.log("zipArchive validity (system unzip):");
 const bytes = zipArchive(tree);

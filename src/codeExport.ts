@@ -68,11 +68,17 @@ export const formatCodeArtifacts = (artifacts: ReadonlyArray<CodeArtifact>): str
 // one clean tree. This is honest normalization, not a lie about meaning — the real
 // nesting under the path is preserved; only the leading root and traversal segments,
 // which name no captured content, are dropped.
-const safeTreePath = (path: string): string =>
-  path
+const safeTreePath = (path: string): string => {
+  const safe = path
     .split("/")
     .filter((seg) => seg.length > 0 && seg !== "." && seg !== "..")
     .join("/");
+  // [LAW:types-are-the-program] The contract is a safe NON-EMPTY relative path: a
+  // degenerate path that was all root/traversal segments ("/", ".", "///") names no real
+  // location and strips to "", so it becomes a stable placeholder rather than an
+  // empty-named archive member the downstream never has to guard against.
+  return safe.length > 0 ? safe : "unnamed";
+};
 
 // [LAW:no-mode-explosion] A small, bounded fence-lang -> extension table so a downloaded
 // snippet carries a real extension its editor recognizes. Data rows, not branches:
@@ -108,12 +114,39 @@ const fileEntry = (path: string, content: FileContent): ZipEntry => {
   }
 };
 
+// A numeric suffix inserted before the final extension, so a renamed collision keeps its
+// type: "src/app.ts" -> "src/app-1.ts", "Makefile" -> "Makefile-1". A dot counts as an
+// extension separator only after the last slash and not as the segment's first char, so
+// a dotfile ("patches/.gitignore.patch") stays whole rather than losing its name.
+const suffixed = (path: string, n: number): string => {
+  const slash = path.lastIndexOf("/");
+  const dot = path.lastIndexOf(".");
+  return dot > slash + 1 ? `${path.slice(0, dot)}-${n}${path.slice(dot)}` : `${path}-${n}`;
+};
+
+// [LAW:no-silent-failure] Guarantee every archive member name is DISTINCT, so no entry is
+// silently overwritten on extraction — a real file whose path happens to equal a
+// generated patches//snippets entry, or two paths that normalize alike, would otherwise
+// clobber each other and lose content. Emission order is preserved (files first), so on a
+// clash the real file keeps its name and the later generated entry is suffixed; real
+// paths are never renamed away in favor of a synthetic one.
+const uniquify = (entries: ReadonlyArray<ZipEntry>): ReadonlyArray<ZipEntry> => {
+  const seen = new Set<string>();
+  return entries.map((e) => {
+    let path = e.path;
+    for (let n = 1; seen.has(path); n += 1) path = suffixed(e.path, n);
+    seen.add(path);
+    return path === e.path ? e : { path, text: e.text };
+  });
+};
+
 // [LAW:types-are-the-program] The download projection: the extractor's CodeArtifact[]
 // mapped to the zip's members, preserving the extractor's order (reconstructed files
 // first, then loose snippets). Full files become the real tree; diff-only files become
 // patches/…; path-less snippets are bucketed under snippets/ and numbered in source
-// order with a lang-derived extension. Every artifact yields exactly one honest entry,
-// so an empty input is an empty tree (a value, not a special case).
+// order with a lang-derived extension. A final uniquify pass makes every entry name
+// distinct. Every artifact yields exactly one honest entry, so an empty input is an
+// empty tree (a value, not a special case).
 export const downloadTree = (artifacts: ReadonlyArray<CodeArtifact>): ReadonlyArray<ZipEntry> => {
   const entries: ZipEntry[] = [];
   let snippetIndex = 0;
@@ -131,7 +164,7 @@ export const downloadTree = (artifacts: ReadonlyArray<CodeArtifact>): ReadonlyAr
       }
     }
   }
-  return entries;
+  return uniquify(entries);
 };
 
 // [LAW:effects-at-boundaries] Base64-encode the archive bytes for embedding in the page
