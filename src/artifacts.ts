@@ -1,11 +1,22 @@
 // [LAW:one-source-of-truth] The code-artifact projection: a total, inert function
-// from the stored Turn[] to a typed CodeArtifact union, computed at render time and
-// storing NOTHING new — the same derived-projection shape as spineOutline.ts and
-// deriveDialogue. [LAW:carrying-cost] It re-derives for every existing paste for
-// free; a display change here is a renderer edit, never a migration.
-// [LAW:one-way-deps] artifacts depends on types (Turn), toolCall (the JSON-vs-raw
-// classifier + the file-path key table), and render (the fenced-block detector);
-// none of them depends on artifacts.
+// from the derived Dialogue to a typed CodeArtifact union, computed at render time
+// and storing NOTHING new — the same derived-projection shape as spineOutline.ts.
+// [LAW:carrying-cost] It re-derives for every existing paste for free; a display
+// change here is a renderer edit, never a migration.
+//
+// [LAW:single-enforcer] The input is the DIALOGUE, not the raw Turn[], and that is a
+// redaction-safety boundary, not a convenience. The one viewable spine the page draws
+// is deriveViewableDialogue(conversation) — deriveDialogue then the authored overlay,
+// which REDACTS content (a whole-turn hide drops the turn's tool-calls; a span hide
+// splices [redacted] into prose). The renderer and the topic outline both read that
+// one viewable derivation, so extraction must too: feeding it the SAME redacted nodes
+// makes "copy-all-code copies a secret the page hides" unrepresentable by construction
+// [LAW:one-source-of-truth] — the copied bytes are a projection of exactly what the
+// reader sees, never a second read of the unredacted original.
+//
+// [LAW:one-way-deps] artifacts depends on dialogue (the model: SpineNode/AssistantBlock),
+// types (ToolOutput), toolCall (the JSON-vs-raw classifier + the file-path key table),
+// and render (the fenced-block detector); none of them depends on artifacts.
 //
 // ─── THE ACCEPT / REJECT SHAPE TABLE (the classifier's spec) ─────────────────
 // The extractor is a classifier, so its correctness is the table it satisfies, not
@@ -25,12 +36,15 @@
 //
 //   The verbatim per-row table lives in scripts/artifacts-check.ts and IS the test.
 //
-// ─── Turn kind -> contribution ──────────────────────────────────────────────
-//   message | thinking | insight  -> fenced code blocks in the prose  -> snippet
-//   tool-call                     -> a file operation (see below) or nothing
-//   subagent (captured)           -> RECURSE into the nested transcript
-//   subagent (summary-only)       -> nothing (degraded capture: no structured turns)
-//   turn-summary | usage          -> nothing (derived annotations, no authored code)
+// ─── spine node / assistant block -> contribution ───────────────────────────
+// deriveDialogue is LOSSLESS (view-check.ts), so this table is the exact Turn-kind
+// table .2 satisfied, re-expressed over the nested model the overlay redacts.
+//   spoken node (user/system content)     -> fenced code blocks in prose  -> snippet
+//   assistant: text | thinking | insight  -> fenced code blocks in prose  -> snippet
+//   assistant: tool-call                  -> a file operation (below) or nothing
+//   assistant: subagent (captured)        -> RECURSE into the nested Dialogue
+//   assistant: subagent (summary-only)    -> nothing (degraded capture: no structured turns)
+//   assistant: turn-summary | usage       -> nothing (derived annotations, no authored code)
 //
 // ─── tool-call -> file operation ────────────────────────────────────────────
 //   Write     JSON {file_path, content:str}                -> full(content)
@@ -59,7 +73,8 @@
 //   indented (4-space) code block   -> REJECT (no fence; out of the ``` scope)
 //   inline codespan `x`             -> REJECT (not a block)
 
-import type { Turn, ToolOutput } from "./types";
+import type { ToolOutput } from "./types";
+import type { AssistantBlock, Dialogue } from "./dialogue";
 import { parseJsonObject, TOOL_PRIMARY_ARG, type JsonObject } from "./toolCall";
 import { fencedCodeBlocks, parseFileRead } from "./render";
 
@@ -196,21 +211,21 @@ const fileOpOf = (
 };
 
 // [LAW:types-are-the-program] Exhaustiveness witness, mirroring deriveDialogue's:
-// callable only with a value narrowed to `never`, so the fold's switch below stops
-// compiling if a new Turn kind is added without classifying it here — the new kind
-// can never silently contribute no artifacts. [LAW:no-silent-failure] it also throws
-// if a value somehow slips past the type system at runtime.
-const assertNever = (turn: never): never => {
-  throw new Error(`extractArtifacts: unhandled turn kind: ${(turn as { kind?: unknown }).kind}`);
+// callable only with a value narrowed to `never`, so the folds below stop compiling
+// if a new SpineNode or AssistantBlock kind is added without classifying it here — the
+// new kind can never silently contribute no artifacts. [LAW:no-silent-failure] it also
+// throws if a value somehow slips past the type system at runtime.
+const assertNever = (x: never): never => {
+  throw new Error(`extractArtifacts: unhandled kind: ${(x as { kind?: unknown }).kind}`);
 };
 
-// [LAW:dataflow-not-control-flow] A single in-source-order fold over the flat Turn
-// stream — the same shape as deriveDialogue. Snippets append in source order; file
-// ops aggregate into a path-keyed map (of FileContent) whose insertion order is
-// first-seen path order. A captured subagent turn recurses in place, so its
-// files/snippets fold into the SAME aggregation at the point the subagent ran.
+// [LAW:dataflow-not-control-flow] A single in-source-order fold over the Dialogue's
+// spine nodes — the same source order deriveDialogue preserved. Snippets append in
+// source order; file ops aggregate into a path-keyed map (of FileContent) whose
+// insertion order is first-seen path order. A captured subagent block recurses in
+// place, so its files/snippets fold into the SAME aggregation at the point it ran.
 const fold = (
-  turns: ReadonlyArray<Turn>,
+  dialogue: Dialogue,
   snippets: CodeArtifact[],
   files: Map<string, FileContent>,
 ): void => {
@@ -232,32 +247,53 @@ const fold = (
     }
   };
 
-  for (const turn of turns) {
-    switch (turn.kind) {
-      case "message":
+  // Prose (spoken content, assistant text/thinking/insight) contributes its fenced
+  // code blocks; a zero-byte fenced block is not an artifact (nothing to copy) so it
+  // is dropped here. The ONE prose->snippet path, shared by every prose-bearing kind.
+  const addSnippets = (content: string): void => {
+    for (const block of fencedCodeBlocks(content)) {
+      if (block.text.length > 0) {
+        snippets.push({ kind: "snippet", lang: block.lang, text: block.text });
+      }
+    }
+  };
+
+  const foldBlock = (block: AssistantBlock): void => {
+    switch (block.kind) {
+      case "text":
       case "thinking":
       case "insight":
-        // message/thinking/insight all carry prose in `content`; a zero-byte fenced
-        // block is not an artifact (nothing to copy/download) so it is dropped here.
-        for (const block of fencedCodeBlocks(turn.content)) {
-          if (block.text.length > 0) {
-            snippets.push({ kind: "snippet", lang: block.lang, text: block.text });
-          }
-        }
-        break;
+        addSnippets(block.content);
+        return;
       case "tool-call": {
-        const found = fileOpOf(turn.tool, turn.args, turn.output);
+        const found = fileOpOf(block.tool, block.args, block.output);
         if (found !== null) accept(found.path, found.op);
-        break;
+        return;
       }
       case "subagent":
-        if (turn.transcript.kind === "captured") fold(turn.transcript.turns, snippets, files);
-        break;
+        // Only a CAPTURED body has structured nested turns to recurse; a summary-only
+        // (degraded) subagent carries just prompt/result prose and yields nothing, as
+        // the .2 table's "subagent (summary-only) -> nothing" row requires.
+        if (block.body.kind === "captured") fold(block.body.transcript, snippets, files);
+        return;
       case "turn-summary":
       case "usage":
+        return;
+      default:
+        return assertNever(block);
+    }
+  };
+
+  for (const node of dialogue) {
+    switch (node.kind) {
+      case "spoken":
+        addSnippets(node.content);
+        break;
+      case "assistant":
+        for (const block of node.blocks) foldBlock(block);
         break;
       default:
-        return assertNever(turn);
+        return assertNever(node);
     }
   }
 };
@@ -265,10 +301,14 @@ const fold = (
 // [LAW:types-are-the-program] The projection: files first (first-seen path order,
 // a mini file tree), then snippets (source order). Grouping by kind is deliberate —
 // .3/.4 present a file tree and loose code blocks through different affordances.
-export const extractArtifacts = (turns: ReadonlyArray<Turn>): ReadonlyArray<CodeArtifact> => {
+// The caller passes the VIEWABLE dialogue's nodes (deriveViewableDialogue(...).map(
+// d => d.node)) so redaction is already applied; the fold ignores fold-state, since a
+// collapsed turn's code is still on the page and copyable — collapse is display, not
+// redaction.
+export const extractArtifacts = (dialogue: Dialogue): ReadonlyArray<CodeArtifact> => {
   const snippets: CodeArtifact[] = [];
   const files = new Map<string, FileContent>();
-  fold(turns, snippets, files);
+  fold(dialogue, snippets, files);
   const fileArtifacts: CodeArtifact[] = [];
   for (const [path, content] of files) {
     fileArtifacts.push({ kind: "file", path, content });
