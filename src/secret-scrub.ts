@@ -29,18 +29,22 @@ const marker = (kinds: ReadonlyArray<SecretKind>): string =>
 // single range carrying both labels, exactly as the overlay's mergeRanges folds a span.
 export type Redaction = { start: number; end: number; kinds: SecretKind[] };
 
-// Fold the (start-sorted) findings into MAXIMAL DISJOINT ranges so the splice below is total:
-// after merging no two ranges share coordinates, and a range that abuts the previous collapses
-// into it rather than emitting two adjacent markers. Exported for direct unit testing: the
-// anchored scanner's word boundaries make scanSecrets output ALWAYS disjoint (two secrets are
-// always separated or collapse into one match), so the fold arm here is unreachable through
-// scrubText and is coverable only by feeding it overlapping ranges directly — the defensive
-// case a future rule that CAN produce overlaps would hit, inherited from overlay's mergeRanges.
+// Fold findings into MAXIMAL DISJOINT ranges so the splice below is total: after merging no two
+// ranges share coordinates, and a range that abuts the previous collapses into it rather than
+// emitting two adjacent markers. It SORTS its input first (mirroring overlay's mergeRanges), so
+// it is total over any caller's order — the fold has no start-sorted precondition to violate
+// [LAW:types-are-the-program], and unsorted input can never silently mangle a redaction
+// [LAW:no-silent-failure]. scanSecrets already sorts for its own display determinism, so this
+// re-sort is a no-op on the scrubText path. Exported for direct unit testing: the anchored
+// scanner's word boundaries make scanSecrets output ALWAYS disjoint (two secrets are always
+// separated or collapse into one match), so the fold arm is unreachable through scrubText and is
+// coverable only by feeding overlapping ranges directly — the defensive case a future rule that
+// CAN produce overlaps would hit, inherited from overlay's mergeRanges.
 export const mergeFindings = (
   findings: ReadonlyArray<{ kind: SecretKind; start: number; end: number }>,
 ): Redaction[] => {
   const merged: Redaction[] = [];
-  for (const f of findings) {
+  for (const f of [...findings].sort((a, b) => a.start - b.start)) {
     const last = merged[merged.length - 1];
     if (last !== undefined && f.start <= last.end) {
       last.end = Math.max(last.end, f.end);

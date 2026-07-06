@@ -79,7 +79,8 @@ console.log("secret-scrub: mergeFindings folds overlapping/abutting ranges into 
 {
   // The scanner cannot emit overlaps, so this fold arm (secret-scrub.ts `f.start <= last.end`)
   // is coverable only by feeding mergeFindings ranges directly — the defensive case a future
-  // rule that CAN overlap would hit. Inputs are start-sorted, mergeFindings' precondition.
+  // rule that CAN overlap would hit. mergeFindings sorts internally, so no input-order
+  // precondition (the unsorted case is asserted below).
   const overlap = mergeFindings([
     { kind: "openai-key", start: 0, end: 10 },
     { kind: "email", start: 5, end: 15 },
@@ -100,6 +101,15 @@ console.log("secret-scrub: mergeFindings folds overlapping/abutting ranges into 
     { kind: "email", start: 6, end: 9 },
   ]);
   assert("a gap keeps ranges separate", disjoint.length === 2);
+
+  // Unsorted input must NOT spuriously merge: mergeFindings sorts first, so two disjoint ranges
+  // given out of order stay two ranges (a naive `f.start <= last.end` over unsorted input would
+  // fold [10,15) into [0,5)). This proves the no-silent-failure fix.
+  const unsorted = mergeFindings([
+    { kind: "email", start: 10, end: 15 },
+    { kind: "openai-key", start: 0, end: 5 },
+  ]);
+  assert("unsorted disjoint input stays two ranges, in sorted order", unsorted.length === 2 && unsorted[0]?.start === 0 && unsorted[1]?.start === 10);
 }
 
 console.log("secret-scrub: scrubTurn covers every warn-scanned field (prose, summary, tool-call)");
