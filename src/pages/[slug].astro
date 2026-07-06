@@ -120,45 +120,48 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
     // page is unchanged and never carries a dead control.
     import { parsePasteRef } from "../slug";
 
+    // [LAW:no-silent-failure] The .compare-form and .conversation sections are
+    // unconditional template invariants (both server-rendered every load), so a missing
+    // one is a broken template, not an optional feature — throw loudly like the sibling
+    // scripts here rather than silently leaving Compare hidden [LAW:no-defensive-null-guards].
     const form = document.querySelector<HTMLFormElement>(".compare-form");
     const conversation = document.querySelector<HTMLElement>(".conversation");
-    if (form && conversation) {
-      const input = form.querySelector<HTMLInputElement>(".compare-input");
-      const error = form.querySelector<HTMLElement>(".compare-error");
-      if (!input || !error) throw new Error("compare form is missing its input or error slot");
+    if (!form || !conversation) throw new Error("required .compare-form or .conversation section missing");
+    const input = form.querySelector<HTMLInputElement>(".compare-input");
+    const error = form.querySelector<HTMLElement>(".compare-error");
+    if (!input || !error) throw new Error("compare form is missing its input or error slot");
 
-      // [LAW:one-source-of-truth] This paste's slug is read from the one server-rendered
-      // data-slug on .conversation — never re-derived from location.pathname.
-      const thisSlug = conversation.dataset.slug ?? "";
+    // [LAW:one-source-of-truth] This paste's slug is read from the one server-rendered
+    // data-slug on .conversation — never re-derived from location.pathname.
+    const thisSlug = conversation.dataset.slug ?? "";
 
-      // [LAW:dataflow-not-control-flow] reason → message is a total map over the two
-      // rejection arms: the pure core owns "is it a slug", the boundary owns the copy.
-      const messageFor = (reason: "empty" | "malformed"): string =>
-        reason === "empty"
-          ? "Enter a paste slug or link to compare with."
-          : "That doesn't look like a valid paste slug or link.";
+    // [LAW:dataflow-not-control-flow] reason → message is a total map over the two
+    // rejection arms: the pure core owns "is it a slug", the boundary owns the copy.
+    const messageFor = (reason: "empty" | "malformed"): string =>
+      reason === "empty"
+        ? "Enter a paste slug or link to compare with."
+        : "That doesn't look like a valid paste slug or link.";
 
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const ref = parsePasteRef(input.value);
-        if (ref.ok) {
-          // [LAW:effects-at-boundaries] the sole effect: navigate to the substrate diff route.
-          window.location.assign("/diff/" + thisSlug + "/" + ref.slug);
-        } else {
-          error.textContent = messageFor(ref.reason);
-          error.hidden = false;
-        }
-      });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const ref = parsePasteRef(input.value);
+      if (ref.ok) {
+        // [LAW:effects-at-boundaries] the sole effect: navigate to the substrate diff route.
+        window.location.assign("/diff/" + thisSlug + "/" + ref.slug);
+      } else {
+        error.textContent = messageFor(ref.reason);
+        error.hidden = false;
+      }
+    });
 
-      // Clear a stale error the moment the reader edits the reference again.
-      input.addEventListener("input", () => {
-        error.hidden = true;
-        error.textContent = "";
-      });
+    // Clear a stale error the moment the reader edits the reference again.
+    input.addEventListener("input", () => {
+      error.hidden = true;
+      error.textContent = "";
+    });
 
-      // [LAW:dataflow-not-control-flow] Reveal only now that the one effect is wired.
-      document.body.classList.add("compare-ready");
-    }
+    // [LAW:dataflow-not-control-flow] Reveal only now that the one effect is wired.
+    document.body.classList.add("compare-ready");
   </script>
 
   {/*
