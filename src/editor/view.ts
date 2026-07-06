@@ -418,14 +418,17 @@ const discardConfirm = (store: EditorStore): TemplateResult | typeof nothing => 
   `;
 };
 
-// [LAW:no-silent-failure] The warn-only surface: an advisory banner that names each block the
-// pure scanner flagged and the kinds found there, so the author sees a likely secret BEFORE
-// minting a permanent public link. It NEVER blocks publish (the submit button is untouched) —
-// a detector has false positives, so the author decides. It renders nothing when clean, and
-// lives in the always-visible slot beside the toolbar's submit control so a publish from either
-// view passes it. `role="status"` (polite) announces on change without the assertive re-read an
-// alert would fire on every keystroke. describeSecretKind is surfaced verbatim [LAW:one-source-of-truth];
-// the secret text itself is never shown — a SecretFinding carries none, so masking is structural.
+// [LAW:no-silent-failure] The secret-guard surface: an advisory banner that names each block the
+// pure scanner flagged and the kinds found there, then OFFERS to remove them — so the author
+// sees a likely secret AND can act on it BEFORE minting a permanent public link. It NEVER blocks
+// publish (the submit button is untouched) — a detector has false positives, so the author
+// decides. The "remove" action calls store.redactSecrets, which scrubs the flagged bytes from
+// the stored original (a true removal, not a display hide); the banner then clears because its
+// scan re-derives clean. It renders nothing when clean, and lives in the always-visible slot
+// beside the toolbar's submit control so a publish from either view passes it. `role="status"`
+// (polite) announces on change without the assertive re-read an alert would fire on every
+// keystroke. describeSecretKind is surfaced verbatim [LAW:one-source-of-truth]; the secret text
+// itself is never shown — a SecretFinding carries none, so masking is structural.
 const secretWarnings = (store: EditorStore): TemplateResult | typeof nothing => {
   const warnings = store.secretWarnings;
   if (warnings.length === 0) return nothing;
@@ -443,6 +446,14 @@ const secretWarnings = (store: EditorStore): TemplateResult | typeof nothing => 
             </li>`,
         )}
       </ul>
+      <div class="secret-warnings-actions">
+        <button class="btn-danger secret-warnings-redact" @click=${() => store.redactSecrets()}>
+          Remove ${warnings.length === 1 ? "it" : "them"} from the paste
+        </button>
+        <span class="secret-warnings-note">
+          Edits the content — the secret is not stored, not just hidden.
+        </span>
+      </div>
     </div>
   `;
 };

@@ -24,6 +24,7 @@ import { claudeCodeSessionId } from "../url";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveDialogue, plainView } from "../dialogue";
 import { scanTurnsForSecrets, type TurnSecretWarning } from "../secret-warnings";
+import { scrubOrigin, scrubTurn } from "../secret-scrub";
 
 export type View = "blocks" | "preview";
 
@@ -483,6 +484,34 @@ export class EditorStore {
     const cur = this.blocks[i];
     if (prev === undefined || cur === undefined) return;
     this.blocks.splice(i - 1, 2, { id: prev.id, turn: mergeTurns(prev.turn, cur.turn) });
+  }
+
+  // [LAW:no-silent-failure] The author acts on the secret warning: REMOVE the flagged
+  // secrets from what will be STORED, not merely from the display. It rewrites the two
+  // authorities the stored paste derives from — the editable blocks (whose content becomes
+  // the published turns) and importOrigin (whose preserved text reproject would otherwise
+  // resurrect the secret from). Every derived value (turns, secretWarnings, submitOrigin,
+  // previewHtml) recomputes off them, so the banner clears and the author SEES the redaction
+  // BEFORE publishing.
+  //
+  // This is the deliberate, author-triggered, secret-only exception to store-the-original-
+  // verbatim (ARCHITECTURE.md, [LAW:one-source-of-truth]): a leaked credential is the one
+  // payload where keeping the original bytes is a liability, so here — and ONLY here — the
+  // stored original is edited, not overlaid. Each block keeps its id (scrubTurn is a content
+  // edit, never a shape change), so the keyed render survives. importOrigin === null is the
+  // genuine "authored from scratch" state — no upstream text to scrub, and the turns are the
+  // sole stored copy already scrubbed via the blocks [LAW:no-defensive-null-guards].
+  //
+  // The importOrigin scrub is LOAD-BEARING for a text/url import: an edit makes isDirty true,
+  // so submitOrigin nests the (now-scrubbed) importOrigin as `input`, and that scrubbed
+  // provenance is what reaches KV (the reproject source). For an editor-arm importOrigin,
+  // submitOrigin drops `input` entirely, so scrubbing it there does not flow to storage — the
+  // scrub of that arm is belt-and-suspenders: scrubOrigin stays exhaustive over every Origin
+  // shape so the pure transform is honest and any future path that re-reads `input` inherits a
+  // clean value, never a resurrected secret.
+  redactSecrets(): void {
+    this.blocks = this.blocks.map((b) => ({ id: b.id, turn: scrubTurn(b.turn) }));
+    if (this.importOrigin !== null) this.importOrigin = scrubOrigin(this.importOrigin);
   }
 
   // ── View + submit ───────────────────────────────────────────────────────
