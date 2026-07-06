@@ -501,6 +501,14 @@ export class EditorStore {
   // edit, never a shape change), so the keyed render survives. importOrigin === null is the
   // genuine "authored from scratch" state — no upstream text to scrub, and the turns are the
   // sole stored copy already scrubbed via the blocks [LAW:no-defensive-null-guards].
+  //
+  // The importOrigin scrub is LOAD-BEARING for a text/url import: an edit makes isDirty true,
+  // so submitOrigin nests the (now-scrubbed) importOrigin as `input`, and that scrubbed
+  // provenance is what reaches KV (the reproject source). For an editor-arm importOrigin,
+  // submitOrigin drops `input` entirely, so scrubbing it there does not flow to storage — the
+  // scrub of that arm is belt-and-suspenders: scrubOrigin stays exhaustive over every Origin
+  // shape so the pure transform is honest and any future path that re-reads `input` inherits a
+  // clean value, never a resurrected secret.
   redactSecrets(): void {
     this.blocks = this.blocks.map((b) => ({ id: b.id, turn: scrubTurn(b.turn) }));
     if (this.importOrigin !== null) this.importOrigin = scrubOrigin(this.importOrigin);

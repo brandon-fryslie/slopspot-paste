@@ -27,12 +27,18 @@ const marker = (kinds: ReadonlyArray<SecretKind>): string =>
 // A resolved redaction range and the kind(s) whose findings formed it. Two findings that
 // overlap (or merely touch) express one intent — remove their union — so they fold into a
 // single range carrying both labels, exactly as the overlay's mergeRanges folds a span.
-type Redaction = { start: number; end: number; kinds: SecretKind[] };
+export type Redaction = { start: number; end: number; kinds: SecretKind[] };
 
 // Fold the (start-sorted) findings into MAXIMAL DISJOINT ranges so the splice below is total:
 // after merging no two ranges share coordinates, and a range that abuts the previous collapses
-// into it rather than emitting two adjacent markers.
-const mergeFindings = (findings: ReadonlyArray<{ kind: SecretKind; start: number; end: number }>): Redaction[] => {
+// into it rather than emitting two adjacent markers. Exported for direct unit testing: the
+// anchored scanner's word boundaries make scanSecrets output ALWAYS disjoint (two secrets are
+// always separated or collapse into one match), so the fold arm here is unreachable through
+// scrubText and is coverable only by feeding it overlapping ranges directly — the defensive
+// case a future rule that CAN produce overlaps would hit, inherited from overlay's mergeRanges.
+export const mergeFindings = (
+  findings: ReadonlyArray<{ kind: SecretKind; start: number; end: number }>,
+): Redaction[] => {
   const merged: Redaction[] = [];
   for (const f of findings) {
     const last = merged[merged.length - 1];

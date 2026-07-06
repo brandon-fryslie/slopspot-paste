@@ -15,11 +15,11 @@
 //
 // Secret values are synthetic but shaped like the real producers. None is a live credential.
 
-import { scrubText, scrubOrigin } from "../src/secret-scrub";
+import { scrubText, scrubOrigin, mergeFindings } from "../src/secret-scrub";
 import { scrubTurn, type AuthorableTurn } from "../src/editor/blocks";
 import { scanSecrets } from "../src/secret-scan";
 import { scanTurnsForSecrets } from "../src/secret-warnings";
-import type { Turn, Origin, ReplayableOrigin } from "../src/types";
+import type { Origin, ReplayableOrigin } from "../src/types";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -60,13 +60,46 @@ console.log("secret-scrub: scrub is idempotent and the marker is inert");
   assert("the marker itself carries no scannable secret", clean(once));
 }
 
-console.log("secret-scrub: overlapping/adjacent findings fold into ONE marker");
+console.log("secret-scrub: multiple distinct secrets each get their own marker, separator kept");
 {
-  // Two emails separated by a single space are two findings; a run of secrets should not
-  // produce a mangled or nested marker. Assert the result is clean and has no leftover bytes.
-  const out = scrubText(`${EMAIL} ${EMAIL}`);
-  assert("no secret bytes remain", !out.includes(EMAIL));
+  // scanSecrets output is ALWAYS disjoint (the anchored patterns' word boundaries mean two
+  // secrets are either separated or collapse into one match — abutment is unconstructable), so
+  // two space-separated secrets are two findings that do NOT merge: each becomes its own marker
+  // and the text between them is preserved unmangled. This is scrubText's observable contract;
+  // the merge fold itself is unreachable here and is tested directly below.
+  const out = scrubText(`${EMAIL} ${OPENAI}`);
+  assert("no secret bytes remain", !out.includes(EMAIL) && !out.includes(OPENAI));
   assert("scans clean", clean(out));
+  const markers = out.match(/\[redacted [^\]]+\]/g) ?? [];
+  assert("two distinct secrets -> two markers", markers.length === 2);
+  assert("separator preserved, order + markers exact", out === "[redacted email address] [redacted OpenAI API key]");
+}
+
+console.log("secret-scrub: mergeFindings folds overlapping/abutting ranges into one redaction");
+{
+  // The scanner cannot emit overlaps, so this fold arm (secret-scrub.ts `f.start <= last.end`)
+  // is coverable only by feeding mergeFindings ranges directly — the defensive case a future
+  // rule that CAN overlap would hit. Inputs are start-sorted, mergeFindings' precondition.
+  const overlap = mergeFindings([
+    { kind: "openai-key", start: 0, end: 10 },
+    { kind: "email", start: 5, end: 15 },
+  ]);
+  assert("overlapping ranges fold to one", overlap.length === 1);
+  assert("folded range is the union [0,15)", overlap[0]?.start === 0 && overlap[0]?.end === 15);
+  assert("folded range carries both kinds, deduped in order", overlap[0]?.kinds.join(",") === "openai-key,email");
+
+  const abut = mergeFindings([
+    { kind: "email", start: 0, end: 5 },
+    { kind: "email", start: 5, end: 9 },
+  ]);
+  assert("abutting ranges (start == prev.end) fold to one", abut.length === 1 && abut[0]?.end === 9);
+  assert("same kind is not duplicated on the folded range", abut[0]?.kinds.length === 1);
+
+  const disjoint = mergeFindings([
+    { kind: "email", start: 0, end: 5 },
+    { kind: "email", start: 6, end: 9 },
+  ]);
+  assert("a gap keeps ranges separate", disjoint.length === 2);
 }
 
 console.log("secret-scrub: scrubTurn covers every warn-scanned field (prose, summary, tool-call)");
@@ -88,7 +121,7 @@ console.log("secret-scrub: scrubTurn covers every warn-scanned field (prose, sum
 
 console.log("secret-scrub: a scrub is a content edit, never a kind/shape change");
 {
-  const turn: Turn = { kind: "tool-call", tool: "Bash", args: `aws set ${AWS}`, output: null };
+  const turn: AuthorableTurn = { kind: "tool-call", tool: "Bash", args: `aws set ${AWS}`, output: null };
   const out = scrubTurn(turn);
   assert("kind unchanged", out.kind === "tool-call");
   assert("null output stays null", out.kind === "tool-call" && out.output === null);
