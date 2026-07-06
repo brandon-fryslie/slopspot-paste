@@ -536,11 +536,12 @@ body.compare-ready .compare { display: block; }
 }
 .compare-input::placeholder { color: var(--fg-muted); }
 .compare-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* [LAW:one-type-per-behavior] The Compare button is the same mono pill the copy
-   controls use — chrome shared with .code-export-pill's shape; only the reveal
-   differs (this one is always shown once body.compare-ready). */
-.compare-go {
-  flex: 0 0 auto;
+/* [LAW:one-type-per-behavior] The mono pill — the elevated 12px pill worn by the
+   Compare button and both code-export controls. Its chrome lives here ONCE
+   [LAW:one-source-of-truth]; each consumer adds .mono-pill in its class list and
+   layers only what differs (a reveal state, a flex rule). (The .tldr-btn base is a
+   deliberately separate variant — flat --bg, size delegated to its subclasses.) */
+.mono-pill {
   font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.04em;
@@ -552,9 +553,14 @@ body.compare-ready .compare { display: block; }
   cursor: pointer;
   transition: color 0.12s ease, border-color 0.12s ease;
 }
-.compare-go:hover { color: var(--fg); border-color: var(--accent); }
-.compare-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.compare-error { margin: 0; flex: 1 1 100%; font-size: 13px; color: var(--fg-muted); }
+.mono-pill:hover { color: var(--fg); border-color: var(--accent); }
+.mono-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The Compare button is always shown once body.compare-ready; it only pins its width. */
+.compare-go { flex: 0 0 auto; }
+/* [LAW:one-type-per-behavior] The inline validation error IS the paste form's error —
+   reuse .form-error (global.css) for the one authoritative appearance; this only makes
+   it wrap onto its own full-width row in the flex form. */
+.compare-error { flex: 1 1 100%; }
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A vertical rail of one marker per turn. Built client-side from the rendered
@@ -1837,26 +1843,13 @@ body.agent-prompt-ready .copy-agent-prompt.copied {
    unsupported viewer never sees a button that can't act. Each button's payload
    lives in a hidden sibling <pre> it reads; the section is absent entirely when
    the conversation carries no code.
-   Appearance lives once on .code-export-pill; the reveal rules toggle only
-   display, so the .copied/.downloaded accent states are never overridden. */
+   Chrome lives once on .mono-pill (shared with the Compare button); .code-export-pill
+   adds only what differs — hidden until its own client reveal, plus the .copied/
+   .downloaded accent states the reveal rules never override. */
 .code-export { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 8px; }
-.code-export-pill {
-  display: none;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  padding: 6px 15px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-elev);
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
-}
+.code-export-pill { display: none; }
 body.copy-all-ready .copy-all-code,
 body.download-ready .download-all-code { display: inline-block; }
-.code-export-pill:hover { color: var(--fg); border-color: var(--accent); }
-.code-export-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .code-export-pill.copied,
 .code-export-pill.downloaded { color: var(--accent); border-color: var(--accent); }
 
