@@ -2064,7 +2064,16 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 /* min-width:0 lets a cell shrink below its content's intrinsic width (wide code scrolls
    inside its own <pre> instead of stretching the cell). */
 .diff-row > .diff-cell { min-width: 0; }
-.diff-heads { position: sticky; top: 0; background: var(--bg); z-index: 1; }
+/* Opaque page-theme backdrop so platform-tinted bubbles don't bleed through the sticky bar
+   as they scroll under it; the bottom border reads it as a distinct header bar rather than an
+   extension of the content below (which carries its own per-column data-platform theming). */
+.diff-heads {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
 
 /* A gap: this side has no counterpart for the node opposite it. A faint dashed placeholder
    holds the grid slot so the reader sees the divergence [LAW:no-silent-failure] rather than

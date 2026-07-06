@@ -80,10 +80,14 @@ export const deriveDiffColumn = (slug: string, load: PasteLoad): DiffColumn => {
 // across the document into duplicate ids (unrepresentable by the anchor's own contract).
 // The diff page wires no minimap/permalink/clamp, so the tN anchors serve nothing here;
 // data-index/topic/role still emit (only id must be document-unique), keeping each spine
-// node identifiable per column. Both renderColumnHtml (one-sided whole column) and the
-// per-node cells of an aligned diff route through this, so neither can drift into top-level.
-const renderNode = (node: DisplayNode): string => renderDialogueHtml([node], false);
+// node identifiable per column. renderColumnHtml is the ONE call site of the topLevel:false
+// render; renderNode routes THROUGH it (a one-node view), so an aligned cell and a one-sided
+// column share exactly one rendering path — if the renderer ever gained array-level wrapping
+// the two would differ correctly (independent cells vs one column), never by accident.
+// [LAW:one-source-of-truth] renderColumnHtml over the FULL view keeps renderDialogueHtml's
+// cumulative-usage fold whole-column; a per-node loop would reset that fold per node.
 export const renderColumnHtml = (view: ViewableDialogue): string => renderDialogueHtml(view, false);
+const renderNode = (node: DisplayNode): string => renderColumnHtml([node]);
 
 // ── Turn alignment (slopspot-diff-pcd.3) ──────────────────────────────────────────────
 // [LAW:decomposition] Align two conversations on the HUMAN-MESSAGE SPINE — the one boundary
@@ -112,21 +116,34 @@ type Segment = { readonly lead: DisplayNode | null; readonly rest: ReadonlyArray
 // [LAW:dataflow-not-control-flow] One pass over the spine, cutting a new segment at each
 // spoken node. Non-spoken (assistant) nodes accumulate into the open segment's `rest`;
 // assistant nodes before the first prompt open a lead-less segment so nothing is dropped.
+// [LAW:no-ambient-temporal-coupling] The built segment is pushed only when its life ENDS (a
+// new spoken node arrives, or the loop finishes) — `rest` is a local reassigned to a fresh
+// array at each segment start, so a pushed segment's `rest` is never mutated afterward. The
+// push does not depend on a reference staying reassigned before the next iteration.
 const segments = (view: ViewableDialogue): ReadonlyArray<Segment> => {
-  const segs: Array<{ lead: DisplayNode | null; rest: DisplayNode[] }> = [];
-  let open: { lead: DisplayNode | null; rest: DisplayNode[] } | null = null;
+  const segs: Segment[] = [];
+  let lead: DisplayNode | null = null;
+  let rest: DisplayNode[] = [];
+  let open = false;
+  const flush = (): void => {
+    if (open) segs.push({ lead, rest });
+  };
   for (const dn of view) {
     if (dn.node.kind === "spoken") {
-      open = { lead: dn, rest: [] };
-      segs.push(open);
+      flush();
+      lead = dn;
+      rest = [];
+      open = true;
     } else {
-      if (open === null) {
-        open = { lead: null, rest: [] };
-        segs.push(open);
+      if (!open) {
+        lead = null;
+        rest = [];
+        open = true;
       }
-      open.rest.push(dn);
+      rest.push(dn);
     }
   }
+  flush();
   return segs;
 };
 
