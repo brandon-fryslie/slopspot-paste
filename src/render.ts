@@ -59,6 +59,18 @@ export const sanitizeUrl = (href: string): string => {
 
 const FENCE_RE = /^\s*(```|~~~)/;
 
+// [LAW:types-are-the-program] The CommonMark-correct OPENING fence: 0–3 spaces of
+// indent, then the fence run. Distinct from FENCE_RE (whose unbounded `\s*` is fine
+// for normalizeTables' fence-state tracking): 4+ spaces of indent makes an INDENTED
+// code block, NOT a fenced one, so fencedCodeBlocks must use this bounded form or it
+// mis-reads an indented block that happens to contain backticks as a fenced block.
+const FENCE_OPEN_RE = /^ {0,3}(```|~~~)/;
+
+// [LAW:no-shared-mutable-globals] A single stateless lexer, owned here. marked
+// builds a fresh Lexer per `.lexer()` call, so this instance carries no cross-call
+// state — sharing it keeps fencedCodeBlocks from allocating a Marked per prose turn.
+const FENCE_LEXER = new Marked({ gfm: true });
+
 // A GFM separator row: pipes around 2+ cells, each `:?-+:?`, optional spaces.
 const SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 
@@ -230,9 +242,11 @@ export interface FencedBlock {
 // renderMarkdown already tokenizes prose to draw <pre> blocks; this exposes the
 // SAME tokenization as data so the code-artifact projection (artifacts.ts) reads
 // the exact blocks the page renders — never a second fence scanner that could
-// disagree [LAW:one-source-of-truth]. The discriminator is FENCE_RE (the table
-// normalizer's own fence test): an INDENTED code block carries no fence and is
-// excluded, matching the triple-backtick scope. An empty-text block is reported
+// disagree [LAW:one-source-of-truth]. The discriminator is FENCE_OPEN_RE (the
+// CommonMark-correct 0–3-space opening fence): an INDENTED (4+-space) code block
+// carries no valid opening fence and is excluded — even one whose text happens to
+// contain backtick characters — matching the triple-backtick scope. An empty-text
+// block is reported
 // faithfully (it renders as an empty <pre>); whether an empty block is an
 // artifact is the caller's policy, not this boundary's.
 // [LAW:dataflow-not-control-flow] One recursive walk over the token tree — code
@@ -242,7 +256,7 @@ export const fencedCodeBlocks = (md: string): ReadonlyArray<FencedBlock> => {
   const blocks: FencedBlock[] = [];
   const visit = (tokens: readonly Token[]): void => {
     for (const t of tokens) {
-      if (t.type === "code" && FENCE_RE.test(t.raw)) {
+      if (t.type === "code" && FENCE_OPEN_RE.test(t.raw)) {
         const info = (t.lang ?? "").trim();
         const lang = info.length === 0 ? null : info.split(/\s+/)[0] ?? null;
         blocks.push({ lang, text: t.text });
@@ -253,7 +267,7 @@ export const fencedCodeBlocks = (md: string): ReadonlyArray<FencedBlock> => {
       if (items) for (const it of items) if (it.tokens) visit(it.tokens);
     }
   };
-  visit(new Marked({ gfm: true }).lexer(md));
+  visit(FENCE_LEXER.lexer(md));
   return blocks;
 };
 

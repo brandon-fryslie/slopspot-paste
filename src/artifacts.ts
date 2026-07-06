@@ -39,7 +39,7 @@
 //   Edit      JSON {file_path, old_string, new_string}     -> diff([{old,new}])
 //   MultiEdit JSON {file_path, edits:[{old_string,new_string}]} -> diff(edits)
 //   <file tool> args are RAW TEXT (parseJsonObject null)   -> REJECT (fmt boundary)
-//   <file tool> JSON but file_path missing/non-string      -> REJECT (no path)
+//   <file tool> JSON, file_path missing/non-string/empty   -> REJECT (no honest path)
 //   Write     JSON but content missing/non-string          -> REJECT (no content)
 //   Edit      JSON but old_string/new_string missing        -> REJECT (no diff)
 //   NotebookEdit                                            -> REJECT (a single
@@ -179,7 +179,10 @@ const fileOpOf = (
   if (obj === null) return null; // FORMAT boundary: raw-text (cc/share) tool-call
   const pathKey = TOOL_PRIMARY_ARG[tool]; // "file_path" for every file tool
   const path = pathKey === undefined ? null : strField(obj, pathKey);
-  if (path === null) return null; // no honest path
+  // A path must be a NON-EMPTY string. Emptiness is rejected here, not in strField,
+  // because an empty `content` (a Write of an empty file) or an empty `old_string`
+  // (an insert-Edit) are legitimate — only a pathless file is nonsensical.
+  if (path === null || path.length === 0) return null; // no honest path
   const op = extractor(obj, output);
   return op === null ? null : { path, op };
 };

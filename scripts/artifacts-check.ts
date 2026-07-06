@@ -20,7 +20,7 @@
 //   Edit      {file_path, old_string, new_string}         -> diff([{old,new}])      ACCEPT
 //   MultiEdit {file_path, edits:[{old_string,new_string}]}-> diff(edits)            ACCEPT
 //   <file tool> args are RAW TEXT (parseJsonObject null)  -> (format boundary)      REJECT
-//   <file tool> JSON, file_path missing/non-string        -> (no path)              REJECT
+//   <file tool> JSON, file_path missing/non-string/empty  -> (no honest path)       REJECT
 //   Write     JSON, content missing/non-string            -> (no content)           REJECT
 //   Edit      JSON, old_string/new_string missing          -> (no diff)              REJECT
 //   NotebookEdit                                           -> (cell != file/diff)   REJECT
@@ -35,6 +35,7 @@
 //   fenced bare ```, non-empty text -> snippet(lang = null)              ACCEPT
 //   fenced with empty text          -> (zero bytes)                      REJECT
 //   indented (4-space) code block   -> (no fence)                        REJECT
+//   4-space-indented w/ backticks   -> (indented, not fenced)            REJECT
 //   inline codespan `x`             -> (not a block)                     REJECT
 //
 // output order: files first (first-seen path order), then snippets (source order).
@@ -89,6 +90,12 @@ console.log("\nArtifact extraction — file fidelity by tool (slopspot-code-expo
   const rc = fileAt(r, "/b.ts");
   assert("Read {file_path} + output -> full(output.text)", rc !== null && rc.kind === "full" && rc.text === "read body\n");
 
+  // ACCEPT: Read of an EMPTY file -> full(""). A real empty file is a genuine tree
+  // node (unlike an empty fenced block, which is nothing to copy).
+  const rEmpty = extractArtifacts([jsonTool("Read", { file_path: "/empty.ts" }, fileOut(""))]);
+  const rEmptyC = fileAt(rEmpty, "/empty.ts");
+  assert("Read with empty output -> full('') (real empty file)", rEmptyC !== null && rEmptyC.kind === "full" && rEmptyC.text === "");
+
   // REJECT: Read with NO captured output knows no content -> no file.
   const rNull = extractArtifacts([jsonTool("Read", { file_path: "/c.ts" }, null)]);
   assert("Read {file_path} + null output -> REJECT (no file)", files(rNull).length === 0);
@@ -126,7 +133,12 @@ console.log("\nArtifact extraction — structured-args reject rows:");
     "Write JSON missing content -> REJECT",
     files(extractArtifacts([jsonTool("Write", { file_path: "/a.ts" })])).length === 0,
   );
-  // REJECT: file_path missing/non-string -> no honest path.
+  // REJECT: content present but non-string -> strField rejects, no fabricated file.
+  assert(
+    "Write JSON with non-string content -> REJECT",
+    files(extractArtifacts([jsonTool("Write", { file_path: "/a.ts", content: 42 })])).length === 0,
+  );
+  // REJECT: file_path missing/non-string/empty -> no honest path.
   assert(
     "Write JSON missing file_path -> REJECT",
     files(extractArtifacts([jsonTool("Write", { content: "orphan" })])).length === 0,
@@ -134,6 +146,12 @@ console.log("\nArtifact extraction — structured-args reject rows:");
   assert(
     "Edit JSON with non-string file_path -> REJECT",
     files(extractArtifacts([jsonTool("Edit", { file_path: 42, old_string: "x", new_string: "y" })])).length === 0,
+  );
+  // REJECT: an empty-string file_path is a string but not a valid path — a pathless
+  // file is nonsensical, so it must not slip past the path check.
+  assert(
+    "Write JSON with empty-string file_path -> REJECT",
+    files(extractArtifacts([jsonTool("Write", { file_path: "", content: "x" })])).length === 0,
   );
   // REJECT: Edit missing a diff half -> no honest diff.
   assert(
@@ -264,6 +282,16 @@ console.log("\nArtifact extraction — fenced snippets:");
 
   // REJECT: an indented (4-space) code block carries no fence.
   assert("indented code block -> REJECT (no fence)", snippets(extractArtifacts([msg("text\n\n    indented\n")])).length === 0);
+
+  // REJECT: a 4-space-INDENTED block whose text contains backticks is still an
+  // indented block per CommonMark (0–3 space fences only) — it must NOT become a
+  // false snippet carrying literal ``` markers.
+  const indentedBackticks = snippets(extractArtifacts([msg("    ```python\n    print(1)\n    ```")]));
+  assert("4-space-indented block with backticks -> REJECT (not a fence)", indentedBackticks.length === 0);
+
+  // ACCEPT boundary: a fence indented up to 3 spaces IS a valid opening fence.
+  const threeSpaceFence = snippets(extractArtifacts([msg("   ```js\n   ok\n   ```")]));
+  assert("3-space-indented fence -> ACCEPT (valid opening fence)", threeSpaceFence.length === 1 && threeSpaceFence[0]?.lang === "js");
 
   // REJECT: inline codespan is not a block.
   assert("inline codespan -> REJECT (not a block)", snippets(extractArtifacts([msg("use `x` inline")])).length === 0);
