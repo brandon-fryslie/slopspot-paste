@@ -82,6 +82,9 @@ const ACCEPT: ReadonlyArray<AcceptCase> = [
   // A real secret that merely CONTAINS an ellipsis mid-value is flagged (the ellipsis arm is now
   // whole-value anchored, matching the function's documented contract).
   { label: "a value containing a mid-string ellipsis is flagged (ellipsis arm anchored)", text: `token = "abc...def123456789"`, kind: "assigned-secret", secret: `token = "abc...def123456789"` },
+  // A real secret appended after a terminal method-call reference is flagged — the reference tail
+  // ends at the call, so trailing content fails the ^…$ anchor and is not excused as a reference.
+  { label: "a secret appended after a terminal os.environ.get() call is flagged", text: `api_key = "os.environ.get('KEY')realPassword123"`, kind: "assigned-secret", secret: `api_key = "os.environ.get('KEY')realPassword123"` },
 ];
 
 // ── REJECT: a near-miss that shares tokens but not the shape ──────────────────

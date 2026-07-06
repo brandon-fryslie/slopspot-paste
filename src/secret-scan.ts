@@ -127,7 +127,8 @@ const TEMPLATE_ENVELOPE = /^(?:\$\{[^}]*\}|\{\{.*\}\}|<[^>]*>|\$[A-Za-z_]\w*)$/;
 // SUPPORTED roots — a value that is wholly one of these is a reference, not a literal. New roots
 // (os.getenv, System.getenv, …) are an unbounded set the generic detector deliberately scopes out:
 // their fallout is a dismissible warn, the design's accepted bounded noise, never a missed leak.
-const ENV_REFERENCE = /^(?:process\.env|import\.meta\.env|os\.environ)(?:[.[(][\w.[\](),'"\s]*)?$/i;
+const ENV_REFERENCE =
+  /^(?:process\.env|import\.meta\.env|os\.environ)(?:[.[][\w.[\]'"]*)?(?:\([\w.,'"\s]*\))?$/i;
 const isPlaceholderSecretValue = (value: string): boolean => {
   const normalized = value.toLowerCase().replace(/[\s_.-]/g, "");
   return (
@@ -183,7 +184,12 @@ const SECRET_RULES: ReadonlyArray<SecretRule> = [
   // A hardcoded secret assignment: a key whose FINAL token is a secret noun, a : or = separator,
   // then a QUOTED literal value. The \b after the noun makes it the key's last token, so
   // secretary/tokenizer (noun is a prefix, not the token) fail by construction; ['"]? admits a
-  // JSON "key": form. The value is (?:(?!\1)[^\n])+ — content up to the CAPTURED delimiter, so a
+  // JSON "key": form. Whitespace around the separator is HORIZONTAL-only ([^\S\n]*, never \n): an
+  // assignment is a single-line construct, and — critically — turnScanText joins a tool-call's
+  // fields with "\n" while scrubTurn scrubs each field separately, so a match allowed to cross a
+  // newline would be warn-visible on the joined text yet un-scrubbable per field, breaking the
+  // scan(scrub(x))===[] invariant. Confining the match to one line keeps scan-surface == scrub-surface.
+  // The value is (?:(?!\1)[^\n])+ — content up to the CAPTURED delimiter, so a
   // double-quoted value may contain an apostrophe (and vice versa) without truncating the match.
   // Known bounded-recall limit: NOT escape-aware, so a value with a backslash-escaped copy of its
   // own delimiter (password = "val\"escaped") truncates at that quote and is dropped; escape
@@ -197,7 +203,7 @@ const SECRET_RULES: ReadonlyArray<SecretRule> = [
   {
     kind: "assigned-secret",
     pattern:
-      /\b[A-Za-z0-9_]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|client[_-]?secret)\b['"]?\s*[:=]\s*(['"])(?:(?!\1)[^\n])+\1/gi,
+      /\b[A-Za-z0-9_]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|client[_-]?secret)\b['"]?[^\S\n]*[:=][^\S\n]*(['"])(?:(?!\1)[^\n])+\1/gi,
     accept: isRealAssignedSecret,
   },
 ];

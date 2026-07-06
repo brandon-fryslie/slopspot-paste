@@ -148,6 +148,21 @@ console.log("secret-scrub: an assigned secret WRAPPING a structured secret folds
   assert("overlapping findings fold to exactly one marker", markers.length === 1);
 }
 
+console.log("secret-scrub: an assigned-secret match cannot cross a tool-call field boundary");
+{
+  // turnScanText joins a tool-call's fields with "\n"; scrubTurn scrubs each field separately. If
+  // the pattern could span that newline, a secret-noun key in `tool` and a quoted value in `args`
+  // would warn on the joined text yet be un-scrubbable per field — breaking scan(scrub)===[].
+  // Horizontal-only whitespace around the separator confines every match to one line.
+  const split: AuthorableTurn = { kind: "tool-call", tool: "password", args: `: "secretvalue12345"`, output: null };
+  assert("a key/value split across fields does not warn (no newline-spanning match)", scanTurnsForSecrets([split]).length === 0);
+  assert("scrub-then-scan holds for the cross-field split", scanTurnsForSecrets([scrubTurn(split)]).length === 0);
+  // A single-line assignment INSIDE one field still warns and scrubs clean (the match is intra-line).
+  const inField: AuthorableTurn = { kind: "tool-call", tool: "Bash", args: `run\napi_key = "secretvalue12345"\n`, output: null };
+  assert("a single-line assignment within a field still warns", scanTurnsForSecrets([inField]).length === 1);
+  assert("and scrubs clean", scanTurnsForSecrets([scrubTurn(inField)]).length === 0);
+}
+
 console.log("secret-scrub: scrubTurn covers every warn-scanned field (prose, summary, tool-call)");
 {
   const turns: AuthorableTurn[] = [
