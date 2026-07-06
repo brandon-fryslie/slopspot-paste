@@ -14,7 +14,7 @@
     "typecheck": "astro check && npm run typecheck:scripts",
     "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "pretest": "npm run typecheck:scripts",
-    "test": "tsx scripts/parser-check.ts && tsx scripts/view-check.ts && tsx scripts/overlay-check.ts && tsx scripts/secret-check.ts && tsx scripts/secret-warnings-check.ts",
+    "test": "tsx scripts/parser-check.ts && tsx scripts/view-check.ts && tsx scripts/overlay-check.ts && tsx scripts/secret-check.ts && tsx scripts/secret-warnings-check.ts && tsx scripts/secret-scrub-check.ts",
     "capture-fixture": "tsx scripts/capture-fixture.ts"
   },
   "dependencies": {
