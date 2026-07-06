@@ -125,6 +125,17 @@ console.log("secret-scrub: an assignment-anchored secret is removed WHOLE and th
   assert("scrub is idempotent on an assignment", scrubText(out) === out);
 }
 
+console.log("secret-scrub: a JSON-form assigned secret is removed and scans clean (key-quote before sep)");
+{
+  // The JSON form puts the key's closing " immediately before the : separator (matched by the
+  // rule's optional ['"]? arm) — structurally distinct from the plain form. Prove end-to-end that
+  // scrub removes it and the result scans clean, so a regression in the optional-quote match can't
+  // silently leave the JSON form dirty.
+  const out = scrubText(`{"api_secret": "longsecretvalue1234"}`);
+  assert("the JSON-form secret value is gone", !out.includes("longsecretvalue1234"));
+  assert("the scrubbed JSON form scans clean", clean(out));
+}
+
 console.log("secret-scrub: an assigned secret WRAPPING a structured secret folds to ONE marker");
 {
   // api_key = "<AWS key>" trips BOTH the AWS rule (the value) and the assigned-secret rule (the

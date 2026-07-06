@@ -68,6 +68,8 @@ const ACCEPT: ReadonlyArray<AcceptCase> = [
   // A real password that merely CONTAINS a template char is a leak, not a placeholder — the
   // envelope reject is anchored on the whole value, so a brace mid-value does not drop it.
   { label: "a real password containing braces is flagged (not treated as a template)", text: `password = "Pa{ss}word9900xk"`, kind: "assigned-secret", secret: `password = "Pa{ss}word9900xk"` },
+  // Min-length boundary: exactly 8 chars is the accept edge (7 rejects, below in the REJECT table).
+  { label: "a value of exactly the minimum length (8) is accepted", text: `token = "aB3xK9mP"`, kind: "assigned-secret", secret: `token = "aB3xK9mP"` },
 ];
 
 // ── REJECT: a near-miss that shares tokens but not the shape ──────────────────
@@ -132,6 +134,7 @@ const REJECT: ReadonlyArray<RejectCase> = [
   { label: "JSON-form quoted env reference is rejected", text: `{"api_secret": "process.env.KEY"}`, forbid: "assigned-secret" },
   // (too-short value)
   { label: "a value shorter than the minimum is not a leak", text: `token = "abc"`, forbid: "assigned-secret" },
+  { label: "a value one below the minimum (7 chars) is rejected at the boundary", text: `token = "aB3xK9m"`, forbid: "assigned-secret" },
   { label: "an empty quoted value is not a leak", text: `api_key = ""`, forbid: "assigned-secret" },
   // (key is not secret-named, or the noun is not the key's FINAL token)
   { label: "a non-secret key (username) is not flagged on its value", text: `username = "john_the_admin_user"`, forbid: "assigned-secret" },
