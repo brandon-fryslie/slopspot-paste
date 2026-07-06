@@ -4,7 +4,7 @@ import Base from "../../layouts/Base.astro";
 import { deriveViewableDialogue } from "../../overlay";
 import { renderTurnCard } from "../../turnCard";
 import { loadViewablePaste } from "../../loadPaste";
-import { PLATFORM_LABEL, platformOf, sourceOf } from "../../types";
+import { DEFAULT_TITLE, PLATFORM_LABEL, platformOf, sourceOf } from "../../types";
 
 export const prerender = false;
 
@@ -39,7 +39,7 @@ if (card === null) {
 // provenance renders as absence.
 const platform = conversation.platformOverride ?? platformOf(sourceOf(conversation.origin));
 const platformLabel = PLATFORM_LABEL[platform];
-const title = conversation.title ?? "Shared conversation";
+const title = conversation.title ?? DEFAULT_TITLE;
 ---
 
 <Base title={`${title} · one turn · slopspot paste`} platform={platform}>

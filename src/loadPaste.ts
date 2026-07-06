@@ -9,20 +9,16 @@
 // [LAW:no-silent-failure] Absence is a typed, discriminated result carrying the HTTP
 // status and message — never a null the caller might read as an empty conversation.
 
-import type { Conversation } from "./types";
+import type { Conversation, PasteLoad } from "./types";
 import { getConversation } from "./storage";
 import { isValidSlug } from "./slug";
 import { isHiddenFromPublic } from "./types";
 
-// [LAW:types-are-the-program] The viewable-paste outcomes: the conversation, or the
-// exact response the boundary must emit. 404 "never existed / bad slug" is kept
-// distinct from 410 "existed but is gone" (the tombstone) and from 503 "the store
-// itself failed" — three different truths, three different statuses, never collapsed.
-// The union makes the gate TOTAL: every path, including a storage-backend rejection,
-// yields a PasteLoad, so the Promise cannot reject out from under its callers.
-export type PasteLoad =
-  | { readonly ok: true; readonly conversation: Conversation }
-  | { readonly ok: false; readonly status: 404 | 410 | 503; readonly message: string };
+// [LAW:one-source-of-truth] PasteLoad — the discriminated result of this gate — is the
+// PURE contract callers depend on, so it lives in types.ts (the shared type home)
+// rather than coupled to this Worker-IO module. The pure diff core (src/diff.ts)
+// consumes it without dragging KVNamespace into the Node/jsdom scripts world.
+export type { PasteLoad };
 
 export const loadViewablePaste = async (
   kv: KVNamespace,

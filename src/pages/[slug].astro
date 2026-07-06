@@ -7,7 +7,7 @@ import { deriveSpineOutline } from "../spineOutline";
 import { extractArtifacts } from "../artifacts";
 import { renderCodeExportControl } from "../codeExport";
 import { loadViewablePaste } from "../loadPaste";
-import { PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime } from "../types";
+import { DEFAULT_TITLE, PLATFORM_LABEL, platformOf, sourceOf, sourceUrlOf, viewLifetime } from "../types";
 
 export const prerender = false;
 
@@ -24,7 +24,7 @@ if (!load.ok) {
 }
 const conversation = load.conversation;
 
-const title = conversation.title ?? "Shared conversation";
+const title = conversation.title ?? DEFAULT_TITLE;
 // [LAW:dataflow-not-control-flow] Both lifetime cases produce a meta string
 // through one match — a pinned paste reads "Never disappears", never a forgotten
 // branch that lies "Disappears in 0 days".
