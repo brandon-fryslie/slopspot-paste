@@ -77,10 +77,10 @@ console.log("secret-scrub: multiple distinct secrets each get their own marker, 
 
 console.log("secret-scrub: mergeFindings folds overlapping/abutting ranges into one redaction");
 {
-  // The scanner cannot emit overlaps, so this fold arm (secret-scrub.ts `f.start <= last.end`)
-  // is coverable only by feeding mergeFindings ranges directly — the defensive case a future
-  // rule that CAN overlap would hit. mergeFindings sorts internally, so no input-order
-  // precondition (the unsorted case is asserted below).
+  // This block feeds mergeFindings ranges directly to pin its sort/abut/gap edges in isolation;
+  // the fold arm is ALSO exercised end-to-end through scrubText below (an assigned-secret match
+  // wrapping a structured value overlaps on the same bytes). mergeFindings sorts internally, so
+  // there is no input-order precondition (the unsorted case is asserted below).
   const overlap = mergeFindings([
     { kind: "openai-key", start: 0, end: 10 },
     { kind: "email", start: 5, end: 15 },
@@ -110,6 +110,31 @@ console.log("secret-scrub: mergeFindings folds overlapping/abutting ranges into 
     { kind: "openai-key", start: 0, end: 5 },
   ]);
   assert("unsorted disjoint input stays two ranges, in sorted order", unsorted.length === 2 && unsorted[0]?.start === 0 && unsorted[1]?.start === 10);
+}
+
+console.log("secret-scrub: an assignment-anchored secret is removed WHOLE and the result scans clean");
+{
+  // The critical invariant for the assigned-secret rule: it matches the whole `key = "value"`, so
+  // scrub replaces the key + quotes too. If it matched only the value, the inert marker would sit
+  // after the key (`api_key = "[redacted …]"`) and RE-TRIGGER the rule — scan would not be clean.
+  const src = `config:\n  api_key = "a1b2c3d4e5f6g7h8i9j0"\n  keep this line`;
+  const out = scrubText(src);
+  assert("the assigned secret value is gone", !out.includes("a1b2c3d4e5f6g7h8i9j0"));
+  assert("scrubbing the assignment scans clean (marker does not re-trigger the rule)", clean(out));
+  assert("surrounding lines survive", out.includes("config:") && out.includes("keep this line"));
+  assert("scrub is idempotent on an assignment", scrubText(out) === out);
+}
+
+console.log("secret-scrub: an assigned secret WRAPPING a structured secret folds to ONE marker");
+{
+  // api_key = "<AWS key>" trips BOTH the AWS rule (the value) and the assigned-secret rule (the
+  // whole assignment); their ranges overlap, so mergeFindings folds them — the fold arm is now
+  // reachable through scrubText, not only via direct mergeFindings calls.
+  const out = scrubText(`api_key = "${AWS}"`);
+  assert("no secret bytes remain", !out.includes(AWS));
+  assert("scans clean", clean(out));
+  const markers = out.match(/\[redacted [^\]]+\]/g) ?? [];
+  assert("overlapping findings fold to exactly one marker", markers.length === 1);
 }
 
 console.log("secret-scrub: scrubTurn covers every warn-scanned field (prose, summary, tool-call)");

@@ -62,6 +62,16 @@ console.log("secret-warnings: a secret in a tool-call's OUTPUT is flagged");
   assert("the kind is openai-key", warnings[0]?.kinds.includes("openai-key") === true);
 }
 
+console.log("secret-warnings: a hardcoded secret assignment in prose is flagged (assigned-secret)");
+{
+  // The user-facing payoff of .5: a `key = "value"` credential the structured rules miss is warned
+  // at the turn level for free, because scanTurnsForSecrets composes the same scanSecrets.
+  const turns: Turn[] = [msg(`the config had api_key = "a1b2c3d4e5f6g7h8i9j0" committed by mistake`)];
+  const warnings = scanTurnsForSecrets(turns);
+  assert("the assignment turn is flagged", warnings.length === 1 && warnings[0]?.turnIndex === 0);
+  assert("the kind is assigned-secret", warnings[0]?.kinds.includes("assigned-secret") === true);
+}
+
 console.log("secret-warnings: clean turns and a reserved-domain near-miss produce NO warning");
 {
   const turns: Turn[] = [

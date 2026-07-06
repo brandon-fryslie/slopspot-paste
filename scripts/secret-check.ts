@@ -57,6 +57,14 @@ const ACCEPT: ReadonlyArray<AcceptCase> = [
   // email (PII) — local @ dotted-domain with a real TLD
   { label: "email address (gmail)", text: "reach me at jane.doe@gmail.com anytime", kind: "email", secret: "jane.doe@gmail.com" },
   { label: "email address (multi-label TLD)", text: "first.last@company.co.uk", kind: "email", secret: "first.last@company.co.uk" },
+  // assigned-secret — secret-named key + = / : + a quoted literal ≥8 chars; the finding spans the
+  // WHOLE assignment (so scrub removes the key+quotes and the marker cannot re-trigger the rule).
+  { label: "api_key = quoted literal (= sep, double quote)", text: `api_key = "a1b2c3d4e5f6g7h8"`, kind: "assigned-secret", secret: `api_key = "a1b2c3d4e5f6g7h8"` },
+  { label: "password: quoted literal (colon sep, YAML style)", text: `password: "s3cr3tP@ssw0rd99"`, kind: "assigned-secret", secret: `password: "s3cr3tP@ssw0rd99"` },
+  { label: "client_secret quoted (single quote, no spaces)", text: `client_secret='Xk9Lm2Qp7Rt4Zw8Bv'`, kind: "assigned-secret", secret: `client_secret='Xk9Lm2Qp7Rt4Zw8Bv'` },
+  { label: "prefixed uppercase key AUTH_TOKEN (token is final token)", text: `AUTH_TOKEN = "ghijklmnop1234567890"`, kind: "assigned-secret", secret: `AUTH_TOKEN = "ghijklmnop1234567890"` },
+  { label: "db_password (prefix, no spaces around =)", text: `db_password="hunter2hunter2hunter2"`, kind: "assigned-secret", secret: `db_password="hunter2hunter2hunter2"` },
+  { label: "camelCase apiKey (api[_-]?key matches under i-flag)", text: `apiKey = "aVeryLongRandomValue12"`, kind: "assigned-secret", secret: `apiKey = "aVeryLongRandomValue12"` },
 ];
 
 // ── REJECT: a near-miss that shares tokens but not the shape ──────────────────
@@ -96,6 +104,30 @@ const REJECT: ReadonlyArray<RejectCase> = [
   { label: "an npm scope @scope/pkg is not an email", text: "npm i @acme/widgets", forbid: "email" },
   { label: "no-TLD foo@bar is not a full address", text: "the token foo@bar is internal", forbid: "email" },
   { label: "a reserved doc domain (example.com) is not PII", text: "email user@example.com in the sample", forbid: "email" },
+  // assigned-secret near-misses — each perturbs ONE invariant while holding the rest.
+  // (no value / bare identifier)
+  { label: "a bare identifier named apiKey with no value is not a leak", text: "const apiKey = readConfig();", forbid: "assigned-secret" },
+  { label: "apiKey mentioned in prose with no assignment", text: "set your apiKey before calling the API", forbid: "assigned-secret" },
+  // (unquoted RHS — the quote anchor rejects references and expressions by construction)
+  { label: "an env-var reference (unquoted) is not a hardcoded secret", text: "apiKey = process.env.API_KEY", forbid: "assigned-secret" },
+  { label: "a function-call value (unquoted) is not a hardcoded secret", text: "token = getToken()", forbid: "assigned-secret" },
+  { label: "a variable value (unquoted) is not a hardcoded secret", text: "password = userSuppliedInput", forbid: "assigned-secret" },
+  // (placeholder value — names a slot, does not hold one)
+  { label: "the placeholder YOUR_KEY_HERE is not a leak", text: `api_key = "YOUR_KEY_HERE"`, forbid: "assigned-secret" },
+  { label: "the placeholder changeme is not a leak", text: `password = "changeme"`, forbid: "assigned-secret" },
+  { label: "the placeholder xxx is not a leak", text: `token = "xxx"`, forbid: "assigned-secret" },
+  { label: "an angle-bracket template <your-api-key> is not a leak", text: `api_key = "<your-api-key>"`, forbid: "assigned-secret" },
+  { label: "a shell template ${API_KEY} is not a leak", text: `secret = "\${API_KEY}"`, forbid: "assigned-secret" },
+  { label: "an ellipsis placeholder is not a leak", text: `api_key = "..."`, forbid: "assigned-secret" },
+  { label: "a quoted env-var reference is still a reference, not a leak", text: `apiKey = "process.env.API_KEY"`, forbid: "assigned-secret" },
+  // (too-short value)
+  { label: "a value shorter than the minimum is not a leak", text: `token = "abc"`, forbid: "assigned-secret" },
+  { label: "an empty quoted value is not a leak", text: `api_key = ""`, forbid: "assigned-secret" },
+  // (key is not secret-named, or the noun is not the key's FINAL token)
+  { label: "a non-secret key (username) is not flagged on its value", text: `username = "john_the_admin_user"`, forbid: "assigned-secret" },
+  { label: "secretary — secret is a prefix, not the key's final token", text: `secretary = "the office manager name"`, forbid: "assigned-secret" },
+  { label: "tokenizer — token is a prefix, not the key's final token", text: `tokenizer = "bert-base-uncased-01"`, forbid: "assigned-secret" },
+  { label: "password_length — password is not the key's final token", text: `password_length = "twenty-characters"`, forbid: "assigned-secret" },
 ];
 
 // ── ZERO: high-entropy content that resembles NOTHING must produce no finding ─
@@ -157,6 +189,17 @@ for (const c of ZERO) {
   // Findings are in source order — the sort contract downstream redaction relies on.
   const starts = scanSecrets(blob).map((f) => f.start);
   assert("mixed blob findings are sorted by start", starts.every((s, i) => i === 0 || starts[i - 1]! <= s));
+}
+
+// ── ASSIGNED-SECRET: JSON-quoted key + whole-assignment range contract ────────
+// A JSON `"key": "value"` form (the key itself quoted) is caught — the optional key-closing quote
+// in the pattern admits it. And the finding spans the WHOLE assignment, not just the value: scrub
+// relies on this so its inert marker replaces the key + quotes and cannot re-trigger the rule.
+{
+  const json = `{"api_secret": "longsecretvalue1234"}`;
+  const found = findingsOfKind(scanSecrets(json), "assigned-secret");
+  assert("JSON-quoted secret key is flagged", found.length === 1);
+  assert("finding spans the whole key:value assignment, not just the value", json.slice(found[0]!.start, found[0]!.end) === `api_secret": "longsecretvalue1234"`);
 }
 
 // Empty input is the identity: no text, no findings — the honest zero, not a crash.
