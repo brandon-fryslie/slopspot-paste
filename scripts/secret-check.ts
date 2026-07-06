@@ -76,6 +76,9 @@ const ACCEPT: ReadonlyArray<AcceptCase> = [
   { label: "a reference prefix with a real secret appended is flagged", text: `api_key = "process.env.API_KEY;realPassw0rd"`, kind: "assigned-secret", secret: `api_key = "process.env.API_KEY;realPassw0rd"` },
   { label: "a double-quoted value containing an apostrophe is not truncated", text: `token = "it's a longsecret12"`, kind: "assigned-secret", secret: `token = "it's a longsecret12"` },
   { label: "a weak credential whose value IS the noun (password) is flagged", text: `password = "password"`, kind: "assigned-secret", secret: `password = "password"` },
+  // One accept row per alternation noun that had no coverage, so a dropped arm is caught.
+  { label: "access_key noun (access[_-]?key arm) is flagged", text: `access_key = "aV8dK2mP9xQ1zL3"`, kind: "assigned-secret", secret: `access_key = "aV8dK2mP9xQ1zL3"` },
+  { label: "passwd noun is flagged", text: `passwd = "r3alPassw0rd99"`, kind: "assigned-secret", secret: `passwd = "r3alPassw0rd99"` },
 ];
 
 // ── REJECT: a near-miss that shares tokens but not the shape ──────────────────
@@ -133,6 +136,8 @@ const REJECT: ReadonlyArray<RejectCase> = [
   { label: "a bare $VAR shell reference is not a leak", text: `secret = "$MY_SECRET_VALUE"`, forbid: "assigned-secret" },
   { label: "an ellipsis placeholder is not a leak", text: `api_key = "..."`, forbid: "assigned-secret" },
   { label: "a quoted env-var reference is still a reference, not a leak", text: `apiKey = "process.env.API_KEY"`, forbid: "assigned-secret" },
+  { label: "a Python os.environ reference is not a leak (ENV_REFERENCE arm)", text: `api_key = "os.environ.API_KEY"`, forbid: "assigned-secret" },
+  { label: "a your-password slot value is a placeholder, not a leak", text: `api_key = "Your-Password"`, forbid: "assigned-secret" },
   // JSON-form placeholders: the value extraction is $-anchored, so the key-closing quote is never
   // taken as the value delimiter — the placeholder predicate sees the value, not ": value".
   { label: "JSON-form placeholder YOUR_KEY_HERE is rejected", text: `{"api_secret": "YOUR_KEY_HERE"}`, forbid: "assigned-secret" },

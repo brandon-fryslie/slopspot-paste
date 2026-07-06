@@ -108,8 +108,9 @@ const ASSIGNED_SECRET_MIN_LENGTH = 8;
 const PLACEHOLDER_SECRET_VALUES = new Set([
   "changeme", "change", "placeholder", "example", "sample", "dummy", "redacted", "todo", "tbd",
   "fixme", "none", "null", "nil", "na", "test", "testing", "value", "string", "default",
-  "yourkey", "yourapikey", "yoursecret", "yourtoken",
-  "yourkeyhere", "yourapikeyhere", "yoursecrethere", "yourtokenhere", "insertkeyhere", "replaceme",
+  "yourkey", "yourapikey", "yoursecret", "yourtoken", "yourpassword", "yourpasswd",
+  "yourkeyhere", "yourapikeyhere", "yoursecrethere", "yourtokenhere", "yourpasswordhere",
+  "yourpasswdhere", "insertkeyhere", "replaceme",
   "foo", "bar", "foobar", "abc", "xxx", "yyy",
 ]);
 
@@ -177,6 +178,10 @@ const SECRET_RULES: ReadonlyArray<SecretRule> = [
   // secretary/tokenizer (noun is a prefix, not the token) fail by construction; ['"]? admits a
   // JSON "key": form. The value is (?:(?!\1)[^\n])+ — content up to the CAPTURED delimiter, so a
   // double-quoted value may contain an apostrophe (and vice versa) without truncating the match.
+  // Known bounded-recall limit: NOT escape-aware, so a value with a backslash-escaped copy of its
+  // own delimiter (password = "val\"escaped") truncates at that quote and is dropped; escape
+  // handling would need a ReDoS-safe \\.-alternation, not worth the hot-path complexity for a
+  // pathological paste given this is an explicitly bounded-recall backstop.
   // It matches the WHOLE assignment — not just the value — because scrub replaces a match with an
   // inert marker, and a marker left where only the value was would sit after the key and re-trigger
   // this rule; removing the key + quotes too keeps scrub idempotent. Checked LAST: it is the broad
