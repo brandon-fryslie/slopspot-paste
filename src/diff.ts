@@ -12,7 +12,15 @@
 
 import { deriveViewableDialogue } from "./overlay";
 import { renderDialogueHtml } from "./renderDialogue";
-import { PLATFORM_LABEL, platformOf, sourceOf, type Platform, type PasteLoad } from "./types";
+import {
+  DEFAULT_TITLE,
+  PLATFORM_LABEL,
+  platformOf,
+  sourceOf,
+  type Platform,
+  type PasteLoad,
+  type PasteLoadStatus,
+} from "./types";
 
 // [LAW:types-are-the-program] One diff column is EITHER a shown conversation or an
 // honest absence — never a half-shown column with an empty body. The `ok:false` arm
@@ -32,7 +40,7 @@ export type DiffColumn =
   | {
       readonly ok: false;
       readonly slug: string;
-      readonly status: 404 | 410 | 503;
+      readonly status: PasteLoadStatus;
       readonly message: string;
     };
 
@@ -51,11 +59,17 @@ export const deriveDiffColumn = (slug: string, load: PasteLoad): DiffColumn => {
   return {
     ok: true,
     slug,
-    title: c.title ?? "Shared conversation",
+    title: c.title ?? DEFAULT_TITLE,
     platform,
     platformLabel: PLATFORM_LABEL[platform],
     turnCount: c.turns.length,
-    html: renderDialogueHtml(deriveViewableDialogue(c)),
+    // [LAW:types-are-the-program] topLevel:false — the SAME suppression the subagent
+    // nested render uses: two columns rendered at top level would each mint id="t0",
+    // id="t1", …, colliding across columns into duplicate document ids (unrepresentable
+    // by the anchor's own contract). The diff page wires no minimap/permalink/clamp, so
+    // the tN anchors serve nothing here; data-index/topic/role stay (only id must be
+    // document-unique), keeping the spine navigable per column for later slices.
+    html: renderDialogueHtml(deriveViewableDialogue(c), false),
   };
 };
 
@@ -68,14 +82,22 @@ export const deriveDiffColumn = (slug: string, load: PasteLoad): DiffColumn => {
 // while the message names both truths.
 export type DiffOutcome =
   | { readonly kind: "render"; readonly left: DiffColumn; readonly right: DiffColumn }
-  | { readonly kind: "fail"; readonly status: 404 | 410 | 503; readonly message: string };
+  | { readonly kind: "fail"; readonly status: PasteLoadStatus; readonly message: string };
+
+// [LAW:no-silent-failure] The more-severe of two failure statuses, ordered by transience:
+// 503 (store down — retryable) > 410 (tombstoned) > 404 (never existed). Returning the
+// actual higher value (not Math.max, which widens to number) keeps the type PasteLoadStatus.
+// The both-missing page uses this so a transient 503 on EITHER side yields a non-cacheable
+// 503 response, rather than a cacheable 404/410 that a CDN could pin as permanently-gone
+// after the store recovers.
+const moreSevere = (a: PasteLoadStatus, b: PasteLoadStatus): PasteLoadStatus => (a >= b ? a : b);
 
 export const diffOutcome = (left: DiffColumn, right: DiffColumn): DiffOutcome =>
   left.ok || right.ok
     ? { kind: "render", left, right }
     : {
         kind: "fail",
-        status: left.status,
+        status: moreSevere(left.status, right.status),
         message:
           `Neither paste could be shown. ` +
           `${left.slug}: ${left.message} · ${right.slug}: ${right.message}`,

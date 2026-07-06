@@ -55,9 +55,13 @@ assert("a redacted column resolves ok (present, not dropped)", redactedCol.ok);
 assert("a diff column renders the redaction marker", redactedCol.ok && redactedCol.html.includes("[redacted]"));
 assert("a diff column NEVER leaks a redacted secret (sources the viewable dialogue, not raw turns)",
   redactedCol.ok && !redactedCol.html.includes(SECRET));
-assert("column html IS renderDialogueHtml(deriveViewableDialogue(conversation)) — pinned to the one enforcer",
+assert("column html IS renderDialogueHtml(deriveViewableDialogue(conversation), false) — pinned to the one enforcer",
   redactedCol.ok &&
-    redactedCol.html === renderDialogueHtml(deriveViewableDialogue(conv({ turns, overlay: hide1 }))));
+    redactedCol.html === renderDialogueHtml(deriveViewableDialogue(conv({ turns, overlay: hide1 })), false));
+// topLevel:false so two columns don't collide on duplicate id="tN" — a column mints no
+// permalink anchor (nothing on the diff page consumes it), unlike the /<slug> full page.
+assert("a diff column mints NO id=\"tN\" anchor (topLevel:false — no cross-column id collision)",
+  redactedCol.ok && !redactedCol.html.includes('id="t'));
 
 // ── A non-overlaid column shows the content, and projects the page's own facts ────────
 const plainCol = deriveDiffColumn("abcdefghjk", okLoad(conv({ turns, title: "My chat" })));
@@ -103,7 +107,13 @@ assert("a render outcome preserves BOTH columns for the template (present + abse
 
 const bothGone = diffOutcome(missA, missB);
 assert("both missing → fail (the only failure)", bothGone.kind === "fail");
-assert("both missing → fail carries the left side's status", bothGone.kind === "fail" && bothGone.status === 503);
+// The page status is the MORE-SEVERE of the two (503 > 410 > 404), independent of side —
+// so a transient 503 is never masked by a cacheable 404. Assert both orderings.
+assert("both missing → fail carries the more-severe status (503 when left=503, right=404)",
+  bothGone.kind === "fail" && bothGone.status === 503);
+const bothGoneRev = diffOutcome(missB, missA); // left=404, right=503
+assert("both missing → severity is position-independent (503 when left=404, right=503)",
+  bothGoneRev.kind === "fail" && bothGoneRev.status === 503);
 assert("both missing → fail names BOTH slugs and BOTH reasons (no silently-dropped side)",
   bothGone.kind === "fail" &&
     bothGone.message.includes("aaaaaaaaaa") && bothGone.message.includes("bbbbbbbbbb") &&
