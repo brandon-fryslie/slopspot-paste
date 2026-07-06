@@ -23,6 +23,7 @@ import { detectSources, parseInput } from "../parser";
 import { claudeCodeSessionId } from "../url";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveDialogue, plainView } from "../dialogue";
+import { scanTurnsForSecrets, type TurnSecretWarning } from "../secret-warnings";
 
 export type View = "blocks" | "preview";
 
@@ -172,6 +173,17 @@ export class EditorStore {
 
   get turns(): Turn[] {
     return toTurns(this.blocks);
+  }
+
+  // [LAW:dataflow-not-control-flow][LAW:single-enforcer] The warn-only guard, as a DERIVED
+  // value: the same pure scanner that owns "what is a secret" (secret-scan.ts), run over the
+  // turns the author is about to publish — not a second detection site that could drift. It is
+  // recomputed only when `turns` changes (mobx computed), so the warning tracks every edit
+  // live, BEFORE a permanent public link exists, whatever path the content entered by (typed,
+  // imported, restored). Purely advisory: nothing here gates canSubmit — the author decides,
+  // because a detector has false positives and a hard veto is the wrong contract [LAW:no-silent-failure].
+  get secretWarnings(): ReadonlyArray<TurnSecretWarning> {
+    return scanTurnsForSecrets(this.turns);
   }
 
   get previewHtml(): string {
