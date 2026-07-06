@@ -70,6 +70,16 @@ assert("a column projects turnCount from turns.length (the same '{n} turns' the 
 assert("a generic (no-origin) paste has a null platform label — absence of provenance renders as absence",
   plainCol.ok && plainCol.platformLabel === null);
 
+// The platform is a two-branch projection: a stored platformOverride WINS over the
+// origin-derived platform (the same override /<slug> honours). Cover the override branch,
+// not just the generic-derived one above — the column must reflect the author's chosen
+// theme, and its label follows [LAW:behavior-not-structure].
+const overrideCol = deriveDiffColumn("abcdefghjk", okLoad(conv({ turns, platformOverride: "claude-code" })));
+assert("platformOverride wins over origin derivation (column.platform === the override)",
+  overrideCol.ok && overrideCol.platform === "claude-code");
+assert("the override's label projects too (claude-code → 'Claude Code')",
+  overrideCol.ok && overrideCol.platformLabel === "Claude Code");
+
 // ── A missing side is an honest absence carrying the gate's verbatim status ───────────
 const goneCol = deriveDiffColumn("goneslug00", errLoad(410, "This paste has expired or been deleted."));
 assert("a missing side is ok:false carrying the exact status", !goneCol.ok && goneCol.status === 410);
