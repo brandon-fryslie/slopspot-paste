@@ -744,6 +744,57 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
       }
       document.body.classList.add("agent-prompt-ready");
     }
+
+    // [LAW:effects-at-boundaries] The document-scoped "Download as files" control, wired
+    // at SCRIPT level — NOT inside the clipboard `if` above — because the download has no
+    // clipboard dependency: it decodes base64, wraps a Blob, and clicks a transient
+    // <a download>. Its own capability seam is URL.createObjectURL, so on an insecure
+    // origin (no navigator.clipboard) the download still wires while the copy pills stay
+    // hidden [LAW:no-silent-failure — each affordance declares the capability it needs].
+    // The server built the reconstructed file tree into a zip and embedded it base64 in
+    // the button's hidden sibling <pre> [LAW:one-source-of-truth]; this only PERFORMS the
+    // effect. [LAW:dataflow-not-control-flow] the button's absence is a value: with no
+    // code the server emitted no control, this query finds nothing, nothing reveals.
+    const downloadAll = document.querySelector<HTMLButtonElement>(".download-all-code");
+    if (downloadAll && typeof URL.createObjectURL === "function") {
+      const zipPayloadEl = downloadAll.parentElement?.querySelector(".download-all-code-payload");
+      // [LAW:no-silent-failure] The control renderer always emits the payload <pre> beside
+      // the button, so a missing sibling is a broken template invariant, not a normal empty
+      // case — fail loudly rather than download an empty archive in silence.
+      if (!zipPayloadEl) throw new Error("download-all-code button has no payload sibling");
+      const zipBase64 = zipPayloadEl.textContent ?? "";
+      // [LAW:one-source-of-truth] Filename slug read from the one server-rendered data-slug
+      // on the .conversation element already resolved above, not re-queried or re-derived
+      // from location.
+      const zipName = "slopspot-" + (conversation.dataset.slug ?? "paste") + "-code.zip";
+      // [LAW:one-source-of-truth] Revert label read from the button the server rendered.
+      const zipLabel = downloadAll.textContent;
+      // [LAW:no-ambient-temporal-coupling] ONE revert timer owns the label; a rapid second
+      // click clears the first before arming its own.
+      let zipRevert = 0;
+      downloadAll.addEventListener("click", () => {
+        // atob -> binary string -> the exact archive bytes the server encoded.
+        const binary = atob(zipBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/zip" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = zipName;
+        a.click();
+        // Revoke on the next macrotask: the click has initiated the download by the time
+        // this fires, so the URL is freed without cancelling it in Firefox/Safari.
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        downloadAll.classList.add("downloaded");
+        downloadAll.textContent = "Downloaded";
+        window.clearTimeout(zipRevert);
+        zipRevert = window.setTimeout(() => {
+          downloadAll.classList.remove("downloaded");
+          downloadAll.textContent = zipLabel;
+        }, 1200);
+      });
+      document.body.classList.add("download-ready");
+    }
   </script>
 
   <script>
