@@ -10,7 +10,12 @@
 // write and the reveal are the page's client concern, not this module's.
 
 import type { CodeArtifact, FileContent, FileEdit } from "./artifacts";
+import { zipArchive, type ZipEntry } from "./zip";
 import { escapeHtml } from "./render";
+
+// [LAW:one-source-of-truth] One pluralizer for the control labels, so "1 block" /
+// "3 blocks" is decided in a single place, not re-inlined per label.
+const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 // One old->new replacement, rendered verbatim under labels. [LAW:no-silent-failure]
 // A diff is shown AS a diff — the old text and the new text, each labelled — never
@@ -55,26 +60,133 @@ const artifactBlock = (artifact: CodeArtifact): string => {
 export const formatCodeArtifacts = (artifacts: ReadonlyArray<CodeArtifact>): string =>
   artifacts.map(artifactBlock).join("\n\n");
 
-// [LAW:dataflow-not-control-flow] The document-scoped control, or NOTHING when there is
-// no code to copy — the absence is a value (empty string) the page renders as nothing,
-// never a dead button. [LAW:one-source-of-truth] the button carries no copy of the data:
-// the payload lives once in a hidden sibling <pre> (escaped here, decoded back verbatim
-// by the client's textContent read), exactly as .copy-code reads its sibling <code>. It
-// stays hidden until the page's client confirms clipboard support and wires it
-// (body.copy-all-ready), mirroring .copy-code so a no-JS viewer never meets a button that
-// cannot act [LAW:no-silent-failure].
+// ─── .4 Download as files: the mini file tree as a zip ──────────────────────────
+
+// [LAW:no-silent-failure] A zip entry's path must be a SAFE RELATIVE path inside the
+// archive root: an absolute root ("/Users/…") or ".." traversal is stripped so
+// extraction can never escape the extraction dir (zip-slip) and every file lands under
+// one clean tree. This is honest normalization, not a lie about meaning — the real
+// nesting under the path is preserved; only the leading root and traversal segments,
+// which name no captured content, are dropped.
+const safeTreePath = (path: string): string =>
+  path
+    .split("/")
+    .filter((seg) => seg.length > 0 && seg !== "." && seg !== "..")
+    .join("/");
+
+// [LAW:no-mode-explosion] A small, bounded fence-lang -> extension table so a downloaded
+// snippet carries a real extension its editor recognizes. Data rows, not branches:
+// adding a language is one entry, and anything absent (or a bare fence) falls to .txt —
+// an honest default that never invents a wrong extension.
+const SNIPPET_EXT: { readonly [lang: string]: string } = {
+  typescript: "ts", ts: "ts", tsx: "tsx",
+  javascript: "js", js: "js", jsx: "jsx",
+  python: "py", py: "py",
+  ruby: "rb", rb: "rb",
+  go: "go", rust: "rs", rs: "rs",
+  java: "java", kotlin: "kt", swift: "swift",
+  c: "c", "c++": "cpp", cpp: "cpp", "c#": "cs", csharp: "cs",
+  php: "php", sh: "sh", bash: "sh", shell: "sh", zsh: "sh",
+  json: "json", yaml: "yaml", yml: "yaml", toml: "toml",
+  html: "html", css: "css", scss: "scss", sql: "sql",
+  markdown: "md", md: "md", xml: "xml", astro: "astro",
+};
+
+// [LAW:dataflow-not-control-flow] One file artifact -> its honest place in the tree,
+// an exhaustive switch over the FileContent union. A `full` snapshot is a REAL
+// reconstructed file at its (safe) path — verbatim bytes, no header. A `diff`-only file
+// is NEVER fabricated into whole bytes: it lands under patches/ with a .patch suffix,
+// carrying the SAME labelled edit text the copy-all payload shows [LAW:one-source-of-
+// truth via fileBody] — a diff shown as a diff, honestly withholding the whole file we
+// never had [LAW:no-silent-failure].
+const fileEntry = (path: string, content: FileContent): ZipEntry => {
+  switch (content.kind) {
+    case "full":
+      return { path: safeTreePath(path), text: content.text };
+    case "diff":
+      return { path: `patches/${safeTreePath(path)}.patch`, text: fileBody(content) };
+  }
+};
+
+// [LAW:types-are-the-program] The download projection: the extractor's CodeArtifact[]
+// mapped to the zip's members, preserving the extractor's order (reconstructed files
+// first, then loose snippets). Full files become the real tree; diff-only files become
+// patches/…; path-less snippets are bucketed under snippets/ and numbered in source
+// order with a lang-derived extension. Every artifact yields exactly one honest entry,
+// so an empty input is an empty tree (a value, not a special case).
+export const downloadTree = (artifacts: ReadonlyArray<CodeArtifact>): ReadonlyArray<ZipEntry> => {
+  const entries: ZipEntry[] = [];
+  let snippetIndex = 0;
+  for (const artifact of artifacts) {
+    switch (artifact.kind) {
+      case "file":
+        entries.push(fileEntry(artifact.path, artifact.content));
+        break;
+      case "snippet": {
+        snippetIndex += 1;
+        const ext = artifact.lang === null ? "txt" : (SNIPPET_EXT[artifact.lang.toLowerCase()] ?? "txt");
+        const num = String(snippetIndex).padStart(3, "0");
+        entries.push({ path: `snippets/snippet-${num}.${ext}`, text: artifact.text });
+        break;
+      }
+    }
+  }
+  return entries;
+};
+
+// [LAW:effects-at-boundaries] Base64-encode the archive bytes for embedding in the page
+// (the client decodes them back with atob). Written over Uint8Array with no `Buffer` or
+// `btoa`, so it runs identically in the Cloudflare Workers render runtime and the Node
+// test runtime [LAW:no-ambient-temporal-coupling on host globals].
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  // B64.charAt is total (a masked 0..63 index is always in range), so the alphabet
+  // lookups need no assertion; the byte reads are in-bounds by each loop/remainder guard.
+  let out = "";
+  let i = 0;
+  for (; i + 3 <= bytes.length; i += 3) {
+    const n = (bytes[i]! << 16) | (bytes[i + 1]! << 8) | bytes[i + 2]!;
+    out += B64.charAt((n >>> 18) & 63) + B64.charAt((n >>> 12) & 63) + B64.charAt((n >>> 6) & 63) + B64.charAt(n & 63);
+  }
+  const rem = bytes.length - i;
+  if (rem === 1) {
+    const n = bytes[i]! << 16;
+    out += B64.charAt((n >>> 18) & 63) + B64.charAt((n >>> 12) & 63) + "==";
+  } else if (rem === 2) {
+    const n = (bytes[i]! << 16) | (bytes[i + 1]! << 8);
+    out += B64.charAt((n >>> 18) & 63) + B64.charAt((n >>> 12) & 63) + B64.charAt((n >>> 6) & 63) + "=";
+  }
+  return out;
+};
+
+// [LAW:dataflow-not-control-flow] The document-scoped code-export control, or NOTHING
+// when there is no code — the absence is a value (empty string) the page renders as
+// nothing, never a dead button. It carries two sibling affordances over the SAME
+// artifacts: copy-all (a text payload) and download (a zip of the file tree).
+// [LAW:one-type-per-behavior] Both are the same shape — a pill button beside a hidden
+// sibling <pre> holding the server-built payload the button reads (the copy-code seam)
+// — so they share the .code-export-pill class and each stays hidden until its own client
+// capability check reveals it, so a no-JS or unsupported viewer never meets a button
+// that cannot act [LAW:no-silent-failure].
 export const renderCodeExportControl = (artifacts: ReadonlyArray<CodeArtifact>): string => {
   if (artifacts.length === 0) return "";
-  const n = artifacts.length;
-  const label = `Copy all code · ${n} block${n === 1 ? "" : "s"}`;
-  const payload = formatCodeArtifacts(artifacts);
+  // [LAW:one-source-of-truth] No separate aria-label on either button: the visible text
+  // is each button's ONLY accessible name, so its "Copied"/"Downloaded" flip is the
+  // confirmation SR users hear too — a redundant aria-label would freeze the announced
+  // name and hide the count.
+  const copyLabel = `Copy all code · ${plural(artifacts.length, "block")}`;
+  const copyPayload = formatCodeArtifacts(artifacts);
+  // The zip payload is built ONCE from one download tree, feeding both the file count in
+  // the label and the embedded archive — one derivation, no drift.
+  const tree = downloadTree(artifacts);
+  const zipBase64 = bytesToBase64(zipArchive(tree));
+  const downloadLabel = `Download as files · ${plural(tree.length, "file")}`;
   return (
-    // [LAW:one-source-of-truth] No separate aria-label: the visible text is the button's
-    // ONLY accessible name. A redundant aria-label would override the text for screen
-    // readers — hiding the block count and freezing the announced name at "Copy all code"
-    // while the text flips to "Copied". With the text as the sole name, that flip is the
-    // confirmation SR users hear too.
-    `<button type="button" class="copy-all-code" data-copy-all-code>${escapeHtml(label)}</button>` +
-    `<pre class="copy-all-code-payload" hidden aria-hidden="true">${escapeHtml(payload)}</pre>`
+    `<button type="button" class="code-export-pill copy-all-code" data-copy-all-code>${escapeHtml(copyLabel)}</button>` +
+    `<pre class="copy-all-code-payload" hidden aria-hidden="true">${escapeHtml(copyPayload)}</pre>` +
+    // The archive is base64 (no HTML-special chars), so it embeds verbatim; the client
+    // reads it from this sibling and decodes exactly these bytes [LAW:one-source-of-truth].
+    `<button type="button" class="code-export-pill download-all-code" data-download-all-code>${escapeHtml(downloadLabel)}</button>` +
+    `<pre class="download-all-code-payload" hidden aria-hidden="true">${zipBase64}</pre>`
   );
 };
