@@ -137,7 +137,10 @@ const REJECT: ReadonlyArray<RejectCase> = [
   { label: "an ellipsis placeholder is not a leak", text: `api_key = "..."`, forbid: "assigned-secret" },
   { label: "a quoted env-var reference is still a reference, not a leak", text: `apiKey = "process.env.API_KEY"`, forbid: "assigned-secret" },
   { label: "a Python os.environ reference is not a leak (ENV_REFERENCE arm)", text: `api_key = "os.environ.API_KEY"`, forbid: "assigned-secret" },
+  { label: "a Python os.environ.get() method-call reference is not a leak", text: `api_key = "os.environ.get('API_KEY')"`, forbid: "assigned-secret" },
   { label: "a your-password slot value is a placeholder, not a leak", text: `api_key = "Your-Password"`, forbid: "assigned-secret" },
+  { label: "an 8-char repeated-character value is a pseudo-placeholder (isolates the ^(.)\\1*$ arm)", text: `token = "aaaaaaaa"`, forbid: "assigned-secret" },
+  { label: "an INSERT-YOUR-KEY-HERE fill-me-in template is not a leak", text: `api_key = "INSERT-YOUR-KEY-HERE"`, forbid: "assigned-secret" },
   // JSON-form placeholders: the value extraction is $-anchored, so the key-closing quote is never
   // taken as the value delimiter — the placeholder predicate sees the value, not ": value".
   { label: "JSON-form placeholder YOUR_KEY_HERE is rejected", text: `{"api_secret": "YOUR_KEY_HERE"}`, forbid: "assigned-secret" },

@@ -123,7 +123,11 @@ const PLACEHOLDER_SECRET_VALUES = new Set([
 // would silently drop a real leak [LAW:no-silent-failure]. Each arm is one reject family from the
 // shape table.
 const TEMPLATE_ENVELOPE = /^(?:\$\{[^}]*\}|\{\{.*\}\}|<[^>]*>|\$[A-Za-z_]\w*)$/;
-const ENV_REFERENCE = /^(?:process\.env|import\.meta\.env|os\.environ)(?:[.[][\w.[\]'"]*)?$/i;
+// The tail admits property, subscript, AND method-call access (os.environ.get('K', 'D')) of the
+// SUPPORTED roots — a value that is wholly one of these is a reference, not a literal. New roots
+// (os.getenv, System.getenv, …) are an unbounded set the generic detector deliberately scopes out:
+// their fallout is a dismissible warn, the design's accepted bounded noise, never a missed leak.
+const ENV_REFERENCE = /^(?:process\.env|import\.meta\.env|os\.environ)(?:[.[(][\w.[\](),'"\s]*)?$/i;
 const isPlaceholderSecretValue = (value: string): boolean => {
   const normalized = value.toLowerCase().replace(/[\s_.-]/g, "");
   return (
@@ -131,7 +135,7 @@ const isPlaceholderSecretValue = (value: string): boolean => {
     /^(.)\1*$/.test(value) ||
     TEMPLATE_ENVELOPE.test(value) ||
     /\.{3}|…/.test(value) ||
-    /^your.*here$/i.test(value) ||
+    /^(?:your|insert|replace|put|add|enter|paste|fill)\b.*here$/i.test(value) ||
     ENV_REFERENCE.test(value)
   );
 };
