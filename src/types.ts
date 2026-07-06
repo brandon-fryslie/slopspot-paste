@@ -368,6 +368,30 @@ export interface Conversation {
   readonly overlay?: Overlay;
 }
 
+// [LAW:types-are-the-program] The viewable-paste outcomes: the conversation, or the
+// exact response the boundary must emit. 404 "never existed / bad slug" is kept
+// distinct from 410 "existed but is gone" (the tombstone) and from 503 "the store
+// itself failed" — three different truths, three different statuses, never collapsed.
+// The union makes the load gate (loadPaste.ts) TOTAL: every path, including a storage
+// rejection, yields a PasteLoad, so the Promise cannot reject out from under its callers.
+// [LAW:decomposition] It lives here — the pure contract home — not in loadPaste.ts,
+// because the shape is what callers depend on; the KV-IO function that mints it is a
+// separate concern. This lets the pure diff core consume it off the Worker ambient world.
+//
+// [LAW:one-source-of-truth] The failure statuses are one named union, so every type that
+// carries "a load's failure status" (PasteLoad here, and the diff's DiffColumn/DiffOutcome
+// that re-project it) references the SAME set — adding a status can't silently drift one
+// re-declaration out of sync with another.
+export type PasteLoadStatus = 404 | 410 | 503;
+export type PasteLoad =
+  | { readonly ok: true; readonly conversation: Conversation }
+  | { readonly ok: false; readonly status: PasteLoadStatus; readonly message: string };
+
+// [LAW:one-source-of-truth] The one fallback title for a paste that carries none. Every
+// reader surface — the full page, the single-turn card, the diff column — shows this exact
+// string, so a reword/localization changes one constant, not three hand-kept copies.
+export const DEFAULT_TITLE = "Shared conversation";
+
 // [LAW:single-enforcer] Three distinct time windows, stated once:
 //   TTL_SECONDS     — active lifetime; paste hides from public reads at W+30d
 //   GRACE_SECONDS   — grace window; isPurgeable fires at W+60d (TTL+GRACE)

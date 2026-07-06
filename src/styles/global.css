@@ -2000,6 +2000,56 @@ body.download-ready .download-all-code { display: inline-block; }
 body:has(.admin-table-wrap) main,
 body:has(.admin-empty) main { max-width: 1100px; }
 
+/* ─── Side-by-side diff (/diff/<a>/<b>) ──────────────────────────────────
+   [LAW:composability] The diff reuses the reading column's .conversation layout
+   verbatim inside each side; these rules only place two of them next to each other
+   and widen the route to hold both. Each .diff-column carries its own data-platform,
+   so the platform-theme vars above cascade per column, not per page. */
+body:has(.diff-columns) main { max-width: 1400px; }
+
+.diff-header { text-align: center; }
+
+.diff-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+/* min-width:0 lets a grid column shrink below its content's intrinsic width, so a
+   wide code block scrolls inside its own <pre> instead of stretching the column. */
+.diff-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.diff-column-header {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.diff-column-title { font-size: 18px; margin: 0 0 4px; letter-spacing: -0.01em; }
+.diff-column-title a { color: inherit; text-decoration: none; }
+.diff-column-title a:hover { text-decoration: underline; }
+
+.diff-column-missing {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 24px 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  background: var(--bg-elev);
+}
+.diff-column-missing-slug { font-family: var(--font-mono); font-size: 13px; margin: 0 0 6px; }
+.diff-column-missing-msg { margin: 0; font-size: 14px; }
+
+/* Stack the two columns on a narrow viewport — no gutter to hold two reading
+   columns, so the comparison becomes vertical. */
+@media (max-width: 899px) {
+  .diff-columns { grid-template-columns: 1fr; }
+}
+
 /* ─── Block editor chrome (index page) ───────────────────────────────────
    [LAW:dataflow-not-control-flow] Per-kind accents are driven by the
    data-kind attribute flowing from the Turn discriminator — one attribute
