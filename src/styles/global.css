@@ -513,6 +513,55 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .tldr-error-msg { flex: 1 1 auto; }
 .tldr-retry { flex: 0 0 auto; }
 
+/* ─── Compare-with entry point ───────────────────────────────────────────
+   A pure client-nav affordance in the header stack: validate a second slug/link
+   and go to /diff/<this>/<that>. display:none until the script confirms it can
+   act and adds body.compare-ready (mirroring the copy pills) — a no-JS reader's
+   page is unchanged, never a dead control that round-trips to a 404. */
+.compare { display: none; margin-bottom: 24px; }
+body.compare-ready .compare { display: block; }
+.compare-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.compare-label { font-size: 12px; letter-spacing: 0.04em; color: var(--fg-muted); }
+.compare-field { display: flex; gap: 8px; flex: 1 1 240px; min-width: 0; }
+.compare-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+.compare-input::placeholder { color: var(--fg-muted); }
+.compare-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* [LAW:one-type-per-behavior] The mono pill — the elevated 12px pill worn by the
+   Compare button and both code-export controls. Its chrome lives here ONCE
+   [LAW:one-source-of-truth]; each consumer adds .mono-pill in its class list and
+   layers only what differs (a reveal state, a flex rule). (The .tldr-btn base is a
+   deliberately separate variant — flat --bg, size delegated to its subclasses.) */
+.mono-pill {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 6px 15px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.mono-pill:hover { color: var(--fg); border-color: var(--accent); }
+.mono-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The Compare button is always shown once body.compare-ready; it only pins its width. */
+.compare-go { flex: 0 0 auto; }
+/* [LAW:one-type-per-behavior] The inline validation error IS the paste form's error —
+   reuse .form-error (global.css) for the one authoritative appearance; this only makes
+   it wrap onto its own full-width row in the flex form. */
+.compare-error { flex: 1 1 100%; }
+
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A vertical rail of one marker per turn. Built client-side from the rendered
    turn elements (see [slug].astro). One rail, two placements: on a wide viewport
@@ -1794,26 +1843,13 @@ body.agent-prompt-ready .copy-agent-prompt.copied {
    unsupported viewer never sees a button that can't act. Each button's payload
    lives in a hidden sibling <pre> it reads; the section is absent entirely when
    the conversation carries no code.
-   Appearance lives once on .code-export-pill; the reveal rules toggle only
-   display, so the .copied/.downloaded accent states are never overridden. */
+   Chrome lives once on .mono-pill (shared with the Compare button); .code-export-pill
+   adds only what differs — hidden until its own client reveal, plus the .copied/
+   .downloaded accent states the reveal rules never override. */
 .code-export { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 8px; }
-.code-export-pill {
-  display: none;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  padding: 6px 15px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-elev);
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
-}
+.code-export-pill { display: none; }
 body.copy-all-ready .copy-all-code,
 body.download-ready .download-all-code { display: inline-block; }
-.code-export-pill:hover { color: var(--fg); border-color: var(--accent); }
-.code-export-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .code-export-pill.copied,
 .code-export-pill.downloaded { color: var(--accent); border-color: var(--accent); }
 
