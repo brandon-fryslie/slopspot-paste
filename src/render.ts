@@ -1,4 +1,4 @@
-import { Marked } from "marked";
+import { Marked, type Token } from "marked";
 import type { ToolOutput } from "./types";
 import { highlightCode } from "./highlight";
 
@@ -58,6 +58,20 @@ export const sanitizeUrl = (href: string): string => {
 // renderer based on what kind of table we saw.
 
 const FENCE_RE = /^\s*(```|~~~)/;
+
+// [LAW:types-are-the-program] The CommonMark-correct OPENING fence: 0–3 spaces of
+// indent, then the fence run. Distinct from FENCE_RE (whose unbounded `\s*` is fine
+// for normalizeTables' fence-state tracking): 4+ spaces of indent makes an INDENTED
+// code block, NOT a fenced one, so fencedCodeBlocks must use this bounded form or it
+// mis-reads an indented block that happens to contain backticks as a fenced block.
+const FENCE_OPEN_RE = /^ {0,3}(```|~~~)/;
+
+// A single shared Marked instance, owned here, used only for lexing. It IS a shared
+// global — safe precisely because it is stateless for this use: marked builds a
+// fresh Lexer per `.lexer()` call, so there is no mutable cross-call state for
+// [LAW:no-shared-mutable-globals] to bite on. Sharing it keeps fencedCodeBlocks from
+// allocating a Marked per prose turn.
+const FENCE_LEXER = new Marked({ gfm: true });
 
 // A GFM separator row: pipes around 2+ cells, each `:?-+:?`, optional spaces.
 const SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
@@ -215,6 +229,40 @@ export const renderMarkdown = (md: string): string => {
   });
 
   return m.parse(normalized, { async: false, gfm: true, breaks: false });
+};
+
+// [LAW:types-are-the-program] A fenced code block as DATA: the language label the
+// info string named (null when the fence carried none), and the block's verbatim
+// text. `lang` is the FIRST info-string word — the language — never the whole
+// info string, so `python title=x` labels as `python`.
+export interface FencedBlock {
+  readonly lang: string | null;
+  readonly text: string;
+}
+
+// [LAW:single-enforcer] Fenced code detection lives at the ONE marked boundary. It
+// lexes through the same marked config renderMarkdown draws with, so it reports the
+// blocks the page renders. (renderMarkdown additionally runs normalizeTables first,
+// but that only injects GFM table separators OUTSIDE fenced regions — it skips
+// fences — so fenced blocks tokenize identically with or without it.) The
+// discriminator is FENCE_OPEN_RE (the CommonMark-correct 0–3-space opening fence):
+// an INDENTED (4+-space) code block carries no valid opening fence and is excluded —
+// even one whose text happens to contain backtick characters — matching the
+// triple-backtick scope. An empty-text block is reported faithfully (it renders as
+// an empty <pre>); whether an empty block is an artifact is the caller's policy.
+// [LAW:single-enforcer] Traversal is marked's own walkTokens — the one authority for
+// walking its token tree — so nested code (in blockquotes, list items) is reached
+// without hand-rolled recursion or unsound casts over marked's token union.
+export const fencedCodeBlocks = (md: string): ReadonlyArray<FencedBlock> => {
+  const blocks: FencedBlock[] = [];
+  FENCE_LEXER.walkTokens(FENCE_LEXER.lexer(md), (t: Token) => {
+    if (t.type === "code" && FENCE_OPEN_RE.test(t.raw)) {
+      const info = (t.lang ?? "").trim();
+      const lang = info.length === 0 ? null : info.split(/\s+/)[0] ?? null;
+      blocks.push({ lang, text: t.text });
+    }
+  });
+  return blocks;
 };
 
 // ─── Tool-output sub-parsers ─────────────────────────────────────────

@@ -30,13 +30,21 @@ export const TOOL_PRIMARY_ARG: { readonly [tool: string]: string } = {
   WebSearch: "query",
 };
 
+// [LAW:types-are-the-program] The structured shape of a jsonl tool call's args:
+// a JSON object of unknown-valued keys. Named so the file-artifact extractor
+// (artifacts.ts) reads the SAME classifier's output type, not a second guess.
+export type JsonObject = { readonly [k: string]: unknown };
+
 // Parse args as a JSON object, or null if it is not one. A jsonl tool call stores
 // its args as serialized JSON; a cc/claude-share tool call stores raw text. This
 // is the one place that classifies which shape we hold.
+// [LAW:single-enforcer] Exported so the file-artifact extractor reuses THIS one
+// JSON-vs-raw-text classifier — a raw-text (cc/share) tool call yields no
+// structured file, decided here once, never re-derived at a second callsite.
 // [LAW:no-silent-failure] The catch is NOT swallowing a failure — "args is not
 // JSON" is a legitimate, expected outcome (cc/share), routed to the raw-text
 // branch below. It never hides a broken state behind a default.
-const parseJsonObject = (s: string): { readonly [k: string]: unknown } | null => {
+export const parseJsonObject = (s: string): JsonObject | null => {
   try {
     const v: unknown = JSON.parse(s);
     return v !== null && typeof v === "object" && !Array.isArray(v)
