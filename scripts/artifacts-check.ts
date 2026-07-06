@@ -313,6 +313,18 @@ console.log("\nArtifact extraction — fenced snippets:");
   // REJECT: inline codespan is not a block.
   assert("inline codespan -> REJECT (not a block)", snippets(extractArtifacts([msg("use `x` inline")])).length === 0);
 
+  // ACCEPT: a tilde-fenced block (~~~) is a valid fence too, not just backticks.
+  const tilde = snippets(extractArtifacts([msg("~~~python\nprint(1)\n~~~\n")]));
+  assert("tilde fence ~~~ -> snippet", tilde.length === 1 && tilde[0]?.lang === "python" && tilde[0]?.text === "print(1)");
+
+  // ACCEPT: a fenced block nested in a blockquote is reached by the recursive walk.
+  const inQuote = snippets(extractArtifacts([msg("> ```ts\n> code\n> ```")]));
+  assert("fence inside a blockquote -> snippet (nested walk)", inQuote.length === 1 && inQuote[0]?.lang === "ts" && inQuote[0]?.text === "code");
+
+  // ACCEPT: a fenced block nested in a list item is reached by the recursive walk.
+  const inList = snippets(extractArtifacts([msg("- ```ts\n  code\n  ```")]));
+  assert("fence inside a list item -> snippet (nested walk)", inList.length === 1 && inList[0]?.lang === "ts" && inList[0]?.text === "code");
+
   // thinking and insight prose are snippet sources too.
   const think = snippets(extractArtifacts([{ kind: "thinking", content: "```py\nprint(1)\n```" } as Turn]));
   assert("thinking prose -> snippet", think.length === 1 && think[0]?.lang === "py");

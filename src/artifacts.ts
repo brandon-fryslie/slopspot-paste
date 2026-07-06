@@ -189,12 +189,19 @@ const fileOpOf = (
   if (extractor === undefined) return null; // not a file tool
   const obj = parseJsonObject(args);
   if (obj === null) return null; // FORMAT boundary: raw-text (cc/share) tool-call
-  const pathKey = TOOL_PRIMARY_ARG[tool]; // "file_path" for every file tool
-  const path = pathKey === undefined ? null : strField(obj, pathKey);
+  // [LAW:no-silent-failure] Reaching here means `tool` IS a file tool (its extractor
+  // exists), and every file tool has a TOOL_PRIMARY_ARG path key. A missing key is
+  // therefore not a data condition but a programmer error — the two tables drifted —
+  // so it throws loudly (a failing test) rather than silently dropping the artifact.
+  const pathKey = TOOL_PRIMARY_ARG[tool];
+  if (pathKey === undefined) {
+    throw new Error(`extractArtifacts: file tool "${tool}" has no TOOL_PRIMARY_ARG path key`);
+  }
+  const path = strField(obj, pathKey);
   // A path must be a NON-EMPTY string. Emptiness is rejected here, not in strField,
   // because an empty `content` (a Write of an empty file) or an empty `old_string`
   // (an insert-Edit) are legitimate — only a pathless file is nonsensical.
-  if (path === null || path.length === 0) return null; // no honest path
+  if (path === null || path.length === 0) return null; // no honest path in the args
   const op = extractor(obj, output);
   return op === null ? null : { path, op };
 };
