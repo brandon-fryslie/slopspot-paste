@@ -215,11 +215,11 @@ export const renderCodeExportControl = (artifacts: ReadonlyArray<CodeArtifact>):
   const zipBase64 = bytesToBase64(zipArchive(tree));
   const downloadLabel = `Download as files · ${plural(tree.length, "file")}`;
   return (
-    `<button type="button" class="code-export-pill copy-all-code" data-copy-all-code>${escapeHtml(copyLabel)}</button>` +
+    `<button type="button" class="mono-pill code-export-pill copy-all-code" data-copy-all-code>${escapeHtml(copyLabel)}</button>` +
     `<pre class="copy-all-code-payload" hidden aria-hidden="true">${escapeHtml(copyPayload)}</pre>` +
     // The archive is base64 (no HTML-special chars), so it embeds verbatim; the client
     // reads it from this sibling and decodes exactly these bytes [LAW:one-source-of-truth].
-    `<button type="button" class="code-export-pill download-all-code" data-download-all-code>${escapeHtml(downloadLabel)}</button>` +
+    `<button type="button" class="mono-pill code-export-pill download-all-code" data-download-all-code>${escapeHtml(downloadLabel)}</button>` +
     `<pre class="download-all-code-payload" hidden aria-hidden="true">${zipBase64}</pre>`
   );
 };
