@@ -14,6 +14,7 @@ import { repeat } from "lit-html/directives/repeat.js";
 import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
 import type { InputKind, Platform, Role, ToolOutputKind, Turn } from "../types";
 import { inputLabel, PLATFORMS, ROLES, TOOL_OUTPUT_KINDS } from "../types";
+import { describeSecretKind } from "../secret-scan";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { convertKind, KINDS } from "./blocks";
 import type { EditorStore } from "./store";
@@ -417,6 +418,35 @@ const discardConfirm = (store: EditorStore): TemplateResult | typeof nothing => 
   `;
 };
 
+// [LAW:no-silent-failure] The warn-only surface: an advisory banner that names each block the
+// pure scanner flagged and the kinds found there, so the author sees a likely secret BEFORE
+// minting a permanent public link. It NEVER blocks publish (the submit button is untouched) —
+// a detector has false positives, so the author decides. It renders nothing when clean, and
+// lives in the always-visible slot beside the toolbar's submit control so a publish from either
+// view passes it. `role="status"` (polite) announces on change without the assertive re-read an
+// alert would fire on every keystroke. describeSecretKind is surfaced verbatim [LAW:one-source-of-truth];
+// the secret text itself is never shown — a SecretFinding carries none, so masking is structural.
+const secretWarnings = (store: EditorStore): TemplateResult | typeof nothing => {
+  const warnings = store.secretWarnings;
+  if (warnings.length === 0) return nothing;
+  return html`
+    <div class="secret-warnings" role="status">
+      <p class="secret-warnings-title">
+        Heads up — this looks like it contains ${warnings.length === 1 ? "a secret" : "secrets"}.
+        Publishing is permanent and public; review before sharing.
+      </p>
+      <ul class="secret-warnings-list">
+        ${warnings.map(
+          (w) =>
+            html`<li>
+              Block ${w.turnIndex + 1}: ${w.kinds.map(describeSecretKind).join(", ")}
+            </li>`,
+        )}
+      </ul>
+    </div>
+  `;
+};
+
 // [LAW:single-enforcer] The one place the submit/discard button markup lives.
 // Both the top toolbar and the bottom bar use this fragment — they cannot
 // disagree because they share the same bindings to the same store getters.
@@ -481,6 +511,7 @@ export const appTemplate = (store: EditorStore): TemplateResult => html`
   <div class="editor">
     ${toolbar(store)}
     ${discardConfirm(store)}
+    ${secretWarnings(store)}
     ${store.view === "blocks"
       ? html`${importBox(store)}${blockList(store)}${bottomBar(store)}`
       : previewPane(store)}
