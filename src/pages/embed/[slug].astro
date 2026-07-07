@@ -1,0 +1,51 @@
+---
+import { env } from "cloudflare:workers";
+import Embed from "../../layouts/Embed.astro";
+import { renderDialogueHtml } from "../../renderDialogue";
+import { deriveViewableDialogue } from "../../overlay";
+import { loadViewablePaste } from "../../loadPaste";
+import { derivePasteMeta } from "../../types";
+
+export const prerender = false;
+
+const { slug } = Astro.params;
+
+// [LAW:single-enforcer] The SAME gate the full page and the single-turn card use —
+// a soft-deleted or expired paste is hidden here too, so the embed surface cannot
+// leak a paste that is gone on /<slug>. Without this the iframe would be a hole in
+// the one viewability boundary. [LAW:dataflow-not-control-flow] the result is a
+// value: the conversation or the exact response to emit.
+const load = await loadViewablePaste(env.PASTES, slug, Date.now());
+if (!load.ok) {
+  return new Response(load.message, { status: load.status });
+}
+const conversation = load.conversation;
+
+// [LAW:one-source-of-truth] Title, theme platform, and label are the SAME display-meta
+// projection the full page and single-turn card show — derived once in derivePasteMeta,
+// not re-open-coded here.
+const { title, platform, platformLabel } = derivePasteMeta(conversation);
+
+// [LAW:single-enforcer] The embed renders the full conversation through the SAME
+// overlay-applied spine (deriveViewableDialogue) and the SAME renderer
+// (renderDialogueHtml) the full page uses — there is no second, embed-only render, so
+// a card in a host page cannot drift from the same paste on /<slug>, and a redacted
+// turn cannot leak through the frame. It is another disposable projection of the
+// stored original; it depends on storage, never the reverse [LAW:one-way-deps].
+const dialogue = deriveViewableDialogue(conversation);
+---
+
+<Embed title={`${title} · slopspot paste`} platform={platform}>
+  <section class="conversation" aria-label="Conversation" set:html={renderDialogueHtml(dialogue)} />
+
+  {/*
+    Attribution back to the canonical paste. The href is root-relative, so inside the
+    frame it resolves against our own origin (never the host's); target=_blank breaks
+    the reader out of the frame to the full conversation. [LAW:dataflow-not-control-flow]
+    the badge is a value the template skips when the platform is generic, not a branch.
+  */}
+  <a class="embed-attribution" href={`/${slug}`} target="_blank" rel="noopener">
+    {platformLabel && <span class="platform-badge">{platformLabel}</span>}
+    <span>View on slopspot·paste ↗</span>
+  </a>
+</Embed>

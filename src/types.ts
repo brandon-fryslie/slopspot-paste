@@ -771,6 +771,25 @@ export const PLATFORM_LABEL: { readonly [P in Platform]: string | null } = {
   "generic": null,
 };
 
+// [LAW:one-source-of-truth] The display-meta projection of a stored paste: its title,
+// theme platform, and platform label. Every reader route — the full page, the
+// single-turn card, the embed frame — shows the SAME three values, so the derivation
+// lives here once (beside the DEFAULT_TITLE / platformOf / PLATFORM_LABEL it composes)
+// rather than copied per route where a future change (truncation, a second fallback
+// tier, a sanitizer) would have to be applied three times or drift. platformOverride
+// wins when the editor set a manual theme, else the source-derived platform; a generic
+// platform carries a null label, so absence of provenance renders as absence.
+export const derivePasteMeta = (
+  conversation: Conversation,
+): { readonly title: string; readonly platform: Platform; readonly platformLabel: string | null } => {
+  const platform = conversation.platformOverride ?? platformOf(sourceOf(conversation.origin));
+  return {
+    title: conversation.title ?? DEFAULT_TITLE,
+    platform,
+    platformLabel: PLATFORM_LABEL[platform],
+  };
+};
+
 export const SOURCE_LABEL: { readonly [K in SourceKind]: string } = {
   // claude-share is a Provider styling identity, not a dropdown option — the
   // dropdown offers the generic "url" arm (URL_INPUT_LABEL) and resolves the

@@ -4,7 +4,7 @@ import Base from "../../layouts/Base.astro";
 import { deriveViewableDialogue } from "../../overlay";
 import { renderTurnCard } from "../../turnCard";
 import { loadViewablePaste } from "../../loadPaste";
-import { DEFAULT_TITLE, PLATFORM_LABEL, platformOf, sourceOf } from "../../types";
+import { derivePasteMeta } from "../../types";
 
 export const prerender = false;
 
@@ -33,13 +33,9 @@ if (card === null) {
   return new Response("Not found", { status: 404 });
 }
 
-// [LAW:one-source-of-truth] Platform theme is a projection of the captured origin —
-// the SAME derivation the full page runs: the manual override wins, else the
-// source-derived platform. A generic platform has a null label, so absence of
-// provenance renders as absence.
-const platform = conversation.platformOverride ?? platformOf(sourceOf(conversation.origin));
-const platformLabel = PLATFORM_LABEL[platform];
-const title = conversation.title ?? DEFAULT_TITLE;
+// [LAW:one-source-of-truth] Title, theme platform, and label are the SAME display-meta
+// projection the full page and embed frame show — derived once in derivePasteMeta.
+const { title, platform, platformLabel } = derivePasteMeta(conversation);
 ---
 
 <Base title={`${title} · one turn · slopspot paste`} platform={platform}>

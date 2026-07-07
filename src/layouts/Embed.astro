@@ -1,0 +1,42 @@
+---
+// [LAW:decomposition] The chromeless frameable shell for every embed render target
+// (/embed/<slug>, and the single-turn /embed/<slug>/t<N> to come). It is Base with a
+// precise cut: it KEEPS the theming Base carries — global.css and the data-platform
+// body attribute the conversation HTML needs to render at all — and DROPS only Base's
+// site chrome (the header nav and footer), which is wrong inside a host page's frame.
+//
+// [LAW:composability] Keeping the stylesheet inside the frame is what makes the embed
+// self-contained: renderDialogueHtml emits bare class names (.bubble, .role-dot) that
+// are inert without global.css, so a frame that dropped the styles would be a render
+// that silently depends on the host's CSS — the very thing the iframe exists to avoid.
+//
+// [LAW:one-way-deps] The layout depends on the styles and the Platform type; nothing
+// depends back on it.
+import "../styles/global.css";
+import type { Platform } from "../types";
+
+interface Props {
+  title: string;
+  // [LAW:dataflow-not-control-flow] Theme is a value carried as data-platform, exactly
+  // as Base does; CSS variable overrides do all the theming. A generic paste omits it.
+  platform?: Platform;
+}
+
+const { title, platform } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{title}</title>
+    <!-- The embed frame is a projection of the canonical paste page; keep it out of
+         search so it never competes with /<slug> for the same conversation. -->
+    <meta name="robots" content="noindex" />
+  </head>
+  <body data-platform={platform} class="embed-body">
+    <slot />
+  </body>
+</html>
