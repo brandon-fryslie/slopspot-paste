@@ -743,6 +743,28 @@ body.compare-ready .compare { display: block; }
   gap: 20px;
 }
 
+/* ─── Embed frame ─────────────────────────────────────────────────────────
+   The chromeless /embed/<slug> render (Embed.astro) has no <main>, so it owns
+   its own reading gutter here. [LAW:one-source-of-truth] it reuses --maxw and the
+   same .conversation layout above — the frame is the same reading column minus the
+   site chrome, never a second set of bubble styles. */
+.embed-body {
+  min-height: auto;
+  padding: 20px 20px 24px;
+  max-width: var(--maxw);
+  margin: 0 auto;
+}
+.embed-attribution {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.embed-attribution:hover { text-decoration: underline; }
+
 /* ─── Bubbles — chat UI ─────────────────────────────────────────────── */
 .bubble {
   position: relative;
