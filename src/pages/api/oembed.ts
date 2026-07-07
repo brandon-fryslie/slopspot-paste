@@ -23,12 +23,15 @@ export const GET: APIRoute = async ({ request }) => {
   // [LAW:no-silent-failure] We advertise ONLY application/json+oembed in discovery, so a
   // consumer asking for xml gets a loud 501 — never faked XML that lies about the format
   // we actually serve. A missing format defaults to our json (oEmbed's default).
+  // [LAW:single-enforcer] The 501 goes through the SAME json() builder as every other
+  // response this handler emits (400/404 and loadViewablePaste's 410/503, plus 200), so
+  // the error contract is one JSON shape [LAW:one-type-per-behavior] — not a bare Response
+  // with no Content-Type that a strict consumer would find inconsistent with the rest.
   const format = url.searchParams.get("format");
   if (format !== null && format !== "json") {
-    return new Response(
-      `Unsupported oEmbed format '${format}'. This provider serves application/json+oembed only.`,
-      { status: 501 },
-    );
+    return json(501, {
+      error: `Unsupported oEmbed format '${format}'. This provider serves application/json+oembed only.`,
+    });
   }
 
   const target = url.searchParams.get("url");
