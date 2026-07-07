@@ -14,6 +14,7 @@
 
 import type { Conversation } from "./types";
 import { derivePasteMeta } from "./types";
+import type { Slug } from "./slug";
 
 // The advertised frame size when the consumer imposes no bound. A conversation card is
 // portrait — taller than wide — so the reader sees several turns before scrolling the frame.
@@ -91,7 +92,7 @@ const escapeAttr = (s: string): string =>
 // paste through the single viewability gate and passes the origin from new URL(request.url).
 export const buildOEmbed = (
   conversation: Conversation,
-  slug: string,
+  slug: Slug,
   origin: string,
   clamp: OEmbedClamp,
 ): OEmbedRich => {
@@ -100,9 +101,10 @@ export const buildOEmbed = (
   const height = clampDim(EMBED_DEFAULT_HEIGHT, clamp.maxheight);
 
   // The rich html frames the shipped /embed/<slug> render target on OUR absolute origin —
-  // self-contained, so it carries its own CSS into the host page. slug is already validated
-  // (isValidSlug: our alphabet only) so it is safe in the URL; title is user-controlled and
-  // escaped for the attribute context.
+  // self-contained, so it carries its own CSS into the host page. slug is a Slug — the type
+  // proves it matches our alphabet, so it is safe interpolated into the URL with no illegal
+  // char reachable [LAW:types-are-the-program]; title is user-controlled and escaped for the
+  // attribute context.
   const html =
     `<iframe src="${origin}/embed/${slug}" width="${width}" height="${height}" ` +
     `style="border:0" loading="lazy" title="${escapeAttr(title)}"></iframe>`;

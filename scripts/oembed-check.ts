@@ -9,6 +9,7 @@
 // attribute [LAW:no-silent-failure]. Behavioural, independent of any Worker or KV.
 
 import { buildOEmbed, parseClamp, EMBED_DEFAULT_WIDTH, EMBED_DEFAULT_HEIGHT } from "../src/oembed";
+import { generateSlug } from "../src/slug";
 import type { Conversation, Turn } from "../src/types";
 
 const assert = (label: string, cond: boolean): void => {
@@ -38,7 +39,10 @@ const turns: ReadonlyArray<Turn> = [
   { kind: "message", role: "assistant", content: "Hi there" },
 ];
 
-const SLUG = "abcdefghjk";
+// A real Slug from the one generator — buildOEmbed REQUIRES a Slug (a string proven to
+// match the paste-id shape), so a hand-typed constant would not typecheck. This exercises
+// the builder against exactly the branded value the app mints [LAW:types-are-the-program].
+const SLUG = generateSlug();
 const ORIGIN = "https://paste.slopspot.ai";
 const noBound = parseClamp(new URLSearchParams());
 
@@ -107,4 +111,14 @@ const noBound = parseClamp(new URLSearchParams());
   assert("the escaped quote is an entity", body.html.includes("&quot;"));
   // The unescaped title still projects into the JSON title field (JSON escaping handles it there).
   assert("the JSON title field is the raw title (unescaped)", body.title === `x"><script>alert(1)</script>`);
+}
+
+// ── AMPERSAND: a literal & becomes &amp; (escaped FIRST, so entities are never double-escaped) ──
+{
+  const ampersand = conv({ turns, title: "Rock & Roll" });
+  const body = buildOEmbed(ampersand, SLUG, ORIGIN, noBound);
+  // A raw & in an attribute starts an ambiguous entity reference; escapeAttr converts it.
+  // Dropping the & replace would leave `Rock & Roll` here and this assertion would catch it.
+  assert("literal & in the title is escaped to &amp; in the attribute", body.html.includes('title="Rock &amp; Roll"'));
+  assert("no raw ampersand remains in the html attribute", !body.html.includes("Rock & Roll"));
 }
