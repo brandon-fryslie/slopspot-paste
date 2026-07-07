@@ -4,7 +4,7 @@ import Embed from "../../layouts/Embed.astro";
 import { renderDialogueHtml } from "../../renderDialogue";
 import { deriveViewableDialogue } from "../../overlay";
 import { loadViewablePaste } from "../../loadPaste";
-import { DEFAULT_TITLE, PLATFORM_LABEL, platformOf, sourceOf } from "../../types";
+import { derivePasteMeta } from "../../types";
 
 export const prerender = false;
 
@@ -21,12 +21,10 @@ if (!load.ok) {
 }
 const conversation = load.conversation;
 
-const title = conversation.title ?? DEFAULT_TITLE;
-// [LAW:one-source-of-truth] Platform theme is the SAME projection of the captured
-// origin the full page runs: manual override wins, else the source-derived platform.
-// A generic platform has a null label, so absence of provenance renders as absence.
-const platform = conversation.platformOverride ?? platformOf(sourceOf(conversation.origin));
-const platformLabel = PLATFORM_LABEL[platform];
+// [LAW:one-source-of-truth] Title, theme platform, and label are the SAME display-meta
+// projection the full page and single-turn card show — derived once in derivePasteMeta,
+// not re-open-coded here.
+const { title, platform, platformLabel } = derivePasteMeta(conversation);
 
 // [LAW:single-enforcer] The embed renders the full conversation through the SAME
 // overlay-applied spine (deriveViewableDialogue) and the SAME renderer
