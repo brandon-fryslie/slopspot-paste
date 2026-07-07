@@ -14,7 +14,7 @@
 
 import type { Conversation } from "./types";
 import { derivePasteMeta } from "./types";
-import type { Slug } from "./slug";
+import type { Slug, TurnIndex } from "./slug";
 
 // The advertised frame size when the consumer imposes no bound. A conversation card is
 // portrait — taller than wide — so the reader sees several turns before scrolling the frame.
@@ -88,25 +88,37 @@ const escapeAttr = (s: string): string =>
     .replace(/"/g, "&quot;");
 
 // [LAW:effects-at-boundaries] Pure: (resolved paste, its slug, the absolute request
-// origin, the consumer's bounds) → the rich oEmbed body. No IO; the caller resolved the
-// paste through the single viewability gate and passes the origin from new URL(request.url).
+// origin, the consumer's bounds, and optionally which turn) → the rich oEmbed body. No IO;
+// the caller resolved the paste through the single viewability gate and passes the origin
+// from new URL(request.url).
 export const buildOEmbed = (
   conversation: Conversation,
   slug: Slug,
   origin: string,
   clamp: OEmbedClamp,
+  // [LAW:dataflow-not-control-flow] WHICH render target to frame is a VALUE, not a second
+  // builder: null = the whole paste, a turn index = that one turn's card. The two embed
+  // shapes are one OEmbedRich differing only in the frame path [LAW:one-type-per-behavior];
+  // every existing caller omits this and gets the whole-paste frame unchanged.
+  // [LAW:types-are-the-program] A branded TurnIndex (minted only by parseTurnSegment), not a
+  // raw number, so a negative / NaN / Infinity that would produce a malformed src like
+  // /embed/<slug>/t-1 cannot reach here — the illegal frame path is unrepresentable.
+  turnIndex: TurnIndex | null = null,
 ): OEmbedRich => {
   const { title, platformLabel } = derivePasteMeta(conversation);
   const width = clampDim(EMBED_DEFAULT_WIDTH, clamp.maxwidth);
   const height = clampDim(EMBED_DEFAULT_HEIGHT, clamp.maxheight);
 
-  // The rich html frames the shipped /embed/<slug> render target on OUR absolute origin —
-  // self-contained, so it carries its own CSS into the host page. slug is a Slug — the type
-  // proves it matches our alphabet, so it is safe interpolated into the URL with no illegal
-  // char reachable [LAW:types-are-the-program]; title is user-controlled and escaped for the
-  // attribute context.
+  // The rich html frames the shipped render target on OUR absolute origin — self-contained,
+  // so it carries its own CSS into the host page. The frame path mirrors the reader URL: the
+  // whole paste (/embed/<slug>), or one turn by its canonical t<N> index (/embed/<slug>/t<N>)
+  // — the SAME turn render target this endpoint also validates against. slug is a Slug and
+  // turnIndex a branded TurnIndex (a non-negative safe integer), so both are safe interpolated
+  // into the URL with no illegal char reachable [LAW:types-are-the-program]; title is
+  // user-controlled and escaped for the attribute context.
+  const framePath = turnIndex === null ? `/embed/${slug}` : `/embed/${slug}/t${turnIndex}`;
   const html =
-    `<iframe src="${origin}/embed/${slug}" width="${width}" height="${height}" ` +
+    `<iframe src="${origin}${framePath}" width="${width}" height="${height}" ` +
     `style="border:0" loading="lazy" title="${escapeAttr(title)}"></iframe>`;
 
   return {
