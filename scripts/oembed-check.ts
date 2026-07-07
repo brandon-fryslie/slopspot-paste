@@ -9,7 +9,7 @@
 // attribute [LAW:no-silent-failure]. Behavioural, independent of any Worker or KV.
 
 import { buildOEmbed, parseClamp, EMBED_DEFAULT_WIDTH, EMBED_DEFAULT_HEIGHT } from "../src/oembed";
-import { generateSlug, parseEmbedRef } from "../src/slug";
+import { generateSlug, parseEmbedRef, parseTurnSegment } from "../src/slug";
 import type { Conversation, Turn } from "../src/types";
 
 const assert = (label: string, cond: boolean): void => {
@@ -125,8 +125,14 @@ const noBound = parseClamp(new URLSearchParams());
 
 // ── TURN FRAME (cxw.5): a turn index frames the /embed/<slug>/t<N> render target, not the whole paste ──
 {
+  // [LAW:types-are-the-program] Mint the index through parseTurnSegment — buildOEmbed REQUIRES
+  // a branded TurnIndex (a non-negative safe integer), so a raw `1` would not typecheck. This
+  // exercises the builder against exactly the branded value the app produces, exactly as SLUG
+  // above is minted through generateSlug rather than a hand-typed constant.
+  const t1 = parseTurnSegment("t1");
+  if (t1 === null) throw new Error("fixture: 't1' must parse to a TurnIndex");
   const whole = buildOEmbed(conv({ turns, title: "My chat" }), SLUG, ORIGIN, noBound);
-  const turnCard = buildOEmbed(conv({ turns, title: "My chat" }), SLUG, ORIGIN, noBound, 1);
+  const turnCard = buildOEmbed(conv({ turns, title: "My chat" }), SLUG, ORIGIN, noBound, t1);
 
   assert("turn frame iframes /embed/<slug>/t<N> on the absolute origin", turnCard.html.includes(`src="${ORIGIN}/embed/${SLUG}/t1"`));
   assert("turn frame does NOT iframe the whole-paste render target", !turnCard.html.includes(`src="${ORIGIN}/embed/${SLUG}"`));
@@ -166,4 +172,23 @@ const noBound = parseClamp(new URLSearchParams());
 
   const foreign = parseEmbedRef("https://example.com/not-a-paste");
   assert("a foreign URL is malformed", !foreign.ok && foreign.reason === "malformed");
+
+  // An out-of-safe-range turn segment is not a turn (parseTurnSegment rejects it), so the
+  // last segment falls through to the slug candidate — a 17-char non-slug — and the ref is
+  // malformed, never a turn carrying a precision-lost index [LAW:no-silent-failure].
+  const hugeTurn = parseEmbedRef(`${ORIGIN}/${SLUG}/t9007199254740993`);
+  assert("an out-of-safe-range turn segment is not a turn ref", !(hugeTurn.ok && hugeTurn.kind === "turn"));
+}
+
+// ── PARSE TURN SEGMENT (cxw.5): the ONE t<N> grammar, non-negative safe integer or null ──
+{
+  assert("parseTurnSegment accepts a normal index", parseTurnSegment("t5") === 5);
+  assert("parseTurnSegment accepts t0 (index 0)", parseTurnSegment("t0") === 0);
+  assert("parseTurnSegment rejects a leading-zero segment (t007)", parseTurnSegment("t007") === null);
+  assert("parseTurnSegment rejects a non-turn segment", parseTurnSegment("abc") === null);
+  assert("parseTurnSegment rejects the empty string", parseTurnSegment("") === null);
+  // The precision trap: Number("t9007199254740993"[1:]) === 9007199254740992, a silent
+  // ===-miss in findTurn. isSafeInteger at the parse boundary rejects it as an honest non-turn.
+  assert("parseTurnSegment rejects a magnitude past the safe-integer range", parseTurnSegment("t9007199254740993") === null);
+  assert("parseTurnSegment accepts the largest safe index", parseTurnSegment(`t${Number.MAX_SAFE_INTEGER}`) === Number.MAX_SAFE_INTEGER);
 }

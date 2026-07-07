@@ -14,7 +14,7 @@
 
 import type { Conversation } from "./types";
 import { derivePasteMeta } from "./types";
-import type { Slug } from "./slug";
+import type { Slug, TurnIndex } from "./slug";
 
 // The advertised frame size when the consumer imposes no bound. A conversation card is
 // portrait — taller than wide — so the reader sees several turns before scrolling the frame.
@@ -100,7 +100,10 @@ export const buildOEmbed = (
   // builder: null = the whole paste, a turn index = that one turn's card. The two embed
   // shapes are one OEmbedRich differing only in the frame path [LAW:one-type-per-behavior];
   // every existing caller omits this and gets the whole-paste frame unchanged.
-  turnIndex: number | null = null,
+  // [LAW:types-are-the-program] A branded TurnIndex (minted only by parseTurnSegment), not a
+  // raw number, so a negative / NaN / Infinity that would produce a malformed src like
+  // /embed/<slug>/t-1 cannot reach here — the illegal frame path is unrepresentable.
+  turnIndex: TurnIndex | null = null,
 ): OEmbedRich => {
   const { title, platformLabel } = derivePasteMeta(conversation);
   const width = clampDim(EMBED_DEFAULT_WIDTH, clamp.maxwidth);
@@ -110,9 +113,9 @@ export const buildOEmbed = (
   // so it carries its own CSS into the host page. The frame path mirrors the reader URL: the
   // whole paste (/embed/<slug>), or one turn by its canonical t<N> index (/embed/<slug>/t<N>)
   // — the SAME turn render target this endpoint also validates against. slug is a Slug and
-  // turnIndex a number, so both are safe interpolated into the URL with no illegal char
-  // reachable [LAW:types-are-the-program]; title is user-controlled and escaped for the
-  // attribute context.
+  // turnIndex a branded TurnIndex (a non-negative safe integer), so both are safe interpolated
+  // into the URL with no illegal char reachable [LAW:types-are-the-program]; title is
+  // user-controlled and escaped for the attribute context.
   const framePath = turnIndex === null ? `/embed/${slug}` : `/embed/${slug}/t${turnIndex}`;
   const html =
     `<iframe src="${origin}${framePath}" width="${width}" height="${height}" ` +
