@@ -2,10 +2,28 @@
 // here, once. Both /api/paste and /api/fetch emit { ...} | { error } bodies; a
 // second copy of this builder would be a second place the content-type or
 // serialization could drift.
-export const json = (status: number, body: Record<string, unknown>): Response =>
+//
+// [LAW:types-are-the-program] The media type is a closed union of the JSON types this
+// builder emits, not bare string: json() always produces a JSON body (JSON.stringify), so
+// a non-JSON content type would make the body and its declared type disagree. The union
+// makes that unrepresentable — a future JSON subtype is one addition here, the single place
+// the set is defined. (application/json+oembed's suffix is +oembed, not +json, so no
+// `${string}+json` template captures it — the values are enumerated honestly.)
+type JsonContentType = "application/json" | "application/json+oembed";
+
+// [LAW:dataflow-not-control-flow] The JSON media subtype is a VALUE this one builder
+// carries, not a second code path: it defaults to application/json (every existing
+// caller is unchanged), and a caller whose body is a more specific +json document —
+// the oEmbed endpoint's application/json+oembed (oEmbed §2.3.4) — passes that subtype
+// so its response still flows through this single enforcer instead of a bare Response.
+export const json = (
+  status: number,
+  body: Record<string, unknown>,
+  contentType: JsonContentType = "application/json",
+): Response =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": contentType },
   });
 
 // [LAW:single-enforcer] Redirect responses are shaped here too. 303 See Other
