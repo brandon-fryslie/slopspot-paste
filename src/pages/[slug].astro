@@ -60,8 +60,9 @@ const sourceUrl = sourceUrlOf(origin);
 // (Astro.url.origin — the SAME request-derived origin the endpoint computes from
 // new URL(request.url).origin) because consumers fetch cross-origin. The paste URL is
 // percent-encoded into the url= param so a consumer decodes back exactly the absolute
-// paste URL. The link's title is the same derivePasteMeta projection the page and
-// endpoint show, never a second title.
+// paste URL. The link's title (below) is derivePasteMeta(conversation).title — the ONE
+// display-meta projection every reader surface on this page already derives from, so it
+// is never a second title minted here.
 const oembedHref = `${Astro.url.origin}/api/oembed?url=${encodeURIComponent(`${Astro.url.origin}/${slug}`)}&format=json`;
 
 // [LAW:one-source-of-truth] Derive the nested Dialogue ONCE, then take two disposable
