@@ -27,8 +27,11 @@ export const GET: APIRoute = async ({ request }) => {
   // response this handler emits (400/404 and loadViewablePaste's 410/503, plus 200), so
   // the error contract is one JSON shape [LAW:one-type-per-behavior] — not a bare Response
   // with no Content-Type that a strict consumer would find inconsistent with the rest.
+  // Case-insensitive, matching how the codebase already compares media/format tokens
+  // (isJsonRequest, http.ts, per RFC 7231): a consumer sending format=JSON gets JSON,
+  // while xml/XML still 501s. The error echoes the raw value the consumer sent.
   const format = url.searchParams.get("format");
-  if (format !== null && format !== "json") {
+  if (format !== null && format.toLowerCase() !== "json") {
     return json(501, {
       error: `Unsupported oEmbed format '${format}'. This provider serves application/json+oembed only.`,
     });
@@ -50,8 +53,12 @@ export const GET: APIRoute = async ({ request }) => {
   // absolute iframe/provider URLs. No origin helper exists yet; this is the derivation.
   const body = buildOEmbed(load.conversation, ref.slug, url.origin, parseClamp(url.searchParams));
 
-  // [LAW:single-enforcer] The shared json() builder sets Content-Type application/json —
-  // oEmbed's required content type for the json format — the same way every API route does.
+  // [LAW:single-enforcer] The success oEmbed document is emitted through the SAME shared
+  // json() builder every API route uses — no bare Response. It carries the spec content
+  // type for a JSON oEmbed response, application/json+oembed (oEmbed §2.3.3), which the
+  // json() builder sets from its media-subtype argument; error responses above stay the
+  // default application/json (they are API errors, not oEmbed documents). This is also
+  // the type cxw.4's discovery <link> will advertise, so the two stay consistent.
   // Spread into a fresh literal so the typed OEmbedRich satisfies json()'s object contract.
-  return json(200, { ...body });
+  return json(200, { ...body }, "application/json+oembed");
 };

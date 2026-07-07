@@ -2,10 +2,20 @@
 // here, once. Both /api/paste and /api/fetch emit { ...} | { error } bodies; a
 // second copy of this builder would be a second place the content-type or
 // serialization could drift.
-export const json = (status: number, body: Record<string, unknown>): Response =>
+//
+// [LAW:dataflow-not-control-flow] The JSON media subtype is a VALUE this one builder
+// carries, not a second code path: it defaults to application/json (every existing
+// caller is unchanged), and a caller whose body is a more specific +json document —
+// the oEmbed endpoint's application/json+oembed (oEmbed §2.3.3) — passes that subtype
+// so its response still flows through this single enforcer instead of a bare Response.
+export const json = (
+  status: number,
+  body: Record<string, unknown>,
+  contentType = "application/json",
+): Response =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": contentType },
   });
 
 // [LAW:single-enforcer] Redirect responses are shaped here too. 303 See Other
