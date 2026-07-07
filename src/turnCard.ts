@@ -14,7 +14,7 @@
 
 import type { ViewableDialogue, DisplayNode } from "./dialogue";
 import { renderDialogueHtml } from "./renderDialogue";
-import { parseTurnSegment } from "./slug";
+import { parseTurnSegment, type TurnIndex } from "./slug";
 
 // [LAW:single-enforcer] The SINGLE resolver of "which display node is turn N in this view".
 // The lookup is by the node's CARRIED index, not array position, so a turn OMITTED by a
@@ -23,7 +23,10 @@ import { parseTurnSegment } from "./slug";
 // oEmbed turn endpoint answer "does t<N> exist?" through THIS one function, so the set of
 // turns that render as a card and the set the endpoint will embed are identical by
 // construction — a non-existent turn is an honest absence (null) on both surfaces.
-export const findTurn = (view: ViewableDialogue, index: number): DisplayNode | null =>
+// [LAW:types-are-the-program] The query is a branded TurnIndex, not a raw number: findTurn is
+// the turn-reference resolver, so only a value that passed parseTurnSegment's validation can
+// reach the lookup — findTurn(view, -1) is a compile error, not a silent null.
+export const findTurn = (view: ViewableDialogue, index: TurnIndex): DisplayNode | null =>
   view.find((d) => d.index === index) ?? null;
 
 // [LAW:no-silent-failure] A segment that isn't a canonical t<N>, or an index that names no
