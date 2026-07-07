@@ -88,25 +88,34 @@ const escapeAttr = (s: string): string =>
     .replace(/"/g, "&quot;");
 
 // [LAW:effects-at-boundaries] Pure: (resolved paste, its slug, the absolute request
-// origin, the consumer's bounds) → the rich oEmbed body. No IO; the caller resolved the
-// paste through the single viewability gate and passes the origin from new URL(request.url).
+// origin, the consumer's bounds, and optionally which turn) → the rich oEmbed body. No IO;
+// the caller resolved the paste through the single viewability gate and passes the origin
+// from new URL(request.url).
 export const buildOEmbed = (
   conversation: Conversation,
   slug: Slug,
   origin: string,
   clamp: OEmbedClamp,
+  // [LAW:dataflow-not-control-flow] WHICH render target to frame is a VALUE, not a second
+  // builder: null = the whole paste, a turn index = that one turn's card. The two embed
+  // shapes are one OEmbedRich differing only in the frame path [LAW:one-type-per-behavior];
+  // every existing caller omits this and gets the whole-paste frame unchanged.
+  turnIndex: number | null = null,
 ): OEmbedRich => {
   const { title, platformLabel } = derivePasteMeta(conversation);
   const width = clampDim(EMBED_DEFAULT_WIDTH, clamp.maxwidth);
   const height = clampDim(EMBED_DEFAULT_HEIGHT, clamp.maxheight);
 
-  // The rich html frames the shipped /embed/<slug> render target on OUR absolute origin —
-  // self-contained, so it carries its own CSS into the host page. slug is a Slug — the type
-  // proves it matches our alphabet, so it is safe interpolated into the URL with no illegal
-  // char reachable [LAW:types-are-the-program]; title is user-controlled and escaped for the
+  // The rich html frames the shipped render target on OUR absolute origin — self-contained,
+  // so it carries its own CSS into the host page. The frame path mirrors the reader URL: the
+  // whole paste (/embed/<slug>), or one turn by its canonical t<N> index (/embed/<slug>/t<N>)
+  // — the SAME turn render target this endpoint also validates against. slug is a Slug and
+  // turnIndex a number, so both are safe interpolated into the URL with no illegal char
+  // reachable [LAW:types-are-the-program]; title is user-controlled and escaped for the
   // attribute context.
+  const framePath = turnIndex === null ? `/embed/${slug}` : `/embed/${slug}/t${turnIndex}`;
   const html =
-    `<iframe src="${origin}/embed/${slug}" width="${width}" height="${height}" ` +
+    `<iframe src="${origin}${framePath}" width="${width}" height="${height}" ` +
     `style="border:0" loading="lazy" title="${escapeAttr(title)}"></iframe>`;
 
   return {

@@ -9,7 +9,7 @@
 // attribute [LAW:no-silent-failure]. Behavioural, independent of any Worker or KV.
 
 import { buildOEmbed, parseClamp, EMBED_DEFAULT_WIDTH, EMBED_DEFAULT_HEIGHT } from "../src/oembed";
-import { generateSlug } from "../src/slug";
+import { generateSlug, parseEmbedRef } from "../src/slug";
 import type { Conversation, Turn } from "../src/types";
 
 const assert = (label: string, cond: boolean): void => {
@@ -121,4 +121,49 @@ const noBound = parseClamp(new URLSearchParams());
   // Dropping the & replace would leave `Rock & Roll` here and this assertion would catch it.
   assert("literal & in the title is escaped to &amp; in the attribute", body.html.includes('title="Rock &amp; Roll"'));
   assert("no raw ampersand remains in the html attribute", !body.html.includes("Rock & Roll"));
+}
+
+// ── TURN FRAME (cxw.5): a turn index frames the /embed/<slug>/t<N> render target, not the whole paste ──
+{
+  const whole = buildOEmbed(conv({ turns, title: "My chat" }), SLUG, ORIGIN, noBound);
+  const turnCard = buildOEmbed(conv({ turns, title: "My chat" }), SLUG, ORIGIN, noBound, 1);
+
+  assert("turn frame iframes /embed/<slug>/t<N> on the absolute origin", turnCard.html.includes(`src="${ORIGIN}/embed/${SLUG}/t1"`));
+  assert("turn frame does NOT iframe the whole-paste render target", !turnCard.html.includes(`src="${ORIGIN}/embed/${SLUG}"`));
+  assert("whole-paste frame (no index) is unchanged — still /embed/<slug>", whole.html.includes(`src="${ORIGIN}/embed/${SLUG}"`));
+  // The turn card is otherwise the SAME rich envelope — same type/title/dimensions, only the frame path differs.
+  assert("turn frame is still a rich oEmbed with the paste title", turnCard.type === "rich" && turnCard.title === "My chat");
+  assert("turn frame carries the design dimensions", turnCard.width === EMBED_DEFAULT_WIDTH && turnCard.height === EMBED_DEFAULT_HEIGHT);
+}
+
+// ── EMBED REF PARSING (cxw.5): a consumer URL resolves to exactly one of {paste, turn} ──
+{
+  const bare = parseEmbedRef(String(SLUG));
+  assert("a bare slug is a whole-paste ref", bare.ok && bare.kind === "paste" && bare.slug === SLUG);
+
+  const pastePath = parseEmbedRef(`${ORIGIN}/${SLUG}`);
+  assert("a /<slug> URL is a whole-paste ref", pastePath.ok && pastePath.kind === "paste" && pastePath.slug === SLUG);
+
+  const turnPath = parseEmbedRef(`${ORIGIN}/${SLUG}/t3`);
+  assert("a /<slug>/t<N> URL is a turn ref carrying the slug and index", turnPath.ok && turnPath.kind === "turn" && turnPath.slug === SLUG && turnPath.index === 3);
+
+  const turnZero = parseEmbedRef(`${ORIGIN}/${SLUG}/t0`);
+  assert("t0 is a canonical turn ref (index 0)", turnZero.ok && turnZero.kind === "turn" && turnZero.index === 0);
+
+  // A t<N> with NO valid slug before it is NOT a turn ref — the last segment falls through to
+  // the slug candidate, which is not valid here, so the whole thing is malformed (never a
+  // turn with a bogus slug, never a silent success) [LAW:no-silent-failure].
+  const orphanTurn = parseEmbedRef("/t3");
+  assert("a t<N> with no slug before it is malformed, not a turn", !orphanTurn.ok && orphanTurn.reason === "malformed");
+
+  // Leading-zero / non-canonical turn segments are not turns; the segment is then a slug
+  // candidate, and "t007" is not a valid slug, so the ref is malformed.
+  const nonCanonical = parseEmbedRef(`${ORIGIN}/${SLUG}/t007`);
+  assert("a non-canonical turn segment (t007) is not a turn ref", !(nonCanonical.ok && nonCanonical.kind === "turn"));
+
+  const empty = parseEmbedRef("");
+  assert("an empty reference is empty, not malformed", !empty.ok && empty.reason === "empty");
+
+  const foreign = parseEmbedRef("https://example.com/not-a-paste");
+  assert("a foreign URL is malformed", !foreign.ok && foreign.reason === "malformed");
 }
