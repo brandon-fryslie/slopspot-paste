@@ -120,8 +120,8 @@ export const plainView = (dialogue: Dialogue): ViewableDialogue =>
 // permalink (renderDialogueHtml emits id="t<N>"), the single-turn card URL, the
 // minimap, and the topic outline all name a turn by this one string. Minting it here
 // means the outline's hrefs cannot drift from the ids the renderer emits — both call
-// this one function. (The inverse parse of the same token lives in turnCard's
-// TURN_SEGMENT; this is its counterpart, the produce side.)
+// this one function. (The inverse parse of the same token lives in slug.ts's
+// parseTurnSegment; this is its counterpart, the produce side.)
 export const turnAnchorId = (index: number): string => `t${index}`;
 
 // [LAW:dataflow-not-control-flow] Visibility is a property of a block's KIND,

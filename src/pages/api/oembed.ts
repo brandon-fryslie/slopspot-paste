@@ -1,7 +1,9 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { loadViewablePaste } from "../../loadPaste";
-import { parsePasteRef } from "../../slug";
+import { parseEmbedRef } from "../../slug";
+import { deriveViewableDialogue } from "../../overlay";
+import { findTurn } from "../../turnCard";
 import { buildOEmbed, parseClamp } from "../../oembed";
 import { json } from "../../http";
 
@@ -41,17 +43,30 @@ export const GET: APIRoute = async ({ request }) => {
   if (target === null) return json(400, { error: "Missing 'url' parameter." });
 
   // [LAW:no-silent-failure] A url that is not one of OUR paste references is a 404, not a
-  // best-effort guess — parsePasteRef reduces a bare slug, a /slug path, or a full paste
-  // URL to the SAME validated slug, or names why it is not one.
-  const ref = parsePasteRef(target);
+  // best-effort guess — parseEmbedRef reduces a bare slug, a /slug path, or a full paste
+  // URL to the SAME validated slug, and additionally recognizes a /<slug>/t<N> turn
+  // permalink as a turn ref, or names why it is neither.
+  const ref = parseEmbedRef(target);
   if (!ref.ok) return json(404, { error: "Not an embeddable slopspot paste URL." });
 
   const load = await loadViewablePaste(env.PASTES, ref.slug, Date.now());
   if (!load.ok) return json(load.status, { error: load.message });
 
+  // [LAW:no-silent-failure][LAW:single-enforcer] A turn ref must name a turn that actually
+  // renders — resolved through the SAME findTurn the /embed/<slug>/t<N> render target uses,
+  // so a /<slug>/t999 that would 404 as a card is a 404 here too, never a 200 whose iframe
+  // frames a dead turn. The whole-paste ref is already validated by loadViewablePaste above;
+  // this is the turn's equivalent gate.
+  if (ref.kind === "turn" && findTurn(deriveViewableDialogue(load.conversation), ref.index) === null) {
+    return json(404, { error: "That turn does not exist in this paste." });
+  }
+
   // Origin is absolute, from the actual request — consumers embed cross-origin and need
   // absolute iframe/provider URLs. No origin helper exists yet; this is the derivation.
-  const body = buildOEmbed(load.conversation, ref.slug, url.origin, parseClamp(url.searchParams));
+  // [LAW:dataflow-not-control-flow] which render target is framed rides one value: the turn
+  // index for a turn ref, null for the whole paste.
+  const turnIndex = ref.kind === "turn" ? ref.index : null;
+  const body = buildOEmbed(load.conversation, ref.slug, url.origin, parseClamp(url.searchParams), turnIndex);
 
   // [LAW:single-enforcer] The success oEmbed document is emitted through the SAME shared
   // json() builder every API route uses — no bare Response — carrying the +oembed media

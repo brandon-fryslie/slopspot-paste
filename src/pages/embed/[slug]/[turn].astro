@@ -1,0 +1,53 @@
+---
+import { env } from "cloudflare:workers";
+import Embed from "../../../layouts/Embed.astro";
+import { renderTurnCard } from "../../../turnCard";
+import { deriveViewableDialogue } from "../../../overlay";
+import { loadViewablePaste } from "../../../loadPaste";
+import { derivePasteMeta } from "../../../types";
+
+export const prerender = false;
+
+const { slug, turn } = Astro.params;
+
+// [LAW:single-enforcer] The SAME viewability gate the full page, the reader turn page, and
+// the whole-paste embed use — a soft-deleted or expired paste is hidden here too, so the
+// framed card surface cannot leak a paste that is gone on /<slug>. [LAW:dataflow-not-control-
+// flow] the result is a value: the conversation or the exact response to emit.
+const load = await loadViewablePaste(env.PASTES, slug, Date.now());
+if (!load.ok) {
+  return new Response(load.message, { status: load.status });
+}
+const conversation = load.conversation;
+
+// [LAW:single-enforcer] The card renders through the SAME renderer the full page and the
+// reader turn page use (renderTurnCard → renderDialogueHtml) over the SAME overlay-applied
+// spine (deriveViewableDialogue), so a card in a host frame cannot drift from the same turn
+// on /<slug>/t<N>, and a redacted turn cannot leak through the frame. [LAW:no-silent-failure]
+// a non-canonical segment or an index past the spine returns null → an honest 404, never a
+// fallback to turn 0 or the whole paste. `turn` is always present on this route.
+const card = renderTurnCard(deriveViewableDialogue(conversation), turn ?? "");
+if (card === null) {
+  return new Response("Not found", { status: 404 });
+}
+
+// [LAW:one-source-of-truth] Title, theme platform, and label are the SAME display-meta
+// projection every reader surface derives once in derivePasteMeta — not re-open-coded here.
+const { title, platform, platformLabel } = derivePasteMeta(conversation);
+---
+
+<Embed title={`${title} · one turn · slopspot paste`} platform={platform}>
+  <section class="conversation" aria-label="Conversation turn" set:html={card} />
+
+  {/*
+    Attribution back to the canonical turn permalink. The href is root-relative, so inside
+    the frame it resolves against our own origin (never the host's); the #t<N> fragment lands
+    the reader on this exact turn in the full conversation; target=_blank breaks out of the
+    frame. [LAW:dataflow-not-control-flow] the badge is a value the template skips when the
+    platform is generic, not a branch.
+  */}
+  <a class="embed-attribution" href={`/${slug}#${turn}`} target="_blank" rel="noopener">
+    {platformLabel && <span class="platform-badge">{platformLabel}</span>}
+    <span>View on slopspot·paste ↗</span>
+  </a>
+</Embed>

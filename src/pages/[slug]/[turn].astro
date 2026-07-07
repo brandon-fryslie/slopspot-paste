@@ -36,9 +36,30 @@ if (card === null) {
 // [LAW:one-source-of-truth] Title, theme platform, and label are the SAME display-meta
 // projection the full page and embed frame show — derived once in derivePasteMeta.
 const { title, platform, platformLabel } = derivePasteMeta(conversation);
+
+// [LAW:single-enforcer] One oEmbed discovery <link> makes THIS turn's URL auto-embeddable,
+// exactly as the whole-paste page does for /<slug>: a consumer that does oEmbed discovery
+// (WordPress, Notion, Discourse) reads this head, finds the endpoint, and calls it — no one
+// has to know /api/oembed exists. [LAW:one-source-of-truth] the url= param is the ABSOLUTE
+// turn URL (this same /<slug>/t<N>, percent-encoded), which parseEmbedRef resolves back to
+// this turn ref, so discovery cannot drift from what the endpoint serves. `turn` is the
+// canonical t<N> the route already validated (renderTurnCard returned non-null above), so
+// the advertised URL names a real, embeddable turn. We advertise ONLY application/json+oembed
+// because the endpoint serves only JSON (501 for xml) and its 200 Content-Type is literally
+// this type, so the link's type and the served type agree by construction [FRAMING:
+// representation]. Both URLs are absolute (Astro.url.origin — the SAME request-derived origin
+// the endpoint computes from new URL(request.url).origin) because consumers fetch cross-origin.
+const oembedHref = `${Astro.url.origin}/api/oembed?url=${encodeURIComponent(`${Astro.url.origin}/${slug}/${turn}`)}&format=json`;
 ---
 
 <Base title={`${title} · one turn · slopspot paste`} platform={platform}>
+  <link
+    slot="head"
+    rel="alternate"
+    type="application/json+oembed"
+    href={oembedHref}
+    title={title}
+  />
   <section class="conversation-header">
     <p class="conversation-meta">
       {platformLabel && <span class="platform-badge">{platformLabel}</span>}
