@@ -47,6 +47,24 @@ const origin = conversation.origin;
 // builds a header). The URL was validated as a claude.ai/share link at ingest.
 const sourceUrl = sourceUrlOf(origin);
 
+// [LAW:single-enforcer] One oEmbed discovery <link> in this paste's head is the entry
+// point that makes a bare paste URL auto-embeddable: a consumer that does oEmbed
+// discovery (WordPress, Notion, Discourse) reads the head, finds this, and calls the
+// endpoint — no one has to know /api/oembed exists. [LAW:one-source-of-truth] it points
+// at the SAME endpoint, addressed by the same absolute paste URL parsePasteRef reduces
+// to a slug, so discovery cannot drift from what the endpoint serves. We advertise ONLY
+// application/json+oembed because the endpoint serves only JSON — it returns 501 for xml
+// on purpose — and its 200 Content-Type is literally this type, so the link's type and
+// the served type agree by construction, never a text/xml+oembed link that would lie
+// about a format we don't serve [FRAMING:representation]. Both URLs are absolute
+// (Astro.url.origin — the SAME request-derived origin the endpoint computes from
+// new URL(request.url).origin) because consumers fetch cross-origin. The paste URL is
+// percent-encoded into the url= param so a consumer decodes back exactly the absolute
+// paste URL. The link's title (below) is derivePasteMeta(conversation).title — the ONE
+// display-meta projection every reader surface on this page already derives from, so it
+// is never a second title minted here.
+const oembedHref = `${Astro.url.origin}/api/oembed?url=${encodeURIComponent(`${Astro.url.origin}/${slug}`)}&format=json`;
+
 // [LAW:one-source-of-truth] Derive the nested Dialogue ONCE, then take two disposable
 // projections of it: the rendered conversation HTML and the topic outline. Both are
 // pure functions of the same stored original — nothing here is persisted, and a paste
@@ -67,6 +85,13 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
+  <link
+    slot="head"
+    rel="alternate"
+    type="application/json+oembed"
+    href={oembedHref}
+    title={title}
+  />
   <section class="conversation-header">
     <h1>{title}</h1>
     <p class="conversation-meta">
