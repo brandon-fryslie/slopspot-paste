@@ -54,11 +54,18 @@ export const GET: APIRoute = async ({ request }) => {
   const body = buildOEmbed(load.conversation, ref.slug, url.origin, parseClamp(url.searchParams));
 
   // [LAW:single-enforcer] The success oEmbed document is emitted through the SAME shared
-  // json() builder every API route uses — no bare Response. It carries the spec content
-  // type for a JSON oEmbed response, application/json+oembed (oEmbed §2.3.3), which the
-  // json() builder sets from its media-subtype argument; error responses above stay the
-  // default application/json (they are API errors, not oEmbed documents). This is also
-  // the type cxw.4's discovery <link> will advertise, so the two stay consistent.
+  // json() builder every API route uses — no bare Response — carrying the +oembed media
+  // subtype (application/json+oembed) that marks a JSON oEmbed document, and that cxw.4's
+  // discovery <link> will advertise, so endpoint and discovery stay consistent.
+  //
+  // Deliberate, spec-grounded split: the error responses above stay the default
+  // application/json. oEmbed signals errors by HTTP STATUS (404 not-found, 501 unimplemented
+  // format — §2.3.4), defining no error *document*, so our {error} body is this API's own
+  // convention, NOT an oEmbed document. Labeling it application/json+oembed would claim it
+  // is one [FRAMING:representation]; application/json tells the truth, and a strict consumer
+  // keys on the status code, not the error body's media type. So +oembed marks exactly the
+  // thing that IS an oEmbed document: this 200.
+  //
   // Spread into a fresh literal so the typed OEmbedRich satisfies json()'s object contract.
   return json(200, { ...body }, "application/json+oembed");
 };
