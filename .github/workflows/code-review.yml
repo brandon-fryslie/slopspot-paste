@@ -20,6 +20,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Code Review
-        uses: brandon-fryslie/coding-agent-review@v1
+        uses: promptctl/copirate-code-review-agent@v1
         with:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
