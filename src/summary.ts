@@ -14,8 +14,8 @@
 // A missing key is not a crash: it is ok:false with configured:false, so the
 // endpoint can answer "not configured" cleanly instead of 500ing.
 
-import type { Dialogue, SpineNode, AssistantBlock } from "./dialogue";
-import { blockVisibility, blockText } from "./dialogue";
+import type { Dialogue } from "./dialogue";
+import { renderDialogueTranscript } from "./transcript";
 import type { Turn } from "./types";
 
 export type SummaryResult =
@@ -65,40 +65,15 @@ export interface ChatMessage {
   readonly content: string;
 }
 
-// [LAW:effects-at-boundaries] Pure: the readable-text projection of one spine node
-// the summary prompt shows the model. An assistant turn contributes only its
-// spine-visible prose — the blocks BLOCK_VISIBILITY marks as the reader-facing
-// conversation — so the summary is built from what a human reads, not from collapsed
-// thinking/tool noise. [LAW:one-source-of-truth] BOTH judgments come from single
-// authorities: `blockVisibility` decides which blocks are spine, and `blockText` (the
-// exhaustive extractor dialogue.ts owns) yields each block's prose. There is no second
-// list of "which kinds carry text" here — a new spine-visible kind is compiler-forced
-// to be handled in blockText, so it can never silently map to "".
-const spineVisibleProse = (blocks: ReadonlyArray<AssistantBlock>): string =>
-  blocks
-    .filter((b) => blockVisibility(b) === "spine")
-    .map(blockText)
-    .filter((s) => s.length > 0)
-    .join("\n\n");
-
-const nodeTranscript = (node: SpineNode): string => {
-  if (node.kind === "spoken") {
-    const speaker = node.role === "user" ? "User" : "System";
-    return `[${speaker}]: ${node.content}`;
-  }
-  const prose = spineVisibleProse(node.blocks);
-  return prose.length > 0 ? `[Assistant]: ${prose}` : "";
-};
-
-// [LAW:effects-at-boundaries] Pure: flatten the derived Dialogue into the plain
-// transcript the model reads. Deterministic in its input — the same dialogue
-// yields the same text, which is why the cache can key on a hash of the turns it
-// derives from.
+// [LAW:effects-at-boundaries] Pure: the plain transcript the model reads, built from the
+// ONE dialogue->text projection (transcript.ts) and then bounded to the summary's token
+// budget. The tail cap is THIS reader's policy — a summary needs the gist, so dropping the
+// tail with an explicit marker is honest here [LAW:no-silent-failure]; the projection
+// itself stays untruncated so a different reader (the continuation bundle) can keep the
+// tail it depends on. Deterministic in its input, which is why the cache can key on a hash
+// of the turns it derives from.
 export const renderDialogueForPrompt = (dialogue: Dialogue): string => {
-  const full = dialogue
-    .map(nodeTranscript)
-    .filter((s) => s.length > 0)
-    .join("\n\n");
+  const full = renderDialogueTranscript(dialogue);
   return full.length > MAX_TRANSCRIPT_CHARS
     ? full.slice(0, MAX_TRANSCRIPT_CHARS) + "\n\n[transcript truncated]"
     : full;
