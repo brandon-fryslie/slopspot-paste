@@ -41,3 +41,19 @@ export const claudeCodeSessionId = (input: string): string | null => {
   const m = CLAUDE_CODE_SESSION_RE.exec(url);
   return m === null ? null : (m[1] ?? null);
 };
+
+// [LAW:one-source-of-truth] The human host label of a source link is DERIVED from
+// the link itself — the URL is the authority, so the label of "View original on
+// <host>" is literally the host the anchor points at and cannot lie about a
+// different provider [FRAMING:representation]. There is deliberately no per-
+// provider display-name value: that would be a second copy of the host the
+// provider's own urlPattern already encodes, free to drift from it. Deriving here
+// also covers the unclaimed-host paste (origin.provider === null) for free — its
+// label is its real hostname, the most honest generic label there is.
+//
+// Total by construction: URL.parse returns null (never throws) on a malformed
+// stored URL at the KV trust boundary, and we fall back to the raw link text —
+// still truthful, since that string is exactly the anchor's href — rather than
+// swallowing the failure or 500-ing a page that would otherwise render
+// ([LAW:no-silent-failure]).
+export const hostLabel = (url: string): string => URL.parse(url)?.hostname ?? url;
