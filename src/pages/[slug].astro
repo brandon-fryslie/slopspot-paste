@@ -6,6 +6,7 @@ import { deriveViewableDialogue } from "../overlay";
 import { deriveSpineOutline } from "../spineOutline";
 import { extractArtifacts } from "../artifacts";
 import { renderCodeExportControl } from "../codeExport";
+import { renderContinuationControl } from "../continuation";
 import { loadViewablePaste } from "../loadPaste";
 import { derivePasteMeta, sourceUrlOf, viewLifetime } from "../types";
 
@@ -82,6 +83,13 @@ const outline = deriveSpineOutline(dialogue);
 // a redacted secret cannot leak through it [LAW:single-enforcer]. The control renders to
 // nothing when the conversation carries no code (a value, not a special-cased branch).
 const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d) => d.node)));
+
+// [LAW:one-source-of-truth] The continuation bundle is another projection of the SAME
+// viewable `dialogue` — the reader's redaction-applied conversation — so the copied text
+// is exactly what is shown, and a redacted turn cannot leak. Renders to nothing when there
+// is no readable prose to continue (a value, not a branch). Universal: it renders for every
+// paste, filling the gap for pastes with no live original thread to reopen.
+const continuationHtml = renderContinuationControl(dialogue);
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -226,6 +234,14 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
     revealing the button (body.copy-all-ready) exactly as the per-code-block copy does.
   */}
   {codeExportHtml && <section class="code-export" set:html={codeExportHtml} />}
+
+  {/*
+    [LAW:dataflow-not-control-flow] The document-scoped continuation control. Rendered only
+    when there IS readable conversation to continue — continuationHtml is "" otherwise, so
+    the section is simply absent, never a dead button. Same inert-markup + client-reveal
+    shape as the code control above [LAW:one-type-per-behavior].
+  */}
+  {continuationHtml && <section class="continuation" set:html={continuationHtml} />}
 
   {/*
     [LAW:one-source-of-truth] data-slug is the ONE client-readable slug: a projection of
@@ -712,39 +728,48 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
       }
       document.body.classList.add("code-copy-ready");
 
-      // [LAW:effects-at-boundaries] The document-scoped "Copy all code" control. One
-      // button copies the server-built payload of every extracted artifact. The payload
-      // is rendered ONCE into a hidden sibling <pre> (server-escaped; textContent decodes
-      // it back verbatim), so the button carries no copy of the data and the clipboard
-      // bytes equal the server projection [LAW:one-source-of-truth] — the same read-from-
-      // sibling shape .copy-code uses. [LAW:dataflow-not-control-flow] the button's absence
-      // is a value: with no code the server emitted no control, so this query finds nothing
-      // and the block stays inert (body.copy-all-ready is never added, so nothing reveals).
-      const copyAll = document.querySelector<HTMLButtonElement>(".copy-all-code");
-      if (copyAll) {
-        const payloadEl = copyAll.parentElement?.querySelector(".copy-all-code-payload");
+      // [LAW:one-type-per-behavior] A document-scoped copy control is ONE behaviour: a
+      // button copies the server-built payload held in a hidden sibling <pre> (server-
+      // escaped; textContent decodes it verbatim, so the clipboard bytes equal the server
+      // projection [LAW:one-source-of-truth]), flips to "Copied", and reverts. Both the
+      // "Copy all code" and "Copy to continue elsewhere" controls are that same shape, so
+      // they are wired by ONE helper differing only in values (which button, which payload
+      // sibling, which ready-class), never two near-identical copies that can drift.
+      // [LAW:dataflow-not-control-flow] the button's absence is a value: when the server
+      // emits no control the query finds nothing and the ready-class is never added, so
+      // nothing reveals — no branch that special-cases "empty".
+      const wirePayloadCopy = (
+        buttonSelector: string,
+        payloadSelector: string,
+        readyClass: string,
+      ): void => {
+        const button = document.querySelector<HTMLButtonElement>(buttonSelector);
+        if (!button) return;
+        const payloadEl = button.parentElement?.querySelector(payloadSelector);
         // [LAW:no-silent-failure] The control renderer always emits the payload <pre>
         // beside the button, so a missing sibling is a broken template invariant, not a
         // normal empty case — fail loudly rather than copy an empty string into silence.
-        if (!payloadEl) throw new Error("copy-all-code button has no payload sibling");
+        if (!payloadEl) throw new Error(`${buttonSelector} button has no payload sibling`);
         // [LAW:one-source-of-truth] Revert label read from the button the server rendered.
-        const label = copyAll.textContent;
+        const label = button.textContent;
         // [LAW:no-ambient-temporal-coupling] ONE revert timer owns the label. A rapid
         // second click clears the first timer before arming its own, so an earlier timer
         // can never flip the label back out from under a later "Copied".
         let revert = 0;
-        copyAll.addEventListener("click", async () => {
+        button.addEventListener("click", async () => {
           await navigator.clipboard.writeText(payloadEl.textContent ?? "");
-          copyAll.classList.add("copied");
-          copyAll.textContent = "Copied";
+          button.classList.add("copied");
+          button.textContent = "Copied";
           window.clearTimeout(revert);
           revert = window.setTimeout(() => {
-            copyAll.classList.remove("copied");
-            copyAll.textContent = label;
+            button.classList.remove("copied");
+            button.textContent = label;
           }, 1200);
         });
-        document.body.classList.add("copy-all-ready");
-      }
+        document.body.classList.add(readyClass);
+      };
+      wirePayloadCopy(".copy-all-code", ".copy-all-code-payload", "copy-all-ready");
+      wirePayloadCopy(".copy-continuation", ".copy-continuation-payload", "copy-continuation-ready");
 
       // [LAW:effects-at-boundaries] A degraded subagent (data-subagent-degraded)
       // renders a "Copy agent prompt" button; clicking it copies a slug-keyed
