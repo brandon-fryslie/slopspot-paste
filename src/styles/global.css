@@ -1875,6 +1875,17 @@ body.download-ready .download-all-code { display: inline-block; }
 .code-export-pill.copied,
 .code-export-pill.downloaded { color: var(--accent); border-color: var(--accent); }
 
+/* ─── Document-scoped continuation bundle ─────────────────────────────────
+   One pill that copies the conversation as text to continue in a fresh LLM
+   chat. Same shape as the code-export control [LAW:one-type-per-behavior]:
+   chrome from .mono-pill, hidden until the client confirms clipboard support
+   and wires it (body.copy-continuation-ready), payload in a hidden sibling
+   <pre>, section absent when there is no readable conversation to continue. */
+.continuation { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 8px; }
+.continuation-pill { display: none; }
+body.copy-continuation-ready .copy-continuation { display: inline-block; }
+.continuation-pill.copied { color: var(--accent); border-color: var(--accent); }
+
 /* ─── Admin (/sloppy) — dense scannable list ─────────────────────────── */
 .admin-header { margin-bottom: 16px; }
 .admin-header h1 {
