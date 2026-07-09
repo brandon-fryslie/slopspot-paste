@@ -732,7 +732,8 @@ console.log("\nSource-link host label derivation (hostLabel — derived from the
     ["claude-share link → claude.ai", "https://claude.ai/share/abc", "claude.ai"],
     ["chatgpt-share link → chatgpt.com (no longer the claude.ai lie)", "https://chatgpt.com/share/abc", "chatgpt.com"],
     ["unclaimed host → its own hostname", "https://example.com/thread/42", "example.com"],
-    ["malformed stored URL → the raw link text, never a throw", "not a url", "not a url"],
+    ["unparseable stored URL → the raw link text, never a throw", "not a url", "not a url"],
+    ["parseable but empty host → the raw link text, never an empty label", "javascript:alert(1)", "javascript:alert(1)"],
   ];
   for (const [label, url, expected] of cases) assertEq(label, hostLabel(url), expected);
 }

@@ -51,9 +51,21 @@ export const claudeCodeSessionId = (input: string): string | null => {
 // also covers the unclaimed-host paste (origin.provider === null) for free — its
 // label is its real hostname, the most honest generic label there is.
 //
-// Total by construction: URL.parse returns null (never throws) on a malformed
-// stored URL at the KV trust boundary, and we fall back to the raw link text —
-// still truthful, since that string is exactly the anchor's href — rather than
-// swallowing the failure or 500-ing a page that would otherwise render
-// ([LAW:no-silent-failure]).
-export const hostLabel = (url: string): string => URL.parse(url)?.hostname ?? url;
+// Total for every stored string. The url arm's link is a KV trust boundary, so
+// two real failure states are handled as values, never as an escaping throw or a
+// silently-empty label ([LAW:no-silent-failure]): a string `new URL` cannot parse
+// (the catch), and a parseable non-special-scheme URL whose host is empty — e.g.
+// `new URL("javascript:x").hostname === ""` (the `|| url`). Both fall back to the
+// raw link text, still truthful because that string is exactly the anchor's href.
+// `new URL` is used rather than the newer `URL.parse` static because this runs in
+// the paste page's server render on Cloudflare Workers, where `URL.parse` is gated
+// on the compatibility date — a missing static would throw and 500 the page,
+// whereas `new URL` has always been present. The try/catch is the honest boundary
+// handler for a stored value, not a defensive guard on trusted data.
+export const hostLabel = (url: string): string => {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
+  }
+};
