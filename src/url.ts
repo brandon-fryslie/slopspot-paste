@@ -41,3 +41,31 @@ export const claudeCodeSessionId = (input: string): string | null => {
   const m = CLAUDE_CODE_SESSION_RE.exec(url);
   return m === null ? null : (m[1] ?? null);
 };
+
+// [LAW:one-source-of-truth] The human host label of a source link is DERIVED from
+// the link itself — the URL is the authority, so the label of "View original on
+// <host>" is literally the host the anchor points at and cannot lie about a
+// different provider [FRAMING:representation]. There is deliberately no per-
+// provider display-name value: that would be a second copy of the host the
+// provider's own urlPattern already encodes, free to drift from it. Deriving here
+// also covers the unclaimed-host paste (origin.provider === null) for free — its
+// label is its real hostname, the most honest generic label there is.
+//
+// Total for every stored string. The url arm's link is a KV trust boundary, so
+// two real failure states are handled as values, never as an escaping throw or a
+// silently-empty label ([LAW:no-silent-failure]): a string `new URL` cannot parse
+// (the catch), and a parseable non-special-scheme URL whose host is empty — e.g.
+// `new URL("javascript:x").hostname === ""` (the `|| url`). Both fall back to the
+// raw link text, still truthful because that string is exactly the anchor's href.
+// `new URL` is used rather than the newer `URL.parse` static because this runs in
+// the paste page's server render on Cloudflare Workers, where `URL.parse` is gated
+// on the compatibility date — a missing static would throw and 500 the page,
+// whereas `new URL` has always been present. The try/catch is the honest boundary
+// handler for a stored value, not a defensive guard on trusted data.
+export const hostLabel = (url: string): string => {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
+  }
+};

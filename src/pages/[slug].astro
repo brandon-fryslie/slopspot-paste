@@ -9,6 +9,7 @@ import { renderCodeExportControl } from "../codeExport";
 import { renderContinuationControl } from "../continuation";
 import { loadViewablePaste } from "../loadPaste";
 import { derivePasteMeta, sourceUrlOf, viewLifetime } from "../types";
+import { hostLabel } from "../url";
 
 export const prerender = false;
 
@@ -45,7 +46,9 @@ const origin = conversation.origin;
 // origin without an upstream URL — text pastes, editor-authored, legacy — which
 // renders as nothing below, not a placeholder ([LAW:dataflow-not-control-flow]:
 // the absence is a value the template skips, not a branch that conditionally
-// builds a header). The URL was validated as a claude.ai/share link at ingest.
+// builds a header). The host shown in the label is derived from this URL itself
+// (hostLabel), so it names the actual origin host — claude.ai, chatgpt.com, or an
+// unclaimed host — and can never lie about a different provider.
 const sourceUrl = sourceUrlOf(origin);
 
 // [LAW:single-enforcer] One oEmbed discovery <link> in this paste's head is the entry
@@ -112,7 +115,7 @@ const continuationHtml = renderContinuationControl(dialogue);
     {sourceUrl && (
       <p class="source-origin">
         <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
-          View original on claude.ai ↗
+          View original on {hostLabel(sourceUrl)} ↗
         </a>
       </p>
     )}
