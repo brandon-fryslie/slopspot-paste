@@ -11,6 +11,7 @@ import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { INPUT_KINDS, isOrigin, isTurns, PROVIDERS, sourceOf, sourceUrlOf, TEXT_ARM_KINDS, textArmInput } from "../src/types";
+import { hostLabel } from "../src/url";
 import type { InputKind, Origin, SourceKind } from "../src/types";
 import { upgradeOrigin } from "../src/types";
 import {
@@ -718,6 +719,23 @@ console.log("\nOrigin → source URL derivation (sourceUrlOf — shape table, pr
     ["url arm → its url", { kind: "url", url: "https://claude.ai/share/abc", fetched: "f", provider: "claude-share" }, "https://claude.ai/share/abc"],
   ];
   for (const [label, origin, expected] of cases) assertEq(label, sourceUrlOf(origin), expected);
+}
+
+console.log("\nSource-link host label derivation (hostLabel — derived from the URL, provider-lvc):");
+{
+  // [FRAMING:representation] The "View original on <host>" label is the actual
+  // host of the source URL, never a hardcoded string and never a second per-
+  // provider copy. So a chatgpt-share paste names chatgpt.com (not claude.ai),
+  // a claude-share paste still names claude.ai, and an unclaimed-host paste
+  // (origin.provider === null) names its own real host — all from one derivation.
+  const cases: ReadonlyArray<[string, string, string]> = [
+    ["claude-share link → claude.ai", "https://claude.ai/share/abc", "claude.ai"],
+    ["chatgpt-share link → chatgpt.com (no longer the claude.ai lie)", "https://chatgpt.com/share/abc", "chatgpt.com"],
+    ["unclaimed host → its own hostname", "https://example.com/thread/42", "example.com"],
+    ["unparseable stored URL → the raw link text, never a throw", "not a url", "not a url"],
+    ["parseable but empty host → the raw link text, never an empty label", "javascript:alert(1)", "javascript:alert(1)"],
+  ];
+  for (const [label, url, expected] of cases) assertEq(label, hostLabel(url), expected);
 }
 
 
