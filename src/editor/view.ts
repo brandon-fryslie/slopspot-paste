@@ -11,12 +11,12 @@
 
 import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
-import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
 import type { InputKind, Platform, Role, ToolOutputKind, Turn } from "../types";
 import { inputLabel, PLATFORMS, ROLES, TOOL_OUTPUT_KINDS } from "../types";
 import { describeSecretKind } from "../secret-scan";
-import type { AuthorableTurn, Block, Kind } from "./blocks";
-import { convertKind, KINDS } from "./blocks";
+import { condenseToolCall, type ToolStatus } from "../toolCall";
+import type { AuthorableTurn, Block, BlockGroup, Kind, NumberedBlock } from "./blocks";
+import { convertKind, groupBlocks, KINDS } from "./blocks";
 import type { EditorStore } from "./store";
 
 const KIND_LABEL: Record<Kind, string> = {
@@ -53,16 +53,17 @@ const valueOf = (e: Event): string =>
 
 // [LAW:effects-at-boundaries] Reading the live caret is an irreducible DOM read —
 // the acknowledged last-inch-of-UI carve-out. The split control sits in the
-// kind-agnostic header, so from the clicked button it locates this card's primary
-// text field (every kind tags exactly one `.primary-text`) and returns its caret
-// offset. The store clamps, so a never-focused field's 0 is a valid edge split,
-// not an error. [LAW:no-silent-failure] a card with no primary field throws.
+// kind-agnostic controls (card header or preview overlay), so from the clicked
+// button it locates this block's primary text field via the data-block-id wrapper
+// both views mark (every kind tags exactly one `.primary-text`) and returns its
+// caret offset. The store clamps, so a never-focused field's 0 is a valid edge
+// split, not an error. [LAW:no-silent-failure] a block with no primary field throws.
 const caretOffsetIn = (origin: HTMLElement): number => {
   const field = origin
-    .closest(".block-card")
+    .closest("[data-block-id]")
     ?.querySelector<HTMLTextAreaElement | HTMLInputElement>(".primary-text");
   if (field === null || field === undefined)
-    throw new Error("block card has no .primary-text field");
+    throw new Error("block has no .primary-text field");
   return field.selectionStart ?? field.value.length;
 };
 
@@ -70,18 +71,29 @@ const caretOffsetIn = (origin: HTMLElement): number => {
 // Each receives a turn already narrowed to its kind, so the new-turn value it
 // builds on edit is checked by the compiler against that exact arm.
 
+// [LAW:one-source-of-truth] The one role-editing control, shared by the block
+// card's fields and the preview's per-block controls — same options, same
+// re-narrowing, same store mutation, whichever view hosts it.
+const roleSelect = (
+  store: EditorStore,
+  id: string,
+  turn: Extract<Turn, { kind: "message" }>,
+): TemplateResult => html`
+  <select
+    class="block-role"
+    @change=${(e: Event) => store.replaceTurn(id, { ...turn, role: asRole(valueOf(e)) })}
+  >
+    ${ROLES.map((r) => html`<option value=${r} ?selected=${r === turn.role}>${ROLE_LABEL[r]}</option>`)}
+  </select>
+`;
+
 const messageBody = (
   store: EditorStore,
   id: string,
   turn: Extract<Turn, { kind: "message" }>,
 ): TemplateResult => html`
   <div class="block-fields">
-    <select
-      class="block-role"
-      @change=${(e: Event) => store.replaceTurn(id, { ...turn, role: asRole(valueOf(e)) })}
-    >
-      ${ROLES.map((r) => html`<option value=${r} ?selected=${r === turn.role}>${ROLE_LABEL[r]}</option>`)}
-    </select>
+    ${roleSelect(store, id, turn)}
     <textarea
       class="block-content primary-text"
       rows="4"
@@ -218,6 +230,7 @@ const blockCard = (store: EditorStore, block: Block, index: number): TemplateRes
   <article
     class="block-card"
     data-kind=${block.turn.kind}
+    data-block-id=${block.id}
     @dragover=${(e: DragEvent) => e.preventDefault()}
     @drop=${(e: DragEvent) => {
       e.preventDefault();
@@ -260,6 +273,16 @@ const blockCard = (store: EditorStore, block: Block, index: number): TemplateRes
   </article>
 `;
 
+// [LAW:one-source-of-truth] One add-block row serves both views — same kinds,
+// same store.addBlock, so the affordance cannot drift between skins.
+const addRow = (store: EditorStore): TemplateResult => html`
+  <div class="add-row">
+    ${KINDS.map(
+      (k) => html`<button class="add-block" @click=${() => store.addBlock(k)}>+ ${KIND_LABEL[k]}</button>`,
+    )}
+  </div>
+`;
+
 const blockList = (store: EditorStore): TemplateResult => html`
   <div class="block-list">
     ${repeat(
@@ -267,11 +290,7 @@ const blockList = (store: EditorStore): TemplateResult => html`
       (block) => block.id,
       (block, index) => blockCard(store, block, index),
     )}
-    <div class="add-row">
-      ${KINDS.map(
-        (k) => html`<button class="add-block" @click=${() => store.addBlock(k)}>+ ${KIND_LABEL[k]}</button>`,
-      )}
-    </div>
+    ${addRow(store)}
   </div>
 `;
 
@@ -495,27 +514,246 @@ const toolbar = (store: EditorStore): TemplateResult => html`
   </div>
 `;
 
-// Sticky bottom bar: only rendered in blocks view. `position: sticky; bottom: 0`
-// keeps it pinned to the viewport bottom while scrolling through a long block
-// list, without taking it out of flow — so no overlap with block content above.
+// Sticky bottom bar, rendered in both views (each is a long editable list).
+// `position: sticky; bottom: 0` keeps it pinned to the viewport bottom while
+// scrolling, without taking it out of flow — so no overlap with content above.
 const bottomBar = (store: EditorStore): TemplateResult => html`
   <div class="editor-bottom-bar">
     ${submitControls(store)}
   </div>
 `;
 
-// [LAW:one-source-of-truth] previewHtml comes from renderDialogueHtml — the SAME
-// renderer the permalink uses (store derives the nested Dialogue first), so the
-// preview shows the exact disclosure UI a reader sees. data-platform reads
-// store.activePlatform:
+// ── Editable preview ────────────────────────────────────────────────────────
+// Preview mode IS the block editor wearing the reader's chrome (slopspot-editor-
+// s3j.1): the same blocks, ids and store mutations as the Blocks view, dressed in
+// the exact classes global.css styles for the permalink (bubble / assistant-blocks
+// / condensed), grouped by dialogue.ts's spine-split rule. [LAW:one-source-of-truth]
+// Visual parity with the reader rests on the shared stylesheet and the shared
+// grouping guard, not on a second copy of either; the read-only preview pane this
+// replaces is gone, so "what readers see" and "what you can edit" are one surface.
+
+// [LAW:one-type-per-behavior] The preview's per-block controls are the SAME
+// operations the block-card header offers — reorder, kind convert, role change,
+// split, merge, delete — bound to the same store mutations; only the chrome
+// differs (a hover/focus-revealed overlay instead of an always-visible header).
+const pvControls = (store: EditorStore, block: Block, index: number): TemplateResult => html`
+  <div class="pv-controls">
+    <span
+      class="drag-handle"
+      draggable="true"
+      title="Drag to reorder"
+      @dragstart=${(e: DragEvent) => e.dataTransfer?.setData("text/plain", String(index))}
+      >⠿</span
+    >
+    ${kindBadge(store, block.id, block.turn)}
+    ${block.turn.kind === "message" ? roleSelect(store, block.id, block.turn) : nothing}
+    <button
+      class="block-act block-split"
+      title="Split at cursor"
+      @click=${(e: Event) => store.splitBlock(block.id, caretOffsetIn(e.currentTarget as HTMLElement))}
+    >
+      ✂
+    </button>
+    <button
+      class="block-act block-merge"
+      title="Merge into the block above"
+      ?disabled=${index === 0}
+      @click=${() => store.mergeBlocks(block.id)}
+    >
+      ↥
+    </button>
+    <button class="block-del" title="Delete block" @click=${() => store.deleteBlock(block.id)}>
+      ✕
+    </button>
+  </div>
+`;
+
+// Seamless editable text that sizes to its content: the wrapper's ::after mirrors
+// the value (CSS grid stacks the two), so the field grows exactly like the prose
+// it stands in for — no rows guess, no inner scrollbar inside a bubble.
+// [LAW:one-source-of-truth] data-value mirrors the SAME store value the textarea
+// renders; both re-render from the store on every input, so the measuring mirror
+// cannot drift from the text it measures.
+const growText = (
+  value: string,
+  placeholder: string,
+  onInput: (v: string) => void,
+): TemplateResult => html`
+  <div class="pv-grow" data-value=${value}>
+    <textarea
+      class="pv-text primary-text"
+      rows="1"
+      placeholder=${placeholder}
+      .value=${value}
+      @input=${(e: Event) => onInput(valueOf(e))}
+    ></textarea>
+  </div>
+`;
+
+// [LAW:one-source-of-truth] The condensed tool-call summary reads condenseToolCall
+// — the SAME projection the reader's renderer reads — so the editable row and the
+// permalink row name a call identically (tool, primary arg, pass/fail). Only the
+// glyph markup is restated here (lit templates vs the renderer's HTML strings).
+const TOOL_BADGE: { readonly [S in ToolStatus]: TemplateResult | typeof nothing } = {
+  ok: html`<span class="tool-badge tool-badge-ok" aria-label="succeeded">✓</span>`,
+  error: html`<span class="tool-badge tool-badge-error" aria-label="failed">✕</span>`,
+  "no-result": nothing,
+};
+
+// A collapsed-by-default detail row, exactly the reader's condensed <details>.
+// The controls overlay lives on a wrapper OUTSIDE the <details>: content that
+// isn't the <summary> is hidden while closed, and controls inside the summary
+// would fight its toggle-on-click. [LAW:no-ambient-temporal-coupling] the browser
+// keeps sole ownership of open/closed; the editor never scripts the fold.
+const pvToolCall = (
+  store: EditorStore,
+  block: Block,
+  index: number,
+  turn: Extract<Turn, { kind: "tool-call" }>,
+): TemplateResult => {
+  const { tool, primaryArg, status } = condenseToolCall(turn);
+  return html`
+    <div class="pv-block" data-block-id=${block.id}>
+      ${pvControls(store, block, index)}
+      <details class="condensed condensed-tool-call" data-kind="tool-call">
+        <summary class="condensed-summary">
+          <span class="condensed-icon tool-icon" aria-hidden="true">❯</span>
+          <span class="condensed-label tool-name">${tool}</span>
+          ${primaryArg === null ? nothing : html`<span class="condensed-arg">${primaryArg}</span>`}
+          ${TOOL_BADGE[status]}
+          <span class="condensed-caret" aria-hidden="true">▸</span>
+        </summary>
+        <div class="condensed-body pv-tool-fields">${toolCallBody(store, block.id, turn)}</div>
+      </details>
+    </div>
+  `;
+};
+
+// [LAW:dataflow-not-control-flow] One dispatch on the turn discriminator, exactly
+// mirroring cardBody — each arm wears the reader class its kind renders with.
+const pvAssistantBlock = (store: EditorStore, { block, index }: NumberedBlock): TemplateResult => {
+  const turn = block.turn;
+  switch (turn.kind) {
+    case "message":
+      return html`
+        <div class="assistant-text bubble-body pv-block" data-block-id=${block.id}>
+          ${pvControls(store, block, index)}
+          ${growText(turn.content, "Assistant text…", (v) => store.replaceTurn(block.id, { ...turn, content: v }))}
+        </div>
+      `;
+    case "insight":
+      return html`
+        <div class="assistant-insight pv-block" data-kind="insight" data-block-id=${block.id}>
+          ${pvControls(store, block, index)}
+          <span class="insight-mark" aria-hidden="true">★</span>
+          <div class="bubble-body">
+            ${growText(turn.content, "Insight…", (v) => store.replaceTurn(block.id, { ...turn, content: v }))}
+          </div>
+        </div>
+      `;
+    case "thinking":
+      return html`
+        <div class="pv-block" data-block-id=${block.id}>
+          ${pvControls(store, block, index)}
+          <details class="condensed condensed-thinking" data-kind="thinking">
+            <summary class="condensed-summary">
+              <span class="condensed-icon" aria-hidden="true">✻</span>
+              <span class="condensed-label">Thinking</span>
+              <span class="condensed-caret" aria-hidden="true">▸</span>
+            </summary>
+            <div class="condensed-body">
+              <div class="bubble-body">
+                ${growText(turn.content, "Thinking…", (v) => store.replaceTurn(block.id, { ...turn, content: v }))}
+              </div>
+            </div>
+          </details>
+        </div>
+      `;
+    case "turn-summary":
+      return html`
+        <aside class="bubble-turn-summary pv-block" data-kind="turn-summary" data-block-id=${block.id}>
+          ${pvControls(store, block, index)}
+          ${growText(turn.text, "Turn summary…", (v) => store.replaceTurn(block.id, { ...turn, text: v }))}
+        </aside>
+      `;
+    case "tool-call":
+      return pvToolCall(store, block, index, turn);
+  }
+};
+
+// A spoken (user/system) bubble: the reader's chrome with the prose swapped for a
+// seamless editable field. The role header stays the reader's static label; the
+// role CHANGE affordance lives in the hover controls, uniform with every other
+// message block.
+const pvSpoken = (
+  store: EditorStore,
+  group: Extract<BlockGroup, { kind: "spoken" }>,
+): TemplateResult => html`
+  <article class="bubble bubble-${group.turn.role} pv-block" data-block-id=${group.id}>
+    ${pvControls(store, { id: group.id, turn: group.turn }, group.index)}
+    <div class="bubble-role">
+      <span class="role-dot role-dot-${group.turn.role}" aria-hidden="true"></span>
+      <span class="role-name">${ROLE_LABEL[group.turn.role]}</span>
+    </div>
+    <div class="bubble-body">
+      ${growText(group.turn.content, "Message…", (v) =>
+        store.replaceTurn(group.id, { ...group.turn, content: v }),
+      )}
+    </div>
+  </article>
+`;
+
+const pvAssistant = (
+  store: EditorStore,
+  entries: ReadonlyArray<NumberedBlock>,
+): TemplateResult => html`
+  <article class="bubble bubble-assistant assistant-turn">
+    <div class="bubble-role">
+      <span class="role-dot role-dot-assistant" aria-hidden="true"></span>
+      <span class="role-name">Assistant</span>
+    </div>
+    <div class="assistant-blocks">
+      ${repeat(entries, (entry) => entry.block.id, (entry) => pvAssistantBlock(store, entry))}
+    </div>
+  </article>
+`;
+
+// Group identity for keyed rendering: a spoken group is its block; an assistant
+// group is identified by its first block. Content edits never change these keys
+// (grouping depends only on kind/role), so focused fields keep their DOM nodes;
+// a structural change (role flip, delete) legitimately rebuilds the group.
+const groupKey = (group: BlockGroup): string =>
+  group.kind === "spoken" ? group.id : (group.entries[0]?.block.id ?? "");
+
+// [LAW:effects-at-boundaries] One delegated drop seam for the whole preview: the
+// dropped-on block is resolved from the DOM wrapper both views mark, then the
+// move is the same store.moveBlock the Blocks view calls. A drop on group chrome
+// or the container gap has no target block — a genuine no-op, not a swallow.
+const dropOnBlock = (store: EditorStore, e: DragEvent): void => {
+  e.preventDefault();
+  const id = (e.target as Element).closest("[data-block-id]")?.getAttribute("data-block-id");
+  if (id === null || id === undefined) return;
+  const to = store.blocks.findIndex((b) => b.id === id);
+  if (to === -1) return;
+  store.moveBlock(Number(e.dataTransfer?.getData("text/plain")), to);
+};
+
+// data-platform reads store.activePlatform, same as the retired read-only pane:
 // - Override: userPlatform === conversation.platformOverride by construction.
 // - Auto: all three submitOrigin arms preserve source: sourceOf(importOrigin),
 //   so sourceOf(submitOrigin) === sourceOf(importOrigin) and platformOf is equal.
-// unsafeHTML is correct: that string is the renderer's own escaped output.
-const previewPane = (store: EditorStore): TemplateResult => html`
-  <section class="preview-pane bubbles" data-platform=${store.activePlatform}>
-    ${unsafeHTML(store.previewHtml)}
-  </section>
+const previewEditor = (store: EditorStore): TemplateResult => html`
+  <div
+    class="bubbles pv-editor"
+    data-platform=${store.activePlatform}
+    @dragover=${(e: DragEvent) => e.preventDefault()}
+    @drop=${(e: DragEvent) => dropOnBlock(store, e)}
+  >
+    ${repeat(groupBlocks(store.blocks), groupKey, (group) =>
+      group.kind === "spoken" ? pvSpoken(store, group) : pvAssistant(store, group.entries),
+    )}
+    ${addRow(store)}
+  </div>
 `;
 
 export const appTemplate = (store: EditorStore): TemplateResult => html`
@@ -524,7 +762,8 @@ export const appTemplate = (store: EditorStore): TemplateResult => html`
     ${discardConfirm(store)}
     ${secretWarnings(store)}
     ${store.view === "blocks"
-      ? html`${importBox(store)}${blockList(store)}${bottomBar(store)}`
-      : previewPane(store)}
+      ? html`${importBox(store)}${blockList(store)}`
+      : previewEditor(store)}
+    ${bottomBar(store)}
   </div>
 `;

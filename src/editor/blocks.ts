@@ -13,6 +13,7 @@
 // stored shape. [LAW:one-source-of-truth]
 
 import type { Role, Turn } from "../types";
+import { isSpokenTurn } from "../dialogue";
 
 // [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. Both `usage`
 // (token accounting) and `subagent` (a reattached nested run) are source-DERIVED,
@@ -187,3 +188,54 @@ export const toBlocks = (turns: ReadonlyArray<AuthorableTurn>): Block[] =>
 
 export const toTurns = (blocks: ReadonlyArray<Block>): AuthorableTurn[] =>
   blocks.map((block) => block.turn);
+
+// ── Editable-preview grouping ───────────────────────────────────────────────
+// The editable preview shows blocks with the reader's turn/bubble structure, so
+// it needs the same grouping deriveDialogue gives the reader: non-assistant
+// messages stand alone as spoken bubbles; every other block accumulates into the
+// open assistant turn. [LAW:one-source-of-truth] The split decision IS
+// dialogue.ts's isSpokenTurn — imported, not restated — so the editable preview
+// and the reader rendering group identically by construction.
+//
+// [LAW:types-are-the-program] Each entry carries the block's index in the FLAT
+// blocks array (the coordinate every store mutation — move/split/merge — speaks),
+// so the grouped projection never forces the view to rediscover flat positions.
+// The spoken arm carries the turn already narrowed to `message`, so the view
+// reads `.role`/`.content` without re-narrowing what the grouping already proved.
+
+export type MessageTurn = Extract<AuthorableTurn, { kind: "message" }>;
+
+export interface NumberedBlock {
+  readonly block: Block;
+  readonly index: number;
+}
+
+export type BlockGroup =
+  | { readonly kind: "spoken"; readonly id: string; readonly index: number; readonly turn: MessageTurn }
+  | { readonly kind: "assistant"; readonly entries: ReadonlyArray<NumberedBlock> };
+
+export const groupBlocks = (blocks: ReadonlyArray<Block>): BlockGroup[] => {
+  const groups: BlockGroup[] = [];
+  // The open assistant group's entries, or null between assistant turns — the
+  // same single-owner fold deriveDialogue runs over turns.
+  let open: NumberedBlock[] | null = null;
+
+  const closeAssistant = (): void => {
+    if (open !== null) {
+      groups.push({ kind: "assistant", entries: open });
+      open = null;
+    }
+  };
+
+  blocks.forEach((block, index) => {
+    const turn = block.turn;
+    if (isSpokenTurn(turn)) {
+      closeAssistant();
+      groups.push({ kind: "spoken", id: block.id, index, turn });
+    } else {
+      (open ??= []).push({ block, index });
+    }
+  });
+  closeAssistant();
+  return groups;
+};

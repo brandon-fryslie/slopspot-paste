@@ -106,8 +106,8 @@
 /* ─── Platform themes ───────────────────────────────────────────────────
    [LAW:dataflow-not-control-flow] Any element bearing data-platform becomes a
    theme root; CSS variable overrides cascade into its subtree. The permalink
-   sets it on <body> (themes the whole page); the editor sets it on the preview
-   pane (scopes only that surface). No platform-specific selectors on components.
+   sets it on <body> (themes the whole page); the editor sets it on the editable
+   preview (scopes only that surface). No platform-specific selectors on components.
    The "generic" platform is the absence of an override: default vars apply. */
 
 [data-platform="claude-web"] {
@@ -743,9 +743,9 @@ body.compare-ready .compare { display: block; }
 .minimap-marker[data-kind="message"][data-role="system"] { --minimap-color: var(--role-system); }
 
 /* [LAW:one-source-of-truth] The conversation-list layout (column + gap) is one
-   rule shared by the permalink page (.conversation) and the editor preview
-   (.bubbles). The renderer emits the same flat list of .bubble articles for
-   both, so preview === permalink styling by construction — not a copied gap. */
+   rule shared by the permalink page (.conversation) and the editor's editable
+   preview (.bubbles). Both surfaces emit the same list of .bubble articles, so
+   preview === permalink styling by construction — not a copied gap. */
 .conversation,
 .bubbles {
   display: flex;
@@ -2197,9 +2197,9 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 /* ─── Block editor chrome (index page) ───────────────────────────────────
    [LAW:dataflow-not-control-flow] Per-kind accents are driven by the
    data-kind attribute flowing from the Turn discriminator — one attribute
-   selector per kind, no layout branching the type can't reach. The preview
-   pane reuses the .bubble* permalink classes verbatim, so only the editing
-   chrome is styled here. */
+   selector per kind, no layout branching the type can't reach. The editable
+   preview wears the .bubble*/.condensed permalink classes verbatim, so only
+   the editing chrome is styled here (and in the .pv-* section below). */
 .editor {
   display: flex;
   flex-direction: column;
@@ -2519,3 +2519,92 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ─── Editable preview (preview view = the block editor in reader chrome) ──
+   slopspot-editor-s3j.1: preview mode IS the editor. The view emits the SAME
+   reader classes styled above (.bubble / .assistant-blocks / .condensed /
+   .bubble-turn-summary), so its look is the permalink stylesheet by shared
+   rule, never a copy [LAW:one-source-of-truth]. Only the editing affordances
+   — the hover controls and the seamless growing text fields — live here. */
+
+.pv-block { position: relative; }
+
+/* Hover/focus-revealed per-block controls. An absolute overlay revealed by
+   opacity only — strictly non-geometric (the #55/#97 lesson: hover feedback
+   near a control must never move the content under the pointer). While
+   invisible they are technically hit-testable, but any pointer over the
+   cluster is also over the block, which makes them visible — an unseen click
+   target is unreachable by construction. */
+.pv-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.pv-block:hover > .pv-controls,
+.pv-block:focus-within > .pv-controls,
+.pv-controls:focus-within {
+  opacity: 1;
+}
+
+/* Seamless auto-growing field: the wrapper's hidden ::after mirrors the value
+   at identical metrics in the same grid cell, sizing the row; the textarea
+   paints no chrome of its own, so the field reads as the reader's prose. */
+.pv-grow { display: grid; }
+.pv-grow::after {
+  content: attr(data-value) " ";
+  visibility: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pv-grow::after,
+.pv-grow > .pv-text {
+  grid-area: 1 / 1 / 2 / 2;
+  font: inherit;
+  line-height: inherit;
+  min-width: 0;
+  padding: 0;
+  border: none;
+}
+.pv-text {
+  width: 100%;
+  min-height: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: inherit;
+  resize: none;
+  overflow: hidden;
+}
+/* The focus affordance is the block ring below, not a field outline — an inner
+   outline would draw editor chrome through the middle of a reader bubble. */
+.pv-text:focus { outline: none; }
+
+/* The editable-surface affordance: a soft ring on the block being edited.
+   Outline paints outside layout, so focusing never moves anything. */
+.pv-block:focus-within {
+  outline: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 3px;
+}
+
+/* Reader parity fixups where an editable field replaces static prose. */
+.assistant-insight.pv-block > .bubble-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* .bubble-turn-summary shrinks to content at the right edge; give the empty
+   field a usable click target and let its text stay selectable/editable. */
+.bubble-turn-summary.pv-block { user-select: text; }
+.bubble-turn-summary .pv-grow { min-width: 220px; }
+/* The tool-call edit fields sit in the reader's condensed body; the summary row
+   above already carries bottom padding, the fields need only a hair of air. */
+.pv-tool-fields { padding-top: 4px; }
