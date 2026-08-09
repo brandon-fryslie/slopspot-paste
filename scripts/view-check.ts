@@ -158,10 +158,10 @@ console.log("\nBottom submit bar (slopspot-editor-controls-csi):");
   const c = jswindow.document.createElement("div");
   render(appTemplate(store), c);
   const bar = c.querySelector(".editor-bottom-bar");
-  assert("blocks view: bottom bar is present", bar !== null);
+  assert("loaded editor: bottom bar is present", bar !== null);
   const submitBtn = bar?.querySelector<HTMLButtonElement>(".btn-primary");
-  assert("blocks view: bottom bar has submit button", submitBtn !== null && submitBtn !== undefined);
-  assert("blocks view: bottom submit is enabled (canSubmit=true)", submitBtn?.disabled === false);
+  assert("loaded editor: bottom bar has submit button", submitBtn !== null && submitBtn !== undefined);
+  assert("loaded editor: bottom submit is enabled (canSubmit=true)", submitBtn?.disabled === false);
 
   // Empty store: bottom submit disabled (canSubmit=false).
   const storeEmpty = new EditorStore(fakeIo());
@@ -280,6 +280,65 @@ console.log("\nEditable preview (slopspot-editor-s3j.1):");
   assert("preview: no read-only .preview-pane remains", c.querySelector(".preview-pane") === null);
 }
 
+console.log("\nText mode is the source editor (slopspot-editor-s3j.2):");
+{
+  // [LAW:verifiable-goals] The ticket's acceptance, DOM half: the default view is
+  // a plain-text editor over the original source; typing derives the conversation
+  // with no parse action; a bulk word edit reflects in EVERY preview occurrence;
+  // and the origin that submit will stamp carries the edited text verbatim.
+  const store = new EditorStore(fakeIo());
+  const c = jswindow.document.createElement("div");
+  render(appTemplate(store), c);
+  assert("default view is Text: the source pane renders", c.querySelector(".source-pane textarea.source-text") !== null);
+  assert("the retired block-card list is gone", c.querySelector(".block-list") === null && c.querySelector(".block-card") === null);
+  assert(
+    "the toolbar offers Text (not Blocks)",
+    Array.from(c.querySelectorAll(".view-toggle .toggle")).some((b) => b.textContent?.trim() === "Text"),
+  );
+
+  // Typing in the pane derives blocks continuously — through the real DOM event.
+  const pane = c.querySelector<HTMLTextAreaElement>(".source-text");
+  if (pane === null) throw new Error("source pane missing");
+  pane.value = "## User\nAlice broke it\n\n## Assistant\nAlice fixed it";
+  pane.dispatchEvent(new jswindow.Event("input", { bubbles: true }));
+  assert("typing in the pane derives blocks (no parse button pressed)", store.blocks.length === 2);
+  render(appTemplate(store), c);
+  assert(
+    "no 'Parse into blocks' action remains",
+    !Array.from(c.querySelectorAll("button")).some((b) => b.textContent?.includes("Parse into blocks")),
+  );
+
+  // Bulk edit: sweep a word across the source; every occurrence re-derives.
+  pane.value = pane.value.replaceAll("Alice", "Bob");
+  pane.dispatchEvent(new jswindow.Event("input", { bubbles: true }));
+  store.setView("preview");
+  render(appTemplate(store), c);
+  const fields = Array.from(c.querySelectorAll<HTMLTextAreaElement>(".pv-editor textarea.pv-text"));
+  assert(
+    "preview reflects the edit in every occurrence",
+    fields.some((f) => f.value === "Bob broke it") &&
+      fields.some((f) => f.value === "Bob fixed it") &&
+      !fields.some((f) => f.value.includes("Alice")),
+  );
+  const stamp = store.submitOrigin;
+  assert(
+    "the origin submit will stamp carries the edited source verbatim",
+    stamp.kind === "markdown" && stamp.content === "## User\nBob broke it\n\n## Assistant\nBob fixed it",
+  );
+
+  // The no-clobber strip renders from EITHER view: stage a derive over a preview
+  // edit, stay in preview, and the pending decision is still visible.
+  const firstId = store.blocks[0]!.id;
+  store.replaceTurn(firstId, { kind: "message", role: "user", content: "hand edit" });
+  store.setSource("## User\nreplacement\n\n## Assistant\ntext");
+  assert("derive over a preview edit stages", store.pendingReparse !== null);
+  render(appTemplate(store), c);
+  assert(
+    "the confirm strip is visible from the Preview view too",
+    store.view === "preview" && c.querySelector(".reparse-confirm") !== null,
+  );
+}
+
 console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/draft):");
 {
   // [LAW:verifiable-goals] The agent-handoff acceptance: a server draft loads into
@@ -287,18 +346,28 @@ console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/dr
   // expired draft surfaces loudly through importError — never a silent empty editor.
 
   // 1. Success: fetchDraft returns a draft -> blocks populated, not dirty, no error.
+  // The draft carries a replayable origin whose reprojection IS its turns — the
+  // real handoff shape (/api/draft stores the origin its parse consumed), so the
+  // origin-derived dirty baseline reads it as clean.
   const okIo: EditorIo = {
     ...fakeIo(),
     fetchDraft: async (): Promise<DraftLoadResult> => ({
       ok: true,
-      draft: { turns: [{ kind: "message", role: "user", content: "from agent" } as const], origin: null },
+      draft: {
+        turns: [
+          { kind: "message", role: "user", content: "from agent" } as const,
+          { kind: "message", role: "assistant", content: "ok" } as const,
+        ],
+        origin: { kind: "markdown", content: "## User\nfrom agent\n\n## Assistant\nok" },
+      },
     }),
   };
   const okStore = new EditorStore(okIo);
   await okStore.loadServerDraft("abc123");
-  assert("handoff: blocks populated from server draft", okStore.blocks.length === 1);
-  assert("handoff: restored draft is not dirty (baseline set)", okStore.isDirty === false);
+  assert("handoff: blocks populated from server draft", okStore.blocks.length === 2);
+  assert("handoff: restored draft is not dirty (baseline derived from origin)", okStore.isDirty === false);
   assert("handoff: no importError on success", okStore.importError === null);
+  assert("handoff: lands in Preview for review", okStore.view === "preview");
 
   // [LAW:one-source-of-truth] A saved theme override must survive the restore, or the
   // editor reopens with the wrong theme and republishes a different override than was
@@ -375,7 +444,7 @@ console.log("\nclaude.ai/code link handoff affordance (slopspot-cc-share-4nc.9):
   // temporary-workaround notice + copyable handoff and SUPPRESSES the doomed
   // fetch button; a normal link keeps the fetch affordance and shows no notice.
   const store = new EditorStore(fakeIo());
-  store.setImport("https://claude.ai/code/session_01E1cdheWtrieG1o6dhhFAJu");
+  store.setSource("https://claude.ai/code/session_01E1cdheWtrieG1o6dhhFAJu");
   const c = jswindow.document.createElement("div");
   render(appTemplate(store), c);
   assert("code link: temporary-workaround notice renders", c.querySelector(".code-link-notice") !== null);
@@ -383,10 +452,14 @@ console.log("\nclaude.ai/code link handoff affordance (slopspot-cc-share-4nc.9):
   assert("code link: doomed fetch row is suppressed", c.querySelector(".import-row") === null);
 
   // A normal (non-code) link keeps the fetch affordance and shows no notice.
-  store.setImport("https://claude.ai/share/abc123");
+  store.setSource("https://claude.ai/share/abc123");
   render(appTemplate(store), c);
   assert("share link: no code-link notice", c.querySelector(".code-link-notice") === null);
   assert("share link: fetch row present", c.querySelector(".import-row") !== null);
+  assert(
+    "share link: fetch button present for the url arm",
+    Array.from(c.querySelectorAll("button")).some((b) => b.textContent?.includes("Fetch & parse")),
+  );
 }
 
 console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");

@@ -1667,55 +1667,53 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
 
   // --- importKind derivation (b48.5 fix: 'raw' is no longer sticky) ---
   const s1 = new EditorStore(fakeIo().io);
-  s1.setImport("## User\nhi\n\n## Assistant\nyo");
+  s1.setSource("## User\nhi\n\n## Assistant\nyo");
   assertEq("importKind snaps to most-specific detection (markdown)", s1.importKind, "markdown");
   // A user override is honored only while it stays a detected kind.
   s1.setImportKind("raw");
   assertEq("explicit override honored when detected", s1.importKind, "raw");
-  s1.setImport("just some unstructured text with no markers");
+  s1.setSource("just some unstructured text with no markers");
   // markdown no longer detected -> override 'raw' still valid here (raw always
   // detected), so it remains; prove the getter, not a stored snapshot.
   assert("override dropped by getter when undetected", s1.detected.includes(s1.importKind));
 
-  // --- confirm-on-reparse: first parse never warns (nothing to clobber) ---
+  // --- continuous derive: setting the source derives blocks, no parse action ---
   const f2 = fakeIo();
   const s2 = new EditorStore(f2.io);
-  s2.setImport("## User\nhello\n\n## Assistant\nworld");
-  s2.ingest();
-  assert("first parse loads blocks immediately", s2.blocks.length === 2);
-  assert("freshly-loaded blocks are not dirty", !s2.isDirty);
-  assert("no pending reparse after clean load", s2.pendingReparse === null);
+  s2.setSource("## User\nhello\n\n## Assistant\nworld");
+  assert("setting the source derives blocks immediately", s2.blocks.length === 2);
+  assert("freshly-derived blocks are not dirty", !s2.isDirty);
+  assert("no pending replacement after a clean derive", s2.pendingReparse === null);
 
-  // --- hand-edit makes the store dirty; a reparse stages instead of clobbering ---
+  // --- hand-edit makes the store dirty; a derive stages instead of clobbering ---
   const firstId = s2.blocks[0]!.id;
   s2.replaceTurn(firstId, { kind: "message", role: "user", content: "EDITED" });
   assert("editing a block marks dirty", s2.isDirty && s2.wouldClobber);
   const editedSnapshot = JSON.stringify(s2.turns);
-  s2.setImport("## User\nbrand\n\n## Assistant\nnew");
-  s2.ingest();
-  assert("reparse over edits stages, does not replace", s2.pendingReparse !== null);
-  assertEq("blocks untouched while reparse pending", JSON.stringify(s2.turns), editedSnapshot);
+  s2.setSource("## User\nbrand\n\n## Assistant\nnew");
+  assert("derive over edits stages, does not replace", s2.pendingReparse !== null);
+  assertEq("blocks untouched while replacement pending", JSON.stringify(s2.turns), editedSnapshot);
 
-  // --- cancel keeps edits; confirm commits the staged parse ---
+  // --- cancel keeps edits; confirm commits the staged derive ---
   s2.cancelReparse();
-  assert("cancel clears the pending reparse", s2.pendingReparse === null);
+  assert("cancel clears the pending replacement", s2.pendingReparse === null);
   assertEq("cancel preserves the edited blocks", JSON.stringify(s2.turns), editedSnapshot);
 
-  s2.setImport("## User\nbrand\n\n## Assistant\nnew");
-  s2.ingest();
-  assert("reparse stages again", s2.pendingReparse !== null);
+  s2.setSource("## User\nbrand\n\n## Assistant\nnew");
+  assert("derive stages again", s2.pendingReparse !== null);
   s2.confirmReparse();
-  assert("confirm replaces blocks with the staged parse", s2.blocks.length === 2);
-  assert("confirmed reparse resets dirty baseline", !s2.isDirty);
+  assert("confirm replaces blocks with the staged derive", s2.blocks.length === 2);
+  assert("confirmed derive is a clean projection (not dirty)", !s2.isDirty);
   assert("confirm clears pending", s2.pendingReparse === null);
   const confirmedFirst = s2.turns[0]!;
   assert(
     "confirmed blocks carry the new content",
     confirmedFirst.kind === "message" && confirmedFirst.content === "brand",
   );
+  assertEq("a confirmed derive keeps the Text view (no yank to preview)", s2.view, "text");
 
   // --- submit moves the Draft (turns + stamped origin) across the boundary ---
-  // A pristine confirmed reparse stamps the verbatim text origin (markdown here),
+  // A pristine confirmed derive stamps the verbatim text origin (markdown here),
   // preserving the source of truth rather than collapsing to an editor origin.
   await s2.submit();
   const s2Origin = f2.submitted[0]?.origin;
@@ -1725,16 +1723,20 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
   );
   assertEq("submit navigates on success", f2.navigated[0], "test-slug");
 
-  // --- editing the import box invalidates a staged reparse ---
+  // --- the staged offer always matches the pane's current text ---
   const s3 = new EditorStore(fakeIo().io);
-  s3.setImport("## User\na\n\n## Assistant\nb");
-  s3.ingest();
+  s3.setSource("## User\na\n\n## Assistant\nb");
   s3.replaceTurn(s3.blocks[0]!.id, { kind: "insight", content: "changed kind" });
-  s3.setImport("## User\nc\n\n## Assistant\nd");
-  s3.ingest();
-  assert("staged before re-edit", s3.pendingReparse !== null);
-  s3.setImport("## User\ne\n\n## Assistant\nf");
-  assert("editing import text drops the stale pending reparse", s3.pendingReparse === null);
+  s3.setSource("## User\nc\n\n## Assistant\nd");
+  assert("staged over the edit", s3.pendingReparse !== null);
+  s3.setSource("## User\ne\n\n## Assistant\nf");
+  const staged = s3.pendingReparse;
+  assert(
+    "further edits re-stage the CURRENT text's derive (the offer never goes stale)",
+    staged !== null &&
+      staged.draft.origin?.kind === "markdown" &&
+      staged.draft.origin.content === "## User\ne\n\n## Assistant\nf",
+  );
 }
 
 console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
@@ -1752,8 +1754,7 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
 
   // --- splitBlock: one card becomes two in place; head keeps id, tail is fresh ---
   const s = new EditorStore(io);
-  s.setImport("## User\nhello world\n\n## Assistant\nreply");
-  s.ingest();
+  s.setSource("## User\nhello world\n\n## Assistant\nreply");
   assert("two blocks loaded", s.blocks.length === 2);
   const headId = s.blocks[0]!.id;
   const tailIdBefore = s.blocks[1]!.id;
@@ -1778,8 +1779,7 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
 
   // --- mergeBlocks: a card folds into the one above; prev id + shape survive ---
   const m = new EditorStore(io);
-  m.setImport("## User\nfirst\n\n## Assistant\nsecond");
-  m.ingest();
+  m.setSource("## User\nfirst\n\n## Assistant\nsecond");
   const prevId = m.blocks[0]!.id;
   const curId = m.blocks[1]!.id;
   m.mergeBlocks(curId);
@@ -1837,9 +1837,8 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
 
   // --- wire the real persistence path, then an edit persists the current turns ---
   const dispose = persistDrafts(s, a.io);
-  s.setImport("## User\nhi\n\n## Assistant\nyo");
-  s.ingest();
-  assertEq("ingest adopts the parse's provenance", s.source, "markdown");
+  s.setSource("## User\nhi\n\n## Assistant\nyo");
+  assertEq("derive adopts the parse's provenance", s.source, "markdown");
   const firstId = s.blocks[0]!.id;
   s.replaceTurn(firstId, { kind: "message", role: "user", content: "EDITED DRAFT" });
   assertEq(
@@ -1848,12 +1847,22 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
     JSON.stringify({ turns: s.turns, origin: s.importOrigin }),
   );
 
-  // --- a fresh editor restoring that draft reproduces the edits and is NOT
-  //     instantly dirty (restore sets pristineTurns via the shared loader) ---
+  // --- a fresh editor restoring that draft reproduces the edits AND still knows
+  //     they diverge from the origin (dirtiness is re-DERIVED from the origin,
+  //     not a load-time snapshot). Regression: the snapshot baseline reported a
+  //     restored edited draft as clean, so submit stamped the raw text origin and
+  //     the server's canonicalize re-derived it — silently dropping the edits. ---
   const s2 = new EditorStore(a.io);
   s2.restoreDraft(a.io.loadDraft());
   assertEq("restored draft reproduces the edited blocks", JSON.stringify(s2.turns), JSON.stringify(s.turns));
-  assert("restored draft is not instantly dirty", !s2.isDirty);
+  assert("restored edited draft is still dirty (turns diverge from origin)", s2.isDirty);
+  const restoredStamp = s2.submitOrigin;
+  assert(
+    "restored edited draft stamps an editor arm nesting the origin — edits survive canonicalize",
+    restoredStamp.kind === "editor" &&
+      restoredStamp.input?.kind === "markdown" &&
+      restoredStamp.input.content === "## User\nhi\n\n## Assistant\nyo",
+  );
   assertEq("restored draft carries the provenance through", s2.source, "markdown");
 
   // --- a successful submit clears the draft so the next visit starts clean ---
@@ -1890,8 +1899,7 @@ console.log("\nDiscard draft persistence round-trip (slopspot-editor-draft-rp4):
   const store = new EditorStore(discardIo);
   const dispose = persistDrafts(store, discardIo);
 
-  store.setImport("## User\nhello\n\n## Assistant\nworld");
-  store.ingest();
+  store.setSource("## User\nhello\n\n## Assistant\nworld");
   assert("blocks built before discard", store.blocks.length === 2);
   assert("draft persisted before discard", cell !== null);
 
@@ -1947,8 +1955,7 @@ console.log("\nDiscard revokes the server-side handoff draft (slopspot-cc-share-
   const scratchDeleted: (string | null)[] = [];
   const scratchIo: EditorIo = { ...handoffIo, deleteDraft: (id) => { scratchDeleted.push(id); } };
   const scratch = new EditorStore(scratchIo);
-  scratch.setImport("## User\nhi\n\n## Assistant\nyo");
-  scratch.ingest();
+  scratch.setSource("## User\nhi\n\n## Assistant\nyo");
   scratch.discard();
   assertEq("from-scratch discard passes null (no handoff to revoke)", JSON.stringify(scratchDeleted), JSON.stringify([null]));
 }
@@ -1978,8 +1985,8 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   // --- a pristine share import stamps the replayable claude-share origin: its
   //     url is displayed and its bytes re-projectable [the whole point of 2my] ---
   const s = new EditorStore(io);
-  s.setImport(shareUrl);
-  await s.ingest();
+  s.setSource(shareUrl);
+  await s.fetchUrl();
   assertEq("share import detects the generic url arm (provider resolved server-side)", s.importKind, "url");
   assert("share import loads its turns and is not dirty", s.blocks.length === 2 && !s.isDirty);
   const pristine = s.submitOrigin;
@@ -2011,8 +2018,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
     submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
   };
   const text = new EditorStore(textIo);
-  text.setImport("## User\nhello\n\n## Assistant\nworld");
-  text.ingest();
+  text.setSource("## User\nhello\n\n## Assistant\nworld");
   assert("text import loads turns and is not dirty", text.blocks.length === 2 && !text.isDirty);
   const pristineText = text.submitOrigin;
   assert(
@@ -2028,6 +2034,105 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
     "from-scratch authoring stamps an editor origin with null provenance",
     scratch.kind === "editor" && scratch.source === null,
   );
+}
+
+console.log("\nText mode edits the original source (slopspot-editor-s3j.2):");
+{
+  const baseIo: EditorIo = {
+    fetchShare: async (): Promise<ParseResult> => ({ ok: false, reason: "unused" }),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "unused" }),
+    submit: async (): Promise<SubmitResult> => ({ ok: true, slug: "x" }),
+    navigate: () => {},
+    saveDraft: () => {},
+    loadDraft: (): Draft => ({ turns: [], origin: null }),
+    clearDraft: () => {},
+    deleteDraft: () => {},
+  };
+
+  // --- the ticket's acceptance, store half: edit a word that appears in several
+  //     turns; every occurrence re-derives, and the origin to be stored carries
+  //     the edited text VERBATIM (the display is a projection of it) ---
+  const s = new EditorStore(baseIo);
+  const original =
+    "## User\nAlice broke the build\n\n## Assistant\nAlice reverted it\n\n## User\nthank Alice";
+  s.setSource(original);
+  assert("multi-turn transcript derives with no parse action", s.blocks.length === 3);
+  const edited = original.replaceAll("Alice", "Bob");
+  s.setSource(edited);
+  const contents = s.turns.map((t) => (t.kind === "message" ? t.content : ""));
+  assert(
+    "every occurrence of the edited word re-derives across turns",
+    contents[0] === "Bob broke the build" &&
+      contents[1] === "Bob reverted it" &&
+      contents[2] === "thank Bob" &&
+      !contents.some((c) => c.includes("Alice")),
+  );
+  assert(
+    "editing a pure projection replaces silently (no confirm for text-lineage blocks)",
+    s.pendingReparse === null,
+  );
+  const stamp = s.submitOrigin;
+  assert(
+    "the stored original carries the edited text verbatim",
+    stamp.kind === "markdown" && stamp.content === edited,
+  );
+
+  // --- a restored draft with NO replayable origin (hand-authored) is authority
+  //     the pane cannot reproduce: deriving over it stages, never wipes ---
+  const authored = new EditorStore(baseIo);
+  authored.restoreDraft({
+    turns: [{ kind: "message", role: "user", content: "hand-authored work" }],
+    origin: null,
+  });
+  authored.setView("text");
+  authored.setSource("## User\nnew paste");
+  assert("derive over hand-authored blocks stages for confirmation", authored.pendingReparse !== null);
+  assert(
+    "the hand-authored blocks survive until confirmed",
+    authored.turns[0]?.kind === "message" && authored.turns[0].content === "hand-authored work",
+  );
+
+  // --- a pristine url fetch is CLEAN yet not derived from the pane's text (its
+  //     source is the fetched bytes — s3j.4): deriving over it must also stage ---
+  const shareOrigin: Origin = {
+    kind: "url",
+    url: "https://claude.ai/share/xyz",
+    fetched: "## You said:\nq\n\n## Claude said:\na",
+    provider: "claude-share",
+  };
+  const urlIo: EditorIo = {
+    ...baseIo,
+    fetchShare: async (): Promise<ParseResult> => ({
+      ok: true,
+      turns: reprojectOrigin(shareOrigin) as Turn[],
+      origin: shareOrigin,
+    }),
+  };
+  const u = new EditorStore(urlIo);
+  u.setSource(shareOrigin.url);
+  await u.fetchUrl();
+  assert("url fetch lands in Preview (no text source to edit yet)", u.view === "preview" && !u.isDirty);
+  u.setView("text");
+  u.setSource("stray text typed over a fetched conversation");
+  assert("derive over a pristine url fetch stages, never silently swaps", u.pendingReparse !== null);
+
+  // --- a text-arm load syncs the pane to the origin's text and lands in Preview
+  //     for review; Text mode then edits the SAME text the origin captured ---
+  const restored = new EditorStore(baseIo);
+  restored.restoreDraft({
+    turns: [
+      { kind: "message", role: "user", content: "hi" },
+      { kind: "message", role: "assistant", content: "yo" },
+    ],
+    origin: { kind: "markdown", content: "## User\nhi\n\n## Assistant\nyo" },
+  });
+  assert("text-arm restore lands in Preview", restored.view === "preview");
+  assertEq(
+    "text-arm restore syncs the source pane to the origin's verbatim text",
+    restored.sourceText,
+    "## User\nhi\n\n## Assistant\nyo",
+  );
+  assert("clean text-arm restore is not dirty (baseline derived from origin)", !restored.isDirty);
 }
 
 console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } arm):");

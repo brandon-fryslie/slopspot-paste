@@ -2215,7 +2215,7 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   border-bottom: 1px solid var(--border);
 }
 
-/* Segmented Blocks/Preview control. */
+/* Segmented Text/Preview control. */
 .view-toggle {
   display: inline-flex;
   border: 1px solid var(--border);
@@ -2273,7 +2273,8 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .btn-danger:hover { background: #991b1b; border-color: #991b1b; }
 
 /* The reparse confirmation strip: warning text + Keep editing / Replace. Sits
-   inside the import box, only present while a clobbering parse is staged. */
+   in the always-visible slot under the toolbar (both views), only present while
+   a clobbering replacement is staged. */
 .reparse-confirm {
   display: flex;
   align-items: center;
@@ -2324,15 +2325,22 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   .secret-warnings { background: #450a0a; color: #fecaca; }
 }
 
-/* Import box — paste a transcript, parse it into blocks. */
-.import-box {
+/* Source pane — Text mode: the plain-text editor over the original source. */
+.source-pane {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elev);
+}
+/* The source is code-shaped (transcripts, JSONL, markdown), so it reads in mono
+   at a height that makes it the page's main editing surface, not a paste slot. */
+.source-text {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  tab-size: 2;
+  height: 60vh;
+  resize: vertical;
 }
 .import-row {
   display: flex;
@@ -2377,42 +2385,15 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 }
 
 /* [LAW:single-enforcer] The global `textarea` rule sets a 320px min-height for
-   the full-page paste box; editor textareas are compact and let their `rows`
-   attribute govern height. Overriding min-height here is the one place that
-   distinction lives. */
-.import-text,
-.block-content,
+   the full-page paste box; the preview's tool-call fields are compact and let
+   their `rows` attribute govern height. Overriding min-height here is the one
+   place that distinction lives. */
 .block-args,
 .block-out-text,
 .code-link-prompt {
   min-height: 0;
 }
 
-/* Block list + cards. */
-.block-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.block-card {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elev);
-  padding: 12px 14px;
-}
-.block-card[data-kind="message"] { border-left-color: #6366f1; }
-.block-card[data-kind="tool-call"] { border-left-color: var(--accent); }
-.block-card[data-kind="insight"] { border-left-color: #f59e0b; }
-.block-card[data-kind="thinking"] { border-left-color: color-mix(in srgb, var(--fg-muted) 60%, transparent); }
-.block-card[data-kind="turn-summary"] { border-left-color: var(--fg-muted); }
-
-.block-card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
 .drag-handle {
   color: var(--fg-muted);
   cursor: grab;
@@ -2437,10 +2418,10 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .block-act:disabled { opacity: 0.35; cursor: not-allowed; }
 .block-del:hover { color: #b91c1c; background: var(--bg-code); }
 
-/* Sticky bottom submit bar — only present in blocks view. Sticks to the
-   viewport bottom while scrolling through a long block list so the user can
-   submit without scrolling back up. In-flow (not fixed), so no overlap with
-   the block list above. A solid background prevents content showing through. */
+/* Sticky bottom submit bar — rendered in both views. Sticks to the viewport
+   bottom while scrolling a long editing surface so the user can submit without
+   scrolling back up. In-flow (not fixed), so no overlap with the content above.
+   A solid background prevents content showing through. */
 .editor-bottom-bar {
   position: sticky;
   bottom: 0;
@@ -2472,15 +2453,15 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 }
 .add-block:hover { border-color: var(--accent); color: var(--fg); }
 
-/* Card fields. */
+/* Tool-call edit fields (the preview's condensed-row body). */
 .block-fields {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-/* Selects and text inputs inside cards share the .source-select chrome; these
-   add the few that aren't already that class. */
+/* Selects and text inputs in the edit controls share the .source-select chrome;
+   these add the few that aren't already that class. */
 .block-badge,
 .block-role,
 .block-out-kind {

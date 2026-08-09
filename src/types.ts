@@ -688,6 +688,17 @@ export const sourceOf = (origin: Origin | null): SourceKind | null => {
 export const sourceUrlOf = (origin: Origin | null): string | null =>
   origin?.kind === "url" ? origin.url : null;
 
+// [LAW:one-source-of-truth] The plain-text source an origin carries — the verbatim
+// content of a text arm, or null for every origin that has no directly editable
+// text: the url arm's source is the link's fetched bytes (bulk text editing of
+// those is slopspot-editor-s3j.4), and the editor arm's turns ARE the source. The
+// editor's Text mode reads this projection to decide whether a loaded draft has a
+// source it can edit as text; nothing stores that text as a second field.
+export const sourceTextOf = (origin: Origin | null): string | null =>
+  origin !== null && origin.kind !== "url" && origin.kind !== "editor"
+    ? origin.content
+    : null;
+
 
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
 // table, AND the T2 detector's iteration order are derived from this one
