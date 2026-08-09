@@ -80,8 +80,18 @@ const startBlockDrag = (e: DragEvent, index: number): void => {
   e.dataTransfer?.setData(BLOCK_DRAG_MIME, String(index));
 };
 
+// Accept a block drag only where a drop will actually act — over a marked block
+// wrapper. The cursor affordance and dropOnBlock's outcome derive from the same
+// [data-block-id] predicate, so the browser never shows an accepting cursor for
+// a drop that would no-op (container gaps show the native not-allowed cursor).
 const allowBlockDrop = (e: DragEvent): void => {
-  if (e.dataTransfer?.types.includes(BLOCK_DRAG_MIME) === true) e.preventDefault();
+  if (
+    e.dataTransfer?.types.includes(BLOCK_DRAG_MIME) === true &&
+    e.target instanceof Element &&
+    e.target.closest("[data-block-id]") !== null
+  ) {
+    e.preventDefault();
+  }
 };
 
 // The dragged block's flat index, or null when the drag is not a block drag.
@@ -728,11 +738,15 @@ const pvSpoken = (
   </article>
 `;
 
+// The group article anchors drops on its chrome (role header, gaps between
+// entries) to the group's FIRST block, so everywhere the accepting cursor shows,
+// the drop acts. Inner blocks still resolve first — closest() finds the nearest
+// wrapper — so this only catches drops the entries themselves didn't claim.
 const pvAssistant = (
   store: EditorStore,
-  entries: ReadonlyArray<NumberedBlock>,
+  entries: Extract<BlockGroup, { kind: "assistant" }>["entries"],
 ): TemplateResult => html`
-  <article class="bubble bubble-assistant assistant-turn">
+  <article class="bubble bubble-assistant assistant-turn" data-block-id=${entries[0].block.id}>
     <div class="bubble-role">
       <span class="role-dot role-dot-assistant" aria-hidden="true"></span>
       <span class="role-name">Assistant</span>

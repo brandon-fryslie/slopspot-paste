@@ -2563,14 +2563,18 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .pv-grow::after {
   content: attr(data-value) " ";
   visibility: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
+/* Every metric that affects line breaking lives in the SHARED rule — the mirror
+   measures truthfully only if both surfaces wrap identically, including long
+   unbroken tokens (overflow-wrap) and whitespace runs (pre-wrap, which is the
+   textarea's UA default, restated so both carry it explicitly). */
 .pv-grow::after,
 .pv-grow > .pv-text {
   grid-area: 1 / 1 / 2 / 2;
   font: inherit;
   line-height: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   min-width: 0;
   padding: 0;
   border: none;
