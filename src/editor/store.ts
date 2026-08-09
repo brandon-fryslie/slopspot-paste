@@ -388,10 +388,11 @@ export class EditorStore {
 
   // [LAW:single-enforcer] An agent handoff: restore a server-stored draft
   // (/api/draft) for review. Mirrors fetchShare's busy/error orchestration and
-  // converges on the SAME accept() loader, so a handed-off draft enters editing
-  // exactly as a fetched import does — its turns become the dirty baseline (not
-  // instantly "dirty"), and a missing/expired draft surfaces through the same
-  // importError channel, never a silent empty editor [LAW:no-silent-failure].
+  // converges on the SAME accept() gate, so a handed-off draft enters editing
+  // exactly as a fetched import does — dirtiness re-derives against the adopted
+  // origin (clean when the turns are its pure projection), and a missing/expired
+  // draft surfaces through the same importError channel, never a silent empty
+  // editor [LAW:no-silent-failure].
   async loadServerDraft(id: string): Promise<void> {
     this.busy = true;
     this.importError = null;
@@ -447,10 +448,12 @@ export class EditorStore {
   }
 
   // [LAW:single-enforcer] Restoring a persisted draft reuses the one loader every
-  // parse/fetch passes through, so the dirty baseline (pristineTurns) is set to
-  // the restored turns and the draft is not instantly "dirty". Called once at
-  // mount before any edit; an empty draft ([]) loads to the same empty editor a
-  // fresh visit gets, so the caller never branches on "is there a draft".
+  // batch load passes through; dirtiness then re-derives against the adopted
+  // origin, so a draft whose turns already diverged from it restores as dirty by
+  // design — its edits keep surviving submit instead of being re-derived away.
+  // Called once at mount before any edit; an empty draft ([]) loads to the same
+  // empty editor a fresh visit gets, so the caller never branches on "is there
+  // a draft".
   restoreDraft(draft: Draft): void {
     this.loadTurns(draft);
   }
