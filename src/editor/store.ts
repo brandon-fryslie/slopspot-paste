@@ -287,6 +287,17 @@ export class EditorStore {
     return this.fetchingUrl !== null;
   }
 
+  // [LAW:one-source-of-truth] The pane actually holds a fetchable link — derived
+  // through isUrl (THE fetchable-link predicate, [LAW:single-enforcer]), never a
+  // stored flag that could go stale. This is deliberately NOT importKind ===
+  // "url": the empty pane also carries that kind as its all-options priming
+  // state. Gates both the auto-fetch fire and the view's retry affordance, so an
+  // importError from a non-fetch path (a failed draft restore over an empty
+  // pane) can never offer a retry that would fetch nothing.
+  get hasFetchableUrl(): boolean {
+    return isUrl(this.sourceText.trim());
+  }
+
   // [LAW:one-source-of-truth] The pane's link IS the adopted origin — derived by
   // comparing the two authorities, never stored as a flag that could go stale.
   // Gates the auto-fetch (re-fetching an adopted link would pointlessly re-load
@@ -418,7 +429,7 @@ export class EditorStore {
   // A declined fire is a genuine no-op (the world moved on), not a swallow.
   autoFetch(): void {
     const url = this.sourceText.trim();
-    if (!isUrl(url) || this.claudeCodeLinkId !== null) return;
+    if (!this.hasFetchableUrl || this.claudeCodeLinkId !== null) return;
     if (this.urlAdopted || this.fetchingUrl === url) return;
     void this.fetchShare(url);
   }

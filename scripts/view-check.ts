@@ -597,6 +597,23 @@ console.log("\nSeamless url ingest (slopspot-editor-s3j.3 — auto-fetch on link
     "confirming adopts the fetched conversation",
     h6.store.importOrigin?.kind === "url" && h6.store.blocks.length === 2,
   );
+
+  // 6. A non-fetch importError (failed draft restore, empty pane) shows the
+  // error WITHOUT the retry: the empty pane's importKind is "url" (priming
+  // state), but there is no link to re-fetch — a retry would POST an empty url.
+  const h7io: EditorIo = {
+    ...fakeIo(),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "This draft has expired or was not found." }),
+  };
+  const h7 = new EditorStore(h7io);
+  await h7.loadServerDraft("gone");
+  const c7 = jswindow.document.createElement("div");
+  render(appTemplate(h7), c7);
+  assert("non-fetch error: the alert renders", c7.querySelector(".form-error") !== null);
+  assert(
+    "non-fetch error over an empty pane: no out-of-place 'Try again'",
+    !Array.from(c7.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Try again"),
+  );
 }
 
 console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");

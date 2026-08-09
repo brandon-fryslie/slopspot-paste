@@ -13,9 +13,13 @@ description: Run and drive slopspot-paste locally to verify a change end-to-end 
   internal error" in workerd; surfaces as "Firecrawl request failed (network
   error)"). It is the local simulator, not the code — the same build works on
   the edge.
-- To verify URL ingest for real, run the worker remotely:
+- To verify URL ingest for real, run the worker remotely. `.dev.vars` is
+  gitignored, so create it first from the agent-memory secrets
+  (`FIRECRAWL_API_KEY` from the firecrawl-key memory powers the fetch arm;
+  `DEEPSEEK_API_TOKEN` from the macOS keychain powers summaries):
 
   ```bash
+  printf 'FIRECRAWL_API_KEY=%s\nDEEPSEEK_API_TOKEN=%s\n' "<firecrawl key>" "<deepseek token>" > .dev.vars
   npm run build
   cp .dev.vars dist/server/.dev.vars
   cd dist/server && CLOUDFLARE_API_TOKEN=<token from memory> \
@@ -25,8 +29,6 @@ description: Run and drive slopspot-paste locally to verify a change end-to-end 
   → http://localhost:8788 executes on Cloudflare's edge with real egress and
   real secrets. `/api/fetch` is read-only (no KV writes), so this is safe;
   don't drive `/api/paste` submits against it casually — that writes prod KV.
-- `.dev.vars` needs `FIRECRAWL_API_KEY` (value in agent memory) for the fetch
-  arm; `DEEPSEEK_API_TOKEN` is already there for summaries.
 
 ## Drive
 

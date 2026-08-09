@@ -267,7 +267,10 @@ const codeLinkNotice = (): TemplateResult => html`
 // is the sub-second settle window and the empty pane — silence is honest there.
 const urlFetchStatus = (store: EditorStore): TemplateResult | typeof nothing => {
   if (store.fetching) return html`<span class="fetch-status" role="status">Fetching conversation…</span>`;
-  if (store.importError !== null)
+  // The retry gates on the pane actually holding a link (hasFetchableUrl), not
+  // on the error alone: importError is shared with non-fetch paths (a failed
+  // draft restore over an empty pane), and a retry there would fetch nothing.
+  if (store.importError !== null && store.hasFetchableUrl)
     return html`<button class="btn-secondary" @click=${() => store.fetchUrl()}>Try again</button>`;
   if (store.urlAdopted) return html`<span class="fetch-status" role="status">Fetched ✓</span>`;
   return nothing;
