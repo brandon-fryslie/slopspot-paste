@@ -21,8 +21,6 @@ import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
 import { detectSources, parseInput } from "../parser";
 import { claudeCodeSessionId } from "../url";
-import { renderDialogueHtml } from "../renderDialogue";
-import { deriveDialogue, plainView } from "../dialogue";
 import { scanTurnsForSecrets, type TurnSecretWarning } from "../secret-warnings";
 import { scrubOrigin, scrubTurn } from "../secret-scrub";
 
@@ -147,14 +145,15 @@ export class EditorStore {
   }
 
   // ── Derived (computed) ──────────────────────────────────────────────────
-  // [LAW:one-source-of-truth] turns/previewHtml are derived from blocks, never
-  // stored alongside them. The preview derives the nested Dialogue and renders it
-  // through renderDialogueHtml — the SAME path the permalink uses — so the two
-  // surfaces render through one component and cannot drift. The editor's block
-  // model never holds subagent or usage turns (loadTurns filters to AuthorableTurn),
-  // so this preview shows the editable content exactly; subagents that only the
-  // stored original carries appear on the permalink, not here, which is correct:
-  // authoring nested subagent structure is out of scope, so the preview mirrors
+  // [LAW:one-source-of-truth] turns (and everything the views draw) are derived
+  // from blocks, never stored alongside them. Both views — the plain block list
+  // and the editable preview (view.ts groups blocks with dialogue.ts's spine-split
+  // rule and dresses them in the reader's bubble classes) — are projections of
+  // this one blocks array; there is no second copy to drift. The block model
+  // never holds subagent or usage turns (loadTurns filters to AuthorableTurn), so
+  // both views show the editable content exactly; subagents that only the stored
+  // original carries appear on the permalink, not here, which is correct:
+  // authoring nested subagent structure is out of scope, so the editor mirrors
   // what is editable, not what is stored.
 
   get detected(): ReadonlyArray<InputKind> {
@@ -185,13 +184,6 @@ export class EditorStore {
   // because a detector has false positives and a hard veto is the wrong contract [LAW:no-silent-failure].
   get secretWarnings(): ReadonlyArray<TurnSecretWarning> {
     return scanTurnsForSecrets(this.turns);
-  }
-
-  get previewHtml(): string {
-    // The editor preview renders the author's raw working turns — no overlay is applied
-    // here (the author edits unredacted content), so the plain Dialogue is lifted to the
-    // renderer's ViewableDialogue via plainView: every node shown, un-folded, positional.
-    return renderDialogueHtml(plainView(deriveDialogue(this.turns)));
   }
 
   get counts(): Record<Kind, number> {
@@ -437,9 +429,10 @@ export class EditorStore {
     this.blocks[i] = { id, turn };
   }
 
+  // Appends in place — no view snap: both views are editable, so the new block
+  // appears wherever the author is working.
   addBlock(kind: Kind): void {
     this.blocks.push({ id: newId(), turn: emptyTurn(kind) });
-    this.view = "blocks";
   }
 
   deleteBlock(id: string): void {
@@ -491,8 +484,8 @@ export class EditorStore {
   // authorities the stored paste derives from — the editable blocks (whose content becomes
   // the published turns) and importOrigin (whose preserved text reproject would otherwise
   // resurrect the secret from). Every derived value (turns, secretWarnings, submitOrigin,
-  // previewHtml) recomputes off them, so the banner clears and the author SEES the redaction
-  // BEFORE publishing.
+  // both views' rendered blocks) recomputes off them, so the banner clears and the author
+  // SEES the redaction BEFORE publishing.
   //
   // This is the deliberate, author-triggered, secret-only exception to store-the-original-
   // verbatim (ARCHITECTURE.md, [LAW:one-source-of-truth]): a leaked credential is the one

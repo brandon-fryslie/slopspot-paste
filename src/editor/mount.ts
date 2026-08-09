@@ -14,7 +14,6 @@ import { render } from "lit-html";
 import { isOrigin, isPlatform, isTurns, upgradeOrigin } from "../types";
 import { EditorStore, type Draft, type DraftLoadResult, type EditorIo, type ImportResult, type SubmitResult } from "./store";
 import { appTemplate } from "./view";
-import { enhanceClampBlocks } from "../clampBlocks";
 
 // [LAW:no-defensive-null-guards] DOM lookup is a trust boundary — the page may
 // not contain the element we expect. One loud guard here (with runtime
@@ -310,15 +309,11 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
   // [LAW:no-ambient-temporal-coupling] mobx's autorun is the single render
   // owner: it runs once now and again whenever any observable the template reads
   // changes. Render order is not folklore — it's whatever the reactive graph
-  // dictates, with one explicit scheduler.
-  // [LAW:single-enforcer] The preview shows the SAME clamp affordance the
-  // permalink does: after each render, enhance any freshly-rendered spine prose.
-  // enhanceClampBlocks is idempotent (it marks what it measured), so re-running
-  // on every autorun only touches newly-rendered nodes; when the Blocks view is
-  // shown there are no `.clampable` elements and it returns before any reflow.
+  // dictates, with one explicit scheduler. (The clamp enhancement that once ran
+  // here served the read-only preview pane; the editable preview renders fields
+  // that size to their content, so there is no clampable prose to enhance.)
   autorun(() => {
     render(appTemplate(store), root);
-    enhanceClampBlocks(root);
   });
   persistDrafts(store, io);
   return store;

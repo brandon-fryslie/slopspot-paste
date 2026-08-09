@@ -39,6 +39,7 @@ setGlobal("SVGElement", jswindow.SVGElement);
 const { render } = await import("lit-html");
 const { appTemplate } = await import("../src/editor/view");
 const { EditorStore } = await import("../src/editor/store");
+const { groupBlocks, toBlocks } = await import("../src/editor/blocks");
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -186,10 +187,97 @@ console.log("\nBottom submit bar (slopspot-editor-controls-csi):");
   await new Promise<void>((r) => setTimeout(r, 10));
   assert("click on bottom submit invokes store.submit()", submitCalled);
 
-  // Preview view: bottom bar absent.
+  // Preview view is editable too (slopspot-editor-s3j.1): the bar stays.
   store.setView("preview");
   render(appTemplate(store), c);
-  assert("preview view: bottom bar is absent", c.querySelector(".editor-bottom-bar") === null);
+  assert("preview view: bottom bar is present", c.querySelector(".editor-bottom-bar") !== null);
+}
+
+console.log("\nEditable preview (slopspot-editor-s3j.1):");
+{
+  // [LAW:one-source-of-truth] groupBlocks mirrors deriveDialogue's spine split
+  // (both call dialogue.ts isSpokenTurn): non-assistant messages stand alone,
+  // everything else folds into the open assistant group.
+  const blocks = toBlocks([
+    { kind: "message", role: "user", content: "hi" } as const,
+    { kind: "message", role: "assistant", content: "hello" } as const,
+    { kind: "tool-call", tool: "Bash", args: '{"command":"ls"}', output: null } as const,
+    { kind: "message", role: "system", content: "sys" } as const,
+  ]);
+  const groups = groupBlocks(blocks);
+  assert("groupBlocks: spoken / assistant / spoken", groups.length === 3);
+  assert("groupBlocks: first group is the user message", groups[0]?.kind === "spoken");
+  assert(
+    "groupBlocks: assistant group folds message + tool-call (2 entries)",
+    groups[1]?.kind === "assistant" && groups[1].entries.length === 2,
+  );
+  assert(
+    "groupBlocks: entries carry FLAT indices (tool-call is block 2)",
+    groups[1]?.kind === "assistant" && groups[1].entries[1]?.index === 2,
+  );
+  assert("groupBlocks: trailing system message closes the assistant group", groups[2]?.kind === "spoken");
+
+  // Rendered preview: reader chrome (bubbles, assistant-blocks, condensed rows)
+  // with editable fields bound to the same store.
+  const store = new EditorStore(fakeIo());
+  store.restoreDraft({
+    turns: [
+      { kind: "message", role: "user", content: "hi" } as const,
+      { kind: "message", role: "assistant", content: "hello" } as const,
+      { kind: "tool-call", tool: "Bash", args: '{"command":"ls"}', output: null } as const,
+    ],
+    origin: null,
+  });
+  store.setView("preview");
+  const c = jswindow.document.createElement("div");
+  render(appTemplate(store), c);
+
+  const userBubble = c.querySelector(".pv-editor .bubble.bubble-user");
+  assert("preview: user message renders as a .bubble-user article", userBubble !== null);
+  assert(
+    "preview: user bubble holds an editable field inside .bubble-body",
+    userBubble?.querySelector(".bubble-body textarea.pv-text") !== null,
+  );
+  const assistantTurn = c.querySelector(".pv-editor .bubble-assistant.assistant-turn");
+  assert("preview: assistant group renders as ONE assistant bubble", assistantTurn !== null);
+  assert(
+    "preview: assistant bubble nests both blocks in .assistant-blocks",
+    assistantTurn?.querySelectorAll(".assistant-blocks .pv-block").length === 2,
+  );
+  const toolRow = assistantTurn?.querySelector("details.condensed.condensed-tool-call");
+  assert("preview: tool call renders as the reader's condensed <details> row", toolRow != null);
+  assert(
+    "preview: condensed summary shows the condensed primary arg (ls)",
+    toolRow?.querySelector(".condensed-arg")?.textContent === "ls",
+  );
+
+  // [LAW:verifiable-goals] The acceptance core: editing in preview mutates the
+  // SAME store the submit path publishes — nothing forks.
+  const field = userBubble?.querySelector("textarea");
+  if (field == null) throw new Error("preview user field missing");
+  field.value = "edited in preview";
+  field.dispatchEvent(new jswindow.Event("input", { bubbles: true }));
+  assert(
+    "preview: typing in a bubble updates store.turns (the published state)",
+    store.turns[0]?.kind === "message" && store.turns[0].content === "edited in preview",
+  );
+
+  // Edit affordances present in preview: role select, kind badge, split/merge/
+  // delete controls, and the add-block row — and adding stays in preview.
+  assert("preview: role select present in message controls", userBubble?.querySelector("select.block-role") !== null);
+  assert("preview: kind badge present in controls", userBubble?.querySelector("select.block-badge") !== null);
+  assert("preview: delete control present", userBubble?.querySelector("button.block-del") !== null);
+  render(appTemplate(store), c); // re-render after the edit above
+  const addMessage = Array.from(c.querySelectorAll<HTMLButtonElement>(".pv-editor .add-block")).find(
+    (b) => b.textContent?.includes("Message"),
+  );
+  assert("preview: add-block row present", addMessage !== undefined);
+  addMessage?.click();
+  assert("preview: + Message appends a block", store.blocks.length === 4);
+  assert("preview: adding a block STAYS in preview view", store.view === "preview");
+
+  // Retirement: the read-only pane is gone.
+  assert("preview: no read-only .preview-pane remains", c.querySelector(".preview-pane") === null);
 }
 
 console.log("\nServer-draft handoff restore (slopspot-cc-share-4nc.7 — /api/draft):");

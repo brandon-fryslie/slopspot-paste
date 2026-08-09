@@ -124,6 +124,19 @@ export const plainView = (dialogue: Dialogue): ViewableDialogue =>
 // parseTurnSegment; this is its counterpart, the produce side.)
 export const turnAnchorId = (index: number): string => `t${index}`;
 
+// [LAW:one-source-of-truth] THE spine-split rule, as a named guard: a turn stands
+// alone on the spine exactly when it is a non-assistant message; every other turn
+// is agent activity that accumulates into the open assistant node. deriveDialogue
+// (below) folds the reader's Dialogue with it, and the editor's groupBlocks
+// (editor/blocks.ts) groups its editable preview with the SAME function — so the
+// editable preview and the reader rendering cannot disagree about which turns
+// share an assistant bubble.
+export type SpokenTurn = Extract<Turn, { kind: "message" }> & {
+  readonly role: Exclude<Role, "assistant">;
+};
+export const isSpokenTurn = (turn: Turn): turn is SpokenTurn =>
+  turn.kind === "message" && turn.role !== "assistant";
+
 // [LAW:dataflow-not-control-flow] Visibility is a property of a block's KIND,
 // fixed once here as data — never a branch the renderer re-decides per block.
 //   spine  — always visible; the readable conversation (assistant prose, insights)
@@ -267,13 +280,13 @@ export const deriveDialogue = (turns: ReadonlyArray<Turn>): Dialogue => {
   for (const turn of turns) {
     switch (turn.kind) {
       case "message":
-        if (turn.role === "assistant") {
-          openAssistant().push({ kind: "text", content: turn.content });
-        } else {
+        if (isSpokenTurn(turn)) {
           // user / system: a spoken spine node. Close any open assistant turn
           // first — a human message is a hard boundary between agent turns.
           closeAssistant();
           spine.push({ kind: "spoken", role: turn.role, content: turn.content });
+        } else {
+          openAssistant().push({ kind: "text", content: turn.content });
         }
         break;
       case "thinking":
