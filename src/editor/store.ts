@@ -576,6 +576,14 @@ export class EditorStore {
   redactSecrets(): void {
     this.blocks = this.blocks.map((b) => ({ id: b.id, turn: scrubTurn(b.turn) }));
     if (this.importOrigin !== null) this.importOrigin = scrubOrigin(this.importOrigin);
+    // [LAW:one-source-of-truth] The pane is the live copy of the origin's text,
+    // so it re-syncs from the freshly-scrubbed origin — the same origin→pane
+    // sync loadTurns performs. Without this the pane keeps DISPLAYING the
+    // secret the author just removed, and the next keystroke's derive would
+    // silently re-adopt it from the un-scrubbed text [LAW:no-silent-failure].
+    // scrubOrigin stays the one scrub enforcer; the pane never gets its own.
+    const src = sourceTextOf(this.importOrigin);
+    if (src !== null) this.sourceText = src;
   }
 
   // ── View + submit ───────────────────────────────────────────────────────

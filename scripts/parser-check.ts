@@ -1673,9 +1673,16 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
   s1.setImportKind("raw");
   assertEq("explicit override honored when detected", s1.importKind, "raw");
   s1.setSource("just some unstructured text with no markers");
-  // markdown no longer detected -> override 'raw' still valid here (raw always
-  // detected), so it remains; prove the getter, not a stored snapshot.
-  assert("override dropped by getter when undetected", s1.detected.includes(s1.importKind));
+  assertEq("raw override survives a text change (raw is always detected)", s1.importKind, "raw");
+  // The drop path: override to a SPECIFIC kind, then change the text so that
+  // kind leaves detection — the getter falls back to the best detection rather
+  // than honoring a stored pick the text no longer supports.
+  const s1b = new EditorStore(fakeIo().io);
+  s1b.setSource("## User\nhi\n\n## Assistant\nyo");
+  s1b.setImportKind("markdown");
+  assertEq("markdown override honored while detected", s1b.importKind, "markdown");
+  s1b.setSource("just some unstructured text with no markers");
+  assertEq("override dropped by getter when its kind leaves detection", s1b.importKind, "raw");
 
   // --- continuous derive: setting the source derives blocks, no parse action ---
   const f2 = fakeIo();
@@ -2133,6 +2140,25 @@ console.log("\nText mode edits the original source (slopspot-editor-s3j.2):");
     "## User\nhi\n\n## Assistant\nyo",
   );
   assert("clean text-arm restore is not dirty (baseline derived from origin)", !restored.isDirty);
+
+  // --- redaction reaches the pane: sourceText re-syncs from the scrubbed
+  //     origin, so the pane stops displaying the removed secret and the next
+  //     keystroke's derive cannot silently resurrect it from un-scrubbed text ---
+  const AWS_KEY = "AKIAIOSFODNN7EXAMPLE";
+  const redacting = new EditorStore(baseIo);
+  redacting.setSource(`## User\nmy key is ${AWS_KEY}\n\n## Assistant\ndon't share that`);
+  assert("the pasted secret is flagged", redacting.secretWarnings.length > 0);
+  redacting.redactSecrets();
+  assert("scrub clears the warning", redacting.secretWarnings.length === 0);
+  assert("scrub reaches the pane's text", !redacting.sourceText.includes(AWS_KEY));
+  // The keystroke that used to resurrect the secret from the stale pane:
+  redacting.setSource(redacting.sourceText + " ok");
+  assert(
+    "a keystroke after redaction does not resurrect the secret anywhere",
+    redacting.secretWarnings.length === 0 &&
+      !JSON.stringify(redacting.turns).includes(AWS_KEY) &&
+      JSON.stringify(redacting.submitOrigin).includes(AWS_KEY) === false,
+  );
 }
 
 console.log("\nisTurns trust-boundary validator (b48.3 — /api/paste { turns } arm):");
