@@ -45,6 +45,13 @@
   --syn-meta: #6b6b6b;
   --radius: 14px;
   --maxw: 820px;
+  /* [LAW:one-source-of-truth] Hover-lift shadow stated once: geometry here, color
+     derived from --fg (the house shadow idiom) so every theme keeps a visible
+     lift — a hardcoded black shadow vanishes on the darkest platform themes.
+     The dark block re-tunes strength only; the geometry has one home. */
+  --bubble-hover-shadow-strength: 9%;
+  --bubble-hover-shadow: 0 4px 18px
+    color-mix(in srgb, var(--fg) var(--bubble-hover-shadow-strength), transparent);
   /* [LAW:one-source-of-truth] The long-prose clamp height stated once, as a line
      count → height. ~10 lines at the bubble line-height. enhanceClampBlocks
      (clampBlocks.ts) reads the rendered geometry against this; it is never copied
@@ -64,6 +71,9 @@
     --bg-code: #1f1f23;
     --fg: #ececec;
     --fg-muted: #a1a1aa;
+    /* Light-on-dark glow needs more mix than dark-on-light shade for the same
+       perceived lift. Strength only — the shadow geometry lives in :root. */
+    --bubble-hover-shadow-strength: 14%;
     --border: #27272a;
     --accent: #a78bfa;
     --accent-fg: #18181b;
@@ -773,16 +783,21 @@ body.compare-ready .compare { display: block; }
   padding: 16px 20px;
   background: var(--bg-elev);
   max-width: 100%;
-  /* Hover-out uses this transition (target state = not-hovered). Hover-in
-     uses the shorter 0.13s from the :hover rule below (target = hovered). */
+}
+/* Hover lift on spine-level bubbles only: captured subagent transcripts re-emit
+   .bubble recursively inside a turn, and :hover matches every ancestor under the
+   pointer — scoping to the conversation's direct children keeps it to one shadow
+   per pointer. Collapsed fold rows keep their quieter color-only affordance.
+   Asymmetric durations on purpose: the lift snaps in and settles slowly on
+   release; each transition lives on its target state. */
+.conversation > .bubble,
+.bubbles > .bubble {
   transition: box-shadow 0.22s ease-out;
 }
-.bubble:hover {
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.09);
+.conversation > .bubble:hover:not(.collapsed-turn),
+.bubbles > .bubble:hover:not(.collapsed-turn) {
+  box-shadow: var(--bubble-hover-shadow);
   transition: box-shadow 0.13s ease-out;
-}
-@media (prefers-color-scheme: dark) {
-  .bubble:hover { box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38); }
 }
 .bubble-user {
   background: var(--user-bg);
