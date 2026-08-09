@@ -53,11 +53,11 @@ const valueOf = (e: Event): string =>
 
 // [LAW:effects-at-boundaries] Reading the live caret is an irreducible DOM read —
 // the acknowledged last-inch-of-UI carve-out. The split control sits in the
-// kind-agnostic controls (card header or preview overlay), so from the clicked
-// button it locates this block's primary text field via the data-block-id wrapper
-// both views mark (every kind tags exactly one `.primary-text`) and returns its
-// caret offset. The store clamps, so a never-focused field's 0 is a valid edge
-// split, not an error. [LAW:no-silent-failure] a block with no primary field throws.
+// kind-agnostic preview overlay, so from the clicked button it locates this
+// block's primary text field via the data-block-id wrapper the preview marks
+// (every kind tags exactly one `.primary-text`) and returns its caret offset.
+// The store clamps, so a never-focused field's 0 is a valid edge split, not an
+// error. [LAW:no-silent-failure] a block with no primary field throws.
 const caretOffsetIn = (origin: HTMLElement): number => {
   const field = origin
     .closest("[data-block-id]")
@@ -67,8 +67,8 @@ const caretOffsetIn = (origin: HTMLElement): number => {
   return field.selectionStart ?? field.value.length;
 };
 
-// [LAW:single-enforcer] The one drag protocol for block reordering, shared by
-// both views. A custom MIME type marks a drag as a block drag: an OS file drag
+// [LAW:single-enforcer] The one drag protocol for block reordering in the
+// preview. A custom MIME type marks a drag as a block drag: an OS file drag
 // or a text drag from another window carries no such entry, so it neither
 // unlocks the drop target (allowBlockDrop leaves the browser default) nor
 // decodes to an index. Without the marker, an external drag's empty — or
@@ -100,13 +100,13 @@ const draggedIndex = (e: DragEvent): number | null => {
   return raw === "" ? null : Number(raw);
 };
 
-// ── Per-kind card bodies ────────────────────────────────────────────────────
+// ── Shared edit controls ────────────────────────────────────────────────────
 // Each receives a turn already narrowed to its kind, so the new-turn value it
 // builds on edit is checked by the compiler against that exact arm.
 
-// [LAW:one-source-of-truth] The one role-editing control, shared by the block
-// card's fields and the preview's per-block controls — same options, same
-// re-narrowing, same store mutation, whichever view hosts it.
+// [LAW:one-source-of-truth] The one role-editing control, hosted by the
+// preview's per-block controls — one set of options, one re-narrowing, one
+// store mutation.
 const roleSelect = (
   store: EditorStore,
   id: string,
@@ -118,54 +118,6 @@ const roleSelect = (
   >
     ${ROLES.map((r) => html`<option value=${r} ?selected=${r === turn.role}>${ROLE_LABEL[r]}</option>`)}
   </select>
-`;
-
-const messageBody = (
-  store: EditorStore,
-  id: string,
-  turn: Extract<Turn, { kind: "message" }>,
-): TemplateResult => html`
-  <div class="block-fields">
-    ${roleSelect(store, id, turn)}
-    <textarea
-      class="block-content primary-text"
-      rows="4"
-      .value=${turn.content}
-      @input=${(e: Event) => store.replaceTurn(id, { ...turn, content: valueOf(e) })}
-    ></textarea>
-  </div>
-`;
-
-// [LAW:one-type-per-behavior] insight and thinking edit identically — a single
-// textarea over their shared `content` field. One body serves both; the kind
-// rides through `...turn` so the new Turn keeps its own discriminator.
-const contentBody = (
-  store: EditorStore,
-  id: string,
-  turn: Extract<Turn, { kind: "insight" | "thinking" }>,
-): TemplateResult => html`
-  <div class="block-fields">
-    <textarea
-      class="block-content primary-text"
-      rows="3"
-      .value=${turn.content}
-      @input=${(e: Event) => store.replaceTurn(id, { ...turn, content: valueOf(e) })}
-    ></textarea>
-  </div>
-`;
-
-const turnSummaryBody = (
-  store: EditorStore,
-  id: string,
-  turn: Extract<Turn, { kind: "turn-summary" }>,
-): TemplateResult => html`
-  <div class="block-fields">
-    <input
-      class="block-summary primary-text"
-      .value=${turn.text}
-      @input=${(e: Event) => store.replaceTurn(id, { ...turn, text: valueOf(e) })}
-    />
-  </div>
 `;
 
 // [LAW:dataflow-not-control-flow] Output presence is a value transition: "No
@@ -232,21 +184,6 @@ const toolCallBody = (
   `;
 };
 
-const cardBody = (store: EditorStore, id: string, turn: AuthorableTurn): TemplateResult => {
-  switch (turn.kind) {
-    case "message":
-      return messageBody(store, id, turn);
-    case "insight":
-      return contentBody(store, id, turn);
-    case "thinking":
-      return contentBody(store, id, turn);
-    case "turn-summary":
-      return turnSummaryBody(store, id, turn);
-    case "tool-call":
-      return toolCallBody(store, id, turn);
-  }
-};
-
 const kindBadge = (store: EditorStore, id: string, turn: AuthorableTurn): TemplateResult => html`
   <select
     class="block-badge"
@@ -256,60 +193,7 @@ const kindBadge = (store: EditorStore, id: string, turn: AuthorableTurn): Templa
   </select>
 `;
 
-// Drag-reorder: the ⠿ handle is the ONLY drag origin (the card itself is not
-// draggable), so a mouse-drag inside a textarea selects text instead of seizing
-// the card. The card is the drop target; moveBlock owns the index arithmetic.
-const blockCard = (store: EditorStore, block: Block, index: number): TemplateResult => html`
-  <article
-    class="block-card"
-    data-kind=${block.turn.kind}
-    data-block-id=${block.id}
-    @dragover=${allowBlockDrop}
-    @drop=${(e: DragEvent) => {
-      const from = draggedIndex(e);
-      if (from === null) return;
-      e.preventDefault();
-      store.moveBlock(from, index);
-    }}
-  >
-    <header class="block-card-head">
-      <span
-        class="drag-handle"
-        draggable="true"
-        title="Drag to reorder"
-        @dragstart=${(e: DragEvent) => startBlockDrag(e, index)}
-        >⠿</span
-      >
-      ${kindBadge(store, block.id, block.turn)}
-      <button
-        class="block-act block-split"
-        title="Split at cursor"
-        @click=${(e: Event) => store.splitBlock(block.id, caretOffsetIn(e.currentTarget as HTMLElement))}
-      >
-        ✂
-      </button>
-      <button
-        class="block-act block-merge"
-        title="Merge into the block above"
-        ?disabled=${index === 0}
-        @click=${() => store.mergeBlocks(block.id)}
-      >
-        ↥
-      </button>
-      <button
-        class="block-del"
-        title="Delete block"
-        @click=${() => store.deleteBlock(block.id)}
-      >
-        ✕
-      </button>
-    </header>
-    ${cardBody(store, block.id, block.turn)}
-  </article>
-`;
-
-// [LAW:one-source-of-truth] One add-block row serves both views — same kinds,
-// same store.addBlock, so the affordance cannot drift between skins.
+// The preview's add-block row — one button per kind, one store.addBlock.
 const addRow = (store: EditorStore): TemplateResult => html`
   <div class="add-row">
     ${KINDS.map(
@@ -318,18 +202,7 @@ const addRow = (store: EditorStore): TemplateResult => html`
   </div>
 `;
 
-const blockList = (store: EditorStore): TemplateResult => html`
-  <div class="block-list">
-    ${repeat(
-      store.blocks,
-      (block) => block.id,
-      (block, index) => blockCard(store, block, index),
-    )}
-    ${addRow(store)}
-  </div>
-`;
-
-// ── Import box ──────────────────────────────────────────────────────────────
+// ── Source pane (Text mode) ─────────────────────────────────────────────────
 
 const asInputKind = (store: EditorStore, v: string): InputKind => {
   const found = store.detected.find((k) => k === v);
@@ -385,16 +258,21 @@ const codeLinkNotice = (): TemplateResult => html`
   </div>
 `;
 
-const importBox = (store: EditorStore): TemplateResult => html`
-  <div class="import-box">
-    <label class="visually-hidden" for="import-text">Conversation to import</label>
+// Text mode IS the plain-text editor over the original submitted source
+// (slopspot-editor-s3j.2): one seamless pane bound to store.sourceText, the
+// architectural authority the blocks re-derive from on every keystroke — no
+// parse button, no separate import box. The slim row beneath keeps the format
+// override, and — for a pasted link, the one asynchronous arm — the explicit
+// fetch action.
+const sourcePane = (store: EditorStore): TemplateResult => html`
+  <div class="source-pane">
+    <label class="visually-hidden" for="source-text">Conversation source</label>
     <textarea
-      id="import-text"
-      class="import-text"
-      rows="8"
-      placeholder="Paste a transcript, then parse it into editable blocks."
-      .value=${store.importText}
-      @input=${(e: Event) => store.setImport(valueOf(e))}
+      id="source-text"
+      class="source-text"
+      placeholder="Paste a transcript or a conversation link — it becomes an editable conversation as you type."
+      .value=${store.sourceText}
+      @input=${(e: Event) => store.setSource(valueOf(e))}
     ></textarea>
     ${store.claudeCodeLinkId !== null
       ? codeLinkNotice()
@@ -406,32 +284,36 @@ const importBox = (store: EditorStore): TemplateResult => html`
           >
             ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${inputLabel(k)}</option>`)}
           </select>
-          <button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.ingest()}>
-            ${store.isUrlImport
-              ? store.busy
-                ? "Fetching…"
-                : "Fetch & parse"
-              : "Parse into blocks"}
-          </button>
+          ${store.isUrlImport
+            ? html`<button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.fetchUrl()}>
+                ${store.busy ? "Fetching…" : "Fetch & parse"}
+              </button>`
+            : nothing}
         </div>`}
     ${store.importError === null
       ? nothing
       : html`<p class="form-error" role="alert">${store.importError}</p>`}
-    ${reparseConfirm(store)}
   </div>
 `;
 
-// [LAW:no-silent-failure] The no-clobber gate. When a parse would overwrite
-// hand-edited blocks, the store stages it (pendingReparse) instead of replacing;
-// this strip is the explicit choice. No pending decision -> renders nothing, so
-// the common path (first parse, or reparse of untouched blocks) is silent.
+// [LAW:no-silent-failure] The no-clobber gate. When a replacement (a text-pane
+// derive or a fetched batch) would overwrite work not derived from its source,
+// the store stages it (pendingReparse) instead of replacing; this strip is the
+// explicit choice. It renders in the always-visible slot beside the toolbar so
+// the pending decision is seen from EITHER view — a staged derive must not hide
+// behind a switch to Preview. No pending decision -> renders nothing, so the
+// common path (first paste, or re-deriving a pure projection) is silent.
 const reparseConfirm = (store: EditorStore): TemplateResult | typeof nothing => {
   if (store.pendingReparse === null) return nothing;
   const n = store.blocks.length;
+  // The only pristine state that stages is the url-origin one (deriveWouldClobber),
+  // so the adjective is exact: dirty blocks are hand-edited, clean ones are fetched.
+  const kind = store.isDirty ? "edited" : "fetched";
   return html`
     <div class="reparse-confirm" role="alert">
       <span
-        >Replace ${n} edited block${n === 1 ? "" : "s"}? This discards your changes.</span
+        >Replace ${n} ${kind} block${n === 1 ? "" : "s"} with the new source? This discards
+        work the new source can't reproduce.</span
       >
       <button class="btn-secondary" @click=${() => store.cancelReparse()}>Keep editing</button>
       <button class="btn-danger" @click=${() => store.confirmReparse()}>Replace</button>
@@ -531,10 +413,10 @@ const toolbar = (store: EditorStore): TemplateResult => html`
   <div class="editor-toolbar">
     <div class="view-toggle" role="tablist">
       <button
-        class="toggle ${store.view === "blocks" ? "active" : ""}"
-        @click=${() => store.setView("blocks")}
+        class="toggle ${store.view === "text" ? "active" : ""}"
+        @click=${() => store.setView("text")}
       >
-        Blocks
+        Text
       </button>
       <button
         class="toggle ${store.view === "preview" ? "active" : ""}"
@@ -807,10 +689,9 @@ export const appTemplate = (store: EditorStore): TemplateResult => html`
   <div class="editor">
     ${toolbar(store)}
     ${discardConfirm(store)}
+    ${reparseConfirm(store)}
     ${secretWarnings(store)}
-    ${store.view === "blocks"
-      ? html`${importBox(store)}${blockList(store)}`
-      : previewEditor(store)}
+    ${store.view === "text" ? sourcePane(store) : previewEditor(store)}
     ${bottomBar(store)}
   </div>
 `;
