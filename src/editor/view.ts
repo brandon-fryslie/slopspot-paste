@@ -760,7 +760,11 @@ const dropOnBlock = (store: EditorStore, e: DragEvent): void => {
   const from = draggedIndex(e);
   if (from === null) return;
   e.preventDefault();
-  const id = (e.target as Element).closest("[data-block-id]")?.getAttribute("data-block-id");
+  // A DOM event target is a trust boundary: EventTarget | null. instanceof
+  // narrows honestly where a cast would assert; a non-Element target is the
+  // same genuine no-target no-op as a drop on the container gap.
+  if (!(e.target instanceof Element)) return;
+  const id = e.target.closest("[data-block-id]")?.getAttribute("data-block-id");
   if (id === null || id === undefined) return;
   const to = store.blocks.findIndex((b) => b.id === id);
   if (to === -1) return;
