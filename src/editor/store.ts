@@ -23,7 +23,7 @@ import type { DraftRecord, InputKind, Origin, ParseResult, Platform, SourceKind,
 import { platformOf, sourceOf, sourceTextOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
-import { detectSources, parseInput, reprojectOrigin } from "../parser";
+import { detectSources, isUrl, parseInput, reprojectOrigin } from "../parser";
 import { claudeCodeSessionId } from "../url";
 import { scanTurnsForSecrets, type TurnSecretWarning } from "../secret-warnings";
 import { scrubOrigin, scrubTurn } from "../secret-scrub";
@@ -102,6 +102,17 @@ export interface EditorIo {
   // clearDraft is unconditional + idempotent. Fire-and-forget: the DRAFT_TTL is the
   // authoritative backstop, so discard never waits on (or branches on) revocation.
   readonly deleteDraft: (id: string | null) => void;
+  // [LAW:no-ambient-temporal-coupling] The single input-settle timer for the url
+  // arm's auto-fetch. One slot: each call supersedes the previously scheduled
+  // fire, so `fire` runs once, after input has been quiet for the boundary's
+  // settle delay. The timer is deliberately dumb — every decision (is this still
+  // a fetchable link, is it already adopted or in flight) is made by the store at
+  // FIRE time against current state, never captured at schedule time. It lives in
+  // EditorIo because a timer is a world effect: mount.ts owns the real
+  // setTimeout; a test fires it by hand. Without the settle, detectSources
+  // classifies "https://c" as a link mid-hand-typing and every keystroke would
+  // fire a paid Firecrawl fetch of a partial URL.
+  readonly scheduleFetch: (fire: () => void) => void;
 }
 
 const clamp = (n: number, lo: number, hi: number): number =>
@@ -142,10 +153,19 @@ export class EditorStore {
   // committer it belongs to, not an ordering assumption or a `force` boolean.
   // null = no decision pending.
   pendingReparse: PendingAdoption | null = null;
-  // One in-flight flag for any network action (fetch OR submit): while either is
-  // running, both buttons disable. There is no legitimate state where a fetch
-  // and a submit race, so a single flag is the honest representation.
+  // In-flight flag for submit and the server-draft restore. The url fetch has
+  // its own richer state (fetchingUrl, below) because it must name WHICH url is
+  // in flight; these two only need "running or not".
   busy = false;
+  // [LAW:no-ambient-temporal-coupling] The url whose fetch is in flight; null =
+  // none. Carrying the URL (not a boolean) is what makes overlapping fetches
+  // safe by VALUE: starting a new fetch overwrites it (the newer request is the
+  // authority), and a completion applies its result only if it still matches —
+  // a superseded response is dropped no matter which order the network returns
+  // them in. setSource also nulls it the moment the pane stops holding the
+  // fetched url, so a zombie response can never adopt over content the user
+  // pasted mid-flight. Also the view's "Fetching…" indicator.
+  fetchingUrl: string | null = null;
   // [LAW:no-ambient-temporal-coupling] Two-phase discard: arm (click "Discard
   // draft") → confirm (click "Discard") mirrors the pendingReparse pattern. false
   // = no decision pending; true = the confirm strip is visible.
@@ -263,14 +283,37 @@ export class EditorStore {
     return this.isDirty ? { kind: "editor", source: sourceOf(o), input: o } : o;
   }
 
-  get canSubmit(): boolean {
-    return this.blocks.length > 0 && !this.busy;
+  get fetching(): boolean {
+    return this.fetchingUrl !== null;
   }
 
-  // [LAW:no-ambient-temporal-coupling] Also gated on !busy to match canSubmit:
-  // a discard during an in-flight fetch would be overwritten by the completion.
+  // [LAW:one-source-of-truth] The pane actually holds a fetchable link — derived
+  // through isUrl (THE fetchable-link predicate, [LAW:single-enforcer]), never a
+  // stored flag that could go stale. This is deliberately NOT importKind ===
+  // "url": the empty pane also carries that kind as its all-options priming
+  // state. Gates both the auto-fetch fire and the view's retry affordance, so an
+  // importError from a non-fetch path (a failed draft restore over an empty
+  // pane) can never offer a retry that would fetch nothing.
+  get hasFetchableUrl(): boolean {
+    return isUrl(this.sourceText.trim());
+  }
+
+  // [LAW:one-source-of-truth] The pane's link IS the adopted origin — derived by
+  // comparing the two authorities, never stored as a flag that could go stale.
+  // Gates the auto-fetch (re-fetching an adopted link would pointlessly re-load
+  // and yank the view) and drives the view's "Fetched" affirmation.
+  get urlAdopted(): boolean {
+    return this.importOrigin?.kind === "url" && this.importOrigin.url === this.sourceText.trim();
+  }
+
+  get canSubmit(): boolean {
+    return this.blocks.length > 0 && !this.busy && !this.fetching;
+  }
+
+  // [LAW:no-ambient-temporal-coupling] Gated exactly as canSubmit: a discard
+  // during an in-flight fetch or submit would be overwritten by the completion.
   get canDiscard(): boolean {
-    return this.blocks.length > 0 && !this.busy;
+    return this.blocks.length > 0 && !this.busy && !this.fetching;
   }
 
   // [LAW:one-source-of-truth] The baseline dirtiness is judged against is the
@@ -329,6 +372,12 @@ export class EditorStore {
     // Any previously staged offer no longer matches the pane; derive() below
     // re-stages against the current text or commits cleanly.
     this.pendingReparse = null;
+    // [LAW:no-ambient-temporal-coupling] An in-flight fetch is valid only while
+    // the pane still holds its url. The moment it doesn't, invalidate it — the
+    // completion check in fetchShare then drops the stale response, so a fetch
+    // racing a mid-flight paste can never adopt over the newer content, and the
+    // "Fetching…" indicator stops lying the same instant.
+    if (this.fetchingUrl !== null && this.fetchingUrl !== text.trim()) this.fetchingUrl = null;
     this.derive();
   }
 
@@ -345,13 +394,17 @@ export class EditorStore {
 
   // [LAW:dataflow-not-control-flow] The continuous projection: parse the pane's
   // text under the active kind and adopt the result. The url guard is the one
-  // honest branch — url is the async fetch arm (fetchUrl), not a sync parse.
-  // importKind is drawn from detectSources, which offers only kinds that parse
-  // this exact text, so the only reachable failure is the empty pane — which
-  // derives the empty conversation, the same state a fresh visit holds.
+  // honest branch — url is the async fetch arm, so it schedules the settle-timed
+  // auto-fetch instead of parsing synchronously. importKind is drawn from
+  // detectSources, which offers only kinds that parse this exact text, so the
+  // only reachable failure is the empty pane — which derives the empty
+  // conversation, the same state a fresh visit holds.
   private derive(): void {
     const kind = this.importKind;
-    if (kind === "url") return;
+    if (kind === "url") {
+      this.io.scheduleFetch(this.autoFetch);
+      return;
+    }
     const result = parseInput(textArmInput(kind, this.sourceText));
     if (!result.ok && this.sourceText.trim().length > 0) {
       // Unreachable while the detection invariant holds; surfaced loudly rather
@@ -365,19 +418,40 @@ export class EditorStore {
     this.accept(draft, "derive");
   }
 
-  // The one async import action: fetch the pasted link through the injected
-  // capability. Text kinds never come here — they derive continuously as the
-  // source is typed.
+  // The settle timer's fire. Every precondition is re-derived from CURRENT
+  // state, because the pane may have changed since the fetch was scheduled
+  // [LAW:no-ambient-temporal-coupling]:
+  //   - isUrl is THE fetchable-link predicate [LAW:single-enforcer] — it also
+  //     screens out the empty pane, whose importKind is "url" only as the
+  //     all-options priming state, not because a link is present;
+  //   - a claude.ai/code link is never fetched (the handoff notice is its path);
+  //   - an adopted or already-in-flight link has nothing new to fetch.
+  // A declined fire is a genuine no-op (the world moved on), not a swallow.
+  autoFetch(): void {
+    const url = this.sourceText.trim();
+    if (!this.hasFetchableUrl || this.claudeCodeLinkId !== null) return;
+    if (this.urlAdopted || this.fetchingUrl === url) return;
+    void this.fetchShare(url);
+  }
+
+  // Manual re-fetch of the pane's link — the retry affordance after a failed
+  // auto-fetch. Immediate (no settle: the user just asked), same one fetch path.
   async fetchUrl(): Promise<void> {
     await this.fetchShare(this.sourceText.trim());
   }
 
   private async fetchShare(url: string): Promise<void> {
-    this.busy = true;
+    this.fetchingUrl = url;
     this.importError = null;
     const result = await this.io.fetchShare(url);
     runInAction(() => {
-      this.busy = false;
+      // Superseded: a newer fetch took the slot, or setSource invalidated it
+      // because the pane no longer holds this url. The current authority's own
+      // completion (or the already-adopted newer content) is the outcome the
+      // user sees — this response has no consumer, so dropping it is a genuine
+      // no-op, not a swallowed failure.
+      if (this.fetchingUrl !== url) return;
+      this.fetchingUrl = null;
       if (!result.ok) {
         this.importError = result.reason;
         return;
