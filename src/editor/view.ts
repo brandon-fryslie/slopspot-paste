@@ -258,22 +258,26 @@ const codeLinkNotice = (): TemplateResult => html`
   </div>
 `;
 
-// [LAW:no-silent-failure] The url arm's lifecycle, made visible as a pure
-// projection of store state — there is no "Fetch & parse" step left
-// (slopspot-editor-s3j.3): pasting a link IS the fetch. In flight → a live
-// status; failed → the error renders below and this offers the retry (error
-// recovery, not a parse step — the same one fetch path, fired immediately);
-// adopted → a quiet affirmation of why nothing is happening. The idle remainder
-// is the sub-second settle window and the empty pane — silence is honest there.
+// [LAW:no-silent-failure][LAW:dataflow-not-control-flow] The url arm's
+// lifecycle as a TOTAL projection of store state — there is no required
+// "Fetch & parse" step left (slopspot-editor-s3j.3): pasting a link IS the
+// fetch. In flight → a live status; failed → the error renders below and this
+// offers the retry (gated on hasFetchableUrl, not the error alone — importError
+// is shared with non-fetch paths like a failed draft restore over an empty
+// pane, where a retry would fetch nothing); adopted → a quiet affirmation of
+// why nothing is happening. The remaining arm — a link in the pane, unfetched —
+// renders an OPTIONAL "Fetch now": it covers the post-cancel state (a declined
+// clobber confirmation leaves the link with no other visible re-trigger) and
+// the settle window, where a click just starts the fetch early (the scheduled
+// fire then dedups on fetchingUrl). Auto-fetch remains the seamless path; this
+// button is recovery, never a gate. Only the empty/non-link pane is silent.
 const urlFetchStatus = (store: EditorStore): TemplateResult | typeof nothing => {
   if (store.fetching) return html`<span class="fetch-status" role="status">Fetching conversation…</span>`;
-  // The retry gates on the pane actually holding a link (hasFetchableUrl), not
-  // on the error alone: importError is shared with non-fetch paths (a failed
-  // draft restore over an empty pane), and a retry there would fetch nothing.
-  if (store.importError !== null && store.hasFetchableUrl)
+  if (!store.hasFetchableUrl) return nothing;
+  if (store.importError !== null)
     return html`<button class="btn-secondary" @click=${() => store.fetchUrl()}>Try again</button>`;
   if (store.urlAdopted) return html`<span class="fetch-status" role="status">Fetched ✓</span>`;
-  return nothing;
+  return html`<button class="btn-secondary" @click=${() => store.fetchUrl()}>Fetch now</button>`;
 };
 
 // Text mode IS the plain-text editor over the original submitted source

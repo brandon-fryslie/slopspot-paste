@@ -614,6 +614,28 @@ console.log("\nSeamless url ingest (slopspot-editor-s3j.3 — auto-fetch on link
     "non-fetch error over an empty pane: no out-of-place 'Try again'",
     !Array.from(c7.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Try again"),
   );
+
+  // 7. Canceling a staged fetch-adoption leaves the link with a visible
+  // re-trigger: the idle arm's optional "Fetch now" (total urlFetchStatus
+  // projection), which re-fetches immediately on click.
+  const h8 = harness();
+  h8.store.setSource("## User\nmine\n\n## Assistant\nkept");
+  h8.store.replaceTurn(h8.store.blocks[0]!.id, { kind: "message", role: "user", content: "edited" });
+  h8.store.setSource(SHARE_URL);
+  h8.fire();
+  h8.resolvers[0]!(okResult(SHARE_URL));
+  await tick();
+  assert("staged over edits (precondition)", h8.store.pendingReparse !== null);
+  h8.store.cancelReparse();
+  const c8 = jswindow.document.createElement("div");
+  h8.store.setView("text");
+  render(appTemplate(h8.store), c8);
+  const fetchNow = Array.from(c8.querySelectorAll<HTMLButtonElement>(".import-row button")).find(
+    (b) => b.textContent?.trim() === "Fetch now",
+  );
+  assert("after cancel: 'Fetch now' renders for the unfetched link", fetchNow !== undefined);
+  fetchNow?.click();
+  assert("'Fetch now' re-fetches the link immediately", h8.calls.length === 2);
 }
 
 console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");
