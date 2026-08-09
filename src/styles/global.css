@@ -853,17 +853,16 @@ body.compare-ready .compare { display: block; }
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6em), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6em), transparent);
 }
-/* Hover-preview: transiently lift the clamp and fade mask while the pointer is
-   over a collapsed block. [LAW:no-ambient-temporal-coupling] hover is pure CSS
-   (transient, pointer-owned); the click-pin in clampBlocks.ts owns the persistent
-   state. They share .is-collapsed as the single boolean — when present, hover
-   previews and mouse-leave restores automatically. Pinned-open blocks lack
-   .is-collapsed so this rule never fires on them. Pinned-closed blocks do have
-   .is-collapsed and DO get the preview, which is intentional. */
-.clampable.is-collapsed:hover > .clamp-content {
-  max-height: none;
-  -webkit-mask-image: none;
-  mask-image: none;
+/* Hovering a collapsed block pre-highlights its toggle, steering the pointer to
+   the one control that discloses. [LAW:no-ambient-temporal-coupling] Hover
+   feedback here is strictly non-geometric (color only): an earlier expand-on-hover
+   preview (#55) changed max-height, which relocated this very toggle while the
+   pointer approached it — hover-driven geometry makes the control's position a
+   function of the pointer chasing it. Geometry changes stay with the click-pin in
+   clampBlocks.ts, the deliberate input that owns persistent state. */
+.clampable.is-collapsed:hover > .clamp-toggle {
+  color: var(--fg);
+  border-color: var(--accent);
 }
 .clamp-toggle {
   display: inline-block;
