@@ -306,11 +306,14 @@ const sourcePane = (store: EditorStore): TemplateResult => html`
 const reparseConfirm = (store: EditorStore): TemplateResult | typeof nothing => {
   if (store.pendingReparse === null) return nothing;
   const n = store.blocks.length;
+  // The only pristine state that stages is the url-origin one (deriveWouldClobber),
+  // so the adjective is exact: dirty blocks are hand-edited, clean ones are fetched.
+  const kind = store.isDirty ? "edited" : "fetched";
   return html`
     <div class="reparse-confirm" role="alert">
       <span
-        >Replace ${n} edited block${n === 1 ? "" : "s"} with the new source? This discards
-        edits the source can't reproduce.</span
+        >Replace ${n} ${kind} block${n === 1 ? "" : "s"} with the new source? This discards
+        work the new source can't reproduce.</span
       >
       <button class="btn-secondary" @click=${() => store.cancelReparse()}>Keep editing</button>
       <button class="btn-danger" @click=${() => store.confirmReparse()}>Replace</button>

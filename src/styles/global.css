@@ -2332,7 +2332,10 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   gap: 10px;
 }
 /* The source is code-shaped (transcripts, JSONL, markdown), so it reads in mono
-   at a height that makes it the page's main editing surface, not a paste slot. */
+   at a height that makes it the page's main editing surface, not a paste slot.
+   The global textarea 320px min-height is deliberately inherited: on a viewport
+   short enough that 60vh dips under it, the floor keeps the pane an editing
+   surface rather than a slit [LAW:single-enforcer — one floor, stated once]. */
 .source-text {
   width: 100%;
   font-family: var(--font-mono);
@@ -2483,7 +2486,6 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   outline-offset: 1px;
 }
 
-.block-summary,
 .block-tool {
   width: 100%;
   padding: 8px 12px;
@@ -2495,7 +2497,6 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   font-size: 14px;
   line-height: 1.4;
 }
-.block-summary:focus,
 .block-tool:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
