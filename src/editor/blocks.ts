@@ -213,15 +213,19 @@ export interface NumberedBlock {
   readonly index: number;
 }
 
+// [LAW:types-are-the-program] An assistant group exists only because a block
+// opened it, so its entries are a non-empty tuple — an empty group (which would
+// alias every other empty group under one repeat key) is unrepresentable.
 export type BlockGroup =
   | { readonly kind: "spoken"; readonly id: string; readonly index: number; readonly turn: SpokenMessageTurn }
-  | { readonly kind: "assistant"; readonly entries: ReadonlyArray<NumberedBlock> };
+  | { readonly kind: "assistant"; readonly entries: readonly [NumberedBlock, ...NumberedBlock[]] };
 
 export const groupBlocks = (blocks: ReadonlyArray<Block>): BlockGroup[] => {
   const groups: BlockGroup[] = [];
   // The open assistant group's entries, or null between assistant turns — the
-  // same single-owner fold deriveDialogue runs over turns.
-  let open: NumberedBlock[] | null = null;
+  // same single-owner fold deriveDialogue runs over turns. Typed as the same
+  // non-empty tuple the group carries: it is born with its first entry.
+  let open: [NumberedBlock, ...NumberedBlock[]] | null = null;
 
   const closeAssistant = (): void => {
     if (open !== null) {
@@ -235,8 +239,10 @@ export const groupBlocks = (blocks: ReadonlyArray<Block>): BlockGroup[] => {
     if (isSpokenTurn(turn)) {
       closeAssistant();
       groups.push({ kind: "spoken", id: block.id, index, turn });
+    } else if (open === null) {
+      open = [{ block, index }];
     } else {
-      (open ??= []).push({ block, index });
+      open.push({ block, index });
     }
   });
   closeAssistant();

@@ -67,6 +67,29 @@ const caretOffsetIn = (origin: HTMLElement): number => {
   return field.selectionStart ?? field.value.length;
 };
 
+// [LAW:single-enforcer] The one drag protocol for block reordering, shared by
+// both views. A custom MIME type marks a drag as a block drag: an OS file drag
+// or a text drag from another window carries no such entry, so it neither
+// unlocks the drop target (allowBlockDrop leaves the browser default) nor
+// decodes to an index. Without the marker, an external drag's empty — or
+// coincidentally numeric — text/plain payload would silently move a block.
+// [LAW:no-silent-failure]
+const BLOCK_DRAG_MIME = "application/x-slopspot-block";
+
+const startBlockDrag = (e: DragEvent, index: number): void => {
+  e.dataTransfer?.setData(BLOCK_DRAG_MIME, String(index));
+};
+
+const allowBlockDrop = (e: DragEvent): void => {
+  if (e.dataTransfer?.types.includes(BLOCK_DRAG_MIME) === true) e.preventDefault();
+};
+
+// The dragged block's flat index, or null when the drag is not a block drag.
+const draggedIndex = (e: DragEvent): number | null => {
+  const raw = e.dataTransfer?.getData(BLOCK_DRAG_MIME) ?? "";
+  return raw === "" ? null : Number(raw);
+};
+
 // ── Per-kind card bodies ────────────────────────────────────────────────────
 // Each receives a turn already narrowed to its kind, so the new-turn value it
 // builds on edit is checked by the compiler against that exact arm.
@@ -231,10 +254,12 @@ const blockCard = (store: EditorStore, block: Block, index: number): TemplateRes
     class="block-card"
     data-kind=${block.turn.kind}
     data-block-id=${block.id}
-    @dragover=${(e: DragEvent) => e.preventDefault()}
+    @dragover=${allowBlockDrop}
     @drop=${(e: DragEvent) => {
+      const from = draggedIndex(e);
+      if (from === null) return;
       e.preventDefault();
-      store.moveBlock(Number(e.dataTransfer?.getData("text/plain")), index);
+      store.moveBlock(from, index);
     }}
   >
     <header class="block-card-head">
@@ -242,7 +267,7 @@ const blockCard = (store: EditorStore, block: Block, index: number): TemplateRes
         class="drag-handle"
         draggable="true"
         title="Drag to reorder"
-        @dragstart=${(e: DragEvent) => e.dataTransfer?.setData("text/plain", String(index))}
+        @dragstart=${(e: DragEvent) => startBlockDrag(e, index)}
         >⠿</span
       >
       ${kindBadge(store, block.id, block.turn)}
@@ -542,7 +567,7 @@ const pvControls = (store: EditorStore, block: Block, index: number): TemplateRe
       class="drag-handle"
       draggable="true"
       title="Drag to reorder"
-      @dragstart=${(e: DragEvent) => e.dataTransfer?.setData("text/plain", String(index))}
+      @dragstart=${(e: DragEvent) => startBlockDrag(e, index)}
       >⠿</span
     >
     ${kindBadge(store, block.id, block.turn)}
@@ -719,23 +744,27 @@ const pvAssistant = (
 `;
 
 // Group identity for keyed rendering: a spoken group is its block; an assistant
-// group is identified by its first block. Content edits never change these keys
-// (grouping depends only on kind/role), so focused fields keep their DOM nodes;
-// a structural change (role flip, delete) legitimately rebuilds the group.
+// group is identified by its first block (the entries tuple is non-empty by
+// type). Content edits never change these keys (grouping depends only on
+// kind/role), so focused fields keep their DOM nodes; a structural change
+// (role flip, delete) legitimately rebuilds the group.
 const groupKey = (group: BlockGroup): string =>
-  group.kind === "spoken" ? group.id : (group.entries[0]?.block.id ?? "");
+  group.kind === "spoken" ? group.id : group.entries[0].block.id;
 
 // [LAW:effects-at-boundaries] One delegated drop seam for the whole preview: the
 // dropped-on block is resolved from the DOM wrapper both views mark, then the
-// move is the same store.moveBlock the Blocks view calls. A drop on group chrome
-// or the container gap has no target block — a genuine no-op, not a swallow.
+// move is the same store.moveBlock the Blocks view calls. A non-block drag
+// decodes to null and a drop on group chrome or the container gap has no target
+// block — genuine no-ops, not swallows.
 const dropOnBlock = (store: EditorStore, e: DragEvent): void => {
+  const from = draggedIndex(e);
+  if (from === null) return;
   e.preventDefault();
   const id = (e.target as Element).closest("[data-block-id]")?.getAttribute("data-block-id");
   if (id === null || id === undefined) return;
   const to = store.blocks.findIndex((b) => b.id === id);
   if (to === -1) return;
-  store.moveBlock(Number(e.dataTransfer?.getData("text/plain")), to);
+  store.moveBlock(from, to);
 };
 
 // data-platform reads store.activePlatform, same as the retired read-only pane:
@@ -746,7 +775,7 @@ const previewEditor = (store: EditorStore): TemplateResult => html`
   <div
     class="bubbles pv-editor"
     data-platform=${store.activePlatform}
-    @dragover=${(e: DragEvent) => e.preventDefault()}
+    @dragover=${allowBlockDrop}
     @drop=${(e: DragEvent) => dropOnBlock(store, e)}
   >
     ${repeat(groupBlocks(store.blocks), groupKey, (group) =>
