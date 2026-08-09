@@ -2000,7 +2000,10 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
   const s = new EditorStore(io);
   s.setSource(shareUrl);
   await s.fetchUrl();
-  assertEq("share import detects the generic url arm (provider resolved server-side)", s.importKind, "url");
+  // s3j.4: adoption syncs the pane to the FETCHED BYTES (bulk-editable source),
+  // and the active parse becomes the origin's own provider re-parse.
+  assertEq("share import lands its fetched bytes in the pane", s.sourceText, shareFetched);
+  assertEq("the active parse is the origin's provider re-parse", s.activeParse.kind, "origin");
   assert("share import loads its turns and is not dirty", s.blocks.length === 2 && !s.isDirty);
   const pristine = s.submitOrigin;
   assert(
@@ -2106,8 +2109,10 @@ console.log("\nText mode edits the original source (slopspot-editor-s3j.2):");
     authored.turns[0]?.kind === "message" && authored.turns[0].content === "hand-authored work",
   );
 
-  // --- a pristine url fetch is CLEAN yet not derived from the pane's text (its
-  //     source is the fetched bytes — s3j.4): deriving over it must also stage ---
+  // --- a url fetch IS a text source now (s3j.4): the pane holds the fetched
+  //     bytes, an edit the provider still parses re-derives cleanly with the
+  //     url provenance riding along, and bytes the provider can't parse fail
+  //     loudly while the last good blocks stand ---
   const shareOrigin: Origin = {
     kind: "url",
     url: "https://claude.ai/share/xyz",
@@ -2125,10 +2130,24 @@ console.log("\nText mode edits the original source (slopspot-editor-s3j.2):");
   const u = new EditorStore(urlIo);
   u.setSource(shareOrigin.url);
   await u.fetchUrl();
-  assert("url fetch lands in Preview (no text source to edit yet)", u.view === "preview" && !u.isDirty);
+  assert("url fetch lands in Preview, clean", u.view === "preview" && !u.isDirty);
   u.setView("text");
+  assertEq("url fetch syncs the pane to the fetched bytes", u.sourceText, shareOrigin.fetched);
   u.setSource("stray text typed over a fetched conversation");
-  assert("derive over a pristine url fetch stages, never silently swaps", u.pendingReparse !== null);
+  assert(
+    "bytes the provider can't parse fail loudly and keep the last good blocks",
+    u.importError !== null && u.blocks.length === 2 && u.pendingReparse === null,
+  );
+  const editedBytes = "## You said:\nq2\n\n## Claude said:\na";
+  u.setSource(editedBytes);
+  assert(
+    "an edit the provider still parses re-derives cleanly with url provenance intact",
+    u.importError === null &&
+      u.importOrigin?.kind === "url" &&
+      u.importOrigin.fetched === editedBytes &&
+      u.importOrigin.url === shareOrigin.url &&
+      !u.isDirty,
+  );
 
   // --- a text-arm load syncs the pane to the origin's text and lands in Preview
   //     for review; Text mode then edits the SAME text the origin captured ---
