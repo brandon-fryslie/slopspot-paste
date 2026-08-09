@@ -1,8 +1,9 @@
 // [LAW:single-enforcer] The progressive-disclosure renderer: the one path that
-// turns the derived nested model (a Dialogue — see dialogue.ts) into HTML. The
-// permalink page renders it via set:html; the editor preview renders it through
-// the same function (store.previewHtml), so the two surfaces render through one
-// component and cannot drift. There is no second renderer.
+// turns the derived nested model (a Dialogue — see dialogue.ts) into HTML for
+// every READ surface — permalink, embed, single-turn card, diff. There is no
+// second read renderer. (The editor's preview is an EDITABLE lit projection of
+// the same turns — editor/view.ts — which wears the same stylesheet classes and
+// shares the grouping guard, isSpokenTurn, and condenseToolCall with this one.)
 //
 // [LAW:dataflow-not-control-flow] Each node and block declares its own disclosure
 // behavior by KIND — visibility is read from blockVisibility (a value), never a
@@ -288,7 +289,7 @@ const usageHtml = (usage: Usage, cumulative: number): string => {
 // carries its true index, so a sliced render keeps its `id="t<N>"` with no offset arg.
 //
 // [LAW:one-source-of-truth] `topLevel` defaults true for the outer render (the
-// permalink page and the editor preview). subagentHtml re-enters false, so depth is
+// permalink and embed pages). subagentHtml re-enters false, so depth is
 // not a number — the one fact that matters is "is this the outer render". A permalink
 // `id` is emitted only at top level, so a nested transcript's nodes (which would
 // repeat t0,t1,…) carry no id at all — duplicate DOM ids are unrepresentable, never
