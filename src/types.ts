@@ -604,6 +604,11 @@ export type Origin =
   | ReplayableOrigin
   | { readonly kind: "editor"; readonly source: SourceKind | null; readonly input?: ReplayableOrigin };
 
+// [LAW:types-are-the-program] The url arm by name, for code that operates on
+// exactly that shape (the editor's fetched-bytes re-parse) without re-deriving
+// the Extract at each site.
+export type UrlOrigin = Extract<ReplayableOrigin, { kind: "url" }>;
+
 export const isTextArmKind = (v: unknown): v is TextArmKind =>
   typeof v === "string" && (TEXT_ARM_KINDS as ReadonlyArray<string>).includes(v);
 
@@ -689,15 +694,15 @@ export const sourceUrlOf = (origin: Origin | null): string | null =>
   origin?.kind === "url" ? origin.url : null;
 
 // [LAW:one-source-of-truth] The plain-text source an origin carries — the verbatim
-// content of a text arm, or null for every origin that has no directly editable
-// text: the url arm's source is the link's fetched bytes (bulk text editing of
-// those is slopspot-editor-s3j.4), and the editor arm's turns ARE the source. The
-// editor's Text mode reads this projection to decide whether a loaded draft has a
-// source it can edit as text; nothing stores that text as a second field.
-export const sourceTextOf = (origin: Origin | null): string | null =>
-  origin !== null && origin.kind !== "url" && origin.kind !== "editor"
-    ? origin.content
-    : null;
+// content of a text arm, or the fetched bytes of a url arm (bulk-editable exactly
+// like a pasted transcript, slopspot-editor-s3j.4). Null only for the editor arm,
+// whose turns ARE the source, and for no origin at all. The editor's Text mode
+// reads this projection to sync its pane to a loaded origin; nothing stores that
+// text as a second field.
+export const sourceTextOf = (origin: Origin | null): string | null => {
+  if (origin === null || origin.kind === "editor") return null;
+  return origin.kind === "url" ? origin.fetched : origin.content;
+};
 
 
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch

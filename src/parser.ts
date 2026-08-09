@@ -1,5 +1,5 @@
-import type { InputKind, Origin, ParseResult, PasteInput, Provider, Role, TextArmKind, Turn } from "./types";
-import { INPUT_KINDS, MAX_PASTE_BYTES, MAX_PASTE_LABEL, TEXT_ARM_KINDS, textArmInput } from "./types";
+import type { InputKind, Origin, ParseResult, PasteInput, Provider, Role, TextArmKind, Turn, UrlOrigin } from "./types";
+import { INPUT_KINDS, MAX_PASTE_BYTES, MAX_PASTE_LABEL, SOURCE_LABEL, TEXT_ARM_KINDS, textArmInput } from "./types";
 import { parseClaudeCode } from "./parsers/cc";
 import { parseClaudeJsonl } from "./parsers/jsonl";
 import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "./providers";
@@ -366,6 +366,27 @@ export const reprojectOrigin = (origin: Origin): ReadonlyArray<Turn> | null => {
     default:
       return PARSER_BY_KIND[origin.kind](normalize(origin.content));
   }
+};
+
+// [LAW:one-source-of-truth] Editing a fetched conversation as text
+// (slopspot-editor-s3j.4): project the edited bytes through the SAME
+// provider-resolved parser that projected the original fetch (reprojectOrigin →
+// parserFor), and carry the url + provider provenance forward with the edited
+// bytes as the new authoritative source — the url arm's exact analogue of a
+// text arm's `content` tracking the editor pane.
+// [LAW:no-silent-failure] A named provider whose parser rejects the edited
+// bytes is a typed failure, never a silent fallback to a different parser —
+// the caller surfaces it, and re-parsing as a text arm stays the user's
+// explicit choice. (A null provider replays through the total fallback race,
+// which cannot reject non-empty text.)
+export const reparseFetched = (origin: UrlOrigin, text: string): ParseResult => {
+  const candidate: UrlOrigin = { ...origin, fetched: text };
+  const turns = reprojectOrigin(candidate);
+  if (turns === null || turns.length === 0) {
+    const label = origin.provider === null ? "the fetched page's format" : SOURCE_LABEL[origin.provider];
+    return { ok: false, reason: `Content no longer parses as ${label} — pick a text format to re-parse it.` };
+  }
+  return { ok: true, turns, origin: candidate };
 };
 
 // [LAW:single-enforcer] The one canonicalization of "turns are the derived cache

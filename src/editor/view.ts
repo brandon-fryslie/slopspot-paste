@@ -11,8 +11,8 @@
 
 import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
-import type { InputKind, Platform, Role, ToolOutputKind, Turn } from "../types";
-import { inputLabel, PLATFORMS, ROLES, TOOL_OUTPUT_KINDS } from "../types";
+import type { InputKind, Platform, Provider, Role, ToolOutputKind, Turn } from "../types";
+import { inputLabel, PLATFORMS, ROLES, SOURCE_LABEL, TOOL_OUTPUT_KINDS } from "../types";
 import { describeSecretKind } from "../secret-scan";
 import { condenseToolCall, type ToolStatus } from "../toolCall";
 import type { AuthorableTurn, Block, BlockGroup, Kind, NumberedBlock } from "./blocks";
@@ -280,13 +280,26 @@ const urlFetchStatus = (store: EditorStore): TemplateResult | typeof nothing => 
   return html`<button class="btn-secondary" @click=${() => store.fetchUrl()}>Fetch now</button>`;
 };
 
+// [LAW:one-source-of-truth] The head option of the format select while the
+// origin arm is the active parse: it names the provider parse that is actually
+// running over the fetched bytes (slopspot-editor-s3j.4), reusing the canonical
+// SOURCE_LABEL strings. It exists only while it IS the selection — picking any
+// detected text kind converts the origin and the option disappears — so it can
+// never be changed TO; asInputKind's throw stays the loud witness if markup and
+// store ever disagree [LAW:no-silent-failure].
+const fetchedLabel = (provider: Provider | null): string =>
+  `Fetched — ${provider === null ? "auto-detected" : SOURCE_LABEL[provider]}`;
+
 // Text mode IS the plain-text editor over the original submitted source
 // (slopspot-editor-s3j.2): one seamless pane bound to store.sourceText, the
 // architectural authority the blocks re-derive from on every keystroke — no
 // parse button, no separate import box. The slim row beneath keeps the format
-// override and, for a pasted link (the one asynchronous arm), the auto-fetch's
-// visible status.
-const sourcePane = (store: EditorStore): TemplateResult => html`
+// select — a projection of the ACTIVE parse, so a fetched conversation's bytes
+// show their provider parse, not the text kind they superficially detect as —
+// and, for a pasted link (the one asynchronous arm), the auto-fetch's status.
+const sourcePane = (store: EditorStore): TemplateResult => {
+  const parse = store.activeParse;
+  return html`
   <div class="source-pane">
     <label class="visually-hidden" for="source-text">Conversation source</label>
     <textarea
@@ -304,7 +317,10 @@ const sourcePane = (store: EditorStore): TemplateResult => html`
             class="source-select"
             @change=${(e: Event) => store.setImportKind(asInputKind(store, valueOf(e)))}
           >
-            ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${inputLabel(k)}</option>`)}
+            ${parse.kind === "origin"
+              ? html`<option value="" selected>${fetchedLabel(parse.origin.provider)}</option>`
+              : nothing}
+            ${store.detected.map((k) => html`<option value=${k} ?selected=${parse.kind !== "origin" && k === store.importKind}>${inputLabel(k)}</option>`)}
           </select>
           ${store.isUrlImport ? urlFetchStatus(store) : nothing}
         </div>`}
@@ -313,6 +329,7 @@ const sourcePane = (store: EditorStore): TemplateResult => html`
       : html`<p class="form-error" role="alert">${store.importError}</p>`}
   </div>
 `;
+};
 
 // [LAW:no-silent-failure] The no-clobber gate. When a replacement (a text-pane
 // derive or a fetched batch) would overwrite work not derived from its source,
@@ -324,13 +341,14 @@ const sourcePane = (store: EditorStore): TemplateResult => html`
 const reparseConfirm = (store: EditorStore): TemplateResult | typeof nothing => {
   if (store.pendingReparse === null) return nothing;
   const n = store.blocks.length;
-  // The only pristine state that stages is the url-origin one (deriveWouldClobber),
-  // so the adjective is exact: dirty blocks are hand-edited, clean ones are fetched.
-  const kind = store.isDirty ? "edited" : "fetched";
+  // Staging requires wouldClobber, which requires isDirty — the blocks under
+  // threat always carry non-derived work, so "edited" is exact. (The pristine
+  // url-origin staging state retired with s3j.4: the pane now holds the fetched
+  // bytes, so clean fetched blocks are a projection of the pane's own text.)
   return html`
     <div class="reparse-confirm" role="alert">
       <span
-        >Replace ${n} ${kind} block${n === 1 ? "" : "s"} with the new source? This discards
+        >Replace ${n} edited block${n === 1 ? "" : "s"} with the new source? This discards
         work the new source can't reproduce.</span
       >
       <button class="btn-secondary" @click=${() => store.cancelReparse()}>Keep editing</button>
