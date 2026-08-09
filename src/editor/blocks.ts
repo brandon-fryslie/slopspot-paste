@@ -13,7 +13,7 @@
 // stored shape. [LAW:one-source-of-truth]
 
 import type { Role, Turn } from "../types";
-import { isSpokenTurn } from "../dialogue";
+import { isSpokenTurn, type SpokenTurn } from "../dialogue";
 
 // [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. Both `usage`
 // (token accounting) and `subagent` (a reattached nested run) are source-DERIVED,
@@ -200,10 +200,13 @@ export const toTurns = (blocks: ReadonlyArray<Block>): AuthorableTurn[] =>
 // [LAW:types-are-the-program] Each entry carries the block's index in the FLAT
 // blocks array (the coordinate every store mutation — move/split/merge — speaks),
 // so the grouped projection never forces the view to rediscover flat positions.
-// The spoken arm carries the turn already narrowed to `message`, so the view
-// reads `.role`/`.content` without re-narrowing what the grouping already proved.
+// The spoken arm carries the FULL narrowing the guard proves — a message whose
+// role is never "assistant" — so an assistant-role message in a spoken group is
+// a compile error, not a runtime surprise, and the view reads `.role` as the
+// two-value spoken vocabulary without re-narrowing.
 
-export type MessageTurn = Extract<AuthorableTurn, { kind: "message" }>;
+export type SpokenMessageTurn = Extract<AuthorableTurn, { kind: "message" }> &
+  Pick<SpokenTurn, "role">;
 
 export interface NumberedBlock {
   readonly block: Block;
@@ -211,7 +214,7 @@ export interface NumberedBlock {
 }
 
 export type BlockGroup =
-  | { readonly kind: "spoken"; readonly id: string; readonly index: number; readonly turn: MessageTurn }
+  | { readonly kind: "spoken"; readonly id: string; readonly index: number; readonly turn: SpokenMessageTurn }
   | { readonly kind: "assistant"; readonly entries: ReadonlyArray<NumberedBlock> };
 
 export const groupBlocks = (blocks: ReadonlyArray<Block>): BlockGroup[] => {
