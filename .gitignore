@@ -8,3 +8,7 @@ dist
 # Generated from wrangler.toml by `wrangler types` (see package.json prebuild).
 worker-configuration.d.ts
 .firecrawl/
+
+# Local MCP configuration (machine-specific, not project source)
+.mcp.json
+mcpi.toml
