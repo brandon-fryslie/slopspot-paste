@@ -2351,6 +2351,12 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   gap: 10px;
   flex-wrap: wrap;
 }
+/* The url arm's live auto-fetch status ("Fetching conversation…" / "Fetched ✓")
+   — quiet inline text beside the kind select, where the fetch button once sat. */
+.fetch-status {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
 
 /* The claude.ai/code handoff notice: an honest "not fetchable yet" panel with a
    copyable agent instruction, shown in place of the fetch button for those links. */

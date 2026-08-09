@@ -61,6 +61,7 @@ const fakeIo = (): EditorIo => ({
   loadDraft: (): Draft => ({ turns: [], origin: null }),
   clearDraft: () => {},
   deleteDraft: () => {},
+  scheduleFetch: () => {}, // a settle timer that never fires; tests that need it capture the callback
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -451,15 +452,190 @@ console.log("\nclaude.ai/code link handoff affordance (slopspot-cc-share-4nc.9):
   assert("code link: copyable instructions present", c.querySelector(".code-link-prompt") !== null);
   assert("code link: doomed fetch row is suppressed", c.querySelector(".import-row") === null);
 
-  // A normal (non-code) link keeps the fetch affordance and shows no notice.
+  // A normal (non-code) link shows no notice and keeps the import row — but no
+  // manual fetch button: the url arm auto-fetches (slopspot-editor-s3j.3).
   store.setSource("https://claude.ai/share/abc123");
   render(appTemplate(store), c);
   assert("share link: no code-link notice", c.querySelector(".code-link-notice") === null);
-  assert("share link: fetch row present", c.querySelector(".import-row") !== null);
+  assert("share link: import row present", c.querySelector(".import-row") !== null);
   assert(
-    "share link: fetch button present for the url arm",
-    Array.from(c.querySelectorAll("button")).some((b) => b.textContent?.includes("Fetch & parse")),
+    "share link: no 'Fetch & parse' button (ingest is automatic)",
+    !Array.from(c.querySelectorAll("button")).some((b) => b.textContent?.includes("Fetch & parse")),
   );
+}
+
+console.log("\nSeamless url ingest (slopspot-editor-s3j.3 — auto-fetch on link detection):");
+{
+  // [LAW:verifiable-goals] The ticket's acceptance, url half: pasting a supported
+  // share URL fetches and yields parsed editable turns with no button pressed,
+  // with visible in-progress and failure states, and the no-clobber gate guarding
+  // an auto-fetch exactly as it guarded the manual one.
+  const SHARE_URL = "https://claude.ai/share/abc123";
+  const FETCHED_MD = "## User\nfrom link\n\n## Assistant\nok";
+  const okResult = (url: string): ParseResult => ({
+    ok: true,
+    turns: [
+      { kind: "message", role: "user", content: "from link" } as const,
+      { kind: "message", role: "assistant", content: "ok" } as const,
+    ],
+    // provider: null replays through the total fallback race, which re-derives
+    // exactly these turns from FETCHED_MD — so the adoption reads as clean.
+    origin: { kind: "url", url, fetched: FETCHED_MD, provider: null },
+  });
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  // A controllable boundary: the settle timer is fired by hand, and each fetch
+  // resolves only when the test says so — completion ORDER is the test's to pick.
+  const harness = () => {
+    const calls: string[] = [];
+    const resolvers: Array<(r: ParseResult) => void> = [];
+    let settled: (() => void) | null = null;
+    const io: EditorIo = {
+      ...fakeIo(),
+      scheduleFetch: (fire) => { settled = fire; },
+      fetchShare: (url): Promise<ParseResult> => {
+        calls.push(url);
+        return new Promise<ParseResult>((res) => resolvers.push(res));
+      },
+    };
+    return { store: new EditorStore(io), calls, resolvers, fire: () => settled?.() };
+  };
+
+  // 1. The happy path: paste → settle → fetch → adopted, no button anywhere.
+  const h1 = harness();
+  h1.store.setSource(SHARE_URL);
+  assert("pasting a link schedules the settle fire without fetching yet", h1.calls.length === 0);
+  h1.fire();
+  assert("the settle fire starts the fetch with the pasted url", h1.calls.length === 1 && h1.calls[0] === SHARE_URL);
+  assert("in flight: store.fetching is true", h1.store.fetching === true);
+  const c1 = jswindow.document.createElement("div");
+  render(appTemplate(h1.store), c1);
+  assert(
+    "in flight: visible 'Fetching conversation…' status",
+    c1.querySelector(".fetch-status")?.textContent?.includes("Fetching conversation…") === true,
+  );
+  h1.resolvers[0]!(okResult(SHARE_URL));
+  await tick();
+  assert("on success: turns adopted with no parse action", h1.store.blocks.length === 2);
+  assert("on success: lands in Preview for review", h1.store.view === "preview");
+  assert(
+    "on success: fetch state clears and the origin is the fetched link",
+    h1.store.fetching === false && h1.store.importOrigin?.kind === "url",
+  );
+  h1.store.setView("text");
+  render(appTemplate(h1.store), c1);
+  assert(
+    "adopted link shows the 'Fetched ✓' affirmation in Text mode",
+    c1.querySelector(".fetch-status")?.textContent?.includes("Fetched") === true,
+  );
+  h1.fire();
+  assert("an adopted link is never re-fetched", h1.calls.length === 1);
+
+  // 2. Failure is loud and recoverable: importError + a retry that re-fetches.
+  const h2 = harness();
+  h2.store.setSource(SHARE_URL);
+  h2.fire();
+  h2.resolvers[0]!({ ok: false, reason: "Failed to fetch the URL." });
+  await tick();
+  assert("on failure: importError surfaces loudly", h2.store.importError === "Failed to fetch the URL.");
+  assert("on failure: fetch state clears", h2.store.fetching === false);
+  const c2 = jswindow.document.createElement("div");
+  render(appTemplate(h2.store), c2);
+  assert("on failure: the error renders as an alert", c2.querySelector(".form-error") !== null);
+  const retry = Array.from(c2.querySelectorAll<HTMLButtonElement>("button")).find(
+    (b) => b.textContent?.trim() === "Try again",
+  );
+  assert("on failure: a 'Try again' retry renders in the import row", retry !== undefined);
+  retry?.click();
+  assert("retry re-fetches the same url immediately (no settle)", h2.calls.length === 2);
+
+  // 3. [LAW:no-ambient-temporal-coupling] A zombie completion never clobbers:
+  // pasting text over the link mid-flight invalidates the fetch by VALUE, so its
+  // late response is dropped whatever order the network returns.
+  const h3 = harness();
+  h3.store.setSource(SHARE_URL);
+  h3.fire();
+  h3.store.setSource("## User\nAlice\n\n## Assistant\nBob");
+  assert("pasting text over the link invalidates the in-flight fetch", h3.store.fetching === false);
+  assert(
+    "the pasted text derives immediately",
+    h3.store.blocks.length === 2 && h3.store.importOrigin?.kind === "markdown",
+  );
+  h3.resolvers[0]!(okResult(SHARE_URL));
+  await tick();
+  assert("the stale fetch result is dropped, not adopted", h3.store.importOrigin?.kind === "markdown");
+  assert("view stays in Text (no yank from a zombie load)", h3.store.view === "text");
+
+  // 4. The two url-shaped states that must NOT fetch: a claude.ai/code link (its
+  // path is the handoff notice) and the empty pane (importKind "url" is only the
+  // all-options priming state, not a link).
+  const h4 = harness();
+  h4.store.setSource("https://claude.ai/code/session_01E1cdheWtrieG1o6dhhFAJu");
+  h4.fire();
+  assert("a claude.ai/code link is never auto-fetched", h4.calls.length === 0);
+  const h5 = harness();
+  h5.store.setSource("");
+  h5.fire();
+  assert("an empty pane never fetches", h5.calls.length === 0);
+
+  // 5. The no-clobber gate guards the auto-fetch exactly as the manual one:
+  // a completion over edited work stages the confirm, never replaces silently.
+  const h6 = harness();
+  h6.store.setSource("## User\nhand\n\n## Assistant\nwork");
+  h6.store.replaceTurn(h6.store.blocks[0]!.id, { kind: "message", role: "user", content: "hand edited" });
+  h6.store.setSource(SHARE_URL);
+  h6.fire();
+  h6.resolvers[0]!(okResult(SHARE_URL));
+  await tick();
+  assert("a fetch over edited work stages the confirm instead of clobbering", h6.store.pendingReparse !== null);
+  assert(
+    "edited blocks stay intact while staged",
+    h6.store.turns[0]?.kind === "message" && h6.store.turns[0].content === "hand edited",
+  );
+  h6.store.confirmReparse();
+  assert(
+    "confirming adopts the fetched conversation",
+    h6.store.importOrigin?.kind === "url" && h6.store.blocks.length === 2,
+  );
+
+  // 6. A non-fetch importError (failed draft restore, empty pane) shows the
+  // error WITHOUT the retry: the empty pane's importKind is "url" (priming
+  // state), but there is no link to re-fetch — a retry would POST an empty url.
+  const h7io: EditorIo = {
+    ...fakeIo(),
+    fetchDraft: async (): Promise<DraftLoadResult> => ({ ok: false, reason: "This draft has expired or was not found." }),
+  };
+  const h7 = new EditorStore(h7io);
+  await h7.loadServerDraft("gone");
+  const c7 = jswindow.document.createElement("div");
+  render(appTemplate(h7), c7);
+  assert("non-fetch error: the alert renders", c7.querySelector(".form-error") !== null);
+  assert(
+    "non-fetch error over an empty pane: no out-of-place 'Try again'",
+    !Array.from(c7.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Try again"),
+  );
+
+  // 7. Canceling a staged fetch-adoption leaves the link with a visible
+  // re-trigger: the idle arm's optional "Fetch now" (total urlFetchStatus
+  // projection), which re-fetches immediately on click.
+  const h8 = harness();
+  h8.store.setSource("## User\nmine\n\n## Assistant\nkept");
+  h8.store.replaceTurn(h8.store.blocks[0]!.id, { kind: "message", role: "user", content: "edited" });
+  h8.store.setSource(SHARE_URL);
+  h8.fire();
+  h8.resolvers[0]!(okResult(SHARE_URL));
+  await tick();
+  assert("staged over edits (precondition)", h8.store.pendingReparse !== null);
+  h8.store.cancelReparse();
+  const c8 = jswindow.document.createElement("div");
+  h8.store.setView("text");
+  render(appTemplate(h8.store), c8);
+  const fetchNow = Array.from(c8.querySelectorAll<HTMLButtonElement>(".import-row button")).find(
+    (b) => b.textContent?.trim() === "Fetch now",
+  );
+  assert("after cancel: 'Fetch now' renders for the unfetched link", fetchNow !== undefined);
+  fetchNow?.click();
+  assert("'Fetch now' re-fetches the link immediately", h8.calls.length === 2);
 }
 
 console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");

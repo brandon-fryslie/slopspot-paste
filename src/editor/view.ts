@@ -258,12 +258,34 @@ const codeLinkNotice = (): TemplateResult => html`
   </div>
 `;
 
+// [LAW:no-silent-failure][LAW:dataflow-not-control-flow] The url arm's
+// lifecycle as a TOTAL projection of store state — there is no required
+// "Fetch & parse" step left (slopspot-editor-s3j.3): pasting a link IS the
+// fetch. In flight → a live status; failed → the error renders below and this
+// offers the retry (gated on hasFetchableUrl, not the error alone — importError
+// is shared with non-fetch paths like a failed draft restore over an empty
+// pane, where a retry would fetch nothing); adopted → a quiet affirmation of
+// why nothing is happening. The remaining arm — a link in the pane, unfetched —
+// renders an OPTIONAL "Fetch now": it covers the post-cancel state (a declined
+// clobber confirmation leaves the link with no other visible re-trigger) and
+// the settle window, where a click just starts the fetch early (the scheduled
+// fire then dedups on fetchingUrl). Auto-fetch remains the seamless path; this
+// button is recovery, never a gate. Only the empty/non-link pane is silent.
+const urlFetchStatus = (store: EditorStore): TemplateResult | typeof nothing => {
+  if (store.fetching) return html`<span class="fetch-status" role="status">Fetching conversation…</span>`;
+  if (!store.hasFetchableUrl) return nothing;
+  if (store.importError !== null)
+    return html`<button class="btn-secondary" @click=${() => store.fetchUrl()}>Try again</button>`;
+  if (store.urlAdopted) return html`<span class="fetch-status" role="status">Fetched ✓</span>`;
+  return html`<button class="btn-secondary" @click=${() => store.fetchUrl()}>Fetch now</button>`;
+};
+
 // Text mode IS the plain-text editor over the original submitted source
 // (slopspot-editor-s3j.2): one seamless pane bound to store.sourceText, the
 // architectural authority the blocks re-derive from on every keystroke — no
 // parse button, no separate import box. The slim row beneath keeps the format
-// override, and — for a pasted link, the one asynchronous arm — the explicit
-// fetch action.
+// override and, for a pasted link (the one asynchronous arm), the auto-fetch's
+// visible status.
 const sourcePane = (store: EditorStore): TemplateResult => html`
   <div class="source-pane">
     <label class="visually-hidden" for="source-text">Conversation source</label>
@@ -284,11 +306,7 @@ const sourcePane = (store: EditorStore): TemplateResult => html`
           >
             ${store.detected.map((k) => html`<option value=${k} ?selected=${k === store.importKind}>${inputLabel(k)}</option>`)}
           </select>
-          ${store.isUrlImport
-            ? html`<button class="btn-secondary" ?disabled=${store.busy} @click=${() => store.fetchUrl()}>
-                ${store.busy ? "Fetching…" : "Fetch & parse"}
-              </button>`
-            : nothing}
+          ${store.isUrlImport ? urlFetchStatus(store) : nothing}
         </div>`}
     ${store.importError === null
       ? nothing
