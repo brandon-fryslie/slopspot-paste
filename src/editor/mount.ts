@@ -261,8 +261,18 @@ const stripDraftParam = (): void => {
   window.history.replaceState(null, "", url.pathname + url.search + url.hash);
 };
 
+// [LAW:no-ambient-temporal-coupling] The one settle delay for the url arm's
+// auto-fetch, owned here at the timing boundary. Long enough that hand-typing a
+// link (each keystroke reschedules) doesn't fire fetches of partial URLs;
+// short enough that a paste feels immediate.
+const URL_SETTLE_MS = 600;
+
 export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
   const root = must(rootSelector, HTMLElement);
+  // Single-slot timer per the EditorIo contract: scheduling supersedes any
+  // previously scheduled fire. Closure-scoped — the mount owns it, nothing else
+  // can touch it [LAW:no-shared-mutable-globals].
+  let urlSettle: ReturnType<typeof setTimeout> | undefined;
   const io: EditorIo = {
     fetchShare,
     fetchDraft,
@@ -272,6 +282,10 @@ export const mountEditor = (rootSelector = "#editor-root"): EditorStore => {
     loadDraft,
     clearDraft,
     deleteDraft,
+    scheduleFetch: (fire) => {
+      clearTimeout(urlSettle);
+      urlSettle = setTimeout(fire, URL_SETTLE_MS);
+    },
   };
   const store = new EditorStore(io);
   // [LAW:no-ambient-temporal-coupling] Draft source is decided once, here, at the

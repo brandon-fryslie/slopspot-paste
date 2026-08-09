@@ -1661,6 +1661,7 @@ console.log("\nEditorStore (b48.5 importKind derivation + b48.6 confirm-on-repar
         cell = null;
       },
       deleteDraft: () => {},
+      scheduleFetch: () => {},
     };
     return { io, submitted, navigated, draftCell: () => cell };
   };
@@ -1757,6 +1758,7 @@ console.log("\nEditorStore split/merge (b48.7 — block by text-range):");
     loadDraft: (): Draft => ({ turns: [], origin: null }),
     clearDraft: () => {},
     deleteDraft: () => {},
+    scheduleFetch: () => {},
   };
 
   // --- splitBlock: one card becomes two in place; head keeps id, tail is fresh ---
@@ -1831,6 +1833,7 @@ console.log("\nEditorStore draft persistence (b48.9 — localStorage round-trip)
         cell = null;
       },
       deleteDraft: () => {},
+      scheduleFetch: () => {},
     };
     return { io, cell: () => cell };
   };
@@ -1901,6 +1904,7 @@ console.log("\nDiscard draft persistence round-trip (slopspot-editor-draft-rp4):
     },
     clearDraft: () => { cell = null; },
     deleteDraft: () => {},
+    scheduleFetch: () => {},
   };
 
   const store = new EditorStore(discardIo);
@@ -1943,6 +1947,7 @@ console.log("\nDiscard revokes the server-side handoff draft (slopspot-cc-share-
     loadDraft: (): Draft => ({ turns: [], origin: null }),
     clearDraft: () => {},
     deleteDraft: (id) => { deleted.push(id); },
+    scheduleFetch: () => {},
   };
 
   const store = new EditorStore(handoffIo);
@@ -1987,6 +1992,7 @@ console.log("\nEditorStore submitOrigin (provenance-2my — share carries its or
     loadDraft: (): Draft => ({ turns: [], origin: null }),
     clearDraft: () => {},
     deleteDraft: () => {},
+    scheduleFetch: () => {},
   };
 
   // --- a pristine share import stamps the replayable claude-share origin: its
@@ -2054,6 +2060,7 @@ console.log("\nText mode edits the original source (slopspot-editor-s3j.2):");
     loadDraft: (): Draft => ({ turns: [], origin: null }),
     clearDraft: () => {},
     deleteDraft: () => {},
+    scheduleFetch: () => {},
   };
 
   // --- the ticket's acceptance, store half: edit a word that appears in several
