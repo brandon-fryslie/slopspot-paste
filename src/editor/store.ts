@@ -19,16 +19,28 @@
 // explosion). Variability lives in the turn value crossing one seam.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { DraftRecord, InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
+import type { DraftRecord, InputKind, Origin, ParseResult, Platform, SourceKind, TextArmKind, Turn, UrlOrigin } from "../types";
 import { platformOf, sourceOf, sourceTextOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
-import { detectSources, isUrl, parseInput, reprojectOrigin } from "../parser";
+import { detectSources, isUrl, parseInput, reparseFetched, reprojectOrigin } from "../parser";
 import { claudeCodeSessionId } from "../url";
 import { scanTurnsForSecrets, type TurnSecretWarning } from "../secret-warnings";
 import { scrubOrigin, scrubTurn } from "../secret-scrub";
 
 export type View = "text" | "preview";
+
+// [LAW:types-are-the-program] The three parses the pane's text can receive, as
+// one discriminated value: the link arm is asynchronous (the settle-timed
+// fetch), the origin arm re-parses a fetched conversation's bytes through their
+// own provider's parser (slopspot-editor-s3j.4), the text arm parses under a
+// TextArmKind. derive() dispatches on it and the view's format select renders
+// from it, so the parse that runs and the parse the UI names cannot drift
+// [LAW:one-source-of-truth].
+export type ActiveParse =
+  | { readonly kind: "link" }
+  | { readonly kind: "origin"; readonly origin: UrlOrigin }
+  | { readonly kind: "text"; readonly arm: TextArmKind };
 
 // [LAW:types-are-the-program] Submit has exactly two outcomes; the discriminated
 // result forces the boundary (and the store) to handle both, never a bare slug
@@ -122,9 +134,10 @@ export class EditorStore {
   blocks: Block[] = [];
   // [LAW:one-source-of-truth] The plain-text source under edit in Text mode —
   // the live copy of the original the architecture declares authoritative. Every
-  // change re-derives the blocks (setSource → derive), and a text-arm load syncs
-  // it from the origin it adopts (loadTurns), so the pane and the captured
-  // origin cannot drift while Text mode is the authority.
+  // change re-derives the blocks (setSource → derive), and a load syncs it from
+  // the origin it adopts (loadTurns; a text arm's content or a url arm's fetched
+  // bytes), so the pane and the captured origin cannot drift while Text mode is
+  // the authority.
   sourceText = "";
   // [LAW:one-source-of-truth] The selected input kind is DERIVED (see importKind),
   // not stored. userKind is an explicit override the user picked from the
@@ -199,15 +212,39 @@ export class EditorStore {
     return detectSources(this.sourceText);
   }
 
+  // [LAW:one-source-of-truth] The user's dropdown pick, honored only while it
+  // remains a detected kind; null = follow detection. The single home of the
+  // "is the override active" condition — importKind and activeParse both read
+  // it, so the kind the select resolves to and the parse that outranks the
+  // origin arm cannot disagree.
+  private get activeOverride(): InputKind | null {
+    const u = this.userKind;
+    return u !== null && this.detected.includes(u) ? u : null;
+  }
+
   // [LAW:dataflow-not-control-flow] The active source kind is a pure function of
   // (detection, optional override): honor the user's pick while it stays a
   // detected kind, else fall to the highest-priority detection. detected is
   // ordered most-specific-first (SOURCE_KINDS), so detected[0] is the best
   // auto-detection — paste markdown -> "markdown", not a sticky "raw".
   get importKind(): InputKind {
-    return this.userKind !== null && this.detected.includes(this.userKind)
-      ? this.userKind
-      : (this.detected[0] ?? "raw");
+    return this.activeOverride ?? this.detected[0] ?? "raw";
+  }
+
+  // [LAW:one-source-of-truth] The one resolution of "what parse does the pane's
+  // text get". A detected link is the async fetch arm. Otherwise a url import
+  // origin claims the pane: its text IS the origin's (possibly edited) fetched
+  // bytes, re-parsed through the origin's own provider — not whatever text kind
+  // the bytes superficially detect as. The explicit override outranks the
+  // origin arm: picking a text format for fetched bytes is the deliberate
+  // "re-parse as plain text" escape, and the next derive converts the origin
+  // to that text arm.
+  get activeParse(): ActiveParse {
+    const kind = this.importKind;
+    if (kind === "url") return { kind: "link" };
+    const origin = this.importOrigin;
+    if (origin?.kind === "url" && this.activeOverride === null) return { kind: "origin", origin };
+    return { kind: "text", arm: kind };
   }
 
   get turns(): Turn[] {
@@ -300,8 +337,11 @@ export class EditorStore {
 
   // [LAW:one-source-of-truth] The pane's link IS the adopted origin — derived by
   // comparing the two authorities, never stored as a flag that could go stale.
-  // Gates the auto-fetch (re-fetching an adopted link would pointlessly re-load
-  // and yank the view) and drives the view's "Fetched" affirmation.
+  // Since s3j.4 adoption syncs the pane to the FETCHED BYTES, so this holds only
+  // in the degenerate state where those bytes are themselves the origin's url —
+  // exactly the state where the auto-fetch would otherwise loop (fetch → adopt →
+  // detect the same link → fetch again), each round a paid scrape. Gates the
+  // auto-fetch as that loop's breaker and drives the view's "Fetched ✓".
   get urlAdopted(): boolean {
     return this.importOrigin?.kind === "url" && this.importOrigin.url === this.sourceText.trim();
   }
@@ -342,20 +382,14 @@ export class EditorStore {
     return JSON.stringify(this.turns) !== JSON.stringify(replayed);
   }
 
-  // The concept the load-side confirm guards: there is visible non-derived work a
-  // replacement would destroy. Empty editor or a pure projection: nothing to lose.
+  // The concept every replacement confirm guards: there is visible non-derived
+  // work a replacement would destroy. Empty editor or a pure projection: nothing
+  // to lose. (Until s3j.4 a pristine url fetch also staged on derive — clean yet
+  // not derived from the pane, which then held only the link. Now the pane holds
+  // the fetched bytes, so a derive's blocks are always a projection of the
+  // pane's own text and this work-protecting gate is the whole rule.)
   get wouldClobber(): boolean {
     return this.blocks.length > 0 && this.isDirty;
-  }
-
-  // The Text pane's derive replaces the blocks with parse(sourceText). That is
-  // silent only when the blocks already ARE a projection of the pane's text (a
-  // clean text-arm origin). A pristine url fetch is clean yet NOT derived from
-  // the pane — its source is the fetched bytes (text-editing those is s3j.4) —
-  // so deriving over it must also confirm rather than silently swap a fetched
-  // conversation for a raw parse of whatever sits in the pane.
-  get deriveWouldClobber(): boolean {
-    return this.wouldClobber || (this.blocks.length > 0 && this.importOrigin?.kind === "url");
   }
 
   // ── Source pane ─────────────────────────────────────────────────────────
@@ -393,22 +427,26 @@ export class EditorStore {
   }
 
   // [LAW:dataflow-not-control-flow] The continuous projection: parse the pane's
-  // text under the active kind and adopt the result. The url guard is the one
+  // text under the active parse and adopt the result. The link guard is the one
   // honest branch — url is the async fetch arm, so it schedules the settle-timed
-  // auto-fetch instead of parsing synchronously. importKind is drawn from
-  // detectSources, which offers only kinds that parse this exact text, so the
-  // only reachable failure is the empty pane — which derives the empty
-  // conversation, the same state a fresh visit holds.
+  // auto-fetch instead of parsing synchronously. A text arm drawn from
+  // detectSources can only fail on the empty pane (the detector offers only
+  // kinds that parse this exact text); the origin arm CAN fail — a named
+  // provider's parser rejecting bytes edited out of its format — and surfaces
+  // loudly while the last good blocks stand [LAW:no-silent-failure]. The
+  // failed-parse pane still offers the detected text kinds, so the explicit
+  // re-parse escape is one pick away.
   private derive(): void {
-    const kind = this.importKind;
-    if (kind === "url") {
+    const parse = this.activeParse;
+    if (parse.kind === "link") {
       this.io.scheduleFetch(this.autoFetch);
       return;
     }
-    const result = parseInput(textArmInput(kind, this.sourceText));
+    const result: ParseResult =
+      parse.kind === "origin"
+        ? reparseFetched(parse.origin, this.sourceText)
+        : parseInput(textArmInput(parse.arm, this.sourceText));
     if (!result.ok && this.sourceText.trim().length > 0) {
-      // Unreachable while the detection invariant holds; surfaced loudly rather
-      // than wiping the blocks under an error [LAW:no-silent-failure].
       this.importError = result.reason;
       return;
     }
@@ -488,13 +526,12 @@ export class EditorStore {
   // ── Blocks ──────────────────────────────────────────────────────────────
 
   // [LAW:single-enforcer] The one decision every replacement batch passes
-  // through: commit now, or stage for confirmation. The gate is via-specific — a
-  // load may silently replace any clean projection, a derive only one whose
-  // source is the pane's own text — but the stage/commit mechanism is this
-  // single point. No `force` flag duplicates the decision at callsites.
+  // through: commit now, or stage for confirmation. Load and derive share the
+  // one work-protecting gate (wouldClobber) — any replacement may silently
+  // replace a clean projection — and `via` only selects the committer. No
+  // `force` flag duplicates the decision at callsites.
   private accept(draft: Draft, via: AdoptionVia): void {
-    const clobbers = via === "load" ? this.wouldClobber : this.deriveWouldClobber;
-    if (clobbers) {
+    if (this.wouldClobber) {
       this.pendingReparse = { draft, via };
       return;
     }
@@ -551,9 +588,11 @@ export class EditorStore {
   //     reached. A fresh fetch carries no override, so theme re-snaps to
   //     detection; a restored draft's explicit pick is honored, so the editor
   //     reopens — and later republishes — the theme that was saved.
-  //   - Source pane: syncs to the plain-text source the adopted origin carries
-  //     (a restored draft would otherwise show a stale pane over new blocks);
-  //     origins without one (url/editor/none) leave the pane alone.
+  //   - Source pane: syncs to the plain-text source the adopted origin carries —
+  //     a text arm's content or a url arm's fetched bytes, so a fetched
+  //     conversation lands bulk-editable exactly like a pasted one
+  //     (slopspot-editor-s3j.4) and a restored draft never shows a stale pane
+  //     over new blocks. Origins without one (editor/none) leave the pane alone.
   //   - Landing view: loaded content is for reviewing — Preview; an empty load
   //     (discard, fresh visit) lands in Text, the paste target.
   private loadTurns(draft: Draft): void {

@@ -524,12 +524,17 @@ console.log("\nSeamless url ingest (slopspot-editor-s3j.3 — auto-fetch on link
   );
   h1.store.setView("text");
   render(appTemplate(h1.store), c1);
+  // s3j.4: adoption syncs the pane to the FETCHED BYTES (the bulk-editable
+  // source), and the format select's head option names the fetched parse.
+  assert("adoption lands the fetched bytes in the pane", h1.store.sourceText === FETCHED_MD);
+  // Scoped to the import row: the toolbar's platform select shares the class.
+  const headOption = c1.querySelector<HTMLOptionElement>(".import-row .source-select option");
   assert(
-    "adopted link shows the 'Fetched ✓' affirmation in Text mode",
-    c1.querySelector(".fetch-status")?.textContent?.includes("Fetched") === true,
+    "the format select's head option names the fetched parse and is selected",
+    headOption?.textContent?.startsWith("Fetched") === true && headOption.selected,
   );
   h1.fire();
-  assert("an adopted link is never re-fetched", h1.calls.length === 1);
+  assert("an adopted conversation is never re-fetched (the pane no longer holds a link)", h1.calls.length === 1);
 
   // 2. Failure is loud and recoverable: importError + a retry that re-fetches.
   const h2 = harness();
@@ -636,6 +641,128 @@ console.log("\nSeamless url ingest (slopspot-editor-s3j.3 — auto-fetch on link
   assert("after cancel: 'Fetch now' renders for the unfetched link", fetchNow !== undefined);
   fetchNow?.click();
   assert("'Fetch now' re-fetches the link immediately", h8.calls.length === 2);
+}
+
+console.log("\nFetched conversations are bulk-editable as text (slopspot-editor-s3j.4):");
+{
+  // [LAW:verifiable-goals] The ticket's acceptance: fetch a shared conversation,
+  // switch to standard mode — the full fetched source is present as editable
+  // text, and a text edit there survives into preview mode and the published
+  // paste (the origin submit stamps).
+  const SHARE_URL = "https://claude.ai/share/s3j4";
+  const FETCHED_MD = "## User\nAlice broke it\n\n## Assistant\nAlice fixed it";
+  const EDITED_MD = "## User\nBob broke it\n\n## Assistant\nBob fixed it";
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const harness = () => {
+    const calls: string[] = [];
+    const resolvers: Array<(r: ParseResult) => void> = [];
+    let settled: (() => void) | null = null;
+    const io: EditorIo = {
+      ...fakeIo(),
+      scheduleFetch: (fire) => { settled = fire; },
+      fetchShare: (url): Promise<ParseResult> => {
+        calls.push(url);
+        return new Promise<ParseResult>((res) => resolvers.push(res));
+      },
+    };
+    return { store: new EditorStore(io), calls, resolvers, fire: () => settled?.() };
+  };
+
+  // 1. Fetch → the bytes are the pane's editable text; a bulk edit re-derives
+  // through the origin's own parser, silently for clean fetched blocks (the
+  // pristine-url staging retired with deriveWouldClobber), and the url
+  // provenance rides along with the edited bytes as the new source.
+  const h1 = harness();
+  h1.store.setSource(SHARE_URL);
+  h1.fire();
+  h1.resolvers[0]!({
+    ok: true,
+    turns: [
+      { kind: "message", role: "user", content: "Alice broke it" } as const,
+      { kind: "message", role: "assistant", content: "Alice fixed it" } as const,
+    ],
+    // provider null replays through the total fallback race, which re-derives
+    // exactly these turns from FETCHED_MD — a clean adoption.
+    origin: { kind: "url", url: SHARE_URL, fetched: FETCHED_MD, provider: null },
+  });
+  await tick();
+  h1.store.setView("text");
+  const c1 = jswindow.document.createElement("div");
+  render(appTemplate(h1.store), c1);
+  const pane1 = c1.querySelector<HTMLTextAreaElement>(".source-text");
+  if (pane1 === null) throw new Error("source pane missing");
+  assert("standard mode holds the full fetched source as editable text", pane1.value === FETCHED_MD);
+
+  pane1.value = pane1.value.replaceAll("Alice", "Bob");
+  pane1.dispatchEvent(new jswindow.Event("input", { bubbles: true }));
+  assert(
+    "a bulk text edit re-derives the turns with no confirm (clean fetched blocks)",
+    h1.store.pendingReparse === null &&
+      h1.store.turns[0]?.kind === "message" && h1.store.turns[0].content === "Bob broke it",
+  );
+  assert(
+    "the origin keeps the url provenance with the edited bytes as its source",
+    h1.store.importOrigin?.kind === "url" &&
+      h1.store.importOrigin.url === SHARE_URL &&
+      h1.store.importOrigin.fetched === EDITED_MD,
+  );
+  assert("the edited state reads clean (blocks are a pure projection of the bytes)", h1.store.isDirty === false);
+  const stamp = h1.store.submitOrigin;
+  assert(
+    "submit stamps the url origin carrying the edited source verbatim",
+    stamp.kind === "url" && stamp.url === SHARE_URL && stamp.fetched === EDITED_MD,
+  );
+  h1.store.setView("preview");
+  render(appTemplate(h1.store), c1);
+  const fields1 = Array.from(c1.querySelectorAll<HTMLTextAreaElement>(".pv-editor textarea.pv-text"));
+  assert(
+    "the text edit survives into preview mode in every occurrence",
+    fields1.some((f) => f.value === "Bob broke it") &&
+      fields1.some((f) => f.value === "Bob fixed it") &&
+      !fields1.some((f) => f.value.includes("Alice")),
+  );
+
+  // 2. [LAW:no-silent-failure] A named provider whose parser rejects the edited
+  // bytes fails loudly (last good blocks stand), and the explicit text-format
+  // pick is the escape that converts the origin — staged, because the fetched
+  // turns can't be reproduced by the new parse.
+  const h2 = harness();
+  h2.store.setSource(SHARE_URL);
+  h2.fire();
+  h2.resolvers[0]!({
+    ok: true,
+    turns: [{ kind: "message", role: "user", content: "hi" } as const],
+    origin: { kind: "url", url: SHARE_URL, fetched: "not claude-share shaped", provider: "claude-share" },
+  });
+  await tick();
+  assert("a named-provider adoption also lands its bytes in the pane", h2.store.sourceText === "not claude-share shaped");
+  h2.store.setSource("still not claude-share shaped");
+  assert(
+    "a provider-rejected edit surfaces loudly and keeps the last good blocks",
+    h2.store.importError !== null &&
+      h2.store.turns[0]?.kind === "message" && h2.store.turns[0].content === "hi",
+  );
+  h2.store.setImportKind("raw");
+  assert("picking a text format over unreproducible fetched turns stages the confirm", h2.store.pendingReparse !== null);
+  h2.store.confirmReparse();
+  assert(
+    "confirming converts the origin to the picked text arm",
+    h2.store.importOrigin?.kind === "raw" && h2.store.importOrigin.content === "still not claude-share shaped",
+  );
+
+  // 3. [LAW:one-source-of-truth] Draft restore round-trips: the origin's bytes
+  // tracked the pane, so a url-origin draft restores with its (possibly edited)
+  // source in the pane and text edits survive a reload.
+  const s3 = new EditorStore(fakeIo());
+  s3.restoreDraft({
+    turns: [
+      { kind: "message", role: "user", content: "Bob broke it" } as const,
+      { kind: "message", role: "assistant", content: "Bob fixed it" } as const,
+    ],
+    origin: { kind: "url", url: SHARE_URL, fetched: EDITED_MD, provider: null },
+  });
+  assert("restoring a url-origin draft lands its bytes in the pane", s3.sourceText === EDITED_MD);
+  assert("the restored draft reads clean (turns are the bytes' projection)", s3.isDirty === false);
 }
 
 console.log("\nSingle-turn card render target (slopspot-permalinks-64g.3):");
