@@ -238,7 +238,9 @@ export const persistDrafts = (store: EditorStore, io: EditorIo): IReactionDispos
   reaction(
     // [LAW:one-source-of-truth] Persist the IMPORT origin (where the turns came
     // from), not the stamp-time submitOrigin — so a restored draft re-establishes
-    // the same editable state, and isDirty is judged against the same baseline.
+    // the same editable state: the origin is the baseline isDirty re-derives
+    // against, so a draft whose turns already diverged restores as dirty and its
+    // edits survive submit rather than being re-derived away.
     // platformOverride rides along so a reload re-establishes the user's theme pick
     // too; without it the same drop the server-draft path had survives on reload.
     (): Draft => ({

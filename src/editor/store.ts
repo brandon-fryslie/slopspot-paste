@@ -1,6 +1,10 @@
-// The editor's reactive core. mobx owns state + derived values; this module is
-// the single source of truth for editing state AFTER parse (the import textarea
-// re-parses INTO blocks via an explicit action; it is never a second live copy).
+// The editor's reactive core. mobx owns state + derived values. Text mode edits
+// sourceText — the plain-text original the architecture declares authoritative —
+// and the blocks re-derive from it continuously; Preview mode edits the derived
+// blocks directly, at which point the turns become the authority and the origin
+// is kept as provenance (see submitOrigin). The two directions meet at one gate
+// (accept): any replacement that would discard non-derived work stages for
+// confirmation instead of clobbering.
 //
 // [LAW:effects-at-boundaries] The store computes; it does not act on the world.
 // Network (fetch/submit) and navigation are *world* effects, so they enter as an
@@ -16,15 +20,15 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { DraftRecord, InputKind, Origin, ParseResult, Platform, SourceKind, Turn } from "../types";
-import { platformOf, sourceOf, textArmInput } from "../types";
+import { platformOf, sourceOf, sourceTextOf, textArmInput } from "../types";
 import type { AuthorableTurn, Block, Kind } from "./blocks";
 import { emptyTurn, isAuthorable, mergeTurns, newId, splitTurn, toBlocks, toTurns } from "./blocks";
-import { detectSources, parseInput } from "../parser";
+import { detectSources, parseInput, reprojectOrigin } from "../parser";
 import { claudeCodeSessionId } from "../url";
 import { scanTurnsForSecrets, type TurnSecretWarning } from "../secret-warnings";
 import { scrubOrigin, scrubTurn } from "../secret-scrub";
 
-export type View = "blocks" | "preview";
+export type View = "text" | "preview";
 
 // [LAW:types-are-the-program] Submit has exactly two outcomes; the discriminated
 // result forces the boundary (and the store) to handle both, never a bare slug
@@ -61,6 +65,18 @@ export type DraftLoadResult =
   | { readonly ok: true; readonly draft: Draft }
   | { readonly ok: false; readonly reason: string };
 
+// [LAW:types-are-the-program] A staged replacement remembers HOW it must commit
+// when confirmed: a batch load (fetch/handoff — full adoption: provenance, theme,
+// landing view) or a continuous text derive (light adoption: blocks + origin
+// only, so confirming mid-typing never yanks the view or resets the theme pick).
+// The discriminator is data the confirm dispatches on, not a second confirm
+// method per path [LAW:dataflow-not-control-flow].
+export type AdoptionVia = "load" | "derive";
+export interface PendingAdoption {
+  readonly draft: Draft;
+  readonly via: AdoptionVia;
+}
+
 // [LAW:effects-at-boundaries] The store's entire contact with the world, named
 // as capabilities. fetchShare hits /api/fetch (URL -> turns + Origin), fetchDraft
 // hits /api/draft (id -> Draft, the agent-handoff restore), submit hits /api/paste
@@ -93,7 +109,12 @@ const clamp = (n: number, lo: number, hi: number): number =>
 
 export class EditorStore {
   blocks: Block[] = [];
-  importText = "";
+  // [LAW:one-source-of-truth] The plain-text source under edit in Text mode —
+  // the live copy of the original the architecture declares authoritative. Every
+  // change re-derives the blocks (setSource → derive), and a text-arm load syncs
+  // it from the origin it adopts (loadTurns), so the pane and the captured
+  // origin cannot drift while Text mode is the authority.
+  sourceText = "";
   // [LAW:one-source-of-truth] The selected input kind is DERIVED (see importKind),
   // not stored. userKind is an explicit override the user picked from the
   // dropdown; null means "follow detection". Storing the resolved kind directly
@@ -106,24 +127,21 @@ export class EditorStore {
   userPlatform: Platform | null = null;
   // [LAW:one-source-of-truth] The Origin the loaded turns were imported from —
   // the captured source of truth (for share, its url + fetched bytes), set only
-  // by loadTurns (the single loader every parse/fetch/draft-restore passes
-  // through). null = authored from scratch. Hand-edits don't change where the
-  // content came from, so edits never touch it; `source` (styling) and
-  // `submitOrigin` (what to stamp) are both DERIVED from it, never stored apart.
+  // by applyDerive (the single adoption core every derive/fetch/draft-restore
+  // passes through). null = authored from scratch. Block edits don't change
+  // where the content came from, so they never touch it; `source` (styling),
+  // `submitOrigin` (what to stamp) and the dirty baseline (replayedTurns) are
+  // all DERIVED from it, never stored apart.
   importOrigin: Origin | null = null;
-  view: View = "blocks";
+  view: View = "text";
   importError: string | null = null;
   submitError: string | null = null;
-  // [LAW:one-source-of-truth] The baseline a reparse is judged against: the turns
-  // as last loaded (parse/fetch/confirmed-reparse). NOT a second live copy of
-  // blocks — it's a snapshot of a *different moment*, so isDirty is derivable
-  // (current blocks vs this baseline) rather than tracked as a flag that drifts.
-  pristineTurns: ReadonlyArray<AuthorableTurn> = [];
-  // [LAW:no-ambient-temporal-coupling] A reparse that would discard hand-edits is
-  // a two-phase action (parse -> confirm -> commit). The middle phase is typed
-  // state carrying the already-parsed turns, not an ordering assumption or a
-  // `force` boolean. null = no decision pending.
-  pendingReparse: Draft | null = null;
+  // [LAW:no-ambient-temporal-coupling] A replacement that would discard
+  // non-derived work is a two-phase action (derive/fetch -> confirm -> commit).
+  // The middle phase is typed state carrying the already-parsed draft AND the
+  // committer it belongs to, not an ordering assumption or a `force` boolean.
+  // null = no decision pending.
+  pendingReparse: PendingAdoption | null = null;
   // One in-flight flag for any network action (fetch OR submit): while either is
   // running, both buttons disable. There is no legitimate state where a fetch
   // and a submit race, so a single flag is the honest representation.
@@ -145,19 +163,20 @@ export class EditorStore {
   }
 
   // ── Derived (computed) ──────────────────────────────────────────────────
-  // [LAW:one-source-of-truth] turns (and everything the views draw) are derived
-  // from blocks, never stored alongside them. Both views — the plain block list
-  // and the editable preview (view.ts groups blocks with dialogue.ts's spine-split
-  // rule and dresses them in the reader's bubble classes) — are projections of
-  // this one blocks array; there is no second copy to drift. The block model
-  // never holds subagent or usage turns (loadTurns filters to AuthorableTurn), so
-  // both views show the editable content exactly; subagents that only the stored
+  // [LAW:one-source-of-truth] turns (and everything Preview draws) are derived
+  // from blocks, never stored alongside them — and the blocks themselves are a
+  // derived projection of sourceText while Text mode is the authority. The
+  // editable preview (view.ts groups blocks with dialogue.ts's spine-split rule
+  // and dresses them in the reader's bubble classes) is a projection of this one
+  // blocks array; there is no second copy to drift. The block model never holds
+  // subagent or usage turns (applyDerive filters to AuthorableTurn), so the
+  // editor shows the editable content exactly; subagents that only the stored
   // original carries appear on the permalink, not here, which is correct:
   // authoring nested subagent structure is out of scope, so the editor mirrors
   // what is editable, not what is stored.
 
   get detected(): ReadonlyArray<InputKind> {
-    return detectSources(this.importText);
+    return detectSources(this.sourceText);
   }
 
   // [LAW:dataflow-not-control-flow] The active source kind is a pure function of
@@ -208,7 +227,7 @@ export class EditorStore {
   // fetch, because slopspot cannot fetch these server-side yet. Drives a DISPLAY
   // branch only; the link is never silently fetched as a doomed url import.
   get claudeCodeLinkId(): string | null {
-    return claudeCodeSessionId(this.importText);
+    return claudeCodeSessionId(this.sourceText);
   }
 
   // [LAW:one-source-of-truth] Styling provenance is DERIVED from the import
@@ -225,26 +244,23 @@ export class EditorStore {
     return this.userPlatform ?? platformOf(this.source);
   }
 
-  // [LAW:one-source-of-truth] The origin to STAMP at submit. Three cases, keyed on
-  // import state and dirty flag:
-  //   1. Pristine import (!isDirty, importOrigin set): stamp origin directly — stored
-  //      turns are a pure projection of parse(origin), reproject is safe.
-  //   2. Edited import (isDirty, importOrigin is a text/share arm): stamp editor arm
-  //      carrying the import origin as `input`, so the original submitted content is
-  //      preserved as provenance ([LAW:no-silent-failure]). Turns are authoritative;
-  //      canonicalize/reproject see the editor arm and keep them verbatim.
-  //   3. From-scratch authoring or edited editor-origin draft: bare editor arm with
-  //      source for styling — no upstream text to preserve.
-  // isDirty is the reliable signal: it compares same-source turns, and text/share
-  // imports have no usage events to be stripped, so "not dirty" guarantees turns
-  // equal reproject(origin).
+  // [LAW:one-source-of-truth] The origin to STAMP at submit, keyed on the origin
+  // shape and the derived isDirty:
+  //   1. Replayable origin, clean: stamp it directly — the stored turns are a pure
+  //      projection of parse(origin), so the server's canonicalize replays it.
+  //   2. Replayable origin, dirty: the turns are the authority; stamp an editor arm
+  //      carrying the origin as `input`, so the imported source is preserved as
+  //      provenance rather than silently discarded ([LAW:no-silent-failure]) and
+  //      canonicalize keeps the turns verbatim.
+  //   3. Editor-arm origin (a restored draft that had already collapsed): the turns
+  //      were already the authority when it was captured — it rides through
+  //      unchanged, nested provenance intact.
+  //   4. No origin: from-scratch authoring — bare editor arm, no provenance.
   get submitOrigin(): Origin {
     const o = this.importOrigin;
-    if (o !== null && !this.isDirty) return o;
-    if (o !== null && o.kind !== "editor") {
-      return { kind: "editor", source: sourceOf(o), input: o };
-    }
-    return { kind: "editor", source: sourceOf(o) };
+    if (o === null) return { kind: "editor", source: null };
+    if (o.kind === "editor") return o;
+    return this.isDirty ? { kind: "editor", source: sourceOf(o), input: o } : o;
   }
 
   get canSubmit(): boolean {
@@ -257,63 +273,103 @@ export class EditorStore {
     return this.blocks.length > 0 && !this.busy;
   }
 
-  // [LAW:one-source-of-truth] "Were the blocks hand-edited since the last parse?"
-  // is derived, never a stored flag. Turn is pure JSON data (it is exactly what
-  // crosses the wire to /api/paste), so structural-string equality is exact for
-  // content and stable for identically-shaped turns. The asymmetry is the whole
-  // point: a false "dirty" only over-warns (harmless); it can never under-warn
-  // into the silent clobber [LAW:no-silent-failure] forbids.
-  get isDirty(): boolean {
-    return JSON.stringify(this.turns) !== JSON.stringify(this.pristineTurns);
+  // [LAW:one-source-of-truth] The baseline dirtiness is judged against is the
+  // captured origin ITSELF: the authorable turns replaying it reproduces, or null
+  // when nothing replays (no origin, an editor arm, or a capture that reproduces
+  // nothing). Derived on demand, never a load-time snapshot — a snapshot goes
+  // stale the moment a hand-edited draft is restored: it would report "clean",
+  // submit would stamp the raw origin, and the server's canonicalize would
+  // re-derive the origin and silently drop the edits [LAW:no-silent-failure].
+  private get replayedTurns(): ReadonlyArray<AuthorableTurn> | null {
+    if (this.importOrigin === null || this.importOrigin.kind === "editor") return null;
+    const replayed = reprojectOrigin(this.importOrigin);
+    return replayed === null ? null : replayed.filter(isAuthorable);
   }
 
-  // The one concept the reparse-confirm guards: there is visible edited work a
-  // reparse would destroy. Empty editor or an untouched parse: nothing to lose.
+  // Dirty = the blocks are NOT a pure projection of a replayable origin: edited
+  // since derive/fetch, hand-authored from scratch, or restored already diverged.
+  // Turn is pure JSON data (exactly what crosses the wire to /api/paste), so
+  // structural-string equality is exact for content and stable for identically-
+  // shaped turns. The asymmetry is the whole point: a false "dirty" only
+  // over-warns (harmless); it can never under-warn into the silent clobber
+  // [LAW:no-silent-failure] forbids.
+  get isDirty(): boolean {
+    const replayed = this.replayedTurns;
+    if (replayed === null) return this.blocks.length > 0;
+    return JSON.stringify(this.turns) !== JSON.stringify(replayed);
+  }
+
+  // The concept the load-side confirm guards: there is visible non-derived work a
+  // replacement would destroy. Empty editor or a pure projection: nothing to lose.
   get wouldClobber(): boolean {
     return this.blocks.length > 0 && this.isDirty;
   }
 
-  // ── Import box ──────────────────────────────────────────────────────────
+  // The Text pane's derive replaces the blocks with parse(sourceText). That is
+  // silent only when the blocks already ARE a projection of the pane's text (a
+  // clean text-arm origin). A pristine url fetch is clean yet NOT derived from
+  // the pane — its source is the fetched bytes (text-editing those is s3j.4) —
+  // so deriving over it must also confirm rather than silently swap a fetched
+  // conversation for a raw parse of whatever sits in the pane.
+  get deriveWouldClobber(): boolean {
+    return this.wouldClobber || (this.blocks.length > 0 && this.importOrigin?.kind === "url");
+  }
 
-  setImport(text: string): void {
-    this.importText = text;
-    // [LAW:one-source-of-truth] No reconciliation needed: importKind is derived
-    // from importText + userKind, so it re-snaps to the best detection the
-    // instant the text changes. A user override that no longer matches the text
-    // is dropped by the getter, not patched here.
+  // ── Source pane ─────────────────────────────────────────────────────────
+
+  // [LAW:one-source-of-truth] Editing the source IS editing the authority; the
+  // blocks re-derive on every change through the same accept gate every other
+  // replacement passes, so a derive that would discard non-derived work stages
+  // for confirmation instead of clobbering. importKind is derived from
+  // sourceText + userKind, so it re-snaps to the best detection the instant the
+  // text changes; an override that no longer matches is dropped by the getter.
+  setSource(text: string): void {
+    this.sourceText = text;
     this.importError = null;
-    // Editing the import box invalidates any staged reparse: the confirm offered
-    // "replace with THAT parse", which no longer matches the text on screen.
+    // Any previously staged offer no longer matches the pane; derive() below
+    // re-stages against the current text or commits cleanly.
     this.pendingReparse = null;
+    this.derive();
   }
 
   setImportKind(kind: InputKind): void {
     this.userKind = kind;
     this.importError = null;
     this.pendingReparse = null;
+    this.derive();
   }
 
   setPlatform(platform: Platform | null): void {
     this.userPlatform = platform;
   }
 
-  // The single import action. "url" is the async fetch arm (delegates to the
-  // injected capability); every text kind parses synchronously and purely.
-  // [LAW:dataflow-not-control-flow] One entry point; the kind value selects the
-  // path, and `kind` narrows to a text arm after the url arm returns.
-  async ingest(): Promise<void> {
+  // [LAW:dataflow-not-control-flow] The continuous projection: parse the pane's
+  // text under the active kind and adopt the result. The url guard is the one
+  // honest branch — url is the async fetch arm (fetchUrl), not a sync parse.
+  // importKind is drawn from detectSources, which offers only kinds that parse
+  // this exact text, so the only reachable failure is the empty pane — which
+  // derives the empty conversation, the same state a fresh visit holds.
+  private derive(): void {
     const kind = this.importKind;
-    this.importError = null;
-    if (kind === "url") {
-      await this.fetchShare(this.importText.trim());
-      return;
-    }
-    const result = parseInput(textArmInput(kind, this.importText));
-    if (!result.ok) {
+    if (kind === "url") return;
+    const result = parseInput(textArmInput(kind, this.sourceText));
+    if (!result.ok && this.sourceText.trim().length > 0) {
+      // Unreachable while the detection invariant holds; surfaced loudly rather
+      // than wiping the blocks under an error [LAW:no-silent-failure].
       this.importError = result.reason;
       return;
     }
-    this.accept({ turns: result.turns, origin: result.origin });
+    const draft: Draft = result.ok
+      ? { turns: result.turns, origin: result.origin }
+      : { turns: [], origin: null };
+    this.accept(draft, "derive");
+  }
+
+  // The one async import action: fetch the pasted link through the injected
+  // capability. Text kinds never come here — they derive continuously as the
+  // source is typed.
+  async fetchUrl(): Promise<void> {
+    await this.fetchShare(this.sourceText.trim());
   }
 
   private async fetchShare(url: string): Promise<void> {
@@ -326,16 +382,17 @@ export class EditorStore {
         this.importError = result.reason;
         return;
       }
-      this.accept({ turns: result.turns, origin: result.origin });
+      this.accept({ turns: result.turns, origin: result.origin }, "load");
     });
   }
 
   // [LAW:single-enforcer] An agent handoff: restore a server-stored draft
   // (/api/draft) for review. Mirrors fetchShare's busy/error orchestration and
-  // converges on the SAME accept() loader, so a handed-off draft enters editing
-  // exactly as a fetched import does — its turns become the dirty baseline (not
-  // instantly "dirty"), and a missing/expired draft surfaces through the same
-  // importError channel, never a silent empty editor [LAW:no-silent-failure].
+  // converges on the SAME accept() gate, so a handed-off draft enters editing
+  // exactly as a fetched import does — dirtiness re-derives against the adopted
+  // origin (clean when the turns are its pure projection), and a missing/expired
+  // draft surfaces through the same importError channel, never a silent empty
+  // editor [LAW:no-silent-failure].
   async loadServerDraft(id: string): Promise<void> {
     this.busy = true;
     this.importError = null;
@@ -350,30 +407,40 @@ export class EditorStore {
       // can DELETE this exact KV draft. Set only on success — a failed restore leaves
       // serverDraftId null, so discarding the resulting empty editor revokes nothing.
       this.serverDraftId = id;
-      this.accept(result.draft);
+      this.accept(result.draft, "load");
     });
   }
 
   // ── Blocks ──────────────────────────────────────────────────────────────
 
-  // [LAW:single-enforcer] The one decision every freshly-parsed/fetched batch
-  // passes through: replace now, or stage for confirmation. The value
-  // (wouldClobber) selects the outcome — both are legitimate data states, not a
-  // skipped operation. No `force` flag duplicates this decision at callsites.
-  private accept(draft: Draft): void {
-    if (this.wouldClobber) {
-      this.pendingReparse = draft;
+  // [LAW:single-enforcer] The one decision every replacement batch passes
+  // through: commit now, or stage for confirmation. The gate is via-specific — a
+  // load may silently replace any clean projection, a derive only one whose
+  // source is the pane's own text — but the stage/commit mechanism is this
+  // single point. No `force` flag duplicates the decision at callsites.
+  private accept(draft: Draft, via: AdoptionVia): void {
+    const clobbers = via === "load" ? this.wouldClobber : this.deriveWouldClobber;
+    if (clobbers) {
+      this.pendingReparse = { draft, via };
       return;
     }
-    this.loadTurns(draft);
+    this.commit({ draft, via });
   }
 
-  // The user confirmed a clobbering reparse. Commit the staged turns through the
-  // same single loader; a no-op when nothing is staged (idempotent confirm).
+  // [LAW:dataflow-not-control-flow] The adoption's own discriminator selects the
+  // committer: a load is a full adoption (loadTurns), a derive a light one
+  // (applyDerive) — so a confirmed mid-typing derive never yanks the view.
+  private commit(adoption: PendingAdoption): void {
+    if (adoption.via === "load") this.loadTurns(adoption.draft);
+    else this.applyDerive(adoption.draft);
+  }
+
+  // The user confirmed a clobbering replacement. Commit the staged adoption
+  // through its own committer; a no-op when nothing is staged (idempotent).
   confirmReparse(): void {
     const pending = this.pendingReparse;
     if (pending === null) return;
-    this.loadTurns(pending);
+    this.commit(pending);
   }
 
   cancelReparse(): void {
@@ -381,39 +448,46 @@ export class EditorStore {
   }
 
   // [LAW:single-enforcer] Restoring a persisted draft reuses the one loader every
-  // parse/fetch passes through, so the dirty baseline (pristineTurns) is set to
-  // the restored turns and the draft is not instantly "dirty". Called once at
-  // mount before any edit; an empty draft ([]) loads to the same empty editor a
-  // fresh visit gets, so the caller never branches on "is there a draft".
+  // batch load passes through; dirtiness then re-derives against the adopted
+  // origin, so a draft whose turns already diverged from it restores as dirty by
+  // design — its edits keep surviving submit instead of being re-derived away.
+  // Called once at mount before any edit; an empty draft ([]) loads to the same
+  // empty editor a fresh visit gets, so the caller never branches on "is there
+  // a draft".
   restoreDraft(draft: Draft): void {
     this.loadTurns(draft);
   }
 
-  // [LAW:single-enforcer] The only place parsed/fetched turns become editable
-  // blocks. Replaces the list wholesale, resets the dirty baseline to the loaded
-  // turns, adopts the batch's provenance, clears any pending decision, and snaps
-  // to the blocks view.
-  private loadTurns(draft: Draft): void {
-    // [LAW:types-are-the-program] usage turns are source-derived token
-    // accounting, not author-able content; the editor holds only AuthorableTurns,
-    // so they are dropped here at the single load seam. Editing a transcript
-    // discards token counts that no longer describe the edited content — the
-    // baseline is set to the same filtered set so the editor isn't instantly
-    // "dirty" against turns it never held.
-    const editable = draft.turns.filter(isAuthorable);
-    this.blocks = toBlocks(editable);
-    this.pristineTurns = editable;
+  // The light adoption — blocks + provenance only, shared core of every commit.
+  // [LAW:types-are-the-program] usage/subagent turns are source-derived, not
+  // author-able content; the editor holds only AuthorableTurns, so they are
+  // dropped here at the single seam where turns become blocks. The dirty
+  // baseline needs no reset: it is DERIVED from the adopted origin
+  // (replayedTurns), which reprojects to this same filtered set.
+  private applyDerive(draft: Draft): void {
+    this.blocks = toBlocks(draft.turns.filter(isAuthorable));
     this.importOrigin = draft.origin;
     this.pendingReparse = null;
-    this.view = "blocks";
-    // [LAW:dataflow-not-control-flow] The theme override is a VALUE the draft
-    // carries, not a branch on how loadTurns was reached. A fresh parse/fetch
-    // carries no override, so this snaps theme back to auto-detection exactly as
-    // before ([LAW:no-mode-explosion] — a stale override diverging from new
-    // content is a hidden mode); a restored draft (server handoff or localStorage)
-    // that carried an explicit pick honors it, so the editor reopens — and later
-    // republishes — the same theme that was saved ([LAW:one-source-of-truth]).
+  }
+
+  // [LAW:single-enforcer] The full adoption every batch load (fetch, handoff,
+  // restore, discard, confirmed load) passes through, built on the same light
+  // core the derive uses, plus the load-only resets:
+  //   - Theme: a VALUE the draft carries, not a branch on how loadTurns was
+  //     reached. A fresh fetch carries no override, so theme re-snaps to
+  //     detection; a restored draft's explicit pick is honored, so the editor
+  //     reopens — and later republishes — the theme that was saved.
+  //   - Source pane: syncs to the plain-text source the adopted origin carries
+  //     (a restored draft would otherwise show a stale pane over new blocks);
+  //     origins without one (url/editor/none) leave the pane alone.
+  //   - Landing view: loaded content is for reviewing — Preview; an empty load
+  //     (discard, fresh visit) lands in Text, the paste target.
+  private loadTurns(draft: Draft): void {
+    this.applyDerive(draft);
     this.userPlatform = draft.platformOverride ?? null;
+    const src = sourceTextOf(draft.origin);
+    if (src !== null) this.sourceText = src;
+    this.view = this.blocks.length === 0 ? "text" : "preview";
   }
 
   // [LAW:dataflow-not-control-flow] The one card mutation. The view computes the
@@ -505,6 +579,14 @@ export class EditorStore {
   redactSecrets(): void {
     this.blocks = this.blocks.map((b) => ({ id: b.id, turn: scrubTurn(b.turn) }));
     if (this.importOrigin !== null) this.importOrigin = scrubOrigin(this.importOrigin);
+    // [LAW:one-source-of-truth] The pane is the live copy of the origin's text,
+    // so it re-syncs from the freshly-scrubbed origin — the same origin→pane
+    // sync loadTurns performs. Without this the pane keeps DISPLAYING the
+    // secret the author just removed, and the next keystroke's derive would
+    // silently re-adopt it from the un-scrubbed text [LAW:no-silent-failure].
+    // scrubOrigin stays the one scrub enforcer; the pane never gets its own.
+    const src = sourceTextOf(this.importOrigin);
+    if (src !== null) this.sourceText = src;
   }
 
   // ── View + submit ───────────────────────────────────────────────────────
@@ -545,13 +627,13 @@ export class EditorStore {
 
   // [LAW:single-enforcer] Route the full block/provenance/view reset through the
   // one loader rather than duplicating loadTurns' resets at a second callsite.
-  // The import-scratch fields (importText, userKind, importError, submitError)
-  // are cleared here because loadTurns deliberately leaves them alone — the import
-  // box must survive a parse/fetch/draft-restore; discard returns to fresh-visit.
+  // The source-pane scratch (sourceText, userKind, importError, submitError) is
+  // cleared here because loadTurns deliberately leaves it alone for origins that
+  // carry no text — discard returns to the fresh-visit state.
   // [LAW:effects-at-boundaries] The store never touches localStorage directly.
   discard(): void {
     this.loadTurns({ turns: [], origin: null });
-    this.importText = "";
+    this.sourceText = "";
     this.userKind = null;
     this.importError = null;
     this.submitError = null;
