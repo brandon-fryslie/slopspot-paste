@@ -789,6 +789,11 @@ body.search-ready .semantic-search { display: block; }
 body.search-active .minimap-marker { opacity: 0.14; }
 body.search-active .minimap-marker:hover,
 body.search-active .minimap-marker:focus-visible { opacity: 0.6; }
+/* The reader's scroll position stays legible mid-search: the in-view marker
+   holds an intermediate lift — above the dim, clearly below the hits — so
+   position awareness survives without impersonating a hit. An active marker
+   that IS a hit takes the full hit opacity via the later rule. */
+body.search-active .minimap-marker.is-active { opacity: 0.45; }
 body.search-active .minimap-marker.is-hit { opacity: 1; }
 body.search-active .minimap-marker.is-hit .minimap-line {
   box-shadow: 0 0 5px color-mix(in srgb, var(--minimap-color, var(--fg-muted)) 70%, transparent);
