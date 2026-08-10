@@ -1279,8 +1279,13 @@ const continuationHtml = renderContinuationControl(dialogue);
           msg.textContent = s.reason;
           box.appendChild(msg);
           // Retry re-enters through the ONE submit path below, so the empty-query
-          // mapping and the fetch stay single-owner [LAW:single-enforcer].
-          box.appendChild(makeButton("tldr-btn search-retry", "Try again", () => form.requestSubmit()));
+          // mapping and the fetch stay single-owner [LAW:single-enforcer]. A
+          // dispatched cancelable submit event (not requestSubmit, Safari ≥16 only;
+          // never form.submit(), which would BYPASS the handler into a native GET
+          // navigation) — the handler needs only preventDefault + the input value.
+          box.appendChild(makeButton("tldr-btn search-retry", "Try again", () =>
+            form.dispatchEvent(new Event("submit", { cancelable: true })),
+          ));
           return [box];
         }
       }
