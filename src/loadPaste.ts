@@ -10,7 +10,7 @@
 // status and message — never a null the caller might read as an empty conversation.
 
 import type { Conversation, PasteLoad } from "./types";
-import { getConversation } from "./storage";
+import { getConversation, type PasteKv } from "./storage";
 import { isValidSlug } from "./slug";
 import { isHiddenFromPublic } from "./types";
 
@@ -21,7 +21,10 @@ import { isHiddenFromPublic } from "./types";
 export type { PasteLoad };
 
 export const loadViewablePaste = async (
-  kv: KVNamespace,
+  // [LAW:composability] The structural KV slice (storage.PasteKv), not the ambient
+  // Worker type: env.PASTES assigns as-is, and the Node check scripts can drive this
+  // gate with a Map-backed stub.
+  kv: Pick<PasteKv, "get">,
   slug: string | undefined,
   now: number,
 ): Promise<PasteLoad> => {

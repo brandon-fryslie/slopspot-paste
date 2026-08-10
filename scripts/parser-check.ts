@@ -49,10 +49,12 @@ import {
   renderDialogueForPrompt,
   summaryRequestBody,
   extractSummary,
-  turnsContentHash,
+  dialogueContentHash,
   summarize,
   SUMMARY_SYSTEM_PROMPT,
 } from "../src/summary";
+import { resolveSummary, type SummarizeFn } from "../src/summaryService";
+import type { PasteKv } from "../src/storage";
 import { isJsonRequest, decodeSlug } from "../src/http";
 import { FALLBACK_WAIT, PROVIDER_REGISTRY, resolveProvider } from "../src/providers";
 
@@ -3146,16 +3148,16 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
   const nullBody = extractSummary(null);
   assert("null body → ok:false, no throw", !nullBody.ok);
 
-  // [LAW:one-source-of-truth] The content hash is deterministic in the turns and
-  // changes when the turns change — this is what makes the cache serve a summary
+  // [LAW:one-source-of-truth] The content hash is deterministic in the dialogue and
+  // changes when the dialogue changes — this is what makes the cache serve a summary
   // only for the exact content it describes.
   await (async () => {
-    const h1 = await turnsContentHash(dialogueTurns);
-    const h2 = await turnsContentHash(dialogueTurns);
-    assertEq("turnsContentHash is deterministic", h1, h2);
+    const h1 = await dialogueContentHash(dialogue);
+    const h2 = await dialogueContentHash(dialogue);
+    assertEq("dialogueContentHash is deterministic", h1, h2);
     assert("hash is a 64-char sha-256 hex string", /^[0-9a-f]{64}$/.test(h1));
     const editedTurns: Turn[] = [...dialogueTurns, { kind: "message", role: "user", content: "thanks" }];
-    const h3 = await turnsContentHash(editedTurns);
+    const h3 = await dialogueContentHash(deriveDialogue(editedTurns));
     assert("editing the turns mints a NEW hash (cache-busting)", h3 !== h1);
 
     // [LAW:no-silent-failure] A missing key is surfaced as configured:false BEFORE
@@ -3195,6 +3197,84 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "   " }),
     }));
     assertEq("decodeSlug treats a whitespace-only slug as absent (null)", decodedBlank, null);
+  })();
+}
+
+console.log("\nSummary reads the viewable projection (slopspot-summary-jjs):");
+{
+  // [LAW:verifiable-goals] The orchestration is driven end-to-end with an in-memory KV
+  // and a stubbed LLM — no network, every outcome asserted. The stub records the actual
+  // prompt text (renderDialogueForPrompt of the dialogue it is handed), so the
+  // assertions pin what the model RECEIVES, not the service's internal shape
+  // [LAW:behavior-not-structure].
+  const kvStore = new Map<string, string>();
+  // The Map-backed PasteKv slice — no cast: the stub implements exactly the two
+  // methods resolveSummary's signature asks for.
+  const kv: Pick<PasteKv, "get" | "put"> = {
+    get: async (key) => kvStore.get(key) ?? null,
+    put: async (key, value) => void kvStore.set(key, value),
+  };
+
+  const slug = "abcdefghjk";
+  const turns: Turn[] = [
+    { kind: "message", role: "user", content: "What did the private incident review conclude?" },
+    { kind: "message", role: "assistant", content: "OVERLAY-HIDDEN-CONCLUSION: the outage was caused by the unrotated key." },
+    { kind: "message", role: "user", content: "Understood, thanks!" },
+  ];
+  // Store the paste as its real KV record so the flow exercises the same read
+  // boundary (getConversation normalization, overlay validation) production hits.
+  const storeRecord = (overlay?: ReadonlyArray<unknown>): void =>
+    void kvStore.set(`paste:${slug}`, JSON.stringify({
+      slug, createdAt: 1, lifetime: { kind: "pinned" }, deletedAt: null,
+      turns, title: null, origin: null,
+      ...(overlay === undefined ? {} : { overlay }),
+    }));
+
+  const prompts: string[] = [];
+  const stub: SummarizeFn = async (dialogue) => {
+    prompts.push(renderDialogueForPrompt(dialogue));
+    return { ok: true, summary: `summary#${prompts.length}` };
+  };
+
+  await (async () => {
+    // The leak timeline: the summary is first generated while every turn is visible…
+    storeRecord();
+    const before = await resolveSummary(kv, slug, 5, {}, false, stub);
+    assert("pre-overlay resolve generates a summary", before.ok && !before.cached);
+    const again = await resolveSummary(kv, slug, 5, {}, false, stub);
+    assert("second resolve is served from cache", again.ok && again.cached);
+    assertEq("cache hit does not call the LLM again", prompts.length, 1);
+
+    // …then the owner hides the assistant turn. The cached summary was generated from
+    // content the reader can no longer see, so it must NOT be served: the cache key
+    // hashes the viewable dialogue, and the fresh prompt carries [redacted] in place.
+    storeRecord([{ kind: "hide", target: { kind: "turn", index: 1 } }]);
+    const hidden = await resolveSummary(kv, slug, 5, {}, false, stub);
+    assert("hiding a turn busts the stale cached summary", hidden.ok && !hidden.cached);
+    assertEq("the redacted paste regenerates via the LLM", prompts.length, 2);
+    const hiddenPrompt = prompts[1] ?? "";
+    assert("overlay-hidden content never reaches the prompt", !hiddenPrompt.includes("OVERLAY-HIDDEN-CONCLUSION"));
+    assert("the prompt sees the [redacted] marker in place", hiddenPrompt.includes("[redacted]"));
+    assert("still-visible turns reach the prompt", hiddenPrompt.includes("Understood, thanks!"));
+
+    // A collapse fold changes no readable content — the reader can expand it — so the
+    // pre-overlay summary still describes what the reader sees and the key holds.
+    storeRecord([{ kind: "collapse", target: { kind: "turn", index: 1 } }]);
+    const folded = await resolveSummary(kv, slug, 5, {}, false, stub);
+    assert("collapse-only overlay keeps the cache hit", folded.ok && folded.cached);
+    assert("fold-only edit serves the pre-overlay summary", folded.ok && folded.summary === "summary#1");
+    assertEq("no LLM call for a fold-only edit", prompts.length, 2);
+
+    // A feature overlay OMITS non-featured turns from every reader surface, so they
+    // are absent from the prompt too — not merely redacted.
+    storeRecord([{ kind: "feature", target: { kind: "turn", index: 0 } }]);
+    const featured = await resolveSummary(kv, slug, 5, {}, false, stub);
+    assert("feature overlay regenerates (viewable content changed)", featured.ok && !featured.cached);
+    assertEq("the featured paste regenerates via the LLM", prompts.length, 3);
+    const featuredPrompt = prompts[2] ?? "";
+    assert("non-featured turns are absent from the prompt",
+      !featuredPrompt.includes("Understood, thanks!") && !featuredPrompt.includes("OVERLAY-HIDDEN-CONCLUSION"));
+    assert("the featured turn is the whole prompt transcript", featuredPrompt.includes("incident review"));
   })();
 }
 
