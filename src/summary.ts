@@ -15,6 +15,7 @@
 // endpoint can answer "not configured" cleanly instead of 500ing.
 
 import type { Dialogue } from "./dialogue";
+import { contentHash } from "./contentHash";
 import { renderDialogueTranscript } from "./transcript";
 
 export type SummaryResult =
@@ -127,14 +128,10 @@ export const extractSummary = (body: CompletionResponse | null): SummaryResult =
 // prompt input is unchanged, so the cached summary still describes it. The model
 // name/version is deliberately NOT part of this key — a summary is a disposable
 // projection, regenerated on read, never stored authority coupled to its writer
-// [LAW:no-ambient-temporal-coupling].
-export const dialogueContentHash = async (dialogue: Dialogue): Promise<string> => {
-  const bytes = new TextEncoder().encode(JSON.stringify(dialogue));
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-};
+// [LAW:no-ambient-temporal-coupling]. The hash construction itself lives in
+// contentHash.ts — the one move shared with the vector-index key [LAW:single-enforcer].
+export const dialogueContentHash = (dialogue: Dialogue): Promise<string> =>
+  contentHash(dialogue);
 
 // [LAW:effects-at-boundaries] The single edge. All network activity for summarization
 // lives here; the interior above is pure. Returns the typed union — no throw crosses

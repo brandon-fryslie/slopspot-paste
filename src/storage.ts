@@ -216,82 +216,90 @@ export const getDraft = async (kv: Pick<PasteKv, "get">, id: string): Promise<Dr
   }
 };
 
-// [LAW:decomposition] Cached summaries are a SEPARATE concern from published
-// conversations and drafts: a DISPOSABLE derived projection, never authority. They
-// live under their own key prefix, keyed by slug PLUS a content hash of the viewable
-// dialogue — so a summary is served only for the exact reader-visible content it
-// describes, and any edit/refetch/overlay change (new hash) simply misses and
-// regenerates. [LAW:single-enforcer] all summary-cache
-// reads/writes own the prefix and key format here, the way paste:/draft: are owned
-// above; a caller supplies (slug, hash) and never assembles the KV key itself.
+// [LAW:decomposition] Cached derived projections — the TL;DR summary and the
+// semantic vector index — are a SEPARATE concern from published conversations and
+// drafts: DISPOSABLE, never authority. Each lives under its own key prefix, keyed
+// by slug PLUS a content hash of the exact viewable projection it derives from — so
+// a cached value is served only for the reader-visible content it describes, and
+// any edit/refetch/overlay change (new hash) simply misses and regenerates.
+// [LAW:single-enforcer] All derived-cache reads/writes own their prefix and key
+// format here, the way paste:/draft: are owned above; a caller supplies (slug, hash)
+// and never assembles the KV key itself.
 const SUMMARY_KEY_PREFIX = "summary:";
+const VECTOR_INDEX_KEY_PREFIX = "vectors:";
 
-// A generous backstop TTL. The hash busts the cache on content change, but a summary
-// is disposable and the model improves over time with no content change to bust it —
-// so the cache self-refreshes within this window, letting an improved model be picked
-// up WITHOUT baking the model version into the key (which would couple a disposable
-// cache to its writer). [LAW:no-ambient-temporal-coupling]
-const SUMMARY_TTL_SECONDS = 30 * 24 * 60 * 60;
+// A generous backstop TTL shared by every derived cache. The hash busts an entry on
+// content change, but the generator improves over time with no content change to
+// bust it — a better summarizer model, a new embedding model — so the cache
+// self-refreshes within this window, letting the improvement be picked up WITHOUT
+// baking a model version into the key (which would couple a disposable cache to its
+// writer). [LAW:no-ambient-temporal-coupling] It is also what makes the sweep's
+// failure path safe: an orphaned entry self-evicts.
+const DERIVED_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-const summaryKey = (slug: string, hash: string): string => `${SUMMARY_KEY_PREFIX}${slug}:${hash}`;
+const derivedKey = (prefix: string, slug: string, hash: string): string =>
+  `${prefix}${slug}:${hash}`;
 
-// [LAW:types-are-the-program] KV is a trust boundary, but a cached summary is a plain
-// string with no schema to validate — a hit is the string, a miss (or transient KV
-// error surfaced as absence) is null, and the caller regenerates. There is nothing to
-// corrupt: the authority is the turns, and the summary is re-derivable from them.
+// [LAW:one-type-per-behavior] The summary cache and the vector-index cache are one
+// behavior — best-effort string get/put under <prefix><slug>:<hash>, prefix sweep on
+// delete — differing only in prefix. One set of operations, instantiated per prefix
+// below, so the "a disposable cache is best-effort, never fatal" invariant is owned
+// HERE, once [LAW:single-enforcer]: a transient KV error must not become a Worker
+// 500, because a derived value can always be regenerated. This is the deliberate
+// OPPOSITE of loadViewablePaste's 503: an AUTHORITY read that fails surfaces loudly
+// (it cannot be worked around), but a DISPOSABLE cache read/write that fails is
+// worked around by regenerating the exact same value. [LAW:no-silent-failure] no
+// error vanishes — every failure is logged.
 //
-// [LAW:single-enforcer] The "a disposable cache is best-effort, never fatal" invariant
-// is owned HERE, in the cache ops, not scattered into every caller. A transient KV
-// error must not become a Worker 500 for either operation, because the summary can
-// always be regenerated. This is the deliberate OPPOSITE of loadViewablePaste's 503:
-// an AUTHORITY read that fails surfaces loudly (it cannot be worked around), but a
-// DISPOSABLE cache read/write that fails is worked around by regenerating the exact
-// same value. [LAW:no-silent-failure] neither error vanishes — both are logged.
-export const getCachedSummary = async (
+// [LAW:types-are-the-program] KV is a trust boundary, but the cached value is a
+// plain string with no schema owned here — a hit is the string, a miss (or transient
+// KV error surfaced as absence) is null, and the caller regenerates. A caller whose
+// value has internal structure (the vector index) validates it at ITS read boundary;
+// the authority is always the paste record, and the value is re-derivable from it.
+const getCachedDerived = async (
   kv: Pick<PasteKv, "get">,
-  slug: string,
-  hash: string,
+  key: string,
 ): Promise<string | null> => {
   try {
-    return await kv.get(summaryKey(slug, hash), "text");
+    return await kv.get(key, "text");
   } catch (err) {
-    // Surfaced as a cache miss so the caller regenerates the identical summary.
-    console.error(`getCachedSummary: KV read failed for slug ${slug}:`, err);
+    // Surfaced as a cache miss so the caller regenerates the identical value.
+    console.error(`derived cache: KV read failed for ${key}:`, err);
     return null;
   }
 };
 
-export const putCachedSummary = async (
+const putCachedDerived = async (
   kv: Pick<PasteKv, "put">,
-  slug: string,
-  hash: string,
-  summary: string,
+  key: string,
+  value: string,
 ): Promise<void> => {
   try {
-    await kv.put(summaryKey(slug, hash), summary, { expirationTtl: SUMMARY_TTL_SECONDS });
+    await kv.put(key, value, { expirationTtl: DERIVED_TTL_SECONDS });
   } catch (err) {
-    // The summary was already produced and is being returned to the caller; a failed
+    // The value was already produced and is being returned to the caller; a failed
     // write must not discard it. The write simply doesn't persist — the next request
     // regenerates and re-attempts the cache.
-    console.error(`putCachedSummary: KV write failed for slug ${slug}:`, err);
+    console.error(`derived cache: KV write failed for ${key}:`, err);
   }
 };
 
-// [LAW:one-way-deps] Sweep every cached summary derived from a slug. The summary
-// cache is a derived projection OF the paste (keyed summary:<slug>:<hash>), so when
-// the authority is hard-deleted its derivations must go too — otherwise a TL;DR of
-// deleted content lingers until its TTL. Paginated like listConversations because a
-// slug can accrue several summaries (one per content hash across edits/refetches).
-export const deleteCachedSummaries = async (
+// [LAW:one-way-deps] Sweep every cached derivation of a slug under one prefix. A
+// derived cache is a projection OF the paste, so when the authority is hard-deleted
+// its derivations must go too — otherwise a TL;DR or vector index of deleted content
+// lingers until its TTL. Paginated like listConversations because a slug can accrue
+// several entries (one per content hash across edits/refetches).
+const sweepCachedDerived = async (
   kv: Pick<PasteKv, "list" | "delete">,
+  keyPrefix: string,
   slug: string,
 ): Promise<void> => {
   // [LAW:no-silent-failure] Best-effort, like the other cache ops: a kv.list/kv.delete
   // rejection here must not propagate through deleteConversation (which has already
   // removed the paste) and crash the purge loop for every subsequent record. Log
-  // loudly and return — orphaned summaries self-evict via SUMMARY_TTL_SECONDS anyway.
+  // loudly and return — orphaned entries self-evict via DERIVED_TTL_SECONDS anyway.
   try {
-    const prefix = `${SUMMARY_KEY_PREFIX}${slug}:`;
+    const prefix = `${keyPrefix}${slug}:`;
     let cursor: string | undefined;
     do {
       const page = await kv.list({ prefix, cursor });
@@ -302,26 +310,66 @@ export const deleteCachedSummaries = async (
       const results = await Promise.allSettled(page.keys.map((k) => kv.delete(k.name)));
       for (const r of results) {
         if (r.status === "rejected") {
-          console.error(`deleteCachedSummaries: KV delete failed for slug ${slug}:`, r.reason);
+          console.error(`derived cache: KV delete failed under ${prefix}:`, r.reason);
         }
       }
       cursor = page.list_complete ? undefined : page.cursor;
     } while (cursor);
   } catch (err) {
-    console.error(`deleteCachedSummaries: KV list failed for slug ${slug}:`, err);
+    console.error(`derived cache: KV list failed under ${keyPrefix}${slug}::`, err);
   }
 };
 
-// Permanently remove a paste record AND its derived summary cache — called only by
-// the purge path after the grace window. [LAW:one-way-deps] deleting the authority
-// sweeps its derivations, so a hard delete leaves no orphaned summary behind.
-// [LAW:no-silent-failure]: callers log what they delete.
+export const getCachedSummary = (
+  kv: Pick<PasteKv, "get">,
+  slug: string,
+  hash: string,
+): Promise<string | null> => getCachedDerived(kv, derivedKey(SUMMARY_KEY_PREFIX, slug, hash));
+
+export const putCachedSummary = (
+  kv: Pick<PasteKv, "put">,
+  slug: string,
+  hash: string,
+  summary: string,
+): Promise<void> => putCachedDerived(kv, derivedKey(SUMMARY_KEY_PREFIX, slug, hash), summary);
+
+export const deleteCachedSummaries = (
+  kv: Pick<PasteKv, "list" | "delete">,
+  slug: string,
+): Promise<void> => sweepCachedDerived(kv, SUMMARY_KEY_PREFIX, slug);
+
+// The vector-index instantiation: the cached value is the JSON of the chunk
+// vectors the search service derives (searchService.ts owns that shape and
+// validates it on read — KV is a trust boundary, and this layer stores strings).
+export const getCachedVectorIndex = (
+  kv: Pick<PasteKv, "get">,
+  slug: string,
+  hash: string,
+): Promise<string | null> => getCachedDerived(kv, derivedKey(VECTOR_INDEX_KEY_PREFIX, slug, hash));
+
+export const putCachedVectorIndex = (
+  kv: Pick<PasteKv, "put">,
+  slug: string,
+  hash: string,
+  indexJson: string,
+): Promise<void> => putCachedDerived(kv, derivedKey(VECTOR_INDEX_KEY_PREFIX, slug, hash), indexJson);
+
+export const deleteCachedVectorIndexes = (
+  kv: Pick<PasteKv, "list" | "delete">,
+  slug: string,
+): Promise<void> => sweepCachedDerived(kv, VECTOR_INDEX_KEY_PREFIX, slug);
+
+// Permanently remove a paste record AND its derived caches — called only by the
+// purge path after the grace window. [LAW:one-way-deps] deleting the authority
+// sweeps its derivations, so a hard delete leaves no orphaned summary or vector
+// index behind. [LAW:no-silent-failure]: callers log what they delete.
 export const deleteConversation = async (
   kv: Pick<PasteKv, "list" | "delete">,
   slug: string,
 ): Promise<void> => {
   await kv.delete(KEY_PREFIX + slug);
   await deleteCachedSummaries(kv, slug);
+  await deleteCachedVectorIndexes(kv, slug);
 };
 
 // [LAW:decomposition] The draft-prefix counterpart of deleteConversation: revoke a
