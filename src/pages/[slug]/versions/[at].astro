@@ -20,10 +20,14 @@ if (!load.ok) {
 }
 const conversation = load.conversation;
 
-// The stamp is the supersededAt instant that keys the record (versionPath mints these
-// links). A non-numeric segment addresses nothing — it reads as absence and falls into
-// the outcome's not-found arm, the same truth as a numeric stamp that was never archived.
-const stamp = at !== undefined && /^\d{1,13}$/.test(at) ? Number(at) : null;
+// The stamp is the supersededAt instant that keys the record. [LAW:one-source-of-truth]
+// The accepted shape is exactly what versionPath mints: the instant's canonical decimal
+// rendering — no leading zeros, unbounded length (the padded 13-digit form is the KV
+// key's concern; getPasteVersion re-pads via versionKey). Any other segment addresses
+// nothing — it reads as absence and falls into the outcome's not-found arm, the same
+// truth as a canonical stamp that was never archived. Leading-zero aliases are rejected
+// like the t<N> permalink route rejects them: one resource, one URL.
+const stamp = at !== undefined && /^(0|[1-9]\d*)$/.test(at) ? Number(at) : null;
 const version =
   stamp === null ? null : await getPasteVersion(env.PASTES, conversation.slug, stamp);
 
