@@ -1106,6 +1106,8 @@ const continuationHtml = renderContinuationControl(dialogue);
   </script>
 
   <script>
+    import { answerNodes } from "../answerCitations";
+
     // [LAW:decomposition] The retrieval affordances — semantic search AND
     // ask-this-conversation — are ONE part, because they share one seam: the
     // minimap rail. Each owns its own query box, region, and state union, but a
@@ -1387,26 +1389,6 @@ const continuationHtml = renderContinuationControl(dialogue);
       }
     };
 
-    // The answer paragraph's children: split on the [t<N>] tag grammar and turn
-    // exactly the tags the server certified as citations into jump links — the
-    // same #t<N> anchors every outline row targets. An uncited tag (the server
-    // filtered it, or the model mangled one) stays plain text: linkification is a
-    // lookup in the citation map, not trust in the model [LAW:types-are-the-program].
-    const answerNodes = (answer: string, citations: OutlineRow[]): Node[] => {
-      const byIndex = new Map(citations.map((c) => [c.index, c]));
-      return answer.split(/(\[t\d+\])/).map((part) => {
-        const tag = /^\[t(\d+)\]$/.exec(part);
-        const row = tag ? byIndex.get(Number(tag[1])) : undefined;
-        if (!row) return document.createTextNode(part);
-        const link = document.createElement("a");
-        link.className = "ask-cite";
-        link.href = "#" + row.anchor;
-        link.title = row.label;
-        link.textContent = part;
-        return link;
-      });
-    };
-
     // [LAW:dataflow-not-control-flow] The ask region's markup: the same
     // exhaustive-switch projection as the search region's. The answer lands as
     // text nodes and anchor elements built here — never innerHTML, so even a
@@ -1430,9 +1412,12 @@ const continuationHtml = renderContinuationControl(dialogue);
           label.textContent = "Answer";
           head.appendChild(label);
           head.appendChild(makeButton("tldr-btn ask-clear", "Clear", clearAsk));
+          // answerNodes (answerCitations.ts — shared with its check) splits the
+          // answer on the [t<N>] grammar and links exactly the certified
+          // citations to their anchors; an uncited tag stays plain text.
           const p = document.createElement("p");
           p.className = "ask-answer";
-          for (const node of answerNodes(s.answer, s.citations)) p.appendChild(node);
+          for (const node of answerNodes(document, s.answer, s.citations)) p.appendChild(node);
           if (s.citations.length === 0) return [head, p];
           // Cited turns as outline rows under the answer — the reader's jump list,
           // the same affordance a search hit row is.
