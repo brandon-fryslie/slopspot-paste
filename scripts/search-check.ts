@@ -194,3 +194,38 @@ console.log("\nThe viewable-paste gate holds for search:");
   assert("an unknown slug is a 404, not a search over nothing",
     !missing.ok && missing.status === 404);
 }
+
+console.log("\nEmbedding failures surface as distinct 502s, never a silent empty result:");
+{
+  // A second paste so failure runs hit their own cache states without disturbing
+  // the counts above. The failing embedder returns the boundary's typed refusal —
+  // the same value shape a real Workers AI outage produces.
+  const slug2 = "abcdefghjm";
+  kvStore.set(`paste:${slug2}`, JSON.stringify({
+    slug: slug2, createdAt: 1, lifetime: { kind: "pinned" }, deletedAt: null,
+    turns, title: null, origin: null,
+  }));
+  const failStub: EmbedFn = async () => ({ ok: false, reason: "model outage" });
+
+  // Cold cache: the CHUNK-INDEX embed is the first call to fail.
+  const indexFail = await resolveSearch(kv, slug2, "banana", 5, untouchableAi, failStub);
+  assert("a chunk-index embed failure is a 502 naming the indexing step",
+    !indexFail.ok && indexFail.status === 502 && indexFail.error.includes("Indexing failed: model outage"));
+  assertEq("a failed index is not cached (still only the first paste's three keys)", vectorKeys().length, 3);
+
+  // Warm the cache with the good stub, then fail: only the QUERY embed remains.
+  const warm = await resolveSearch(kv, slug2, "banana", 5, untouchableAi, embedStub);
+  assert("the warm-up resolve builds the second paste's index", warm.ok && !warm.indexCached);
+  const queryFail = await resolveSearch(kv, slug2, "banana", 5, untouchableAi, failStub);
+  assert("a query embed failure on a cached index is a 502 naming the query step",
+    !queryFail.ok && queryFail.status === 502 && queryFail.error.includes("Query embedding failed: model outage"));
+
+  // A soft-deleted paste is gone from every reader surface, search included.
+  kvStore.set(`paste:${slug2}`, JSON.stringify({
+    slug: slug2, createdAt: 1, lifetime: { kind: "pinned" }, deletedAt: 3,
+    turns, title: null, origin: null,
+  }));
+  const deleted = await resolveSearch(kv, slug2, "banana", 5, untouchableAi, embedStub);
+  assert("a soft-deleted paste is a 410, same as /<slug>",
+    !deleted.ok && deleted.status === 410);
+}
