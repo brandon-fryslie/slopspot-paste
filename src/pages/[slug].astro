@@ -210,6 +210,28 @@ const continuationHtml = renderContinuationControl(dialogue);
   */}
   <section class="tldr" hidden aria-live="polite" data-slug={slug}></section>
 
+  {/*
+    [LAW:effects-at-boundaries] Semantic in-page search: the server emits only this
+    inert form and an empty results region — the ranked hits are a network fact the
+    client fetches from /api/search on demand, never server-rendered state.
+    [LAW:dataflow-not-control-flow] display:none until the script confirms it can act
+    and adds body.search-ready (the compare-form reveal): with JavaScript disabled the
+    reader's page is unchanged and never carries a dead search box — /api/search is
+    JSON-only by design, so there is no no-JS form arm this could degrade to.
+    aria-live announces each results transition (searching → hits / error).
+  */}
+  <section class="semantic-search">
+    <form class="search-form">
+      <label class="search-label" for="semantic-search-input">Search this conversation</label>
+      <span class="search-field">
+        <input class="search-input" id="semantic-search-input" type="search" autocomplete="off"
+          spellcheck="false" placeholder="ask in your own words…" />
+        <button class="mono-pill search-go" type="submit">Search</button>
+      </span>
+    </form>
+    <div class="search-results" aria-live="polite"></div>
+  </section>
+
   {outline.length > 0 && (
     <details class="spine-outline">
       <summary class="spine-outline-summary">
@@ -397,6 +419,11 @@ const continuationHtml = renderContinuationControl(dialogue);
       btn.type = "button";
       btn.className = "minimap-marker";
       btn.dataset.kind = el.dataset.kind ?? "";
+      // [LAW:one-source-of-truth] The marker carries the SAME data-index its turn
+      // carries — the renderer's spine index, which is also the search hit's `index`
+      // and the /t<N> anchor number. The semantic-search script joins hits to
+      // markers on this attribute; it is never a second numbering.
+      btn.dataset.index = String(index);
       if (el.dataset.role) btn.dataset.role = el.dataset.role;
       btn.setAttribute("aria-label", `Jump to ${markerLabel(el)}`);
       // [LAW:no-ambient-temporal-coupling] Native smooth scroll; the browser
@@ -1051,6 +1078,262 @@ const continuationHtml = renderContinuationControl(dialogue);
     // never reaches here, so the region stays display:none and the page is unchanged.
     region.hidden = false;
     render({ kind: "idle" });
+  </script>
+
+  <script>
+    // [LAW:decomposition] Semantic search is its own part, cut apart from the
+    // minimap/copy and TL;DR scripts: it owns exactly the query box, the ranked-hits
+    // region, and the hit paint on the rail. [LAW:effects-at-boundaries] its single
+    // network edge is the /api/search fetch; everything else is a pure projection of
+    // one state value.
+    //
+    // [LAW:no-defensive-null-guards] The page renders .semantic-search (with its
+    // form, input, button, and results region) and .conversation unconditionally,
+    // so a missing one is a broken template invariant — assert once, loudly, like
+    // the sibling scripts.
+    const searchSection = document.querySelector<HTMLElement>(".semantic-search");
+    const searchConversation = document.querySelector<HTMLElement>(".conversation");
+    if (!searchSection || !searchConversation) {
+      throw new Error("required .semantic-search or .conversation section missing");
+    }
+    const form = searchSection.querySelector<HTMLFormElement>(".search-form");
+    const input = searchSection.querySelector<HTMLInputElement>(".search-input");
+    const go = searchSection.querySelector<HTMLButtonElement>(".search-go");
+    const results = searchSection.querySelector<HTMLElement>(".search-results");
+    if (!form || !input || !go || !results) {
+      throw new Error("search section is missing its form, input, button, or results region");
+    }
+
+    // [LAW:one-source-of-truth] slug from the one server-rendered data-slug on
+    // .conversation, like every sibling script — never re-derived from location.
+    const slug = searchConversation.dataset.slug ?? "";
+
+    // The wire shape of one /api/search hit: OutlineEntry & {score} (searchService).
+    // `index` is the renderer's spine index — the SAME number the turn's data-index
+    // and the marker's data-index carry — `anchor` the t<N> id the renderer emitted,
+    // `label` the same derived text the outline and minimap show. `role` is data for
+    // the dot's hue; `score` already ordered the hits server-side and is not shown.
+    type SearchHit = {
+      index: number;
+      anchor: string;
+      role: string;
+      label: string;
+      score: number;
+    };
+
+    // [LAW:types-are-the-program] The results region's total state — the TL;DR
+    // mount's discriminated-union move: every screen is one representable value and
+    // the region is rebuilt whole per transition, so stale hits during a fetch or a
+    // Clear control while searching are unrepresentable rather than defended against.
+    type SearchState =
+      | { kind: "idle" }
+      | { kind: "searching" }
+      | { kind: "ready"; hits: SearchHit[] }
+      | { kind: "error"; reason: string };
+
+    // Cosine scores cluster high (a3k.4's live run: best ~0.70, next ~0.53), so the
+    // ranking is trustworthy but an absolute score threshold is not — show top-N.
+    const TOP_N = 8;
+
+    const makeButton = (
+      className: string,
+      label: string,
+      onClick: () => void,
+    ): HTMLButtonElement => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = className;
+      btn.textContent = label;
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+
+    // [LAW:no-ambient-temporal-coupling] The ONE in-flight owner. The disabled
+    // submit button blocks a second submit, but the native clear X on a
+    // type="search" input is not blocked — clear() can run mid-flight, and the
+    // abandoned fetch's continuation would otherwise resurrect results into an
+    // idle UI. clear() aborts the owner; search() supersedes it; and search()'s
+    // renders route through settle(), which drops a state whose controller was
+    // aborted — so a cleared search stays cleared, by value, not by timing luck.
+    let inFlight: AbortController | null = null;
+
+    // [LAW:effects-at-boundaries] The one network edge, mirroring the TL;DR's
+    // generate(): every outcome — dropped connection, non-JSON body, error status,
+    // hits — maps to a state value, never a silent return [LAW:no-silent-failure].
+    // A superseded/cleared fetch is the one deliberate exception: its owner already
+    // rendered the state that superseded it, so settle() drops it silently.
+    const search = async (query: string): Promise<void> => {
+      inFlight?.abort();
+      const ctl = new AbortController();
+      inFlight = ctl;
+      const settle = (s: SearchState): void => {
+        if (!ctl.signal.aborted) render(s);
+      };
+      render({ kind: "searching" });
+      const res = await fetch("/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug, query }),
+        signal: ctl.signal,
+      }).catch(() => null);
+      if (!res) {
+        settle({ kind: "error", reason: "Network error — could not reach search." });
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as
+        | { hits?: SearchHit[]; error?: string }
+        | null;
+      if (res.ok && Array.isArray(body?.hits)) {
+        // [LAW:dataflow-not-control-flow] How many hits to show is a VALUE derived
+        // from the corpus: at most TOP_N, and never more than half the ranked turns
+        // (the server ranks EVERY prose turn, so an uncapped slice on a small paste
+        // would light the whole rail and erase the hit distribution — a hit is only
+        // visibly distinct because a non-hit exists beside it).
+        const ranked = body.hits;
+        const shown = Math.min(TOP_N, Math.ceil(ranked.length / 2));
+        settle({ kind: "ready", hits: ranked.slice(0, shown) });
+        return;
+      }
+      // [LAW:no-silent-failure] Surface the server's own reason — a 502 embedding
+      // failure, a 410 expired — so a failed search is legible, never a blank region.
+      settle({ kind: "error", reason: body?.error ?? `Search failed (HTTP ${res.status}).` });
+    };
+
+    const clear = (): void => {
+      inFlight?.abort();
+      input.value = "";
+      render({ kind: "idle" });
+      input.focus();
+    };
+
+    // [LAW:dataflow-not-control-flow] The region's markup is a pure projection of
+    // the state value: one exhaustive switch, rebuilt whole on every transition.
+    // Labels and hit text land as textContent, never innerHTML.
+    const resultChildren = (s: SearchState): Node[] => {
+      switch (s.kind) {
+        case "idle":
+          return [];
+        case "searching": {
+          const status = document.createElement("div");
+          status.className = "search-status";
+          // Honest about the first-search index build (a3k.4 observed ~seconds on a
+          // 34-chunk paste) with ONE always-true message — no timer that escalates
+          // the copy [LAW:no-ambient-temporal-coupling].
+          status.textContent =
+            "Searching… a first search builds this paste’s index and can take a few seconds.";
+          return [status];
+        }
+        case "ready": {
+          const head = document.createElement("div");
+          head.className = "search-head";
+          const label = document.createElement("span");
+          label.className = "search-head-label";
+          // Zero hits means the paste has no searchable prose at all (the server
+          // ranks every prose-bearing turn) — the label states that, a value the
+          // data picked, not a separate screen.
+          label.textContent = s.hits.length > 0 ? "Best matches" : "No matches";
+          head.appendChild(label);
+          // [LAW:one-type-per-behavior] Clear is the SAME control as the TL;DR
+          // head's Regenerate — a tldr-btn secondary pill seated right in a head
+          // row — so it wears that base and the shared size group, not mono-pill
+          // (whose later cascade position would override the secondary size).
+          head.appendChild(makeButton("tldr-btn search-clear", "Clear", clear));
+          if (s.hits.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "search-empty";
+            empty.textContent = "Nothing searchable in this conversation.";
+            return [head, empty];
+          }
+          // [LAW:one-type-per-behavior] A hit row IS an outline row — the same
+          // role-dot + label anchor jumping to the same t<N> id — so it wears the
+          // outline's classes and the two surfaces can never drift apart in look
+          // or in how they address a turn [LAW:one-source-of-truth].
+          const list = document.createElement("ol");
+          list.className = "search-hits";
+          for (const hit of s.hits) {
+            const item = document.createElement("li");
+            item.className = "spine-outline-item";
+            const link = document.createElement("a");
+            link.className = "spine-outline-link";
+            link.href = "#" + hit.anchor;
+            const dot = document.createElement("span");
+            dot.className = "spine-outline-dot";
+            dot.dataset.role = hit.role;
+            dot.setAttribute("aria-hidden", "true");
+            const text = document.createElement("span");
+            text.className = "spine-outline-label";
+            text.textContent = hit.label;
+            link.appendChild(dot);
+            link.appendChild(text);
+            item.appendChild(link);
+            list.appendChild(item);
+          }
+          return [head, list];
+        }
+        case "error": {
+          const box = document.createElement("div");
+          box.className = "search-error";
+          box.setAttribute("role", "alert");
+          const msg = document.createElement("span");
+          msg.className = "search-error-msg";
+          msg.textContent = s.reason;
+          box.appendChild(msg);
+          // Retry re-enters through the ONE submit path below, so the empty-query
+          // mapping and the fetch stay single-owner [LAW:single-enforcer]. A
+          // dispatched cancelable submit event (not requestSubmit, Safari ≥16 only;
+          // never form.submit(), which would BYPASS the handler into a native GET
+          // navigation) — the handler needs only preventDefault + the input value.
+          box.appendChild(makeButton("tldr-btn search-retry", "Try again", () =>
+            form.dispatchEvent(new Event("submit", { cancelable: true })),
+          ));
+          return [box];
+        }
+      }
+    };
+
+    // [LAW:dataflow-not-control-flow] ONE projection of the state onto every
+    // surface it owns — the results region, the form's submit availability, and
+    // the rail's hit paint. Every operation runs on every transition; only the
+    // values vary. Markers are addressed live by the data-index the minimap script
+    // stamped, so a paste with no markers paints nothing — a value, not a guard.
+    const render = (s: SearchState): void => {
+      results.replaceChildren(...resultChildren(s));
+      // Disabling the default submit button also blocks Enter-key implicit
+      // submission (spec'd HTML behavior), so ONE value gates both submit paths and
+      // overlapping fetches are unrepresentable [LAW:no-ambient-temporal-coupling].
+      go.disabled = s.kind === "searching";
+      const hitIndices = new Set(s.kind === "ready" ? s.hits.map((h) => h.index) : []);
+      document.body.classList.toggle("search-active", s.kind === "ready");
+      for (const marker of document.querySelectorAll<HTMLElement>(".minimap-marker[data-index]")) {
+        marker.classList.toggle("is-hit", hitIndices.has(Number(marker.dataset.index)));
+      }
+    };
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const query = input.value.trim();
+      // [LAW:single-enforcer] An empty query IS the clear action, routed through
+      // the one clear() owner — never a direct idle render that would leave
+      // whitespace sitting in the box while the state reads idle.
+      if (query === "") {
+        clear();
+        return;
+      }
+      void search(query);
+    });
+
+    // [LAW:single-enforcer] The browser's native clear X on a type="search" input
+    // fires the `search` event, not `submit` — without this, that affordance would
+    // empty the box while results and the lit rail silently stay. An emptied value
+    // routes through the SAME clear() owner as every other reset-to-idle path.
+    input.addEventListener("search", () => {
+      if (input.value === "") clear();
+    });
+
+    // Seat the idle state, then reveal — a no-JS viewer never reaches here, so the
+    // section stays display:none and the page is unchanged.
+    render({ kind: "idle" });
+    document.body.classList.add("search-ready");
   </script>
 
   <script>
