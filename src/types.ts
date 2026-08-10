@@ -591,6 +591,14 @@ export const textArmInput = (kind: TextArmKind, content: string): PasteInput => 
 // fallback for null), and styling derives generic from null. A fetched paste
 // whose host gained a provider later still re-derives correctly: the stored
 // bytes are the authority, the provider tag only selects which parser replays them.
+// [LAW:types-are-the-program] `fetchedAt` is the instant the url was last FETCHED
+// to produce this arm's bytes (stamped by the refetch path, slopspot-freshness-eck.2).
+// Optional: records written before stamping carry no instant — honest absence, their
+// fetch time is approximated by the record's createdAt — and it is scoped to the url
+// arm alone, so "a text paste with a fetch timestamp" is unrepresentable. The
+// editor's bulk-edit (reparseFetched) spreads it forward unchanged: editing the
+// bytes does not change when the url was fetched, and the edited-bytes caveat is the
+// display's to word honestly.
 export type ReplayableOrigin =
   | { readonly kind: TextArmKind; readonly content: string }
   | {
@@ -598,6 +606,7 @@ export type ReplayableOrigin =
       readonly url: string;
       readonly fetched: string;
       readonly provider: Provider | null;
+      readonly fetchedAt?: number;
     };
 
 export type Origin =
@@ -614,16 +623,24 @@ export const isTextArmKind = (v: unknown): v is TextArmKind =>
 
 const isReplayableOrigin = (v: unknown): v is ReplayableOrigin => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; provider?: unknown };
+  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; provider?: unknown; fetchedAt?: unknown };
   if (o.kind === "url") {
     return (
       typeof o.url === "string" &&
       typeof o.fetched === "string" &&
-      (o.provider === null || isProvider(o.provider))
+      (o.provider === null || isProvider(o.provider)) &&
+      // Absent = written before stamping; present must be a real instant (isCount:
+      // non-negative finite), so a corrupted stamp is rejected at the boundary.
+      (o.fetchedAt === undefined || isCount(o.fetchedAt))
     );
   }
   return isTextArmKind(o.kind) && typeof o.content === "string";
 };
+
+// [LAW:types-are-the-program] The url arm's runtime witness by name, for the
+// boundaries that classify exactly that shape (the version-record validator below).
+export const isUrlOrigin = (v: unknown): v is UrlOrigin =>
+  isReplayableOrigin(v) && v.kind === "url";
 
 // [LAW:types-are-the-program] KV is a trust boundary; a stored origin is unknown
 // JSON until classified. [LAW:dataflow-not-control-flow] One switch on the
@@ -704,6 +721,35 @@ export const sourceTextOf = (origin: Origin | null): string | null => {
   return origin.kind === "url" ? origin.fetched : origin.content;
 };
 
+
+// [LAW:types-are-the-program] A paste whose origin IS the url arm — the refinement
+// the refetch/freshness features operate on. Narrowing once through this predicate
+// lets their cores take the refined type, so "planning a refetch of a text paste"
+// is unrepresentable rather than re-guarded per call site.
+export type UrlPaste = Conversation & { readonly origin: UrlOrigin };
+export const isUrlPaste = (c: Conversation): c is UrlPaste =>
+  c.origin !== null && c.origin.kind === "url";
+
+// [LAW:one-source-of-truth] An archived url-arm snapshot that a refetch superseded
+// (slopspot-freshness-eck.2). Store the original, derive the display: the version
+// carries the VERBATIM prior origin — bytes, url, provider, its own fetch stamp —
+// and its turns/title re-derive through the provider registry parser at read time,
+// never a second stored projection. `supersededAt` is the refetch instant that
+// archived it. The paste record stays the sole authority for the CURRENT content;
+// versions are the trail of what that authority used to say.
+export interface PasteVersion {
+  readonly origin: UrlOrigin;
+  readonly supersededAt: number;
+}
+
+// [LAW:types-are-the-program] KV is a trust boundary; a stored version record is
+// unknown JSON until classified here. No legacy lift: version records postdate the
+// current Origin shape, so isUrlOrigin alone is the whole contract.
+export const isPasteVersion = (v: unknown): v is PasteVersion => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { origin?: unknown; supersededAt?: unknown };
+  return isUrlOrigin(o.origin) && isCount(o.supersededAt);
+};
 
 // [LAW:one-source-of-truth] The dropdown's option list, the parser's dispatch
 // table, AND the T2 detector's iteration order are derived from this one
