@@ -45,26 +45,54 @@ interface CheckOutcome {
   readonly output: string;
 }
 
+// [LAW:no-silent-failure] The bound on a single check. The slowest real check
+// finishes in single-digit seconds; a child still running at this deadline is
+// hung (infinite loop, deadlock, unanswered network wait) and is killed and
+// reported as a timeout — a loud, named failure instead of an unbounded wait.
+const CHECK_DEADLINE_MS = 120_000;
+
 // Children run `node --import tsx <file>` — the same tsx this runner executes
 // under — inheriting cwd so fixture paths resolve exactly as they did in the
-// package.json chain.
+// package.json chain. Each child announces its start on stderr so a hang is
+// attributable from the live terminal even though the report prints at the end.
 const runCheck = (file: string): Promise<CheckOutcome> =>
   new Promise((resolve) => {
+    console.error(`· starting ${file}`);
     const child = spawn(process.execPath, ["--import", "tsx", join(scriptsDir, file)], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const chunks: Buffer[] = [];
     child.stdout.on("data", (c: Buffer) => chunks.push(c));
     child.stderr.on("data", (c: Buffer) => chunks.push(c));
+    // [LAW:no-ambient-temporal-coupling] The deadline timer is owned here, armed
+    // once per child and disarmed on close; `timedOut` is the one fact the close
+    // arm reads to label the kill as a timeout rather than a plain signal death.
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, CHECK_DEADLINE_MS);
     // [LAW:no-silent-failure] A spawn failure fires `error` and never `close`;
     // without this arm the promise would be unresolvable and the suite would hang
     // silently instead of failing this check by name.
-    child.on("error", (err) =>
-      resolve({ file, code: 1, signal: null, output: `spawn failed: ${err.message}\n` }),
-    );
-    child.on("close", (code, signal) =>
-      resolve({ file, code, signal, output: Buffer.concat(chunks).toString("utf8") }),
-    );
+    child.on("error", (err) => {
+      clearTimeout(deadline);
+      resolve({ file, code: 1, signal: null, output: `spawn failed: ${err.message}\n` });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(deadline);
+      const output = Buffer.concat(chunks).toString("utf8");
+      resolve(
+        timedOut
+          ? {
+              file,
+              code: 1,
+              signal: null,
+              output: `${output}\ntimed out after ${CHECK_DEADLINE_MS / 1000}s and was killed\n`,
+            }
+          : { file, code, signal, output },
+      );
+    });
   });
 
 const outcomes = await Promise.all(checks.map(runCheck));
