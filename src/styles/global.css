@@ -512,11 +512,12 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   text-transform: uppercase;
   color: var(--accent);
 }
-/* Secondary actions: the smaller pill. Size is grouped so the three can't drift;
+/* Secondary actions: the smaller pill. Size is grouped so the four can't drift;
    each then sits differently in its flex row. */
 .tldr-regen,
 .tldr-retry,
-.search-retry { font-size: 11px; padding: 3px 11px; border-radius: 6px; }
+.search-retry,
+.search-clear { font-size: 11px; padding: 3px 11px; border-radius: 6px; }
 .tldr-regen { margin-left: auto; }
 .tldr-body {
   margin: 0;
@@ -610,7 +611,7 @@ body.compare-ready .compare { display: block; }
 body.search-ready .semantic-search { display: block; }
 .search-status { margin-top: 10px; }
 .search-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-.search-clear { margin-left: auto; font-size: 11px; padding: 3px 11px; border-radius: 6px; }
+.search-clear { margin-left: auto; }
 /* The hit list wears the outline card's frame; its rows wear the outline's own
    row classes (spine-outline-link/dot/label), so a hit row and an outline row are
    one control [LAW:one-type-per-behavior] — this only frames the list. */

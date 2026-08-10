@@ -1214,7 +1214,11 @@ const continuationHtml = renderContinuationControl(dialogue);
           // data picked, not a separate screen.
           label.textContent = s.hits.length > 0 ? "Best matches" : "No matches";
           head.appendChild(label);
-          head.appendChild(makeButton("mono-pill search-clear", "Clear", clear));
+          // [LAW:one-type-per-behavior] Clear is the SAME control as the TL;DR
+          // head's Regenerate — a tldr-btn secondary pill seated right in a head
+          // row — so it wears that base and the shared size group, not mono-pill
+          // (whose later cascade position would override the secondary size).
+          head.appendChild(makeButton("tldr-btn search-clear", "Clear", clear));
           if (s.hits.length === 0) {
             const empty = document.createElement("p");
             empty.className = "search-empty";
@@ -1284,12 +1288,22 @@ const continuationHtml = renderContinuationControl(dialogue);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const query = input.value.trim();
-      // An empty query IS the clear action: restore the idle region and the rail.
+      // [LAW:single-enforcer] An empty query IS the clear action, routed through
+      // the one clear() owner — never a direct idle render that would leave
+      // whitespace sitting in the box while the state reads idle.
       if (query === "") {
-        render({ kind: "idle" });
+        clear();
         return;
       }
       void search(query);
+    });
+
+    // [LAW:single-enforcer] The browser's native clear X on a type="search" input
+    // fires the `search` event, not `submit` — without this, that affordance would
+    // empty the box while results and the lit rail silently stay. An emptied value
+    // routes through the SAME clear() owner as every other reset-to-idle path.
+    input.addEventListener("search", () => {
+      if (input.value === "") clear();
     });
 
     // Seat the idle state, then reveal — a no-JS viewer never reaches here, so the
