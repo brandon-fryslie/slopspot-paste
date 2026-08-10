@@ -49,6 +49,24 @@ const normalizeOverlay = (raw: unknown, slug: string): Conversation["overlay"] =
   return undefined;
 };
 
+// [LAW:composability] The injectable slice of the KV binding this module uses —
+// declared structurally, NOT the ambient Worker `KVNamespace`, so `env.PASTES`
+// assigns as-is while the check scripts (a Node world that deliberately excludes
+// the Worker ambient types — see tsconfig.scripts.json) drive the same code
+// against a Map-backed stub. The EmbeddingAi move (embeddings.ts) applied to KV:
+// the boundary asks for exactly the methods it calls, never the platform's whole
+// surface. Each function below narrows further with Pick to just what it reads.
+export interface PasteKv {
+  get(key: string, type: "text"): Promise<string | null>;
+  put(key: string, value: string, options?: { readonly expirationTtl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(options: { readonly prefix: string; readonly cursor?: string }): Promise<{
+    readonly keys: ReadonlyArray<{ readonly name: string }>;
+    readonly list_complete: boolean;
+    readonly cursor?: string;
+  }>;
+}
+
 const KEY_PREFIX = "paste:";
 
 // [LAW:dataflow-not-control-flow] The stored lifetime decides the KV backstop
@@ -57,7 +75,7 @@ const KEY_PREFIX = "paste:";
 // (lives forever). The backstop is not the expiry mechanism — it is a failsafe
 // in case the purge step never runs.
 export const putConversation = async (
-  kv: KVNamespace,
+  kv: Pick<PasteKv, "put">,
   c: Conversation,
 ): Promise<void> => {
   const key = KEY_PREFIX + c.slug;
@@ -111,7 +129,7 @@ const normalizeLifetime = (raw: {
 };
 
 export const getConversation = async (
-  kv: KVNamespace,
+  kv: Pick<PasteKv, "get">,
   slug: string,
 ): Promise<Conversation | null> => {
   const raw = await kv.get(KEY_PREFIX + slug, "text");
@@ -167,7 +185,7 @@ const DRAFT_TTL_SECONDS = 3600;
 // [LAW:one-source-of-truth] A draft carries exactly the editable state the editor
 // restores — the canonical DraftRecord shape (types.ts), the same one the client
 // Draft aliases and the /api/paste editor arm already speak. No second representation.
-export const putDraft = async (kv: KVNamespace, id: string, draft: DraftRecord): Promise<void> => {
+export const putDraft = async (kv: Pick<PasteKv, "put">, id: string, draft: DraftRecord): Promise<void> => {
   await kv.put(DRAFT_KEY_PREFIX + id, JSON.stringify(draft), { expirationTtl: DRAFT_TTL_SECONDS });
 };
 
@@ -177,7 +195,7 @@ export const putDraft = async (kv: KVNamespace, id: string, draft: DraftRecord):
 // [LAW:single-enforcer] origin normalization reuses the same normalizeOrigin the
 // conversation read path uses, so a draft and a published paste lift provenance
 // identically.
-export const getDraft = async (kv: KVNamespace, id: string): Promise<DraftRecord | null> => {
+export const getDraft = async (kv: Pick<PasteKv, "get">, id: string): Promise<DraftRecord | null> => {
   const raw = await kv.get(DRAFT_KEY_PREFIX + id, "text");
   if (raw === null) return null;
   try {
@@ -200,9 +218,10 @@ export const getDraft = async (kv: KVNamespace, id: string): Promise<DraftRecord
 
 // [LAW:decomposition] Cached summaries are a SEPARATE concern from published
 // conversations and drafts: a DISPOSABLE derived projection, never authority. They
-// live under their own key prefix, keyed by slug PLUS a content hash of the turns —
-// so a summary is served only for the exact turns it describes, and any edit/refetch
-// (new hash) simply misses and regenerates. [LAW:single-enforcer] all summary-cache
+// live under their own key prefix, keyed by slug PLUS a content hash of the viewable
+// dialogue — so a summary is served only for the exact reader-visible content it
+// describes, and any edit/refetch/overlay change (new hash) simply misses and
+// regenerates. [LAW:single-enforcer] all summary-cache
 // reads/writes own the prefix and key format here, the way paste:/draft: are owned
 // above; a caller supplies (slug, hash) and never assembles the KV key itself.
 const SUMMARY_KEY_PREFIX = "summary:";
@@ -229,7 +248,7 @@ const summaryKey = (slug: string, hash: string): string => `${SUMMARY_KEY_PREFIX
 // DISPOSABLE cache read/write that fails is worked around by regenerating the exact
 // same value. [LAW:no-silent-failure] neither error vanishes — both are logged.
 export const getCachedSummary = async (
-  kv: KVNamespace,
+  kv: Pick<PasteKv, "get">,
   slug: string,
   hash: string,
 ): Promise<string | null> => {
@@ -243,7 +262,7 @@ export const getCachedSummary = async (
 };
 
 export const putCachedSummary = async (
-  kv: KVNamespace,
+  kv: Pick<PasteKv, "put">,
   slug: string,
   hash: string,
   summary: string,
@@ -264,7 +283,7 @@ export const putCachedSummary = async (
 // deleted content lingers until its TTL. Paginated like listConversations because a
 // slug can accrue several summaries (one per content hash across edits/refetches).
 export const deleteCachedSummaries = async (
-  kv: KVNamespace,
+  kv: Pick<PasteKv, "list" | "delete">,
   slug: string,
 ): Promise<void> => {
   // [LAW:no-silent-failure] Best-effort, like the other cache ops: a kv.list/kv.delete
@@ -298,7 +317,7 @@ export const deleteCachedSummaries = async (
 // sweeps its derivations, so a hard delete leaves no orphaned summary behind.
 // [LAW:no-silent-failure]: callers log what they delete.
 export const deleteConversation = async (
-  kv: KVNamespace,
+  kv: Pick<PasteKv, "list" | "delete">,
   slug: string,
 ): Promise<void> => {
   await kv.delete(KEY_PREFIX + slug);
@@ -310,7 +329,7 @@ export const deleteConversation = async (
 // idempotent (a missing key is a no-op), so this is safe to call for a draft that
 // already expired or was never stored — the DELETE endpoint leans on that to stay
 // idempotent. [LAW:single-enforcer] all draft writes/reads/deletes own the prefix here.
-export const deleteDraft = async (kv: KVNamespace, id: string): Promise<void> => {
+export const deleteDraft = async (kv: Pick<PasteKv, "delete">, id: string): Promise<void> => {
   await kv.delete(DRAFT_KEY_PREFIX + id);
 };
 
@@ -321,7 +340,7 @@ export const deleteDraft = async (kv: KVNamespace, id: string): Promise<void> =>
 // (pre-schema or hand-edited) parses to null. Both are legitimate values to
 // drop from the admin view.
 export const listConversations = async (
-  kv: KVNamespace,
+  kv: Pick<PasteKv, "list" | "get">,
 ): Promise<ReadonlyArray<Conversation>> => {
   const out: Conversation[] = [];
   let cursor: string | undefined;

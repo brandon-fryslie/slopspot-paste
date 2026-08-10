@@ -12,13 +12,14 @@
 // KV effect is likewise the passed-in namespace, not an ambient import.
 //
 // [LAW:one-source-of-truth] The TL;DR is a disposable projection: keyed by
-// slug + turnsContentHash, regenerated on a miss, never stored on the conversation
-// and never coupled to the model version that wrote it [LAW:no-ambient-temporal-coupling].
+// slug + a hash of the viewable dialogue, regenerated on a miss, never stored on the
+// conversation and never coupled to the model version that wrote it
+// [LAW:no-ambient-temporal-coupling].
 
 import { loadViewablePaste } from "./loadPaste";
-import { deriveDialogue } from "./dialogue";
-import { summarize as realSummarize, turnsContentHash, type SummaryEnv, type SummaryResult } from "./summary";
-import { getCachedSummary, putCachedSummary } from "./storage";
+import { deriveViewableDialogue } from "./overlay";
+import { summarize as realSummarize, dialogueContentHash, type SummaryEnv, type SummaryResult } from "./summary";
+import { getCachedSummary, putCachedSummary, type PasteKv } from "./storage";
 import type { Dialogue } from "./dialogue";
 
 // [LAW:types-are-the-program] The orchestration's total outcome: a summary (with
@@ -39,7 +40,9 @@ export type SummaryOutcome =
 export type SummarizeFn = (dialogue: Dialogue, env: SummaryEnv) => Promise<SummaryResult>;
 
 export const resolveSummary = async (
-  kv: KVNamespace,
+  // [LAW:composability] The structural KV slice (storage.PasteKv): env.PASTES assigns
+  // as-is, and the orchestration test drives the whole flow with a Map-backed stub.
+  kv: Pick<PasteKv, "get" | "put">,
   slug: string,
   now: number,
   env: SummaryEnv,
@@ -57,14 +60,22 @@ export const resolveSummary = async (
   const load = await loadViewablePaste(kv, slug, now);
   if (!load.ok) return { ok: false, status: load.status, error: load.message };
 
-  const { turns } = load.conversation;
-  // [LAW:one-source-of-truth] Hash the turns (the derived authority the summary
-  // projects); the Dialogue the prompt reads derives from the same turns.
-  const hash = await turnsContentHash(turns);
+  // [LAW:single-enforcer] The prompt reads the SAME viewable projection every reader
+  // surface shows (deriveViewableDialogue — the one place a stored paste becomes
+  // viewable), so the TL;DR can never describe a turn the overlay hides: a hidden
+  // node already carries "[redacted]" in place, a feature overlay has already omitted
+  // the non-featured nodes. The collapse fold is display-only (the reader can expand
+  // it), so dropping it in the .node projection keeps folded content summarizable.
+  const dialogue = deriveViewableDialogue(load.conversation).map((d) => d.node);
+  // [LAW:one-source-of-truth] Hash the exact dialogue the prompt reads — this ONE
+  // value feeds both the cache key here and summarizeFn below, so an overlay edit
+  // that changes the viewable content busts the stale summary along with the prompt,
+  // by construction, while a fold-only edit (same readable nodes) keeps the hit.
+  const hash = await dialogueContentHash(dialogue);
 
   // [LAW:one-source-of-truth] `force` bypasses the cache READ, never the WRITE. A
-  // regenerate re-derives from the authoritative turns and overwrites the SAME
-  // disposable key (same turns → same hash → same key) below, replacing the stale
+  // regenerate re-derives from the authoritative record and overwrites the SAME
+  // disposable key (same viewable dialogue → same hash → same key) below, replacing the stale
   // projection in place rather than minting a second entry. This is the sanctioned
   // regenerate path precisely because the cache is disposable by design — the model
   // improves with no content change to bust the key, so a reader forces a fresh one.
@@ -72,7 +83,7 @@ export const resolveSummary = async (
   if (cached !== null) return { ok: true, summary: cached, cached: true };
 
   // [LAW:effects-at-boundaries] The LLM call happens exactly here, only on a miss.
-  const result = await summarizeFn(deriveDialogue(turns), env);
+  const result = await summarizeFn(dialogue, env);
   if (!result.ok) {
     // [LAW:no-silent-failure] A missing key is a config truth (503 not-configured),
     // distinct from a genuine provider failure (502). Neither is a 500 crash.

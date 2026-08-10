@@ -16,7 +16,6 @@
 
 import type { Dialogue } from "./dialogue";
 import { renderDialogueTranscript } from "./transcript";
-import type { Turn } from "./types";
 
 export type SummaryResult =
   | { readonly ok: true; readonly summary: string }
@@ -71,7 +70,7 @@ export interface ChatMessage {
 // tail with an explicit marker is honest here [LAW:no-silent-failure]; the projection
 // itself stays untruncated so a different reader (the continuation bundle) can keep the
 // tail it depends on. Deterministic in its input, which is why the cache can key on a hash
-// of the turns it derives from.
+// of the dialogue it derives from.
 export const renderDialogueForPrompt = (dialogue: Dialogue): string => {
   const full = renderDialogueTranscript(dialogue);
   return full.length > MAX_TRANSCRIPT_CHARS
@@ -118,15 +117,19 @@ export const extractSummary = (body: CompletionResponse | null): SummaryResult =
   return { ok: true, summary: content.trim() };
 };
 
-// [LAW:one-source-of-truth] The cache key's content component: a hash of the turns,
-// which are themselves the derived authority the summary projects. Turns unchanged →
-// hash unchanged → cache hit; any edit/refetch changes the turns and mints a new key,
-// so a cached summary can never be served for content it does not describe. The model
+// [LAW:one-source-of-truth] The cache key's content component: a hash of the exact
+// VIEWABLE dialogue the prompt reads — the overlay-applied projection every reader
+// surface shows — never the raw turns. Hashing the prompt's own input means the key
+// and the prompt cannot disagree: a content edit OR an overlay edit that changes what
+// a reader sees mints a new key (so a summary generated from previously-visible
+// content stops being served the moment the owner hides that content), while an edit
+// that leaves the readable nodes untouched (a collapse fold) keeps the key — the
+// prompt input is unchanged, so the cached summary still describes it. The model
 // name/version is deliberately NOT part of this key — a summary is a disposable
 // projection, regenerated on read, never stored authority coupled to its writer
 // [LAW:no-ambient-temporal-coupling].
-export const turnsContentHash = async (turns: ReadonlyArray<Turn>): Promise<string> => {
-  const bytes = new TextEncoder().encode(JSON.stringify(turns));
+export const dialogueContentHash = async (dialogue: Dialogue): Promise<string> => {
+  const bytes = new TextEncoder().encode(JSON.stringify(dialogue));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
