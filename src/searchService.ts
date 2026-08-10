@@ -21,7 +21,8 @@
 
 import { loadViewablePaste } from "./loadPaste";
 import { deriveViewableDialogue } from "./overlay";
-import { deriveChunks } from "./chunks";
+import type { ViewableDialogue } from "./dialogue";
+import { deriveChunks, type DialogueChunk } from "./chunks";
 import { deriveSpineOutline, type OutlineEntry } from "./spineOutline";
 import { contentHash } from "./contentHash";
 import {
@@ -115,29 +116,38 @@ const parseCachedIndex = (
   return result.vectors;
 };
 
-export const resolveSearch = async (
-  // [LAW:composability] The structural KV slice (storage.PasteKv): env.PASTES
-  // assigns as-is, and the check script drives the whole flow with a Map-backed stub.
+// [LAW:types-are-the-program] The retrieval core's unit: a chunk WITH its score,
+// in document order. This is the seam /api/search and /api/ask share — search
+// dedupes scored chunks to turn-level hits; ask packs the top-scoring chunk TEXTS
+// into a prompt budget. Both read this one value, never a second scoring pass.
+export interface ScoredChunk extends DialogueChunk {
+  readonly score: number;
+}
+
+export type ChunkScoreOutcome =
+  | { readonly ok: true; readonly scored: ReadonlyArray<ScoredChunk>; readonly indexCached: boolean }
+  | { readonly ok: false; readonly status: 502; readonly error: string };
+
+// [LAW:single-enforcer] The ONE chunk-scoring core, lifted out of resolveSearch so
+// resolveAsk retrieves through the same cache, the same hash, and the same cosine —
+// never a second retrieval path. It owns: hash the exact chunk list, serve the
+// cached vector index when it matches, else embed once and cache, embed the query,
+// score every chunk. Takes the already-derived view so the caller (which also
+// needs the view for outlines/anchors) derives it exactly once.
+export const scoreChunksForQuery = async (
   kv: Pick<PasteKv, "get" | "put">,
   slug: string,
+  view: ViewableDialogue,
   query: string,
-  now: number,
   ai: EmbeddingAi,
-  embedFn: EmbedFn = realEmbedTexts,
-): Promise<SearchOutcome> => {
-  // [LAW:single-enforcer] The one viewable-paste gate — the same one /<slug> and
-  // /api/summarize resolve through, so a hidden/expired paste that 404/410s there
-  // cannot be searched here.
-  const load = await loadViewablePaste(kv, slug, now);
-  if (!load.ok) return { ok: false, status: load.status, error: load.message };
-
+  embedFn: EmbedFn,
+): Promise<ChunkScoreOutcome> => {
   // [LAW:one-source-of-truth] The corpus is the VIEWABLE projection — the same
   // chunks a reader can see (hidden turns already carry the redaction marker,
   // feature-omitted turns are already absent), derived by the one chunk authority.
   // Hash the exact chunk list the index embeds, so the key and the embedded
   // content cannot disagree: an overlay edit that changes readable content mints
   // a new key, while a fold-only edit (same readable nodes) keeps the hit.
-  const view = deriveViewableDialogue(load.conversation);
   const chunks = deriveChunks(view);
   const hash = await contentHash(chunks);
 
@@ -172,13 +182,40 @@ export const resolveSearch = async (
 
   // [LAW:one-source-of-truth] chunks and chunkVectors are positionally aligned —
   // extractEmbeddings certified exactly one vector per chunk on both the fresh and
-  // the cached path. Several chunks can carry one spine index (a long node split
-  // into windows); a reader jumps to turns, not windows, so hits dedupe to the
-  // best-scoring chunk per index.
+  // the cached path.
+  const scored = chunks.map((chunk, i) => ({
+    ...chunk,
+    score: cosine(queryVector, chunkVectors[i] ?? []),
+  }));
+  return { ok: true, scored, indexCached: cached !== null };
+};
+
+export const resolveSearch = async (
+  // [LAW:composability] The structural KV slice (storage.PasteKv): env.PASTES
+  // assigns as-is, and the check script drives the whole flow with a Map-backed stub.
+  kv: Pick<PasteKv, "get" | "put">,
+  slug: string,
+  query: string,
+  now: number,
+  ai: EmbeddingAi,
+  embedFn: EmbedFn = realEmbedTexts,
+): Promise<SearchOutcome> => {
+  // [LAW:single-enforcer] The one viewable-paste gate — the same one /<slug> and
+  // /api/summarize resolve through, so a hidden/expired paste that 404/410s there
+  // cannot be searched here.
+  const load = await loadViewablePaste(kv, slug, now);
+  if (!load.ok) return { ok: false, status: load.status, error: load.message };
+
+  const view = deriveViewableDialogue(load.conversation);
+  const outcome = await scoreChunksForQuery(kv, slug, view, query, ai, embedFn);
+  if (!outcome.ok) return outcome;
+
+  // Several chunks can carry one spine index (a long node split into windows); a
+  // reader jumps to turns, not windows, so hits dedupe to the best-scoring chunk
+  // per index.
   const best = new Map<number, number>();
-  chunks.forEach((chunk, i) => {
-    const score = cosine(queryVector, chunkVectors[i] ?? []);
-    if (score > (best.get(chunk.index) ?? -Infinity)) best.set(chunk.index, score);
+  outcome.scored.forEach(({ index, score }) => {
+    if (score > (best.get(index) ?? -Infinity)) best.set(index, score);
   });
 
   // Every viewable node appears in the outline; a node with no readable prose has
@@ -192,5 +229,5 @@ export const resolveSearch = async (
     })
     .sort((a, b) => b.score - a.score);
 
-  return { ok: true, hits, indexCached: cached !== null };
+  return { ok: true, hits, indexCached: outcome.indexCached };
 };
