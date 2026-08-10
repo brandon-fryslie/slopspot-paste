@@ -121,7 +121,10 @@ console.log("\nThe edge (stubbed binding):");
       return Promise.resolve(real);
     },
   };
-  void (async () => {
+  // [LAW:no-silent-failure] Awaited at top level (not void-discarded): if this
+  // block ever fails to settle, node exits 13 loudly instead of 0 silently, and
+  // every assertion inside is guaranteed to run before the process can exit.
+  await (async () => {
     const out = await embedTexts(["alpha", "beta"], okAi);
     assert("edge resolves the classified vectors", out.ok && out.vectors.length === 2);
     assert("edge sends the one canonical model id", seenModel === EMBEDDING_MODEL);
