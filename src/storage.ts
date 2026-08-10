@@ -1,5 +1,5 @@
-import type { Conversation, DraftRecord, Lifetime } from "./types";
-import { isOrigin, isOverlay, isPlatform, isTurns, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
+import type { Conversation, DraftRecord, Lifetime, PasteVersion } from "./types";
+import { isOrigin, isOverlay, isPasteVersion, isPlatform, isTurns, upgradeOrigin, TTL_SECONDS, GRACE_SECONDS, PURGE_BUFFER_SECONDS } from "./types";
 
 // [LAW:single-enforcer] The deletion lifecycle is now OWNED here, not delegated
 // to KV's expirationTtl. The KV backstop TTL is TTL+GRACE+BUFFER — BUFFER
@@ -74,17 +74,20 @@ const KEY_PREFIX = "paste:";
 // PLUS the full grace window before KV would auto-evict; `pinned` has no TTL
 // (lives forever). The backstop is not the expiry mechanism — it is a failsafe
 // in case the purge step never runs.
+// [LAW:one-source-of-truth] The backstop-TTL policy a stored record derives from
+// its paste's lifetime, stated once and shared by the paste record and its version
+// archive — so a version can never outlive (or under-live) the paste whose trail it
+// is by a drifted second copy of this expression.
+const backstopTtl = (lifetime: Lifetime): { readonly expirationTtl: number } | undefined =>
+  lifetime.kind === "pinned"
+    ? undefined
+    : { expirationTtl: TTL_SECONDS + GRACE_SECONDS + PURGE_BUFFER_SECONDS };
+
 export const putConversation = async (
   kv: Pick<PasteKv, "put">,
   c: Conversation,
 ): Promise<void> => {
-  const key = KEY_PREFIX + c.slug;
-  const body = JSON.stringify(c);
-  const options =
-    c.lifetime.kind === "pinned"
-      ? undefined
-      : { expirationTtl: TTL_SECONDS + GRACE_SECONDS + PURGE_BUFFER_SECONDS };
-  await kv.put(key, body, options);
+  await kv.put(KEY_PREFIX + c.slug, JSON.stringify(c), backstopTtl(c.lifetime));
 };
 
 // [LAW:types-are-the-program] KV is a trust boundary: records were written by
@@ -359,14 +362,105 @@ export const deleteCachedVectorIndexes = (
   slug: string,
 ): Promise<void> => sweepCachedDerived(kv, VECTOR_INDEX_KEY_PREFIX, slug);
 
-// Permanently remove a paste record AND its derived caches — called only by the
-// purge path after the grace window. [LAW:one-way-deps] deleting the authority
-// sweeps its derivations, so a hard delete leaves no orphaned summary or vector
-// index behind. [LAW:no-silent-failure]: callers log what they delete.
+// [LAW:decomposition] Version records — archived url-arm snapshots a refetch
+// superseded (slopspot-freshness-eck.2) — are a THIRD storage concern, distinct
+// from both the authoritative paste record and the disposable derived caches.
+// Like the paste, they hold ORIGINAL bytes (the refetch overwrite destroys the
+// only other copy, so a version is NOT re-derivable): their writes and deletes
+// are LOUD, never the caches' best-effort. Like the caches, they live under
+// their own per-slug prefix and die with their paste.
+const VERSION_KEY_PREFIX = "version:";
+
+// [LAW:one-source-of-truth] The stored PasteVersion value is the authority; the
+// key's zero-padded supersededAt is a derived index that makes kv.list return a
+// slug's versions in chronological order (13 digits covers epoch-ms until 2286).
+// Two concurrent refetches archiving in the same millisecond collide on the key,
+// but each archived the SAME prior record it read, so the overwrite is
+// value-identical — the collision cannot lose data.
+const versionKey = (slug: string, supersededAt: number): string =>
+  `${VERSION_KEY_PREFIX}${slug}:${String(supersededAt).padStart(13, "0")}`;
+
+// [LAW:no-silent-failure] NOT wrapped like the derived-cache puts: the caller
+// (the refetch executor) is about to overwrite the only other copy of these
+// bytes, so an archive that fails must abort that overwrite — a KV rejection
+// propagates loudly instead of being logged into a silent data loss.
+export const putPasteVersion = async (
+  kv: Pick<PasteKv, "put">,
+  slug: string,
+  version: PasteVersion,
+  lifetime: Lifetime,
+): Promise<void> => {
+  await kv.put(versionKey(slug, version.supersededAt), JSON.stringify(version), backstopTtl(lifetime));
+};
+
+// Oldest→newest by construction: the zero-padded key IS the chronological order,
+// so no sort is re-derived here. [LAW:types-are-the-program] KV is a trust
+// boundary — each record is unknown JSON until isPasteVersion classifies it; a
+// corrupt record is dropped LOUDLY (an archived original vanishing silently would
+// be the exact failure this feature exists to prevent), and a key that expired
+// between list and get is a legitimate absence.
+export const listPasteVersions = async (
+  kv: Pick<PasteKv, "list" | "get">,
+  slug: string,
+): Promise<ReadonlyArray<PasteVersion>> => {
+  const prefix = `${VERSION_KEY_PREFIX}${slug}:`;
+  const out: PasteVersion[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await kv.list({ prefix, cursor });
+    const batch = await Promise.all(page.keys.map((k) => kv.get(k.name, "text")));
+    page.keys.forEach((k, i) => {
+      const raw = batch[i];
+      if (raw === undefined || raw === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        console.error(`listPasteVersions: stored version is not JSON, dropping: ${k.name}`);
+        return;
+      }
+      if (!isPasteVersion(parsed)) {
+        console.error(`listPasteVersions: stored version failed validation, dropping: ${k.name}`);
+        return;
+      }
+      out.push(parsed);
+    });
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return out;
+};
+
+// [LAW:no-silent-failure] LOUD, deliberately unlike sweepCachedDerived: a pinned
+// paste's versions carry no TTL backstop, so a swallowed delete failure would
+// orphan archived conversation content FOREVER. A rejection propagates to the
+// caller (deleteConversation), whose ordering below guarantees a retry path.
+export const deletePasteVersions = async (
+  kv: Pick<PasteKv, "list" | "delete">,
+  slug: string,
+): Promise<void> => {
+  const prefix = `${VERSION_KEY_PREFIX}${slug}:`;
+  let cursor: string | undefined;
+  do {
+    const page = await kv.list({ prefix, cursor });
+    await Promise.all(page.keys.map((k) => kv.delete(k.name)));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+};
+
+// Permanently remove a paste record AND its derived caches AND its version
+// archive — called only by the purge path after the grace window.
+// [LAW:one-way-deps] deleting the authority sweeps its derivations, so a hard
+// delete leaves no orphaned summary, vector index, or archived snapshot behind.
+// [LAW:no-ambient-temporal-coupling] Versions are swept BEFORE the paste record:
+// the purge only revisits slugs whose paste record still exists, so deleting the
+// record first would make a mid-sweep failure unreachable by any retry — versions
+// of a pinned paste would orphan forever. This order leaves the record standing
+// on failure, and the next purge run retries the whole deletion.
 export const deleteConversation = async (
   kv: Pick<PasteKv, "list" | "delete">,
   slug: string,
 ): Promise<void> => {
+  await deletePasteVersions(kv, slug);
   await kv.delete(KEY_PREFIX + slug);
   await deleteCachedSummaries(kv, slug);
   await deleteCachedVectorIndexes(kv, slug);
