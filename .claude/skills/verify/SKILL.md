@@ -26,9 +26,14 @@ description: Run and drive slopspot-paste locally to verify a change end-to-end 
     npx wrangler dev --remote --config wrangler.json --port 8788
   ```
 
-  → http://localhost:8788 executes on Cloudflare's edge with real egress and
-  real secrets. `/api/fetch` is read-only (no KV writes), so this is safe;
-  don't drive `/api/paste` submits against it casually — that writes prod KV.
+  → http://localhost:8788 executes on Cloudflare's edge with real egress, real
+  secrets, and the real AI binding (embeddings/search/ask all work). KV is the
+  **preview** namespace (`preview_id` in wrangler.toml), NOT prod — the paste
+  list starts empty and `/api/paste` submits are sandboxed there, so seeding a
+  test paste via `curl -X POST /api/paste -H 'content-type: application/json'
+  -d '{"content":"## User\n..."}'` is safe and is the way to get a corpus to
+  drive. (Verified 2026-08-09: the dev banner prints the bound namespace id —
+  it matches `preview_id`, and prod pastes are absent.)
 
 ## Drive
 
