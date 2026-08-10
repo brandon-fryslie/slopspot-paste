@@ -268,10 +268,17 @@ export const ingestPaste = async (
   // parses these stored bytes through that provider's parser and never has to
   // re-hit the network (a refetch could 404, drift, or cost money — the captured
   // bytes are the authority).
+  // [LAW:effects-at-boundaries] The fetch instant is stamped HERE, at the boundary
+  // that performed the fetch — the one place the clock and the effect meet
+  // (slopspot-freshness-eck.4). Every freshly ingested url origin carries its age
+  // from birth; only records written before stamping lack it (honest absence — a
+  // pre-stamping refetch could have replaced their bytes at an unknown later
+  // instant, so no other field can honestly stand in). The refetch path re-stamps
+  // with its plan instant, keeping supersededAt and fetchedAt one clock.
   return {
     ok: true,
     turns,
-    origin: { kind: "url", url, fetched: fetched.markdown, provider },
+    origin: { kind: "url", url, fetched: fetched.markdown, provider, fetchedAt: Date.now() },
   };
 };
 

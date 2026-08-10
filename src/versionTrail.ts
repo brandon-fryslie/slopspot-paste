@@ -32,11 +32,6 @@ import {
 export const versionPath = (slug: string, supersededAt: number): string =>
   `/${slug}/versions/${supersededAt}`;
 
-// One date format for every trail surface: the UTC calendar date. Server-rendered pages
-// have no reader locale to consult, so a fixed unambiguous form beats a locale guess.
-export const versionDate = (instant: number): string =>
-  new Date(instant).toISOString().slice(0, 10);
-
 // [LAW:types-are-the-program] What the paste page's trail block shows — or null: a paste
 // with no archived versions shows NO affordance (the ticket's contract), and null is that
 // absence as a value the template skips. Both arms carry the stamps (dates are metadata,
