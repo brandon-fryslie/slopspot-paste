@@ -28,3 +28,9 @@ preview_id = "6b206d1d59964bebb9a87a65392d2992"
 [[kv_namespaces]]
 binding = "SESSION"
 id = "99408375e4f64187809cfca2685e9c95"
+
+# [LAW:effects-at-boundaries] Workers AI, the embedding effect's one entry point.
+# The binding needs no API key — the deployed Worker calls it directly; only
+# out-of-Worker capture (fixtures, probes) needs a token with Workers AI scope.
+[ai]
+binding = "AI"
