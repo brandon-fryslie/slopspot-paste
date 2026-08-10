@@ -84,9 +84,17 @@ const snapshotWhen =
   */}
   <div class="diff-aligned">
     <div class="diff-row diff-heads">
+      {/*
+        Each head shows ITS side's title — the diff substrate's pattern. The snapshot's
+        title re-derives from the archived turns (deriveTitle in versionPageOutcome), so
+        when upstream drift renamed the conversation, the two heads honestly show both
+        names. The role labels (archived / current) live in the meta lines.
+      */}
       <header class="diff-column-header diff-cell" data-platform={snapshot.platform}>
-        <h2 class="diff-column-title">Archived snapshot</h2>
+        <h2 class="diff-column-title">{snapshot.title}</h2>
         <p class="conversation-meta">
+          <span>Archived snapshot</span>
+          <span aria-hidden="true">·</span>
           {snapshot.platformLabel && <span class="platform-badge">{snapshot.platformLabel}</span>}
           {snapshot.platformLabel && <span aria-hidden="true">·</span>}
           <span>{snapshot.turnCount} turns</span>
@@ -95,8 +103,10 @@ const snapshotWhen =
         </p>
       </header>
       <header class="diff-column-header diff-cell" data-platform={current.platform} data-slug={current.slug}>
-        <h2 class="diff-column-title"><a href={`/${current.slug}`}>Current</a></h2>
+        <h2 class="diff-column-title"><a href={`/${current.slug}`}>{current.title}</a></h2>
         <p class="conversation-meta">
+          <span>Current</span>
+          <span aria-hidden="true">·</span>
           {current.platformLabel && <span class="platform-badge">{current.platformLabel}</span>}
           {current.platformLabel && <span aria-hidden="true">·</span>}
           <span>{current.turnCount} turns</span>

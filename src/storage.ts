@@ -396,11 +396,14 @@ export const putPasteVersion = async (
 // [LAW:one-source-of-truth] The trail's cheap index: the zero-padded key IS the
 // supersededAt stamp, so listing a slug's version instants reads keys only — no
 // version bodies (which carry the full archived bytes) are fetched to draw a list
-// of dates. Oldest→newest by construction (kv.list returns keys in order and the
-// padding makes lexicographic = chronological). [LAW:no-silent-failure] A key whose
-// stamp segment is not a shape versionKey can write — all digits, length ≥ 13
-// (padStart pads short instants to 13 and passes longer ones through) — is
-// corruption, dropped loudly, never parsed into a wrong instant.
+// of dates. Oldest→newest is enforced by the NUMERIC sort below — order derives
+// from the stamp value, never from key shape (lexicographic key order matches
+// chronology only while every stamp is 13 digits; at the 14-digit rollover the
+// two diverge, so key order is a pagination nicety, not the authority).
+// [LAW:no-silent-failure] A key whose stamp segment is not a shape versionKey can
+// write — all digits, length ≥ 13 (padStart pads short instants to 13 and passes
+// longer ones through) — is corruption, dropped loudly, never parsed into a wrong
+// instant.
 export const listPasteVersionStamps = async (
   kv: Pick<PasteKv, "list">,
   slug: string,
@@ -420,7 +423,7 @@ export const listPasteVersionStamps = async (
     }
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
-  return out;
+  return out.sort((a, b) => a - b);
 };
 
 // [LAW:types-are-the-program] KV is a trust boundary — a stored version record is

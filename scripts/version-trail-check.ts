@@ -111,6 +111,17 @@ const withOverlay = (overlay: Overlay): Conversation => ({ ...current, overlay }
   const full = await listPasteVersions(kv, paste.slug);
   assert("full listing still routes through the same validated read", full.length === 1 && eq(full[0], plan.version));
 }
+{
+  // Chronological order derives from the stamp VALUE, not key shape: at the 13→14
+  // digit rollover (~2286) lexicographic key order inverts ("9999999999999" sorts
+  // after "10000000000000"), and the numeric sort must not inherit that.
+  const kv = stubKv();
+  const v = (at: number): string => JSON.stringify({ ...plan.version, supersededAt: at });
+  kv.store.set("version:rollover:9999999999999", v(9_999_999_999_999));
+  kv.store.set("version:rollover:10000000000000", v(10_000_000_000_000));
+  const stamps = await listPasteVersionStamps(kv, "rollover");
+  assert("stamp order is numeric across the 13→14 digit rollover", eq(stamps, [9_999_999_999_999, 10_000_000_000_000]));
+}
 
 // ── The trail derivation: affordance iff versions exist ───────────────────────
 assert("no versions ⇒ no trail affordance (null)", deriveVersionTrail(current, []) === null);
