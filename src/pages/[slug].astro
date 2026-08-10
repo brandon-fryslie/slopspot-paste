@@ -9,9 +9,10 @@ import { renderCodeExportControl } from "../codeExport";
 import { renderContinuationControl } from "../continuation";
 import { loadViewablePaste } from "../loadPaste";
 import { listPasteVersionStamps } from "../storage";
-import { deriveVersionTrail, versionDate, versionPath } from "../versionTrail";
+import { deriveVersionTrail, versionPath } from "../versionTrail";
 import { describeTargetFault } from "../overlay";
-import { derivePasteMeta, isUrlPaste, sourceUrlOf, viewLifetime } from "../types";
+import { fetchedAgeLabel } from "../freshnessView";
+import { derivePasteMeta, isUrlPaste, sourceUrlOf, utcDate, viewLifetime } from "../types";
 import { hostLabel } from "../url";
 import { MAX_QUESTION_CHARS } from "../ask";
 
@@ -108,6 +109,16 @@ const versionStamps = isUrlPaste(conversation)
   ? await listPasteVersionStamps(env.PASTES, conversation.slug)
   : [];
 const trail = deriveVersionTrail(conversation, versionStamps);
+
+// The freshness surface (slopspot-freshness-eck.4) exists only for url-arm pastes —
+// a text/editor paste has no upstream page to be fresher or staler than. null = no
+// surface (the template skips it, a value not a branch); the present arm carries the
+// derived age line, itself null for pre-stamping records — honest absence, never a
+// fabricated instant [LAW:no-silent-failure]. The check affordance is pure client
+// enhancement over /api/freshness; the server renders only the static age.
+const freshness = isUrlPaste(conversation)
+  ? { ageLabel: fetchedAgeLabel(conversation.origin) }
+  : null;
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -135,6 +146,118 @@ const trail = deriveVersionTrail(conversation, versionStamps);
       </p>
     )}
   </section>
+
+  {/*
+    The freshness surface (slopspot-freshness-eck.4): how old this url-arm snapshot
+    is, plus an explicit COMPARE-ONLY check against the live page. The age line is
+    static server content (stamped records only — a legacy record carries no fetch
+    instant and shows none). The check form is progressive enhancement: hidden until
+    the script below adds body.freshness-ready, so a no-JS reader sees the age and
+    never a dead button. The check POSTs /api/freshness — a byte comparison that
+    writes nothing to the paste record; its verdict wording (freshnessView.ts)
+    claims only what bytes prove. Adopting a new version remains the privileged
+    /sloppy refetch; checking is public and read-only.
+  */}
+  {freshness && (
+    <section class="freshness" data-slug={slug}>
+      {freshness.ageLabel && <p class="freshness-age">{freshness.ageLabel}</p>}
+      <form class="freshness-form">
+        <button class="mono-pill freshness-check" type="submit">Check the live page</button>
+      </form>
+      <p class="freshness-result" aria-live="polite" hidden></p>
+    </section>
+  )}
+
+  <script>
+    // [LAW:decomposition] The freshness check is its own part, cut apart from the
+    // sibling scripts: it owns exactly the freshness section and the one network
+    // edge to /api/freshness [LAW:effects-at-boundaries]. The section renders only
+    // for url-arm pastes, so its ABSENCE here is a legitimate value (this paste has
+    // no upstream to check) — the wirePayloadCopy convention, not the loud throw
+    // the unconditional sections use.
+    import { VERDICT_WORDING, checkedAgo, isFreshnessVerdict, type FreshnessVerdict } from "../freshnessView";
+
+    const freshnessSection = document.querySelector<HTMLElement>(".freshness");
+    if (freshnessSection) {
+      const form = freshnessSection.querySelector<HTMLFormElement>(".freshness-form");
+      const button = freshnessSection.querySelector<HTMLButtonElement>(".freshness-check");
+      const result = freshnessSection.querySelector<HTMLElement>(".freshness-result");
+      // [LAW:no-silent-failure] The section always renders with its form, button,
+      // and result slot, so a missing one is a broken template invariant.
+      if (!form || !button || !result) {
+        throw new Error("freshness section is missing its form, button, or result slot");
+      }
+      // [LAW:one-source-of-truth] slug from the section's own server-rendered
+      // data-slug (the .tldr move), never re-derived from location.
+      const slug = freshnessSection.dataset.slug ?? "";
+
+      // [LAW:types-are-the-program] The region's total state, the TL;DR move: every
+      // screen is one representable value. `checking` disables the submit button —
+      // disabling also blocks Enter-key implicit submission, so overlapping checks
+      // are unrepresentable [LAW:no-ambient-temporal-coupling].
+      type CheckState =
+        | { kind: "idle" }
+        | { kind: "checking" }
+        | { kind: "done"; verdict: FreshnessVerdict; checkedAt: number }
+        | { kind: "error"; reason: string };
+
+      // [LAW:dataflow-not-control-flow] One total projection of the state onto the
+      // button and result line; every property is written on every transition, only
+      // the values vary. Verdict wording comes from the ONE map the check script
+      // also asserts (freshnessView.ts) — never retyped here
+      // [LAW:one-source-of-truth]. All text lands as textContent, never innerHTML.
+      const render = (s: CheckState): void => {
+        button.disabled = s.kind === "checking";
+        result.hidden = s.kind === "idle";
+        result.classList.toggle("freshness-differs", s.kind === "done" && s.verdict === "changed");
+        result.classList.toggle("freshness-error", s.kind === "error");
+        result.textContent =
+          s.kind === "idle"
+            ? ""
+            : s.kind === "checking"
+              ? "Checking the live page… fetching it fresh can take a few seconds."
+              : s.kind === "done"
+                ? `${VERDICT_WORDING[s.verdict]} (${checkedAgo(s.checkedAt, Date.now())})`
+                : s.reason;
+      };
+
+      // [LAW:effects-at-boundaries] The one network edge, mirroring the TL;DR's
+      // generate(): every outcome — dropped connection, non-JSON body, error
+      // status, verdict — maps to a state value [LAW:no-silent-failure].
+      const check = async (): Promise<void> => {
+        render({ kind: "checking" });
+        const res = await fetch("/api/freshness", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ slug }),
+        }).catch(() => null);
+        if (!res) {
+          render({ kind: "error", reason: "Network error — could not reach the freshness check." });
+          return;
+        }
+        const body = (await res.json().catch(() => null)) as
+          | { verdict?: unknown; checkedAt?: unknown; error?: string }
+          | null;
+        if (res.ok && body && isFreshnessVerdict(body.verdict) && typeof body.checkedAt === "number") {
+          render({ kind: "done", verdict: body.verdict, checkedAt: body.checkedAt });
+          return;
+        }
+        // [LAW:no-silent-failure] Surface the server's own reason — a 422 dead
+        // link, a 410 expired — so a failed check is legible, never a blank line.
+        render({ kind: "error", reason: body?.error ?? `Freshness check failed (HTTP ${res.status}).` });
+      };
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void check();
+      });
+
+      // Seat idle, then reveal — a no-JS viewer never reaches here, so the form
+      // stays display:none and the page shows only the static age line.
+      render({ kind: "idle" });
+      document.body.classList.add("freshness-ready");
+    }
+  </script>
 
   {/*
     [LAW:effects-at-boundaries] The "Compare with…" control mints a /diff/<this>/<other>
@@ -244,7 +367,7 @@ const trail = deriveVersionTrail(conversation, versionStamps);
           {[...trail.stamps].reverse().map((at) => (
             <li>
               <a href={versionPath(conversation.slug, at)}>
-                Snapshot replaced {versionDate(at)}
+                Snapshot replaced {utcDate(at)}
               </a>
               <span class="version-trail-hint"> — compare with current</span>
             </li>
@@ -254,7 +377,7 @@ const trail = deriveVersionTrail(conversation, versionStamps);
         <Fragment>
           <ul class="version-trail-list">
             {[...trail.stamps].reverse().map((at) => (
-              <li>Snapshot replaced {versionDate(at)}</li>
+              <li>Snapshot replaced {utcDate(at)}</li>
             ))}
           </ul>
           <p class="version-trail-withheld" role="note">

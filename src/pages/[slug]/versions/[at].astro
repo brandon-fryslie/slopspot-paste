@@ -4,7 +4,8 @@ import Base from "../../../layouts/Base.astro";
 import { loadViewablePaste } from "../../../loadPaste";
 import { getPasteVersion } from "../../../storage";
 import { renderDiffRow } from "../../../diff";
-import { versionDate, versionPageOutcome } from "../../../versionTrail";
+import { versionPageOutcome } from "../../../versionTrail";
+import { utcDate } from "../../../types";
 
 export const prerender = false;
 
@@ -61,11 +62,11 @@ const rows = outcome.rows.map(({ row, changed }) => ({ ...renderDiffRow(row), ch
 const { snapshot, current } = outcome;
 const snapshotWhen =
   snapshot.fetchedAt === null
-    ? `replaced ${versionDate(snapshot.supersededAt)}`
-    : `fetched ${versionDate(snapshot.fetchedAt)} · replaced ${versionDate(snapshot.supersededAt)}`;
+    ? `replaced ${utcDate(snapshot.supersededAt)}`
+    : `fetched ${utcDate(snapshot.fetchedAt)} · replaced ${utcDate(snapshot.supersededAt)}`;
 ---
 
-<Base title={`${current.title} · snapshot ${versionDate(snapshot.supersededAt)} · slopspot paste`}>
+<Base title={`${current.title} · snapshot ${utcDate(snapshot.supersededAt)} · slopspot paste`}>
   <section class="conversation-header diff-header">
     <h1>Snapshot vs. current</h1>
     <p class="conversation-meta">

@@ -392,6 +392,15 @@ export type PasteLoad =
 // string, so a reword/localization changes one constant, not three hand-kept copies.
 export const DEFAULT_TITLE = "Shared conversation";
 
+// [LAW:one-source-of-truth] One date format for every instant a reader surface words —
+// the version trail's "replaced" dates, the freshness surface's fetched-age — the UTC
+// calendar date. Server-rendered pages have no reader locale to consult, so a fixed
+// unambiguous form beats a locale guess. It lives HERE (the dependency-free contract
+// home) rather than beside any one surface, so the client-bundled freshness script and
+// the server templates share the same formatter instead of drifting copies.
+export const utcDate = (instant: number): string =>
+  new Date(instant).toISOString().slice(0, 10);
+
 // [LAW:single-enforcer] Three distinct time windows, stated once:
 //   TTL_SECONDS     — active lifetime; paste hides from public reads at W+30d
 //   GRACE_SECONDS   — grace window; isPurgeable fires at W+60d (TTL+GRACE)
@@ -592,10 +601,13 @@ export const textArmInput = (kind: TextArmKind, content: string): PasteInput => 
 // whose host gained a provider later still re-derives correctly: the stored
 // bytes are the authority, the provider tag only selects which parser replays them.
 // [LAW:types-are-the-program] `fetchedAt` is the instant the url was last FETCHED
-// to produce this arm's bytes (stamped by the refetch path, slopspot-freshness-eck.2).
-// Optional: records written before stamping carry no instant — honest absence, their
-// fetch time is approximated by the record's createdAt — and it is scoped to the url
-// arm alone, so "a text paste with a fetch timestamp" is unrepresentable. The
+// to produce this arm's bytes — stamped at the ingest boundary for every fresh fetch
+// (parser.ts, slopspot-freshness-eck.4) and re-stamped by the refetch plan
+// (slopspot-freshness-eck.2). Optional: records written before stamping carry no
+// instant — honest absence, shown as no age (a pre-stamping refetch could have
+// replaced their bytes at an unknown later instant, so no stored field can honestly
+// stand in) — and it is scoped to the url arm alone, so "a text paste with a fetch
+// timestamp" is unrepresentable. The
 // editor's bulk-edit (reparseFetched) spreads it forward unchanged: editing the
 // bytes does not change when the url was fetched, and the edited-bytes caveat is the
 // display's to word honestly.

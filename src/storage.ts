@@ -230,6 +230,7 @@ export const getDraft = async (kv: Pick<PasteKv, "get">, id: string): Promise<Dr
 // and never assembles the KV key itself.
 const SUMMARY_KEY_PREFIX = "summary:";
 const VECTOR_INDEX_KEY_PREFIX = "vectors:";
+const FRESHNESS_KEY_PREFIX = "freshness:";
 
 // A generous backstop TTL shared by every derived cache. The hash busts an entry on
 // content change, but the generator improves over time with no content change to
@@ -239,6 +240,14 @@ const VECTOR_INDEX_KEY_PREFIX = "vectors:";
 // writer). [LAW:no-ambient-temporal-coupling] It is also what makes the sweep's
 // failure path safe: an orphaned entry self-evicts.
 const DERIVED_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+// The freshness-verdict cache is the shortest-lived derived cache, because its TTL
+// IS the feature's cooldown (slopspot-freshness-eck.4): while an entry lives, a
+// repeat "check the live page" is served the last verdict and its timestamp with
+// no upstream fetch — the entry is what bounds Firecrawl spend to one live fetch
+// per paste per window. One hour keeps the verdict honest (the surface words how
+// long ago it was checked) without letting a stale answer linger for days.
+const FRESHNESS_TTL_SECONDS = 60 * 60;
 
 const derivedKey = (prefix: string, slug: string, hash: string): string =>
   `${prefix}${slug}:${hash}`;
@@ -276,9 +285,13 @@ const putCachedDerived = async (
   kv: Pick<PasteKv, "put">,
   key: string,
   value: string,
+  // [LAW:one-type-per-behavior] The lifespan is configuration each instantiation
+  // passes (the long generator-refresh window, or the freshness cooldown), not a
+  // second put path per cache.
+  ttlSeconds: number,
 ): Promise<void> => {
   try {
-    await kv.put(key, value, { expirationTtl: DERIVED_TTL_SECONDS });
+    await kv.put(key, value, { expirationTtl: ttlSeconds });
   } catch (err) {
     // The value was already produced and is being returned to the caller; a failed
     // write must not discard it. The write simply doesn't persist — the next request
@@ -334,7 +347,8 @@ export const putCachedSummary = (
   slug: string,
   hash: string,
   summary: string,
-): Promise<void> => putCachedDerived(kv, derivedKey(SUMMARY_KEY_PREFIX, slug, hash), summary);
+): Promise<void> =>
+  putCachedDerived(kv, derivedKey(SUMMARY_KEY_PREFIX, slug, hash), summary, DERIVED_TTL_SECONDS);
 
 export const deleteCachedSummaries = (
   kv: Pick<PasteKv, "list" | "delete">,
@@ -355,12 +369,37 @@ export const putCachedVectorIndex = (
   slug: string,
   hash: string,
   indexJson: string,
-): Promise<void> => putCachedDerived(kv, derivedKey(VECTOR_INDEX_KEY_PREFIX, slug, hash), indexJson);
+): Promise<void> =>
+  putCachedDerived(kv, derivedKey(VECTOR_INDEX_KEY_PREFIX, slug, hash), indexJson, DERIVED_TTL_SECONDS);
 
 export const deleteCachedVectorIndexes = (
   kv: Pick<PasteKv, "list" | "delete">,
   slug: string,
 ): Promise<void> => sweepCachedDerived(kv, VECTOR_INDEX_KEY_PREFIX, slug);
+
+// The freshness-verdict instantiation (slopspot-freshness-eck.4): the cached value
+// is the JSON of the last compare-only check's verdict + instant, keyed by the hash
+// of the exact stored bytes the verdict compared against (freshnessService.ts owns
+// that shape and validates it on read — KV is a trust boundary, and this layer
+// stores strings). Short TTL: the entry is the check's cooldown, see above.
+export const getCachedFreshness = (
+  kv: Pick<PasteKv, "get">,
+  slug: string,
+  hash: string,
+): Promise<string | null> => getCachedDerived(kv, derivedKey(FRESHNESS_KEY_PREFIX, slug, hash));
+
+export const putCachedFreshness = (
+  kv: Pick<PasteKv, "put">,
+  slug: string,
+  hash: string,
+  verdictJson: string,
+): Promise<void> =>
+  putCachedDerived(kv, derivedKey(FRESHNESS_KEY_PREFIX, slug, hash), verdictJson, FRESHNESS_TTL_SECONDS);
+
+export const deleteCachedFreshness = (
+  kv: Pick<PasteKv, "list" | "delete">,
+  slug: string,
+): Promise<void> => sweepCachedDerived(kv, FRESHNESS_KEY_PREFIX, slug);
 
 // [LAW:decomposition] Version records — archived url-arm snapshots a refetch
 // superseded (slopspot-freshness-eck.2) — are a THIRD storage concern, distinct
@@ -486,7 +525,8 @@ export const deletePasteVersions = async (
 // Permanently remove a paste record AND its derived caches AND its version
 // archive — called only by the purge path after the grace window.
 // [LAW:one-way-deps] deleting the authority sweeps its derivations, so a hard
-// delete leaves no orphaned summary, vector index, or archived snapshot behind.
+// delete leaves no orphaned summary, vector index, freshness verdict, or archived
+// snapshot behind.
 // [LAW:no-ambient-temporal-coupling] Versions are swept BEFORE the paste record:
 // the purge only revisits slugs whose paste record still exists, so deleting the
 // record first would make a mid-sweep failure unreachable by any retry — versions
@@ -500,6 +540,7 @@ export const deleteConversation = async (
   await kv.delete(KEY_PREFIX + slug);
   await deleteCachedSummaries(kv, slug);
   await deleteCachedVectorIndexes(kv, slug);
+  await deleteCachedFreshness(kv, slug);
 };
 
 // [LAW:decomposition] The draft-prefix counterpart of deleteConversation: revoke a
