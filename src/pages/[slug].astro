@@ -10,6 +10,7 @@ import { renderContinuationControl } from "../continuation";
 import { loadViewablePaste } from "../loadPaste";
 import { derivePasteMeta, sourceUrlOf, viewLifetime } from "../types";
 import { hostLabel } from "../url";
+import { MAX_QUESTION_CHARS } from "../ask";
 
 export const prerender = false;
 
@@ -230,6 +231,30 @@ const continuationHtml = renderContinuationControl(dialogue);
       </span>
     </form>
     <div class="search-results" aria-live="polite"></div>
+  </section>
+
+  {/*
+    [LAW:effects-at-boundaries] Ask this conversation: the server emits only this
+    inert form and an empty answer region — the answer is a network fact the client
+    fetches from /api/ask on demand, never server-rendered state. Same
+    render-hidden-then-reveal move as the search box (body.ask-ready): a no-JS
+    reader's page is unchanged and never carries a dead ask box. maxlength derives
+    from the ONE question bound the server enforces (ask.ts MAX_QUESTION_CHARS) —
+    a client courtesy stamped from the same constant, never a second value
+    [LAW:one-source-of-truth]. aria-live announces each transition (asking →
+    answer / error).
+  */}
+  <section class="semantic-ask">
+    <form class="ask-form">
+      <label class="ask-label" for="semantic-ask-input">Ask this conversation</label>
+      <span class="ask-field">
+        <input class="ask-input" id="semantic-ask-input" type="search" autocomplete="off"
+          spellcheck="false" placeholder="ask a question, get a cited answer…"
+          maxlength={MAX_QUESTION_CHARS} />
+        <button class="mono-pill ask-go" type="submit">Ask</button>
+      </span>
+    </form>
+    <div class="ask-results" aria-live="polite"></div>
   </section>
 
   {outline.length > 0 && (
@@ -1081,20 +1106,26 @@ const continuationHtml = renderContinuationControl(dialogue);
   </script>
 
   <script>
-    // [LAW:decomposition] Semantic search is its own part, cut apart from the
-    // minimap/copy and TL;DR scripts: it owns exactly the query box, the ranked-hits
-    // region, and the hit paint on the rail. [LAW:effects-at-boundaries] its single
-    // network edge is the /api/search fetch; everything else is a pure projection of
-    // one state value.
+    // [LAW:decomposition] The retrieval affordances — semantic search AND
+    // ask-this-conversation — are ONE part, because they share one seam: the
+    // minimap rail. Each owns its own query box, region, and state union, but a
+    // single render() below is the rail's ONE paint owner
+    // [LAW:one-source-of-truth] — two scripts each toggling body.search-active
+    // and is-hit would fight over the markers. The affordances are mutually
+    // exclusive by construction: submitting either resets the other to idle, so
+    // at most one can be non-idle and the rail always shows exactly one truth.
+    // [LAW:effects-at-boundaries] the network edges are the /api/search and
+    // /api/ask fetches; everything else is a pure projection of the two states.
     //
-    // [LAW:no-defensive-null-guards] The page renders .semantic-search (with its
-    // form, input, button, and results region) and .conversation unconditionally,
-    // so a missing one is a broken template invariant — assert once, loudly, like
-    // the sibling scripts.
+    // [LAW:no-defensive-null-guards] The page renders .semantic-search,
+    // .semantic-ask (each with form, input, button, and results region) and
+    // .conversation unconditionally, so a missing one is a broken template
+    // invariant — assert once, loudly, like the sibling scripts.
     const searchSection = document.querySelector<HTMLElement>(".semantic-search");
+    const askSection = document.querySelector<HTMLElement>(".semantic-ask");
     const searchConversation = document.querySelector<HTMLElement>(".conversation");
-    if (!searchSection || !searchConversation) {
-      throw new Error("required .semantic-search or .conversation section missing");
+    if (!searchSection || !askSection || !searchConversation) {
+      throw new Error("required .semantic-search, .semantic-ask, or .conversation section missing");
     }
     const form = searchSection.querySelector<HTMLFormElement>(".search-form");
     const input = searchSection.querySelector<HTMLInputElement>(".search-input");
@@ -1103,33 +1134,50 @@ const continuationHtml = renderContinuationControl(dialogue);
     if (!form || !input || !go || !results) {
       throw new Error("search section is missing its form, input, button, or results region");
     }
+    const askForm = askSection.querySelector<HTMLFormElement>(".ask-form");
+    const askInput = askSection.querySelector<HTMLInputElement>(".ask-input");
+    const askGo = askSection.querySelector<HTMLButtonElement>(".ask-go");
+    const askResults = askSection.querySelector<HTMLElement>(".ask-results");
+    if (!askForm || !askInput || !askGo || !askResults) {
+      throw new Error("ask section is missing its form, input, button, or results region");
+    }
 
     // [LAW:one-source-of-truth] slug from the one server-rendered data-slug on
     // .conversation, like every sibling script — never re-derived from location.
     const slug = searchConversation.dataset.slug ?? "";
 
-    // The wire shape of one /api/search hit: OutlineEntry & {score} (searchService).
-    // `index` is the renderer's spine index — the SAME number the turn's data-index
-    // and the marker's data-index carry — `anchor` the t<N> id the renderer emitted,
-    // `label` the same derived text the outline and minimap show. `role` is data for
-    // the dot's hue; `score` already ordered the hits server-side and is not shown.
-    type SearchHit = {
+    // The wire shape both endpoints speak: an OutlineEntry (spineOutline.ts).
+    // `index` is the renderer's spine index — the SAME number the turn's
+    // data-index and the marker's data-index carry — `anchor` the t<N> id the
+    // renderer emitted, `label` the same derived text the outline and minimap
+    // show. `role` is data for the dot's hue. A search hit adds the score that
+    // already ordered it server-side (not shown); an ask citation is exactly this.
+    type OutlineRow = {
       index: number;
       anchor: string;
       role: string;
       label: string;
-      score: number;
     };
+    type SearchHit = OutlineRow & { score: number };
 
-    // [LAW:types-are-the-program] The results region's total state — the TL;DR
-    // mount's discriminated-union move: every screen is one representable value and
-    // the region is rebuilt whole per transition, so stale hits during a fetch or a
-    // Clear control while searching are unrepresentable rather than defended against.
+    // [LAW:types-are-the-program] Each region's total state — the TL;DR mount's
+    // discriminated-union move: every screen is one representable value and the
+    // region is rebuilt whole per transition, so stale hits during a fetch or a
+    // Clear control while searching are unrepresentable rather than defended
+    // against.
     type SearchState =
       | { kind: "idle" }
       | { kind: "searching" }
       | { kind: "ready"; hits: SearchHit[] }
       | { kind: "error"; reason: string };
+    type AskState =
+      | { kind: "idle" }
+      | { kind: "asking" }
+      | { kind: "ready"; answer: string; citations: OutlineRow[] }
+      | { kind: "error"; reason: string };
+
+    let searchState: SearchState = { kind: "idle" };
+    let askState: AskState = { kind: "idle" };
 
     // Cosine scores cluster high (a3k.4's live run: best ~0.70, next ~0.53), so the
     // ranking is trustworthy but an absolute score threshold is not — show top-N.
@@ -1148,28 +1196,55 @@ const continuationHtml = renderContinuationControl(dialogue);
       return btn;
     };
 
-    // [LAW:no-ambient-temporal-coupling] The ONE in-flight owner. The disabled
-    // submit button blocks a second submit, but the native clear X on a
-    // type="search" input is not blocked — clear() can run mid-flight, and the
-    // abandoned fetch's continuation would otherwise resurrect results into an
-    // idle UI. clear() aborts the owner; search() supersedes it; and search()'s
-    // renders route through settle(), which drops a state whose controller was
-    // aborted — so a cleared search stays cleared, by value, not by timing luck.
-    let inFlight: AbortController | null = null;
+    // [LAW:one-type-per-behavior] A hit row and a citation row ARE outline rows —
+    // the same role-dot + label anchor jumping to the same t<N> id — so both wear
+    // the outline's classes and the three surfaces can never drift apart in look
+    // or in how they address a turn [LAW:one-source-of-truth].
+    const outlineItem = (row: OutlineRow): HTMLLIElement => {
+      const item = document.createElement("li");
+      item.className = "spine-outline-item";
+      const link = document.createElement("a");
+      link.className = "spine-outline-link";
+      link.href = "#" + row.anchor;
+      const dot = document.createElement("span");
+      dot.className = "spine-outline-dot";
+      dot.dataset.role = row.role;
+      dot.setAttribute("aria-hidden", "true");
+      const text = document.createElement("span");
+      text.className = "spine-outline-label";
+      text.textContent = row.label;
+      link.appendChild(dot);
+      link.appendChild(text);
+      item.appendChild(link);
+      return item;
+    };
 
-    // [LAW:effects-at-boundaries] The one network edge, mirroring the TL;DR's
+    // [LAW:no-ambient-temporal-coupling] ONE in-flight owner per affordance. The
+    // disabled submit button blocks a second submit, but the native clear X on a
+    // type="search" input is not blocked — a clear can run mid-flight, and the
+    // abandoned fetch's continuation would otherwise resurrect results into an
+    // idle UI. Clearing aborts the owner; a new request supersedes it; and every
+    // fetch's renders route through a settle() that drops a state whose
+    // controller was aborted — cleared stays cleared, by value, not timing luck.
+    let searchInFlight: AbortController | null = null;
+    let askInFlight: AbortController | null = null;
+
+    // [LAW:effects-at-boundaries] The search network edge, mirroring the TL;DR's
     // generate(): every outcome — dropped connection, non-JSON body, error status,
     // hits — maps to a state value, never a silent return [LAW:no-silent-failure].
     // A superseded/cleared fetch is the one deliberate exception: its owner already
     // rendered the state that superseded it, so settle() drops it silently.
     const search = async (query: string): Promise<void> => {
-      inFlight?.abort();
+      // Mutual exclusion: the rail shows one affordance's truth at a time.
+      askInFlight?.abort();
+      askState = { kind: "idle" };
+      searchInFlight?.abort();
       const ctl = new AbortController();
-      inFlight = ctl;
+      searchInFlight = ctl;
       const settle = (s: SearchState): void => {
-        if (!ctl.signal.aborted) render(s);
+        if (!ctl.signal.aborted) setSearch(s);
       };
-      render({ kind: "searching" });
+      setSearch({ kind: "searching" });
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1199,16 +1274,58 @@ const continuationHtml = renderContinuationControl(dialogue);
       settle({ kind: "error", reason: body?.error ?? `Search failed (HTTP ${res.status}).` });
     };
 
-    const clear = (): void => {
-      inFlight?.abort();
-      input.value = "";
-      render({ kind: "idle" });
-      input.focus();
+    // [LAW:effects-at-boundaries] The ask network edge — the same settle-gated
+    // shape as search's. The server's citations are already filtered to excerpts
+    // the model was actually shown, so this renders them blindly.
+    const ask = async (question: string): Promise<void> => {
+      // Mutual exclusion: the rail shows one affordance's truth at a time.
+      searchInFlight?.abort();
+      searchState = { kind: "idle" };
+      askInFlight?.abort();
+      const ctl = new AbortController();
+      askInFlight = ctl;
+      const settle = (s: AskState): void => {
+        if (!ctl.signal.aborted) setAsk(s);
+      };
+      setAsk({ kind: "asking" });
+      const res = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slug, question }),
+        signal: ctl.signal,
+      }).catch(() => null);
+      if (!res) {
+        settle({ kind: "error", reason: "Network error — could not reach the answerer." });
+        return;
+      }
+      const body = (await res.json().catch(() => null)) as
+        | { answer?: string; citations?: OutlineRow[]; error?: string }
+        | null;
+      if (res.ok && typeof body?.answer === "string" && Array.isArray(body.citations)) {
+        settle({ kind: "ready", answer: body.answer, citations: body.citations });
+        return;
+      }
+      // [LAW:no-silent-failure] Surface the server's own reason — the 400 length
+      // cap, a 502 provider failure, a 503 not-configured — never a blank region.
+      settle({ kind: "error", reason: body?.error ?? `Ask failed (HTTP ${res.status}).` });
     };
 
-    // [LAW:dataflow-not-control-flow] The region's markup is a pure projection of
-    // the state value: one exhaustive switch, rebuilt whole on every transition.
-    // Labels and hit text land as textContent, never innerHTML.
+    const clearSearch = (): void => {
+      searchInFlight?.abort();
+      input.value = "";
+      setSearch({ kind: "idle" });
+      input.focus();
+    };
+    const clearAsk = (): void => {
+      askInFlight?.abort();
+      askInput.value = "";
+      setAsk({ kind: "idle" });
+      askInput.focus();
+    };
+
+    // [LAW:dataflow-not-control-flow] The search region's markup is a pure
+    // projection of its state value: one exhaustive switch, rebuilt whole on
+    // every transition. Labels and hit text land as textContent, never innerHTML.
     const resultChildren = (s: SearchState): Node[] => {
       switch (s.kind) {
         case "idle":
@@ -1237,37 +1354,16 @@ const continuationHtml = renderContinuationControl(dialogue);
           // head's Regenerate — a tldr-btn secondary pill seated right in a head
           // row — so it wears that base and the shared size group, not mono-pill
           // (whose later cascade position would override the secondary size).
-          head.appendChild(makeButton("tldr-btn search-clear", "Clear", clear));
+          head.appendChild(makeButton("tldr-btn search-clear", "Clear", clearSearch));
           if (s.hits.length === 0) {
             const empty = document.createElement("p");
             empty.className = "search-empty";
             empty.textContent = "Nothing searchable in this conversation.";
             return [head, empty];
           }
-          // [LAW:one-type-per-behavior] A hit row IS an outline row — the same
-          // role-dot + label anchor jumping to the same t<N> id — so it wears the
-          // outline's classes and the two surfaces can never drift apart in look
-          // or in how they address a turn [LAW:one-source-of-truth].
           const list = document.createElement("ol");
           list.className = "search-hits";
-          for (const hit of s.hits) {
-            const item = document.createElement("li");
-            item.className = "spine-outline-item";
-            const link = document.createElement("a");
-            link.className = "spine-outline-link";
-            link.href = "#" + hit.anchor;
-            const dot = document.createElement("span");
-            dot.className = "spine-outline-dot";
-            dot.dataset.role = hit.role;
-            dot.setAttribute("aria-hidden", "true");
-            const text = document.createElement("span");
-            text.className = "spine-outline-label";
-            text.textContent = hit.label;
-            link.appendChild(dot);
-            link.appendChild(text);
-            item.appendChild(link);
-            list.appendChild(item);
-          }
+          for (const hit of s.hits) list.appendChild(outlineItem(hit));
           return [head, list];
         }
         case "error": {
@@ -1291,49 +1387,155 @@ const continuationHtml = renderContinuationControl(dialogue);
       }
     };
 
-    // [LAW:dataflow-not-control-flow] ONE projection of the state onto every
-    // surface it owns — the results region, the form's submit availability, and
-    // the rail's hit paint. Every operation runs on every transition; only the
-    // values vary. Markers are addressed live by the data-index the minimap script
-    // stamped, so a paste with no markers paints nothing — a value, not a guard.
-    const render = (s: SearchState): void => {
-      results.replaceChildren(...resultChildren(s));
+    // The answer paragraph's children: split on the [t<N>] tag grammar and turn
+    // exactly the tags the server certified as citations into jump links — the
+    // same #t<N> anchors every outline row targets. An uncited tag (the server
+    // filtered it, or the model mangled one) stays plain text: linkification is a
+    // lookup in the citation map, not trust in the model [LAW:types-are-the-program].
+    const answerNodes = (answer: string, citations: OutlineRow[]): Node[] => {
+      const byIndex = new Map(citations.map((c) => [c.index, c]));
+      return answer.split(/(\[t\d+\])/).map((part) => {
+        const tag = /^\[t(\d+)\]$/.exec(part);
+        const row = tag ? byIndex.get(Number(tag[1])) : undefined;
+        if (!row) return document.createTextNode(part);
+        const link = document.createElement("a");
+        link.className = "ask-cite";
+        link.href = "#" + row.anchor;
+        link.title = row.label;
+        link.textContent = part;
+        return link;
+      });
+    };
+
+    // [LAW:dataflow-not-control-flow] The ask region's markup: the same
+    // exhaustive-switch projection as the search region's. The answer lands as
+    // text nodes and anchor elements built here — never innerHTML, so even a
+    // misbehaving model can never inject markup.
+    const askChildren = (s: AskState): Node[] => {
+      switch (s.kind) {
+        case "idle":
+          return [];
+        case "asking": {
+          const status = document.createElement("div");
+          status.className = "ask-status";
+          status.textContent =
+            "Answering… reading the most relevant turns (a first question can take a few seconds).";
+          return [status];
+        }
+        case "ready": {
+          const head = document.createElement("div");
+          head.className = "ask-head";
+          const label = document.createElement("span");
+          label.className = "ask-head-label";
+          label.textContent = "Answer";
+          head.appendChild(label);
+          head.appendChild(makeButton("tldr-btn ask-clear", "Clear", clearAsk));
+          const p = document.createElement("p");
+          p.className = "ask-answer";
+          for (const node of answerNodes(s.answer, s.citations)) p.appendChild(node);
+          if (s.citations.length === 0) return [head, p];
+          // Cited turns as outline rows under the answer — the reader's jump list,
+          // the same affordance a search hit row is.
+          const list = document.createElement("ol");
+          list.className = "ask-sources";
+          for (const citation of s.citations) list.appendChild(outlineItem(citation));
+          return [head, p, list];
+        }
+        case "error": {
+          const box = document.createElement("div");
+          box.setAttribute("role", "alert");
+          box.className = "ask-error";
+          const msg = document.createElement("span");
+          msg.className = "ask-error-msg";
+          msg.textContent = s.reason;
+          box.appendChild(msg);
+          box.appendChild(makeButton("tldr-btn ask-retry", "Try again", () =>
+            askForm.dispatchEvent(new Event("submit", { cancelable: true })),
+          ));
+          return [box];
+        }
+      }
+    };
+
+    // [LAW:dataflow-not-control-flow] ONE projection of BOTH states onto every
+    // surface this part owns — the two regions, the two submit availabilities,
+    // and the rail's paint. Every operation runs on every transition; only the
+    // values vary. Markers are addressed live by the data-index the minimap
+    // script stamped, so a paste with no markers paints nothing — a value, not a
+    // guard. The rail's lit set is a value the exclusive states pick: search
+    // hits, or ask citations, or nothing — and body.search-active (one dim tier
+    // serves both affordances [LAW:one-type-per-behavior]) lifts only when there
+    // is something lit to distinguish.
+    const render = (): void => {
+      results.replaceChildren(...resultChildren(searchState));
+      askResults.replaceChildren(...askChildren(askState));
       // Disabling the default submit button also blocks Enter-key implicit
       // submission (spec'd HTML behavior), so ONE value gates both submit paths and
       // overlapping fetches are unrepresentable [LAW:no-ambient-temporal-coupling].
-      go.disabled = s.kind === "searching";
-      const hitIndices = new Set(s.kind === "ready" ? s.hits.map((h) => h.index) : []);
-      document.body.classList.toggle("search-active", s.kind === "ready");
+      go.disabled = searchState.kind === "searching";
+      askGo.disabled = askState.kind === "asking";
+      const lit =
+        searchState.kind === "ready"
+          ? searchState.hits.map((h) => h.index)
+          : askState.kind === "ready"
+            ? askState.citations.map((c) => c.index)
+            : [];
+      const litSet = new Set(lit);
+      document.body.classList.toggle(
+        "search-active",
+        searchState.kind === "ready" || (askState.kind === "ready" && litSet.size > 0),
+      );
       for (const marker of document.querySelectorAll<HTMLElement>(".minimap-marker[data-index]")) {
-        marker.classList.toggle("is-hit", hitIndices.has(Number(marker.dataset.index)));
+        marker.classList.toggle("is-hit", litSet.has(Number(marker.dataset.index)));
       }
+    };
+    const setSearch = (s: SearchState): void => {
+      searchState = s;
+      render();
+    };
+    const setAsk = (s: AskState): void => {
+      askState = s;
+      render();
     };
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const query = input.value.trim();
       // [LAW:single-enforcer] An empty query IS the clear action, routed through
-      // the one clear() owner — never a direct idle render that would leave
+      // the one clear owner — never a direct idle render that would leave
       // whitespace sitting in the box while the state reads idle.
       if (query === "") {
-        clear();
+        clearSearch();
         return;
       }
       void search(query);
+    });
+    askForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const question = askInput.value.trim();
+      if (question === "") {
+        clearAsk();
+        return;
+      }
+      void ask(question);
     });
 
     // [LAW:single-enforcer] The browser's native clear X on a type="search" input
     // fires the `search` event, not `submit` — without this, that affordance would
     // empty the box while results and the lit rail silently stay. An emptied value
-    // routes through the SAME clear() owner as every other reset-to-idle path.
+    // routes through the SAME clear owner as every other reset-to-idle path.
     input.addEventListener("search", () => {
-      if (input.value === "") clear();
+      if (input.value === "") clearSearch();
+    });
+    askInput.addEventListener("search", () => {
+      if (askInput.value === "") clearAsk();
     });
 
-    // Seat the idle state, then reveal — a no-JS viewer never reaches here, so the
-    // section stays display:none and the page is unchanged.
-    render({ kind: "idle" });
+    // Seat the idle states, then reveal both affordances — a no-JS viewer never
+    // reaches here, so the sections stay display:none and the page is unchanged.
+    render();
     document.body.classList.add("search-ready");
+    document.body.classList.add("ask-ready");
   </script>
 
   <script>
