@@ -12,6 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import {
+  EMBEDDING_BATCH_CHAR_BUDGET,
   EMBEDDING_DIMS,
   EMBEDDING_MODEL,
   embeddingsRequestBody,
@@ -144,6 +145,54 @@ console.log("\nThe edge (stubbed binding):");
     const junkAi: EmbeddingAi = { run: () => Promise.resolve({ unexpected: true }) };
     const junk = await embedTexts(["alpha"], junkAi);
     assert("a malformed resolution classifies as a typed refusal", !junk.ok);
+
+    // [LAW:single-enforcer] The wire's per-request token cap, enforced as the char
+    // budget: texts pack into contiguous batches, one request per batch, re-joined
+    // in input order. Three texts sized so exactly two fit a batch prove the split
+    // point, and per-text marker vectors prove the concatenation is positional.
+    const big = (marker: string): string => marker + "x".repeat(Math.floor(EMBEDDING_BATCH_CHAR_BUDGET * 0.4));
+    const bigTexts = [big("a"), big("b"), big("c")];
+    const batchesSeen: string[][] = [];
+    const markedAi: EmbeddingAi = {
+      run: (_model, input) => {
+        batchesSeen.push(input.text);
+        return Promise.resolve({
+          data: input.text.map((t) => [t.charCodeAt(0), ...Array<number>(EMBEDDING_DIMS - 1).fill(0)]),
+        });
+      },
+    };
+    const batched = await embedTexts(bigTexts, markedAi);
+    assert("over-budget input splits into two requests", batchesSeen.length === 2);
+    assert(
+      "the split is greedy and contiguous: [a,b] then [c]",
+      batchesSeen[0]?.length === 2 && batchesSeen[1]?.length === 1,
+    );
+    assert(
+      "vectors re-join in input order across batches",
+      batched.ok &&
+        batched.vectors.length === 3 &&
+        batched.vectors.map((v) => v[0]).join(",") ===
+          bigTexts.map((t) => t.charCodeAt(0)).join(","),
+    );
+
+    // [LAW:no-silent-failure] One failed batch fails the WHOLE operation — a
+    // partial vector list would silently misalign with the caller's texts.
+    let call = 0;
+    const halfFailAi: EmbeddingAi = {
+      run: (_model, input) => {
+        call += 1;
+        return call === 2
+          ? Promise.reject(new Error("second batch refused"))
+          : Promise.resolve({
+              data: input.text.map(() => Array<number>(EMBEDDING_DIMS).fill(0)),
+            });
+      },
+    };
+    const halfFailed = await embedTexts(bigTexts, halfFailAi);
+    assert(
+      "a failed batch fails the whole embed with its typed reason",
+      !halfFailed.ok && halfFailed.reason.includes("second batch refused"),
+    );
 
     // [LAW:effects-at-boundaries] Zero texts is the identity — the binding must
     // never be invoked for it. The stub throws synchronously to prove it.
