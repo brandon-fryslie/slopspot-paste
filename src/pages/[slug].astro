@@ -1148,18 +1148,36 @@ const continuationHtml = renderContinuationControl(dialogue);
       return btn;
     };
 
+    // [LAW:no-ambient-temporal-coupling] The ONE in-flight owner. The disabled
+    // submit button blocks a second submit, but the native clear X on a
+    // type="search" input is not blocked — clear() can run mid-flight, and the
+    // abandoned fetch's continuation would otherwise resurrect results into an
+    // idle UI. clear() aborts the owner; search() supersedes it; and search()'s
+    // renders route through settle(), which drops a state whose controller was
+    // aborted — so a cleared search stays cleared, by value, not by timing luck.
+    let inFlight: AbortController | null = null;
+
     // [LAW:effects-at-boundaries] The one network edge, mirroring the TL;DR's
     // generate(): every outcome — dropped connection, non-JSON body, error status,
     // hits — maps to a state value, never a silent return [LAW:no-silent-failure].
+    // A superseded/cleared fetch is the one deliberate exception: its owner already
+    // rendered the state that superseded it, so settle() drops it silently.
     const search = async (query: string): Promise<void> => {
+      inFlight?.abort();
+      const ctl = new AbortController();
+      inFlight = ctl;
+      const settle = (s: SearchState): void => {
+        if (!ctl.signal.aborted) render(s);
+      };
       render({ kind: "searching" });
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ slug, query }),
+        signal: ctl.signal,
       }).catch(() => null);
       if (!res) {
-        render({ kind: "error", reason: "Network error — could not reach search." });
+        settle({ kind: "error", reason: "Network error — could not reach search." });
         return;
       }
       const body = (await res.json().catch(() => null)) as
@@ -1173,15 +1191,16 @@ const continuationHtml = renderContinuationControl(dialogue);
         // visibly distinct because a non-hit exists beside it).
         const ranked = body.hits;
         const shown = Math.min(TOP_N, Math.ceil(ranked.length / 2));
-        render({ kind: "ready", hits: ranked.slice(0, shown) });
+        settle({ kind: "ready", hits: ranked.slice(0, shown) });
         return;
       }
       // [LAW:no-silent-failure] Surface the server's own reason — a 502 embedding
       // failure, a 410 expired — so a failed search is legible, never a blank region.
-      render({ kind: "error", reason: body?.error ?? `Search failed (HTTP ${res.status}).` });
+      settle({ kind: "error", reason: body?.error ?? `Search failed (HTTP ${res.status}).` });
     };
 
     const clear = (): void => {
+      inFlight?.abort();
       input.value = "";
       render({ kind: "idle" });
       input.focus();
