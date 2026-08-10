@@ -18,13 +18,50 @@
 // [LAW:one-source-of-truth] The one model this app embeds with, and the dimension
 // its vectors have. bge-m3: 1024-dim, multilingual, long-context — verified live
 // (test/fixtures/bge-m3-embedding.json, captured 2026-08-09 from the REST ai/run
-// endpoint, which serves the same model the binding does). A single call was
-// verified to embed 501 texts — above any chunk count a stored paste projects —
-// so this boundary carries no batching; an overrun surfaces as a loud provider
-// error, never a silently split request. Consumers (the index cache, cosine
-// scoring) read EMBEDDING_DIMS from here, never a literal 1024 of their own.
+// endpoint, which serves the same model the binding does). Consumers (the index
+// cache, cosine scoring) read EMBEDDING_DIMS from here, never a literal 1024 of
+// their own.
 export const EMBEDDING_MODEL = "@cf/baai/bge-m3";
 export const EMBEDDING_DIMS = 1024;
+
+// [LAW:single-enforcer] The wire's ONE capacity rule, owned here where the wire
+// lives. The model caps a REQUEST at 60,000 TOTAL tokens across its texts —
+// verified live 2026-08-09, when a large paste's 65,740-token chunk batch was
+// refused with provider error 3030. (A 501-short-text call had verified there is
+// no meaningful per-request ARRAY cap; the token ceiling is the real bound.) The
+// budget is counted in characters because the tokenizer lives on the other side
+// of the wire: CJK tokenizes near 1 token/char and byte-fallback can exceed it,
+// so half the cap keeps every batch decisively inside while typical English
+// (~4 chars/token) rides far below. Per-TEXT size is not this rule — the chunk
+// projection (CHUNK_MAX_CHARS) owns that, which is also what guarantees a single
+// text always fits a batch by itself.
+export const EMBEDDING_BATCH_CHAR_BUDGET = 30_000;
+
+// [LAW:dataflow-not-control-flow] Pure greedy packing of texts into contiguous
+// batches under the budget — the same fold shape as the chunk windows: one pass
+// for every input, [] in / [] out, no skip branches. A text that alone exceeds
+// the budget still gets its own batch: this function never drops or splits a
+// text (splitting is the chunk projection's job), so a true overrun reaches the
+// wire and fails LOUDLY as a provider error, never a silent omission
+// [LAW:no-silent-failure].
+export const batchTexts = (
+  texts: ReadonlyArray<string>,
+): ReadonlyArray<ReadonlyArray<string>> => {
+  const out: string[][] = [];
+  let open: string[] = [];
+  let openChars = 0;
+  for (const text of texts) {
+    if (open.length > 0 && openChars + text.length > EMBEDDING_BATCH_CHAR_BUDGET) {
+      out.push(open);
+      open = [];
+      openChars = 0;
+    }
+    open.push(text);
+    openChars += text.length;
+  }
+  if (open.length > 0) out.push(open);
+  return out;
+};
 
 export type EmbeddingsResult =
   | { readonly ok: true; readonly vectors: ReadonlyArray<ReadonlyArray<number>> }
@@ -103,24 +140,40 @@ export const extractEmbeddings = (
 
 // [LAW:effects-at-boundaries] The single edge. All binding activity for embeddings
 // lives here; the interior above is pure. Returns the typed union — no throw
-// crosses this boundary. Zero texts is the identity, answered without invoking the
-// binding: the empty request has a statically known result, and the model would
-// reject it as an error the caller did nothing to earn.
+// crosses this boundary. The texts are cut into budgeted batches (batchTexts) and
+// embedded as one request each, concurrently — the batches are independent and
+// Promise.all preserves order, so the concatenation below is positionally faithful
+// to the input. Zero texts is the identity, answered without invoking the binding
+// (batchTexts yields no batches): the empty request has a statically known result,
+// and the model would reject it as an error the caller did nothing to earn.
 export const embedTexts = async (
   texts: ReadonlyArray<string>,
   ai: EmbeddingAi,
 ): Promise<EmbeddingsResult> => {
-  if (texts.length === 0) return { ok: true, vectors: [] };
+  const outcomes = await Promise.all(
+    batchTexts(texts).map(async (batch): Promise<EmbeddingsResult> => {
+      // [LAW:types-are-the-program] The catch returns the rejection value;
+      // `instanceof Error` then narrows failure from output (the summary.ts
+      // `instanceof Response` move) — a binding rejection becomes a typed reason,
+      // and a non-Error rejection falls through to the classifier, whose no-data
+      // arm reports it.
+      const outcome = await ai
+        .run(EMBEDDING_MODEL, embeddingsRequestBody(batch))
+        .catch((e: unknown): unknown => e);
+      if (outcome instanceof Error) {
+        return { ok: false, reason: `Workers AI embedding call failed: ${outcome.message}` };
+      }
+      return extractEmbeddings(outcome, batch.length);
+    }),
+  );
 
-  // [LAW:types-are-the-program] The catch returns the rejection value; `instanceof
-  // Error` then narrows failure from output (the summary.ts `instanceof Response`
-  // move) — a binding rejection becomes a typed reason, and a non-Error rejection
-  // falls through to the classifier, whose no-data arm reports it.
-  const outcome = await ai
-    .run(EMBEDDING_MODEL, embeddingsRequestBody(texts))
-    .catch((e: unknown): unknown => e);
-  if (outcome instanceof Error) {
-    return { ok: false, reason: `Workers AI embedding call failed: ${outcome.message}` };
+  // [LAW:no-silent-failure] All-or-nothing: one failed batch fails the whole
+  // operation with its typed reason — a partial concatenation would be a vector
+  // list that silently misaligns with the caller's texts.
+  const vectors: Array<ReadonlyArray<number>> = [];
+  for (const o of outcomes) {
+    if (!o.ok) return o;
+    vectors.push(...o.vectors);
   }
-  return extractEmbeddings(outcome, texts.length);
+  return { ok: true, vectors };
 };
