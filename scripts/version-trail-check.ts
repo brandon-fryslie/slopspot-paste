@@ -198,7 +198,9 @@ assert("no version at that instant ⇒ not-found", versionPageOutcome(current, n
   assert("the drift is visible (at least one changed row)", gotChanged.some(Boolean));
   assert("byte-stable user prompts are never marked changed", outcome.rows.every((r) => {
     if (r.row.kind !== "paired") return false;
-    const spoken = r.row.left.node.kind === "spoken";
+    // Either side spoken puts the row under the never-changed requirement, so a prompt
+    // mispaired against an assistant node on the other side fails loudly here too.
+    const spoken = r.row.left.node.kind === "spoken" || r.row.right.node.kind === "spoken";
     return spoken ? !r.changed : true;
   }));
 }

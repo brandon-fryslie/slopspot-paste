@@ -398,8 +398,9 @@ export const putPasteVersion = async (
 // version bodies (which carry the full archived bytes) are fetched to draw a list
 // of dates. Oldest→newest by construction (kv.list returns keys in order and the
 // padding makes lexicographic = chronological). [LAW:no-silent-failure] A key whose
-// stamp segment is not the exact 13-digit shape versionKey writes is corruption,
-// dropped loudly — never parsed into a wrong instant.
+// stamp segment is not a shape versionKey can write — all digits, length ≥ 13
+// (padStart pads short instants to 13 and passes longer ones through) — is
+// corruption, dropped loudly, never parsed into a wrong instant.
 export const listPasteVersionStamps = async (
   kv: Pick<PasteKv, "list">,
   slug: string,
@@ -411,7 +412,7 @@ export const listPasteVersionStamps = async (
     const page = await kv.list({ prefix, cursor });
     for (const k of page.keys) {
       const stamp = k.name.slice(prefix.length);
-      if (!/^\d{13}$/.test(stamp)) {
+      if (!/^\d{13,}$/.test(stamp)) {
         console.error(`listPasteVersionStamps: malformed version key, dropping: ${k.name}`);
         continue;
       }
