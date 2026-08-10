@@ -468,7 +468,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .tldr-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Primary call-to-action: larger, softer corner, slightly wider tracking. */
 .tldr-trigger { font-size: 12px; letter-spacing: 0.04em; padding: 5px 14px; border-radius: 8px; }
-.tldr-status {
+/* [LAW:one-type-per-behavior] The in-flight status line — pulsing dot + muted
+   message — is ONE control worn by the TL;DR fetch and the semantic search fetch;
+   the chrome lives here once so the two can't drift. */
+.tldr-status,
+.search-status {
   font-size: 13px;
   color: var(--fg-muted);
   display: flex;
@@ -477,8 +481,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 }
 /* A quiet pulsing dot marks the in-flight fetch — the browser owns the timing
    (CSS animation), no JS clock. prefers-reduced-motion drops it to steady. */
-.tldr-status::before {
+.tldr-status::before,
+.search-status::before {
   content: "";
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: 999px;
@@ -487,7 +493,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 }
 @keyframes tldr-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .tldr-status::before { animation: none; opacity: 0.7; }
+  .tldr-status::before,
+  .search-status::before { animation: none; opacity: 0.7; }
 }
 .tldr-head {
   display: flex;
@@ -495,17 +502,21 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   gap: 10px;
   margin-bottom: 8px;
 }
-.tldr-label {
+/* [LAW:one-type-per-behavior] The small uppercase section label — worn by the
+   TL;DR head and the search results head; one chrome source. */
+.tldr-label,
+.search-head-label {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent);
 }
-/* Secondary actions: the smaller pill. Size is grouped so the two can't drift;
+/* Secondary actions: the smaller pill. Size is grouped so the three can't drift;
    each then sits differently in its flex row. */
 .tldr-regen,
-.tldr-retry { font-size: 11px; padding: 3px 11px; border-radius: 6px; }
+.tldr-retry,
+.search-retry { font-size: 11px; padding: 3px 11px; border-radius: 6px; }
 .tldr-regen { margin-left: auto; }
 .tldr-body {
   margin: 0;
@@ -513,15 +524,20 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   line-height: 1.55;
   color: var(--fg);
 }
-.tldr-error {
+/* [LAW:one-type-per-behavior] The inline failure row — reason + retry pill —
+   worn by the TL;DR and search error states; one chrome source. */
+.tldr-error,
+.search-error {
   display: flex;
   align-items: center;
   gap: 12px;
   font-size: 13px;
   color: var(--fg-muted);
 }
-.tldr-error-msg { flex: 1 1 auto; }
-.tldr-retry { flex: 0 0 auto; }
+.tldr-error-msg,
+.search-error-msg { flex: 1 1 auto; }
+.tldr-retry,
+.search-retry { flex: 0 0 auto; }
 
 /* ─── Compare-with entry point ───────────────────────────────────────────
    A pure client-nav affordance in the header stack: validate a second slug/link
@@ -530,10 +546,17 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
    page is unchanged, never a dead control that round-trips to a 404. */
 .compare { display: none; margin-bottom: 24px; }
 body.compare-ready .compare { display: block; }
-.compare-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.compare-label { font-size: 12px; letter-spacing: 0.04em; color: var(--fg-muted); }
-.compare-field { display: flex; gap: 8px; flex: 1 1 240px; min-width: 0; }
-.compare-input {
+/* [LAW:one-type-per-behavior] The inline label + input + pill form row is ONE
+   control worn by Compare-with and the semantic search box; the chrome lives here
+   once [LAW:one-source-of-truth], each form only names its own classes. */
+.compare-form,
+.search-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.compare-label,
+.search-label { font-size: 12px; letter-spacing: 0.04em; color: var(--fg-muted); }
+.compare-field,
+.search-field { display: flex; gap: 8px; flex: 1 1 240px; min-width: 0; }
+.compare-input,
+.search-input {
   flex: 1 1 auto;
   min-width: 0;
   font-family: var(--font-mono);
@@ -544,8 +567,10 @@ body.compare-ready .compare { display: block; }
   background: var(--bg-elev);
   color: var(--fg);
 }
-.compare-input::placeholder { color: var(--fg-muted); }
-.compare-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.compare-input::placeholder,
+.search-input::placeholder { color: var(--fg-muted); }
+.compare-input:focus-visible,
+.search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* [LAW:one-type-per-behavior] The mono pill — the elevated 12px pill worn by the
    Compare button and both code-export controls. Its chrome lives here ONCE
    [LAW:one-source-of-truth]; each consumer adds .mono-pill in its class list and
@@ -565,12 +590,40 @@ body.compare-ready .compare { display: block; }
 }
 .mono-pill:hover { color: var(--fg); border-color: var(--accent); }
 .mono-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* The Compare button is always shown once body.compare-ready; it only pins its width. */
-.compare-go { flex: 0 0 auto; }
+/* The Compare/Search buttons are always shown once revealed; they only pin width. */
+.compare-go,
+.search-go { flex: 0 0 auto; }
 /* [LAW:one-type-per-behavior] The inline validation error IS the paste form's error —
    reuse .form-error (global.css) for the one authoritative appearance; this only makes
    it wrap onto its own full-width row in the flex form. */
 .compare-error { flex: 1 1 100%; }
+
+/* ─── Semantic in-page search ─────────────────────────────────────────────
+   A client-revealed search affordance ([slug].astro): the reader asks in their
+   own words, /api/search ranks turns by meaning, and the hits render as a jump
+   list while the minimap paints their distribution. display:none until the
+   script adds body.search-ready (the compare reveal) — a no-JS reader's page is
+   unchanged, never a dead search box. The results region below the form is a
+   pure projection of the client state machine: searching status, ranked hits +
+   Clear, or an error with Try again. */
+.semantic-search { display: none; margin-bottom: 24px; }
+body.search-ready .semantic-search { display: block; }
+.search-status { margin-top: 10px; }
+.search-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.search-clear { margin-left: auto; font-size: 11px; padding: 3px 11px; border-radius: 6px; }
+/* The hit list wears the outline card's frame; its rows wear the outline's own
+   row classes (spine-outline-link/dot/label), so a hit row and an outline row are
+   one control [LAW:one-type-per-behavior] — this only frames the list. */
+.search-hits {
+  margin: 8px 0 0;
+  padding: 4px 0 6px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+.search-empty { margin: 8px 0 0; font-size: 13px; color: var(--fg-muted); }
+.search-error { margin-top: 10px; }
 
 /* ─── Minimap / conversation timeline ─────────────────────────────────────
    A vertical rail of one marker per turn. Built client-side from the rendered
@@ -723,6 +776,21 @@ body.compare-ready .compare { display: block; }
 }
 .minimap-marker.is-active {
   opacity: 1;
+}
+/* [LAW:dataflow-not-control-flow] Search paints the rail: while a result set is
+   live (body.search-active, owned by the search script's one render) every marker
+   dims and only hit markers light, so the hit distribution reads at a glance.
+   Hover/focus still lift a dimmed marker part-way, keeping the rail navigable
+   mid-search. Clearing the search removes the class and the rail restores
+   wholesale — no per-marker cleanup. The glow inherits --minimap-color, so a hit
+   keeps its role hue rather than minting a second colour vocabulary
+   [LAW:one-source-of-truth]. */
+body.search-active .minimap-marker { opacity: 0.14; }
+body.search-active .minimap-marker:hover,
+body.search-active .minimap-marker:focus-visible { opacity: 0.6; }
+body.search-active .minimap-marker.is-hit { opacity: 1; }
+body.search-active .minimap-marker.is-hit .minimap-line {
+  box-shadow: 0 0 5px color-mix(in srgb, var(--minimap-color, var(--fg-muted)) 70%, transparent);
 }
 .minimap-line {
   /* One line of the wrapped-text representation. Its colour is the turn's kind
