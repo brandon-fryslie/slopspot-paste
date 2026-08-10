@@ -1,0 +1,135 @@
+---
+import { env } from "cloudflare:workers";
+import Base from "../../../layouts/Base.astro";
+import { loadViewablePaste } from "../../../loadPaste";
+import { getPasteVersion } from "../../../storage";
+import { renderDiffRow } from "../../../diff";
+import { versionDate, versionPageOutcome } from "../../../versionTrail";
+
+export const prerender = false;
+
+// [LAW:effects-at-boundaries] The two KV reads are the only IO, performed here at the
+// route boundary: the paste through loadViewablePaste — the ONE visibility gate
+// [LAW:single-enforcer], so a hidden/expired paste's version trail is exactly as gone
+// as the paste itself — and the one version record this page compares against.
+// Everything after is a pure projection (src/versionTrail.ts).
+const { slug, at } = Astro.params;
+const load = await loadViewablePaste(env.PASTES, slug, Date.now());
+if (!load.ok) {
+  return new Response(load.message, { status: load.status });
+}
+const conversation = load.conversation;
+
+// The stamp is the supersededAt instant that keys the record. [LAW:one-source-of-truth]
+// The accepted shape is exactly what versionPath mints: the instant's canonical decimal
+// rendering — no leading zeros, unbounded length (the padded 13-digit form is the KV
+// key's concern; getPasteVersion re-pads via versionKey). Any other segment addresses
+// nothing — it reads as absence and falls into the outcome's not-found arm, the same
+// truth as a canonical stamp that was never archived. Leading-zero aliases are rejected
+// like the t<N> permalink route rejects them: one resource, one URL.
+const stamp = at !== undefined && /^(0|[1-9]\d*)$/.test(at) ? Number(at) : null;
+const version =
+  stamp === null ? null : await getPasteVersion(env.PASTES, conversation.slug, stamp);
+
+// [LAW:dataflow-not-control-flow] The outcome is a VALUE naming its display mode; the
+// template draws the mode and never re-decides it. The privacy gate is structural: the
+// withheld arm carries no rows, so this page cannot leak un-redacted snapshot content
+// for a paste whose overlay withholds (hide/feature) — see versionTrail.ts.
+const outcome = versionPageOutcome(conversation, version);
+if (outcome.kind === "withheld") {
+  return new Response(
+    "This paste redacts content, so its archived snapshots are not publicly viewable.",
+    { status: 403 },
+  );
+}
+if (outcome.kind === "not-found") {
+  return new Response("No archived snapshot exists at that instant.", { status: 404 });
+}
+if (outcome.kind === "unparseable") {
+  // [LAW:no-silent-failure] The archived bytes no longer replay through the provider
+  // parser — corruption or a parser regression. Loud on both surfaces: the operator log
+  // names the record, the reader gets an honest 500, never a silently empty column.
+  console.error(
+    `version page: archived snapshot no longer parses: ${conversation.slug} @ ${outcome.supersededAt}`,
+  );
+  return new Response("This archived snapshot could not be rendered.", { status: 500 });
+}
+
+// The pre-rendered aligned rows, snapshot (older) left, current right — the template
+// stays presentational. `changed` marks the rows whose content actually differs.
+const rows = outcome.rows.map(({ row, changed }) => ({ ...renderDiffRow(row), changed }));
+const { snapshot, current } = outcome;
+const snapshotWhen =
+  snapshot.fetchedAt === null
+    ? `replaced ${versionDate(snapshot.supersededAt)}`
+    : `fetched ${versionDate(snapshot.fetchedAt)} · replaced ${versionDate(snapshot.supersededAt)}`;
+---
+
+<Base title={`${current.title} · snapshot ${versionDate(snapshot.supersededAt)} · slopspot paste`}>
+  <section class="conversation-header diff-header">
+    <h1>Snapshot vs. current</h1>
+    <p class="conversation-meta">
+      <span>
+        An archived snapshot of <a href={`/${current.slug}`}>{current.title}</a>, compared
+        with what the paste shows now
+      </span>
+    </p>
+  </section>
+
+  {/*
+    The aligned diff, reusing the /diff substrate markup and styles: two column heads over
+    a stack of paired rows. Prompts that pair land on the same row; a prompt present on one
+    side only opens a visible gap on the other [LAW:no-silent-failure] — never a silent
+    shift. Rows whose content differs carry data-changed for the highlight styling.
+  */}
+  <div class="diff-aligned">
+    <div class="diff-row diff-heads">
+      {/*
+        Each head shows ITS side's title — the diff substrate's pattern. The snapshot's
+        title re-derives from the archived turns (deriveTitle in versionPageOutcome), so
+        when upstream drift renamed the conversation, the two heads honestly show both
+        names. The role labels (archived / current) live in the meta lines.
+      */}
+      <header class="diff-column-header diff-cell" data-platform={snapshot.platform}>
+        <h2 class="diff-column-title">{snapshot.title}</h2>
+        <p class="conversation-meta">
+          <span>Archived snapshot</span>
+          <span aria-hidden="true">·</span>
+          {snapshot.platformLabel && <span class="platform-badge">{snapshot.platformLabel}</span>}
+          {snapshot.platformLabel && <span aria-hidden="true">·</span>}
+          <span>{snapshot.turnCount} turns</span>
+          <span aria-hidden="true">·</span>
+          <span>{snapshotWhen}</span>
+        </p>
+      </header>
+      <header class="diff-column-header diff-cell" data-platform={current.platform} data-slug={current.slug}>
+        <h2 class="diff-column-title"><a href={`/${current.slug}`}>{current.title}</a></h2>
+        <p class="conversation-meta">
+          <span>Current</span>
+          <span aria-hidden="true">·</span>
+          {current.platformLabel && <span class="platform-badge">{current.platformLabel}</span>}
+          {current.platformLabel && <span aria-hidden="true">·</span>}
+          <span>{current.turnCount} turns</span>
+        </p>
+      </header>
+    </div>
+    {rows.map((row) => (
+      <div class="diff-row" data-changed={row.changed ? "true" : undefined}>
+        <div
+          class="diff-cell conversation"
+          data-platform={snapshot.platform}
+          data-gap={row.left === null ? "true" : undefined}
+          aria-label="Archived snapshot"
+          set:html={row.left ?? ""}
+        />
+        <div
+          class="diff-cell conversation"
+          data-platform={current.platform}
+          data-gap={row.right === null ? "true" : undefined}
+          aria-label={`Conversation ${current.slug}`}
+          set:html={row.right ?? ""}
+        />
+      </div>
+    ))}
+  </div>
+</Base>
