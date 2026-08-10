@@ -9,7 +9,14 @@
 // projections over the stored record (deriveViewableDialogue, deriveChunks), so
 // the same stored content always yields the same key with no canonicalization
 // step — JSON.stringify of a deterministically-constructed value is stable.
-export const contentHash = async (value: unknown): Promise<string> => {
+//
+// [LAW:types-are-the-program] The parameter is the JSON-representable roots, NOT
+// `unknown`: `undefined` stringifies to the undefined PRIMITIVE, which the encoder
+// would launder into the hash of "" — a silent key collision. Excluding it from
+// the type makes that wrong key a compile error, not a runtime surprise.
+export const contentHash = async (
+  value: object | string | number | boolean | null,
+): Promise<string> => {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest))
