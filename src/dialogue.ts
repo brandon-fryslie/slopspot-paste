@@ -191,6 +191,25 @@ export const blockText = (block: AssistantBlock): string => {
   }
 };
 
+// [LAW:one-source-of-truth] The single authority for "a spine node's readable
+// prose" — the text a reader actually sees on the spine. A spoken node reads as
+// its content; an assistant node as its spine-VISIBLE blocks' text (the
+// blockVisibility judgment) extracted by blockText (the exhaustive per-kind
+// authority above), so collapsed thinking/tool noise never leaks in and a new
+// block kind is compiler-forced through both authorities. Every dialogue→text
+// reader (the transcript projection, the embeddable chunk projection) derives
+// from THIS, never from a private re-enumeration of kinds. [LAW:one-way-deps]
+// It lives here, beside the authorities it composes, so readers depend only
+// downhill on the model — never on each other.
+export const nodeVisibleProse = (node: SpineNode): string =>
+  node.kind === "spoken"
+    ? node.content
+    : node.blocks
+        .filter((b) => blockVisibility(b) === "spine")
+        .map(blockText)
+        .filter((s) => s.length > 0)
+        .join("\n\n");
+
 const snippet = (text: string): string => {
   const collapsed = text.replace(/\s+/g, " ").trim();
   return collapsed.length > LABEL_MAX
