@@ -18,6 +18,7 @@ import {
   PLATFORM_LABEL,
   platformOf,
   sourceOf,
+  type Conversation,
   type Platform,
   type PasteLoad,
   type PasteLoadStatus,
@@ -57,11 +58,10 @@ export type DiffColumn = OkColumn | MissingColumn;
 // redacted in its diff column by construction; reading raw turns here would reopen the
 // secret-leak hole the overlay + code-export epics closed. [LAW:one-source-of-truth]
 // title and platform are the SAME projections /<slug> shows, not a second derivation.
-export const deriveDiffColumn = (slug: string, load: PasteLoad): DiffColumn => {
-  if (!load.ok) {
-    return { ok: false, slug, status: load.status, message: load.message };
-  }
-  const c = load.conversation;
+// deriveOkColumn is the shown arm alone, by name: the version-trail page
+// (versionTrail.ts) holds an already-gated Conversation — not a PasteLoad — and its
+// current-side column must be THIS projection, not a re-derivation that could drift.
+export const deriveOkColumn = (slug: string, c: Conversation): OkColumn => {
   const platform = c.platformOverride ?? platformOf(sourceOf(c.origin));
   return {
     ok: true,
@@ -73,6 +73,11 @@ export const deriveDiffColumn = (slug: string, load: PasteLoad): DiffColumn => {
     view: deriveViewableDialogue(c),
   };
 };
+
+export const deriveDiffColumn = (slug: string, load: PasteLoad): DiffColumn =>
+  load.ok
+    ? deriveOkColumn(slug, load.conversation)
+    : { ok: false, slug, status: load.status, message: load.message };
 
 // [LAW:single-enforcer] The ONE fact every diff render shares: a column draws at
 // topLevel:false — the SAME suppression the nested subagent render uses. Two columns (or

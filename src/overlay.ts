@@ -13,7 +13,7 @@
 // different concern — the author is editing unredacted content — so it does NOT pass
 // through here.
 
-import type { Conversation, Overlay } from "./types";
+import type { Conversation, Overlay, OverlayDirective } from "./types";
 import type { AssistantBlock, Dialogue, SpineNode, ViewableDialogue } from "./dialogue";
 import { deriveDialogue, plainView } from "./dialogue";
 
@@ -312,6 +312,25 @@ export const deriveViewableDialogue = (
 export const spanPiecesByTurn = (
   turns: Conversation["turns"],
 ): ReadonlyArray<ReadonlyArray<string>> => deriveDialogue(turns).map(spanPieces);
+
+// [LAW:single-enforcer] The one statement of which directive kinds WITHHOLD content from
+// the public view — the predicate the version-trail privacy gate dispatches on
+// (slopspot-freshness-eck.3). `hide` redacts content and `feature` omits every
+// non-featured turn, so a paste carrying either must not expose an OLD snapshot's turns:
+// the directives target CURRENT indices and cannot be honestly projected onto a prior
+// snapshot, so the un-redacted original would leak [LAW:no-silent-failure]. `collapse`
+// merely folds — the content stays publicly expandable on the current page — so it
+// withholds nothing and a collapse-only overlay leaves the trail diffable.
+// [LAW:types-are-the-program] Mapped over OverlayDirective["kind"], so a future directive
+// kind does not compile until it declares whether it withholds — the gap a bare
+// `.some(kind === …)` would leave open.
+const KIND_WITHHOLDS: { readonly [K in OverlayDirective["kind"]]: boolean } = {
+  hide: true,
+  feature: true,
+  collapse: false,
+};
+export const overlayWithholdsContent = (overlay: Overlay): boolean =>
+  overlay.some((d) => KIND_WITHHOLDS[d.kind]);
 
 // [LAW:one-source-of-truth] The UNFILTERED authoring spine: every turn, no overlay applied —
 // the owner-only #edit surface. The public render applies the overlay, and a FEATURE overlay

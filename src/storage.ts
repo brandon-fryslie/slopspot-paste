@@ -393,41 +393,73 @@ export const putPasteVersion = async (
   await kv.put(versionKey(slug, version.supersededAt), JSON.stringify(version), backstopTtl(lifetime));
 };
 
-// Oldest→newest by construction: the zero-padded key IS the chronological order,
-// so no sort is re-derived here. [LAW:types-are-the-program] KV is a trust
-// boundary — each record is unknown JSON until isPasteVersion classifies it; a
-// corrupt record is dropped LOUDLY (an archived original vanishing silently would
-// be the exact failure this feature exists to prevent), and a key that expired
-// between list and get is a legitimate absence.
+// [LAW:one-source-of-truth] The trail's cheap index: the zero-padded key IS the
+// supersededAt stamp, so listing a slug's version instants reads keys only — no
+// version bodies (which carry the full archived bytes) are fetched to draw a list
+// of dates. Oldest→newest by construction (kv.list returns keys in order and the
+// padding makes lexicographic = chronological). [LAW:no-silent-failure] A key whose
+// stamp segment is not the exact 13-digit shape versionKey writes is corruption,
+// dropped loudly — never parsed into a wrong instant.
+export const listPasteVersionStamps = async (
+  kv: Pick<PasteKv, "list">,
+  slug: string,
+): Promise<ReadonlyArray<number>> => {
+  const prefix = `${VERSION_KEY_PREFIX}${slug}:`;
+  const out: number[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await kv.list({ prefix, cursor });
+    for (const k of page.keys) {
+      const stamp = k.name.slice(prefix.length);
+      if (!/^\d{13}$/.test(stamp)) {
+        console.error(`listPasteVersionStamps: malformed version key, dropping: ${k.name}`);
+        continue;
+      }
+      out.push(Number(stamp));
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return out;
+};
+
+// [LAW:types-are-the-program] KV is a trust boundary — a stored version record is
+// unknown JSON until isPasteVersion classifies it; a corrupt record is dropped
+// LOUDLY (an archived original vanishing silently would be the exact failure this
+// feature exists to prevent). A missing key is a legitimate absence (expired, or a
+// stamp that never was). [LAW:single-enforcer] This is THE version-record read:
+// the full listing below routes through it, so the two cannot validate differently.
+export const getPasteVersion = async (
+  kv: Pick<PasteKv, "get">,
+  slug: string,
+  supersededAt: number,
+): Promise<PasteVersion | null> => {
+  const key = versionKey(slug, supersededAt);
+  const raw = await kv.get(key, "text");
+  if (raw === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.error(`getPasteVersion: stored version is not JSON, dropping: ${key}`);
+    return null;
+  }
+  if (!isPasteVersion(parsed)) {
+    console.error(`getPasteVersion: stored version failed validation, dropping: ${key}`);
+    return null;
+  }
+  return parsed;
+};
+
+// Oldest→newest by construction: the stamp index is chronological and each body
+// loads through the one validated read above. A null (expired between list and
+// get, or dropped as corrupt — already logged there) is a legitimate absence.
 export const listPasteVersions = async (
   kv: Pick<PasteKv, "list" | "get">,
   slug: string,
 ): Promise<ReadonlyArray<PasteVersion>> => {
-  const prefix = `${VERSION_KEY_PREFIX}${slug}:`;
-  const out: PasteVersion[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await kv.list({ prefix, cursor });
-    const batch = await Promise.all(page.keys.map((k) => kv.get(k.name, "text")));
-    page.keys.forEach((k, i) => {
-      const raw = batch[i];
-      if (raw === undefined || raw === null) return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        console.error(`listPasteVersions: stored version is not JSON, dropping: ${k.name}`);
-        return;
-      }
-      if (!isPasteVersion(parsed)) {
-        console.error(`listPasteVersions: stored version failed validation, dropping: ${k.name}`);
-        return;
-      }
-      out.push(parsed);
-    });
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  return out;
+  const stamps = await listPasteVersionStamps(kv, slug);
+  const batch = await Promise.all(stamps.map((at) => getPasteVersion(kv, slug, at)));
+  return batch.filter((v): v is PasteVersion => v !== null);
 };
 
 // [LAW:no-silent-failure] LOUD, deliberately unlike sweepCachedDerived: a pinned
