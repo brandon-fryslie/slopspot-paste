@@ -105,9 +105,13 @@ const nodesEqual = (l: DisplayNode, r: DisplayNode): boolean =>
 // privacy gate is structural: the `withheld` arm carries NO view and NO rows, so a
 // redacted paste leaking un-redacted snapshot content through this page is
 // unrepresentable, not merely unrendered.
-//   `withheld`    — the current overlay withholds content (hide/feature). Checked FIRST,
-//                   before the record is even considered, so the response for a redacted
-//                   paste is identical whether or not the stamp exists.
+//   `withheld`    — the current overlay withholds content (hide/feature). The FIRST arm
+//                   so the outcome ignores the record entirely: a redacted paste answers
+//                   identically whether or not the stamp exists — no existence oracle.
+//                   (The route boundary still performs its one KV read unconditionally
+//                   [LAW:dataflow-not-control-flow]; the gate is decided here alone
+//                   [LAW:single-enforcer], and the spare read on a redacted paste's
+//                   hand-typed version URL is the price of a single decider.)
 //   `not-found`   — no version archived at that instant (or the stamp never parsed).
 //   `unparseable` — the archived bytes no longer replay through the provider parser:
 //                   real corruption or a parser regression, surfaced loudly at the
