@@ -8,7 +8,10 @@ import { extractArtifacts } from "../artifacts";
 import { renderCodeExportControl } from "../codeExport";
 import { renderContinuationControl } from "../continuation";
 import { loadViewablePaste } from "../loadPaste";
-import { derivePasteMeta, sourceUrlOf, viewLifetime } from "../types";
+import { listPasteVersionStamps } from "../storage";
+import { deriveVersionTrail, versionDate, versionPath } from "../versionTrail";
+import { describeTargetFault } from "../overlay";
+import { derivePasteMeta, isUrlPaste, sourceUrlOf, viewLifetime } from "../types";
 import { hostLabel } from "../url";
 import { MAX_QUESTION_CHARS } from "../ask";
 
@@ -94,6 +97,17 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
 // is no readable prose to continue (a value, not a branch). Universal: it renders for every
 // paste, filling the gap for pastes with no live original thread to reopen.
 const continuationHtml = renderContinuationControl(dialogue);
+
+// [LAW:effects-at-boundaries] The trail's one extra KV read — a keys-only list of this
+// slug's version stamps — gated on isUrlPaste: versions are archived only by the refetch
+// path, which operates on url-arm pastes alone (planRefetch takes UrlPaste), so for a
+// text/editor paste the list is provably empty and the read is skipped, keeping those
+// pastes untouched by this feature (the ticket's contract). Everything after is the pure
+// derivation (versionTrail.ts): null = no versions = no affordance rendered.
+const versionStamps = isUrlPaste(conversation)
+  ? await listPasteVersionStamps(env.PASTES, conversation.slug)
+  : [];
+const trail = deriveVersionTrail(conversation, versionStamps);
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -197,6 +211,60 @@ const continuationHtml = renderContinuationControl(dialogue);
     // [LAW:dataflow-not-control-flow] Reveal only now that the one effect is wired.
     document.body.classList.add("compare-ready");
   </script>
+
+  {/*
+    The version trail (slopspot-freshness-eck.3): the archived snapshots a changed
+    refetch preserved, newest first. Server-rendered from the trail VALUE
+    (versionTrail.ts) — the template draws the arm, it never re-decides the privacy
+    gate: `diffable` links each snapshot to its aligned diff against current;
+    `withheld` lists dates only, because this paste's overlay withholds content
+    (hide/feature) and the un-redacted old snapshots must not be exposed. The
+    staleness note is DERIVED at read time (outOfRangeTarget), never stored — it
+    surfaces that a display directive no longer matches the refetched content
+    [LAW:no-silent-failure].
+  */}
+  {trail && (
+    <section class="version-trail">
+      <h2 class="version-trail-heading">Version history</h2>
+      <p class="conversation-meta">
+        <span>
+          {trail.stamps.length === 1
+            ? "1 archived snapshot from before a refetch"
+            : `${trail.stamps.length} archived snapshots from before refetches`}
+        </span>
+      </p>
+      {trail.staleFault && (
+        <p class="version-trail-stale" role="note">
+          A display directive on this paste no longer matches its refetched content:{" "}
+          {describeTargetFault(trail.staleFault)}
+        </p>
+      )}
+      {trail.kind === "diffable" ? (
+        <ul class="version-trail-list">
+          {[...trail.stamps].reverse().map((at) => (
+            <li>
+              <a href={versionPath(conversation.slug, at)}>
+                Snapshot replaced {versionDate(at)}
+              </a>
+              <span class="version-trail-hint"> — compare with current</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <Fragment>
+          <ul class="version-trail-list">
+            {[...trail.stamps].reverse().map((at) => (
+              <li>Snapshot replaced {versionDate(at)}</li>
+            ))}
+          </ul>
+          <p class="version-trail-withheld" role="note">
+            This paste redacts content, so its archived snapshots are not publicly
+            viewable.
+          </p>
+        </Fragment>
+      )}
+    </section>
+  )}
 
   {/*
     [LAW:one-source-of-truth] The TL;DR region carries NO summary content — it is an

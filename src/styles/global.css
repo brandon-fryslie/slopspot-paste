@@ -616,6 +616,39 @@ body.compare-ready .compare { display: block; }
    it wrap onto its own full-width row in the flex form. */
 .compare-error { flex: 1 1 100%; }
 
+/* ─── Version trail (slopspot-freshness-eck.3) ───────────────────────────
+   The archived snapshots a changed refetch preserved, server-rendered on the
+   paste page (no JS reveal — the list is static content, meaningful without a
+   script). The stale/withheld notes reuse the muted meta voice: honest
+   annotations, not alarms. */
+.version-trail { margin-bottom: 24px; }
+.version-trail-heading {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: 0 0 4px;
+}
+.version-trail-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.version-trail-list a { color: var(--accent); }
+.version-trail-hint { color: var(--fg-muted); }
+.version-trail-stale,
+.version-trail-withheld {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
 /* ─── Semantic in-page search ─────────────────────────────────────────────
    A client-revealed search affordance ([slug].astro): the reader asks in their
    own words, /api/search ranks turns by meaning, and the hits render as a jump
@@ -2297,6 +2330,15 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   border-radius: var(--radius);
   background: var(--bg-elev);
   min-height: 32px;
+}
+
+/* A version-diff row whose content actually differs (versionTrail.ts derives the flag):
+   an accent rail on the row's leading edge, so the changed turns are scannable without
+   re-reading both columns. Identical paired rows carry no attribute and no rail. */
+.diff-row[data-changed] {
+  border-left: 2px solid var(--accent);
+  padding-left: 12px;
+  margin-left: -14px;
 }
 
 /* Stack the two columns on a narrow viewport — no gutter to hold two reading
