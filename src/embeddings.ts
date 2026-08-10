@@ -76,8 +76,15 @@ export const extractEmbeddings = (
   expected: number,
 ): EmbeddingsResult => {
   const data = (output as EmbeddingOutput | null)?.data;
-  if (!Array.isArray(data)) {
+  // [LAW:no-silent-failure] Absence and wrong shape are distinct truths: "no data
+  // field" points an operator at the binding/response envelope, "present but not
+  // an array" points at a wire-shape change. One shared reason would misdirect
+  // the debugging of whichever one actually happened.
+  if (data === undefined) {
     return { ok: false, reason: "Workers AI returned no embedding data." };
+  }
+  if (!Array.isArray(data)) {
+    return { ok: false, reason: "Workers AI returned embedding data that is not an array." };
   }
   if (data.length !== expected) {
     return {

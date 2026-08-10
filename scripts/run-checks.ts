@@ -56,6 +56,12 @@ const runCheck = (file: string): Promise<CheckOutcome> =>
     const chunks: Buffer[] = [];
     child.stdout.on("data", (c: Buffer) => chunks.push(c));
     child.stderr.on("data", (c: Buffer) => chunks.push(c));
+    // [LAW:no-silent-failure] A spawn failure fires `error` and never `close`;
+    // without this arm the promise would be unresolvable and the suite would hang
+    // silently instead of failing this check by name.
+    child.on("error", (err) =>
+      resolve({ file, code: 1, signal: null, output: `spawn failed: ${err.message}\n` }),
+    );
     child.on("close", (code, signal) =>
       resolve({ file, code, signal, output: Buffer.concat(chunks).toString("utf8") }),
     );

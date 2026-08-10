@@ -93,6 +93,19 @@ console.log("\nClassifier refuses malformed payloads with typed reasons (no thro
     "count-mismatch reason names both counts",
     !mismatch.ok && mismatch.reason.includes("2") && mismatch.reason.includes("3"),
   );
+  // [LAW:no-silent-failure] Absence vs wrong shape are distinct truths with
+  // distinct reasons — a shared string would misdirect whichever debugging
+  // actually needs to happen.
+  const absent = extractEmbeddings({}, 1);
+  const wrongShape = extractEmbeddings({ data: "vectors" }, 1);
+  assert(
+    "missing data and wrong-shape data carry different reasons",
+    !absent.ok && !wrongShape.ok && absent.reason !== wrongShape.reason,
+  );
+  assert(
+    "wrong-shape reason says the data was present but not an array",
+    !wrongShape.ok && wrongShape.reason.includes("not an array"),
+  );
 }
 
 console.log("\nThe edge (stubbed binding):");
