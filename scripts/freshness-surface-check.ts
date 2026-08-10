@@ -13,7 +13,6 @@
 import { readFileSync } from "node:fs";
 import { resolveFreshness, type FetchFreshFn } from "../src/freshnessService";
 import {
-  FRESHNESS_VERDICTS,
   VERDICT_WORDING,
   checkedAgo,
   fetchedAgeLabel,
@@ -243,9 +242,19 @@ assert(
   "changed wording claims only the snapshot difference",
   VERDICT_WORDING.changed === "The live page differs from the stored snapshot.",
 );
-assert("the verdict set is exactly the plan kinds", JSON.stringify(FRESHNESS_VERDICTS) === '["unchanged","changed"]');
-assert("isFreshnessVerdict accepts both verdicts", FRESHNESS_VERDICTS.every(isFreshnessVerdict));
-assert("isFreshnessVerdict rejects junk", !isFreshnessVerdict("maybe") && !isFreshnessVerdict(1));
+// Set membership, not serialization order — the witness is the wording map's keys.
+assert(
+  "the verdict set is exactly the plan kinds",
+  JSON.stringify(Object.keys(VERDICT_WORDING).sort()) === '["changed","unchanged"]',
+);
+assert(
+  "isFreshnessVerdict accepts both verdicts",
+  isFreshnessVerdict("unchanged") && isFreshnessVerdict("changed"),
+);
+assert(
+  "isFreshnessVerdict rejects junk (including prototype keys)",
+  !isFreshnessVerdict("maybe") && !isFreshnessVerdict(1) && !isFreshnessVerdict("toString"),
+);
 assert("checkedAgo: fresh instants read as just now", checkedAgo(NOW, NOW) === "checked just now");
 assert("checkedAgo: minutes are worded singular/plural", checkedAgo(NOW - 60_000, NOW) === "checked 1 minute ago" && checkedAgo(NOW - 10 * 60_000, NOW) === "checked 10 minutes ago");
 assert("checkedAgo: past-the-window instants stay total (hours arm)", checkedAgo(NOW - 3 * 3_600_000, NOW) === "checked 3 hours ago");

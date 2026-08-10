@@ -10,28 +10,29 @@ import type { RefetchPlan } from "./freshness";
 
 // [LAW:one-source-of-truth] The verdict IS planRefetch's plan kind — the compare-
 // only check reports the same decision the refetch executor would have acted on,
-// never a second comparison that could disagree. The tuple is the runtime witness
-// for the wire boundary (the client validates /api/freshness responses with it);
-// its `satisfies` pins every entry to a real plan kind, and the wording map below
-// (keyed over the FULL plan-kind union) breaks compilation if the plan ever grows
-// an arm this tuple misses — the two cannot drift.
-export const FRESHNESS_VERDICTS = ["unchanged", "changed"] as const satisfies ReadonlyArray<
-  RefetchPlan["kind"]
->;
-export type FreshnessVerdict = (typeof FRESHNESS_VERDICTS)[number];
-
-export const isFreshnessVerdict = (v: unknown): v is FreshnessVerdict =>
-  typeof v === "string" && (FRESHNESS_VERDICTS as ReadonlyArray<string>).includes(v);
+// never a second comparison that could disagree.
+export type FreshnessVerdict = RefetchPlan["kind"];
 
 // [LAW:one-source-of-truth] The ONE wording of each verdict, worded to claim
 // exactly what bytes-equality proves and nothing stronger (the fixture evidence,
 // freshness.ts): "differs" may not become "the conversation was updated" — render
 // drift is indistinguishable from content change, and the stored snapshot may
 // carry user edits (PR #101). Every surface reads this map; none retypes the claim.
-export const VERDICT_WORDING: { readonly [K in RefetchPlan["kind"]]: string } = {
+// Keyed over the FULL plan-kind union, so a new RefetchPlan arm fails compilation
+// HERE until worded — which also makes the map the complete runtime witness the
+// wire validator below leans on.
+export const VERDICT_WORDING: { readonly [K in FreshnessVerdict]: string } = {
   unchanged: "The live page matches the stored snapshot.",
   changed: "The live page differs from the stored snapshot.",
 };
+
+// [LAW:one-source-of-truth] The wire-boundary witness (the client validates
+// /api/freshness responses with it) is the wording map's OWN key set — sound and
+// COMPLETE by construction, since the mapped type above requires every plan kind —
+// never a second tuple that could omit a new arm. Object.hasOwn, not `in`: a
+// prototype key ("toString") must never pass as a verdict.
+export const isFreshnessVerdict = (v: unknown): v is FreshnessVerdict =>
+  typeof v === "string" && Object.hasOwn(VERDICT_WORDING, v);
 
 // [LAW:no-silent-failure] The fetched-age line, or null: only a record the refetch
 // path stamped (origin.fetchedAt) shows an age; a pre-stamping record shows NOTHING
