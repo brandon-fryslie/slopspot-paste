@@ -21,9 +21,9 @@ import {
 import { deriveTitle } from "../src/parser";
 import { parseClaudeShare } from "../src/parsers/claude-share";
 import { deriveDialogue } from "../src/dialogue";
-import { deriveVersionTrail, versionDate, versionPageOutcome, versionPath } from "../src/versionTrail";
+import { deriveVersionTrail, versionPageOutcome, versionPath } from "../src/versionTrail";
 import type { Conversation, Overlay, PasteVersion } from "../src/types";
-import { isUrlPaste } from "../src/types";
+import { isUrlPaste, utcDate } from "../src/types";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -218,6 +218,6 @@ assert("no version at that instant ⇒ not-found", versionPageOutcome(current, n
 
 // ── Link/date projections the templates share ─────────────────────────────────
 assert("versionPath mints the route the version page serves", versionPath("abc123", 5) === "/abc123/versions/5");
-assert("versionDate is the UTC calendar date", versionDate(0) === "1970-01-01");
+assert("utcDate is the UTC calendar date", utcDate(0) === "1970-01-01");
 
 if (process.exitCode !== 1) console.log("version-trail-check: all assertions passed.");

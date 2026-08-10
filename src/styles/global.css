@@ -616,6 +616,33 @@ body.compare-ready .compare { display: block; }
    it wrap onto its own full-width row in the flex form. */
 .compare-error { flex: 1 1 100%; }
 
+/* ─── Freshness surface (slopspot-freshness-eck.4) ───────────────────────
+   The url-arm snapshot's age (static server content, meaningful without JS) and
+   the compare-only "check the live page" affordance. Only the FORM is gated on
+   body.freshness-ready (the compare reveal) — a no-JS reader keeps the age line
+   and never meets a dead button. The result line reuses the muted meta voice;
+   a "differs" verdict borrows the accent rail the trail notes wear. */
+.freshness { margin-bottom: 24px; }
+.freshness-age {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.freshness-form { display: none; }
+body.freshness-ready .freshness-form { display: block; }
+.freshness-result {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+.freshness-result.freshness-differs {
+  color: var(--fg);
+  border-left-color: var(--accent);
+}
+.freshness-result.freshness-error { border-left-color: var(--border); }
+
 /* ─── Version trail (slopspot-freshness-eck.3) ───────────────────────────
    The archived snapshots a changed refetch preserved, server-rendered on the
    paste page (no JS reveal — the list is static content, meaningful without a
