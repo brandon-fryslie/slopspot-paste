@@ -59,6 +59,14 @@
   /* The launcher's diameter, read by both the circle itself and every inset measured
      from its edge — so nothing downstream hardcodes half of 44. */
   --dock-launcher-size: 44px;
+  /* The lift shared by the two fixtures that float over the prose. It was stated once
+     while the launcher and the menu were one pill; splitting them duplicated the
+     declaration as a side effect rather than as a decision, which is how two copies of
+     a tuning value begin to drift [LAW:one-source-of-truth]. Lives here rather than on
+     body.tool-dock-ready because the launcher's own rule sits in the base layer, and a
+     token scoped to the floating face would resolve to nothing there. Same idiom as
+     --bubble-hover-shadow below. */
+  --dock-pill-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
   /* [LAW:one-source-of-truth] Hover-lift shadow stated once: geometry here, color
      derived from --fg (the house shadow idiom) so every theme keeps a visible
      lift — a hardcoded black shadow vanishes on the darkest platform themes.
@@ -816,9 +824,7 @@ body.tool-dock-ready .tool-dock-launcher {
    being exactly this box's width, lost the side bleed of its 44px shadow. Only one panel
    is ever unhidden, so capping each one is the same bound with nothing left to clip. */
 body.tool-dock-ready .tool-dock-panels {
-  /* The 12px is the strip's former side padding, moved onto the child that needed it:
-     a panel narrower than the viewport must still not touch its edges. */
-  width: min(760px, 100% - 24px);
+  width: min(760px, 100% - 2 * var(--dock-side-inset));
 }
 body.tool-dock-ready .tool-panel {
   max-height: min(58vh, 520px);
@@ -859,7 +865,7 @@ body.tool-dock-ready .tool-dock-scrim[hidden] { display: none; }
   appearance: none;
   /* The lift the old wrapping pill used to give it. Standing alone, the circle carries
      its own separation from the prose it floats over. */
-  box-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
+  box-shadow: var(--dock-pill-shadow);
 }
 .tool-dock-launcher:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 /* Both faces occupy the same grid cell and cross-rotate; the state decides which one
@@ -910,7 +916,7 @@ body.tool-dock-ready .tool-dock[data-state] .tool-dock-menu {
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
   backdrop-filter: blur(14px);
-  box-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
+  box-shadow: var(--dock-pill-shadow);
   /* The pill used to interpolate its WIDTH out of the launcher, which is the coupling
      that cost it a position of its own. Standing apart it rises into place instead —
      the same unfolding character (the per-item stagger below is untouched) without the
