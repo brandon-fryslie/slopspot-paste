@@ -183,6 +183,18 @@ refuses(
   "two panels claiming one tool id",
   pageMarkup([{ id: "outline" }, { id: "outline" }]),
 );
+// Duplicating a tool in `pageMarkup` duplicates its item AND its panel, which trips the
+// panel check first — so the item check needs markup only IT can reach: two items sharing
+// an id, over two distinctly-named panels.
+refuses(
+  "two menu items claiming one tool id",
+  `<!DOCTYPE html><body><div class="${S.dock}"><div class="${S.scrim}"></div>
+   <div class="${S.panelHost}"><section class="${S.panel}" data-tool="outline"></section>
+   <section class="${S.panel}" data-tool="search"></section></div>
+   <div><button class="${S.launcher}"></button><div class="${S.menu}">
+   <button class="${S.item}" data-tool="outline"></button>
+   <button class="${S.item}" data-tool="outline"></button></div></div></div>`,
+);
 refuses(
   "an element carrying no data-tool at all",
   `<!DOCTYPE html><body><div class="${S.dock}"><div class="${S.scrim}"></div>
@@ -197,6 +209,44 @@ refuses(
 );
 refuses("no dock region at all", `<!DOCTYPE html><body><main></main>`);
 
+// Two refusals that replace SILENT behaviour in the inline version this module came from —
+// there, a dock outside <body> quietly `break`ed out of the walk and governed nothing. Both
+// need their own fixture, or the throws are only claims [LAW:no-silent-failure].
+{
+  // Refused at MOUNT rather than at resolve, and deliberately so: the walk up to <body> is
+  // re-run on every render (a mount-time sample is what let the minimap escape it), so the
+  // connectivity check lives in that walk and nowhere else. A second copy inside
+  // `resolveDock` would be a duplicate enforcer of one invariant [LAW:single-enforcer]. The
+  // contract the assertion states is therefore the true one: a detached dock cannot be
+  // DRIVEN, and says so rather than governing nothing.
+  const dom = new JSDOM(`<!DOCTYPE html><body></body>`);
+  const detached = dom.window.document.createElement("div");
+  detached.innerHTML = dockMarkup([{ id: "outline" }]);
+  let threw = false;
+  try {
+    mountDock(resolveDock(detached));
+  } catch {
+    threw = true;
+  }
+  assert("a dock in a subtree that never reaches <body> refuses to mount", threw);
+}
+{
+  // A document with no browsing context: resolvable markup, but no window to own the
+  // MutationObserver or the constructors `instanceof` is tested against, so it could be
+  // resolved and never driven.
+  const dom = new JSDOM(`<!DOCTYPE html><body></body>`);
+  const orphan = dom.window.document.implementation.createHTMLDocument("orphan");
+  orphan.body.innerHTML = dockMarkup([{ id: "outline" }]);
+  assert("precondition: that document really has no window", orphan.defaultView === null);
+  let threw = false;
+  try {
+    resolveDock(orphan);
+  } catch {
+    threw = true;
+  }
+  assert("a dock in a document with no window", threw);
+}
+
 // ── The transition chain ─────────────────────────────────────────────────────
 
 console.log("\nThe dock walks closed → menu → panel → menu → closed:");
@@ -210,6 +260,17 @@ console.log("\nThe dock walks closed → menu → panel → menu → closed:");
   assert("closed: the menu is inert, so its clipped items are not tabbable", isInert(h.dock.menu));
   assert("closed: the scrim is down", h.dock.scrim.hidden);
   assert("closed: no panel is up", h.dock.panels.every((p) => p.hidden));
+  // Announced from the script, never from the markup: the panels are modal only in this
+  // face, and the no-JS face renders them as a plain stack with nothing dimmed behind.
+  // Markup carrying role="dialog" would lie to a reader who never runs this script.
+  assert(
+    "every panel is announced as a dialog",
+    h.dock.panels.every((p) => p.getAttribute("role") === "dialog"),
+  );
+  assert(
+    "every panel is announced as modal",
+    h.dock.panels.every((p) => p.getAttribute("aria-modal") === "true"),
+  );
 
   h.dock.launcher.click();
   assert("the launcher opens the menu", h.state() === "menu");
@@ -501,9 +562,50 @@ console.log("\nA dock with nothing reachable hides — and comes back (bug 1):")
   h.item("tldr").click();
   assert("its late tool opens", h.state() === "panel" && !h.panel("tldr").hidden);
 
+  // Withdraw the capability while that tool's panel is OPEN and the caret is inside it —
+  // the sequence that made the page unusable before the state was settled on a gate change.
+  h.panel("tldr").querySelector<HTMLInputElement>("input")?.focus();
   h.body.classList.remove("tldr-ready");
   await h.settle();
   assert("the last capability going away hides the dock again", h.dock.root.hidden);
+  // The trap: the dock went display:none while `state` still said "panel", so every region
+  // outside it stayed inert. Dock unreachable, page unreachable — nothing on the document
+  // was operable for the rest of its life. Settling the state on a gate change is what
+  // removes it, and this is the assertion that would have caught it.
+  assert(
+    "...and does NOT leave the page inert behind it — no keyboard trap",
+    ["site-header", "site-footer", "minimap"].every(
+      (id) => h.doc.getElementById(id)?.hasAttribute("inert") === false,
+    ),
+  );
+  assert("...the dock no longer claims a panel is open", h.state() === "closed");
+  // Deliberately NOT asserted: where the caret ends up. jsdom does not block .focus() on a
+  // hidden element, so any claim here would pass on a behaviour jsdom fabricates and a real
+  // browser does not share. What matters — and is true in both — is that the page is
+  // reachable again, so a reader whose caret was dropped can Tab back into it.
+}
+
+console.log("\nWithdrawing one tool's capability leaves the others reachable:");
+{
+  // The same settlement, one step short of hiding the dock: the open tool goes away but
+  // another remains, so the dock falls back to the menu rather than closing.
+  const h = mount([{ id: "outline" }, { id: "tldr", requires: "tldr-ready" }]);
+  h.body.classList.add("tldr-ready");
+  await h.settle();
+  h.dock.launcher.click();
+  h.item("tldr").click();
+  assert("precondition: the gated tool's panel is open", h.state() === "panel");
+
+  h.body.classList.remove("tldr-ready");
+  await h.settle();
+  assert("the panel of a withdrawn tool does not stay open", h.state() === "menu");
+  assert("...its panel is down", h.panel("tldr").hidden);
+  assert(
+    "...the page is not left inert",
+    h.doc.getElementById("site-header")?.hasAttribute("inert") === false,
+  );
+  assert("...and the dock stays up on its remaining tool", !h.dock.root.hidden);
+  assert("...which is still offered", !h.item("outline").hidden);
 }
 
 console.log("\nAn ungated tool alone is enough to keep the dock up:");

@@ -216,18 +216,48 @@ const setInert = (el: HTMLElement, inert: boolean): void => {
   el.toggleAttribute("inert", inert);
 };
 
+// [LAW:one-source-of-truth] The ONE reading of which tools the reader can reach right now,
+// off the items' own data-requires and the live body classes. Both the projection below and
+// the state settlement above consult this same function — a second, differently worded
+// availability test is exactly how a panel stays open for a tool the menu has already
+// withdrawn.
+//
+// [LAW:no-ambient-temporal-coupling] Read afresh on every render rather than sampled once
+// at mount. A tool's capability class is added by that tool's own script, and script
+// execution order is exactly the kind of incidental timing this dock must not depend on —
+// reading it at each render makes "when did the other scripts run" a question the dock
+// never has to ask.
+const reachableTools = (d: ResolvedDock): ReadonlySet<string> => {
+  const body = d.win.document.body;
+  const hasBodyClass = (cls: string): boolean => body.classList.contains(cls);
+  return new Set(
+    d.items
+      .filter((item) => isAvailable(parseAvailability(item.dataset.requires), hasBodyClass))
+      .map(toolIdOf),
+  );
+};
+
+// The state a change in capability leaves the dock in. A panel open for a tool the reader
+// can no longer reach is not a state the dock may sit in: `renderDock` would hide the whole
+// dock while `s.kind === "panel"` still marked every region outside it `inert`, leaving
+// nothing on the page reachable at all — a keyboard trap strictly worse than the dropped
+// caret it resembles, and one that lasts for the rest of the page's life.
+//
+// [LAW:types-are-the-program] The correction lives HERE, at the one transition that can
+// invalidate a state, rather than as a condition inside the projection. Gating the inert
+// write on visibility would make the render survive the bad state while leaving `state`
+// itself naming a tool nobody can reach — the next reader of `state` inherits the same lie.
+// Removing the illegal value is the fix; defending against it downstream is not.
+const settle = (s: DockState, reachable: ReadonlySet<string>): DockState => {
+  if (reachable.size === 0) return { kind: "closed" };
+  return s.kind === "panel" && !reachable.has(s.tool) ? { kind: "menu" } : s;
+};
+
 // [LAW:dataflow-not-control-flow] One total projection of the state onto the DOM: every
 // attribute is written on every transition, only the values vary, so there is no path where
 // a stale aria-expanded survives a change of screen.
-//
-// [LAW:no-ambient-temporal-coupling] Availability is RE-READ here on every transition
-// rather than sampled once at mount. A tool's capability class is added by that tool's own
-// script, and script execution order is exactly the kind of incidental timing this dock
-// must not depend on — reading it at each render makes "when did the other scripts run" a
-// question the dock never has to ask.
 export const renderDock = (d: ResolvedDock, s: DockState): void => {
-  const body = d.win.document.body;
-  const hasBodyClass = (cls: string): boolean => body.classList.contains(cls);
+  const reachable = reachableTools(d);
 
   d.root.dataset.state = s.kind;
   d.launcher.setAttribute("aria-expanded", String(s.kind !== "closed"));
@@ -239,13 +269,10 @@ export const renderDock = (d: ResolvedDock, s: DockState): void => {
   // and the focusability.
   setInert(d.menu, s.kind === "closed");
 
-  let available = 0;
   for (const item of d.items) {
     const id = toolIdOf(item);
     const active = s.kind === "panel" && s.tool === id;
-    const reachable = isAvailable(parseAvailability(item.dataset.requires), hasBodyClass);
-    available += reachable ? 1 : 0;
-    item.hidden = !reachable;
+    item.hidden = !reachable.has(id);
     item.classList.toggle(DOCK_ITEM_ACTIVE_CLASS, active);
     item.setAttribute("aria-expanded", String(active));
   }
@@ -254,7 +281,7 @@ export const renderDock = (d: ResolvedDock, s: DockState): void => {
   }
   // A dock with nothing reachable is not a dock — hide the launcher rather than offer an
   // icon that expands into an empty row [LAW:no-silent-failure].
-  d.root.hidden = available === 0;
+  d.root.hidden = reachable.size === 0;
   // The page behind an open panel is inert, matching what the scrim already says visually.
   // Written on every transition like every other attribute here, so there is no path that
   // dims the page without also taking it out of the tab order.
@@ -268,6 +295,16 @@ export const renderDock = (d: ResolvedDock, s: DockState): void => {
 export const mountDock = (d: ResolvedDock): void => {
   const doc = d.win.document;
   let state: DockState = { kind: "closed" };
+
+  // The panels are modal only in THIS face — the no-JS face renders them as a plain stack
+  // with nothing dimmed behind, so the role is announced HERE rather than in the markup,
+  // where it would lie to a reader who never runs this script. Each section already carries
+  // its own aria-label, so naming needs nothing further. Set once at mount: which panels
+  // are dialogs is a static fact about the dock, not per-render state.
+  for (const panel of d.panels) {
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+  }
 
   // The item a tool id names, resolved through a loud checkpoint rather than a
   // `?? launcher` at each use — the bijection proved in `resolveDock` already guarantees
@@ -387,6 +424,12 @@ export const mountDock = (d: ResolvedDock): void => {
     const next = gateSignature();
     if (next === gates) return;
     gates = next;
-    renderDock(d, state);
+    // Through `setState`, not straight to `renderDock`, for two reasons that are really one:
+    // a gate change is a TRANSITION like any other. It can invalidate the current state (a
+    // panel whose tool just went away), so it goes through `settle`; and it can hide the
+    // element the reader's caret is sitting in, so it goes through the same focus rule every
+    // other transition uses [LAW:single-enforcer]. A second focus-restoration path here
+    // would be one more thing to keep in step with the first.
+    setState(settle(state, reachableTools(d)), d.launcher);
   }).observe(doc.body, { attributes: true, attributeFilter: ["class"] });
 };
