@@ -682,6 +682,30 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
 
     const hasBodyClass = (cls: string): boolean => document.body.classList.contains(cls);
 
+    // Everything the scrim covers: the dock's siblings at each level up to <body>. An open
+    // panel is drawn over a dimmed page and reads as modal, so it has to BE modal — without
+    // this a keyboard reader tabs straight out of the panel onto links they cannot see
+    // underneath the scrim. Collected once, and by construction the dock's own subtree is
+    // never in the list: at each level we take the siblings of the node we came up through.
+    const outsideDock: HTMLElement[] = [];
+    for (let node: HTMLElement = dock; node !== document.body; ) {
+      const parent = node.parentElement;
+      if (parent === null) break;
+      for (const sibling of parent.children) {
+        if (sibling !== node && sibling instanceof HTMLElement) outsideDock.push(sibling);
+      }
+      node = parent;
+    }
+
+    // The panels are modal only in THIS face — the no-JS face renders them as a plain
+    // stack with nothing dimmed behind, so the role is announced here rather than in the
+    // markup, where it would lie to a reader who never runs this script. Each section
+    // already carries its own aria-label, so naming needs nothing further.
+    for (const panel of panels) {
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+    }
+
     // [LAW:dataflow-not-control-flow] One total projection of the state onto the DOM:
     // every attribute is written on every transition, only the values vary, so there is
     // no path where a stale aria-expanded survives a change of screen.
@@ -717,6 +741,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       // A dock with nothing reachable is not a dock — hide the launcher rather than
       // offer an icon that expands into an empty row [LAW:no-silent-failure].
       dock.hidden = available === 0;
+      // The page behind an open panel is inert, matching what the scrim already says
+      // visually. Written on every transition like every other attribute here, so there
+      // is no path that dims the page without also taking it out of the tab order
+      // [LAW:dataflow-not-control-flow].
+      for (const region of outsideDock) region.inert = s.kind === "panel";
     };
 
     // The item a tool id names, resolved through a loud checkpoint like `toolIdOf` above
