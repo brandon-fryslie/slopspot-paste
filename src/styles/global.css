@@ -746,12 +746,42 @@ body:not(.tool-dock-ready) .tool-panel[data-requires] { display: none; }
    [LAW:dataflow-not-control-flow]. */
 body.tool-dock-ready {
   --dock-corner-inset: calc(var(--rail-axis) - var(--dock-launcher-size) / 2);
+  /* The strip's gap, stated once: it is also the clearance the menu must leave beside
+     the launcher, and a bare 12px in that calc would go stale the day this gap changes
+     without anyone editing it having reason to look there [LAW:one-source-of-truth]. */
+  --dock-gap: 12px;
+  --dock-side-inset: 12px;
+  /* The menu's axis and its width budget, as one pair. A page-centred bar can only stay
+     clear of a right-hand launcher by reserving the same band on the LEFT — its half
+     width is bounded by 50% minus the clearance on both sides by construction — so the
+     corner is paid for twice. That is the right trade where a centred content column is
+     what the bar answers to, and the wrong one where there is no such column; the block
+     below re-values this pair rather than adding a rule [LAW:dataflow-not-control-flow]. */
+  --dock-menu-centre: 50%;
+  --dock-menu-max: calc(
+    100% - 2 * (var(--dock-corner-inset) + var(--dock-launcher-size) + var(--dock-gap))
+  );
 }
 /* Below the gutter breakpoint the minimap is a slide-over rather than a rail, so there
    is no axis to ride — what the launcher must clear instead is the mobile timeline
-   toggle (right:16px, 44px wide), and 72px is where its own corner begins. */
+   toggle (right:16px, 44px wide), and 72px is where its own corner begins.
+
+   The menu stops centring on the page here too. The prose is full-bleed at this width,
+   so there is no centred column for the bar to line up with, and paying for the corner
+   twice would leave a 390px phone 134px of row — barely one icon before the reader has
+   to scroll. Centred in the band beside the launcher instead, the corner is reserved
+   once and that same phone keeps 250px. */
 @media (max-width: 1099px) {
   body.tool-dock-ready.has-timeline { --dock-corner-inset: 72px; }
+  body.tool-dock-ready {
+    --dock-menu-max: calc(
+      100% - var(--dock-corner-inset) - var(--dock-launcher-size) - var(--dock-gap) -
+        var(--dock-side-inset)
+    );
+    --dock-menu-centre: calc(
+      var(--dock-side-inset) + var(--dock-menu-max) / 2
+    );
+  }
 }
 body.tool-dock-ready .tool-dock {
   position: fixed;
@@ -765,7 +795,7 @@ body.tool-dock-ready .tool-dock {
      own inset instead. */
   padding: 0;
   align-items: center;
-  gap: 12px;
+  gap: var(--dock-gap);
   pointer-events: none;
 }
 body.tool-dock-ready .tool-dock > * { pointer-events: auto; }
@@ -855,18 +885,25 @@ body.tool-dock-ready .tool-dock-scrim[hidden] { display: none; }
    `bottom: 0` sits it on the launcher's own row — the launcher is the strip's last
    in-flow child, so the strip's bottom edge IS the launcher's, and matching heights
    put the two on one baseline without either measuring the other. */
-body.tool-dock-ready .tool-dock-menu {
+/* [LAW:single-enforcer] The `[data-state]` in this selector is not a specificity hack —
+   the menu's whole appearance is a projection of that attribute, so the selector states
+   a dependency the rule already has. It also has to compute ABOVE the blanket
+   `.tool-dock > * { pointer-events: auto }`, which without it ties this rule exactly
+   (0,2,1 each) and is settled only by which one sits later in the file. A tie decided by
+   source order is an invariant held in place by nobody: reorder the two, or add one
+   class to the blanket, and the closed menu becomes a full-width invisible hit target
+   parked over the bottom of the conversation, with no visual symptom to catch it. At
+   (0,4,1) this wins outright. The tie that remains is with its own open-state partner
+   directly below, which matches it at (0,4,1) — adjacent, authored as a pair, ordered
+   on purpose. */
+body.tool-dock-ready .tool-dock[data-state] .tool-dock-menu {
   display: flex;
   align-items: center;
   position: absolute;
   bottom: 0;
-  left: 50%;
+  left: var(--dock-menu-centre);
   min-height: var(--dock-launcher-size);
-  /* Symmetric, so the bar never reaches under the launcher on either side and the
-     centre stays the centre. Everything it must clear it reads off one value. */
-  max-width: calc(
-    100% - 2 * (var(--dock-corner-inset) + var(--dock-launcher-size) + 12px)
-  );
+  max-width: var(--dock-menu-max);
   min-width: 0;
   padding: 0 5px;
   border: 1px solid var(--border);
