@@ -776,6 +776,22 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // no-JS reader keeps the ungated tools and never meets a launcher that can't launch.
     render(state);
     document.body.classList.add("tool-dock-ready");
+
+    // [LAW:no-ambient-temporal-coupling] The capability classes are the dock's real
+    // input, and they arrive whenever each tool's own script finishes wiring — an
+    // instant this script has no way to know and must not guess at. So availability is
+    // level-triggered on that input rather than sampled: any change to body's class set
+    // re-projects the current state. Without this the render above is a one-shot read
+    // taken BEFORE the later tool scripts declare, and `dock.hidden` latches on it —
+    // every path back to `render` runs through the launcher, which the hide has just
+    // removed. That door only opens one way, which is what makes a sampled read fatal
+    // here and a live one correct: the dock now states its independence from script
+    // order instead of resting on the accident that one always-available tool is
+    // present. It also keeps an already-open menu honest when a tool declares late.
+    new MutationObserver(() => render(state)).observe(document.body, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
   </script>
 
   <script>
