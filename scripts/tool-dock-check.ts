@@ -1,0 +1,203 @@
+// Tool dock checks (slopspot-tool-dock-44r). Run: `tsx scripts/tool-dock-check.ts`.
+//
+// No framework — asserts and sets a non-zero exit code on failure. Verifies the PURE
+// half of the dock (src/toolDock.ts) off-DOM, plus the one fact the compiler cannot
+// reach: that every capability class a tool is gated on is actually added by a script
+// on the paste page. A tool gated on a class nobody adds is invisible forever, and
+// nothing about that is a type error [LAW:no-silent-failure].
+//
+// Behavioural, not structural: nothing here asserts how the dock is laid out, animated,
+// or wired — only what its values MEAN [LAW:behavior-not-structure].
+
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  DOCK_TOOLS,
+  TOOL,
+  isAvailable,
+  panelDomId,
+  parseAvailability,
+  requiresAttr,
+  type ToolAvailability,
+} from "../src/toolDock";
+
+const assert = (label: string, cond: boolean): void => {
+  if (!cond) {
+    console.error(`  ✗ ${label}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`  ✓ ${label}`);
+  }
+};
+
+const has = (...classes: string[]) => (cls: string): boolean => classes.includes(cls);
+
+console.log("\nThe tool list is one enumeration:");
+
+const ids = DOCK_TOOLS.map((t) => t.id);
+assert("the dock offers tools at all", ids.length > 0);
+assert("no two tools share an id", new Set(ids).size === ids.length);
+assert(
+  "TOOL is keyed by exactly the ids in DOCK_TOOLS",
+  Object.keys(TOOL).sort().join(",") === [...ids].sort().join(","),
+);
+assert(
+  "every TOOL entry is the array entry it is keyed by",
+  ids.every((id) => TOOL[id] === DOCK_TOOLS.find((t) => t.id === id)),
+);
+assert(
+  "no two tools claim the same panel DOM id",
+  new Set(ids.map(panelDomId)).size === ids.length,
+);
+assert(
+  "every tool carries a label, a hint, and an svg icon",
+  DOCK_TOOLS.every((t) => t.label.length > 0 && t.hint.length > 0 && t.icon.startsWith("<svg")),
+);
+
+console.log("\nAvailability survives the server → DOM → client round trip:");
+
+// The seam's whole contract: what the server writes into data-requires, the client
+// parses back into the SAME value. Asserted over the real tool list, so a tool added
+// with a shape the attribute cannot carry fails here rather than in a browser.
+for (const tool of DOCK_TOOLS) {
+  const back = parseAvailability(requiresAttr(tool.availability));
+  assert(
+    `${tool.id}: ${JSON.stringify(tool.availability)} round-trips`,
+    JSON.stringify(back) === JSON.stringify(tool.availability),
+  );
+}
+
+// An ABSENT attribute is how the server writes "always" — the only reading that keeps
+// an ungated tool reachable.
+assert("absent attribute parses as always", parseAvailability(undefined).kind === "always");
+assert("null attribute parses as always", parseAvailability(null).kind === "always");
+assert(
+  "one class parses as a one-class gate",
+  JSON.stringify(parseAvailability("search-ready")) ===
+    JSON.stringify({ kind: "when", bodyClasses: ["search-ready"] }),
+);
+assert(
+  "several classes parse as a many-class gate",
+  JSON.stringify(parseAvailability("copy-all-ready download-ready")) ===
+    JSON.stringify({ kind: "when", bodyClasses: ["copy-all-ready", "download-ready"] }),
+);
+assert(
+  "surrounding and repeated whitespace collapses",
+  JSON.stringify(parseAvailability("  a   b  ")) ===
+    JSON.stringify({ kind: "when", bodyClasses: ["a", "b"] }),
+);
+
+// A PRESENT but empty attribute would mean "gated on nothing", which is a tool that can
+// never appear. It is a broken projection, and it fails loudly rather than vanishing.
+const throwsOn = (raw: string): boolean => {
+  try {
+    parseAvailability(raw);
+    return false;
+  } catch {
+    return true;
+  }
+};
+assert("an empty attribute throws rather than hiding a tool", throwsOn(""));
+assert("a whitespace-only attribute throws too", throwsOn("   "));
+
+console.log("\nAvailability reads as any-of, never all-of:");
+
+const always: ToolAvailability = { kind: "always" };
+const oneOf: ToolAvailability = { kind: "when", bodyClasses: ["a"] };
+const eitherOf: ToolAvailability = { kind: "when", bodyClasses: ["a", "b"] };
+assert("always needs no class", isAvailable(always, has()));
+assert("a gated tool is unavailable with no class", !isAvailable(oneOf, has()));
+assert("a gated tool is available with its class", isAvailable(oneOf, has("a")));
+assert("an unrelated class does not admit it", !isAvailable(oneOf, has("z")));
+assert("a two-class gate opens on the first", isAvailable(eitherOf, has("a")));
+assert("a two-class gate opens on the second alone", isAvailable(eitherOf, has("b")));
+assert("a two-class gate stays shut on neither", !isAvailable(eitherOf, has("z")));
+
+console.log("\nEvery gate names a class the page actually adds:");
+
+// [LAW:one-source-of-truth] The capability classes live in two places by necessity —
+// the tool that earns one adds it, the dock that reads one is gated on it — and only
+// this check can hold them together. A gate on a class no script adds is a tool the
+// reader can never reach, with nothing in the type system to say so.
+const pagePath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "pages", "[slug].astro");
+const page = readFileSync(pagePath, "utf8");
+// [LAW:parse-dont-validate] The page is parsed ONCE into the set of classes it actually
+// ADDS to document.body; every gate is then a membership question against that set. The
+// weaker question — does this quoted string appear anywhere in the file — let a class
+// named only in a comment, a selector, or a data attribute pass as added, which is the
+// exact false pass this check exists to prevent.
+//
+// Two seams do the adding: most tools call classList.add with the literal, while the two
+// payload tools route through wirePayloadCopy(…, readyClass) and add a parameter. Both
+// are read. A THIRD seam introduced later falls outside this extraction, and every gate
+// through it then fails as "no script adds it" — loudly wrong rather than quietly passing
+// [LAW:no-silent-failure]. That is the only failure direction that keeps the check worth
+// running: a miss here costs a false alarm, never an invisible tool.
+const captured = (pattern: RegExp): readonly string[] =>
+  [...page.matchAll(pattern)].map(([match, cls]) => {
+    if (cls === undefined) {
+      throw new Error(`tool-dock-check: ${pattern} matched ${match} without capturing a class`);
+    }
+    return cls;
+  });
+
+const addedClasses = new Set([
+  ...captured(/document\.body\.classList\.add\("([^"]+)"\)/g),
+  ...captured(/wirePayloadCopy\([^)]*"([^"]+)"\s*\)/g),
+]);
+
+// One positive control per seam: an extraction that silently matched nothing would make
+// every assertion below fail for the wrong reason, so each spelling proves itself first.
+assert("the inline classList.add seam is read", addedClasses.has("search-ready"));
+assert("the wirePayloadCopy seam is read", addedClasses.has("copy-all-ready"));
+// A class no tool script has ever heard of must fail, or this check proves nothing.
+assert("a fictional class is not found", !addedClasses.has("no-such-tool-ready"));
+
+// [LAW:dataflow-not-control-flow] An ungated tool contributes an empty list of classes
+// rather than skipping the loop body — the same iteration runs for every tool, and the
+// availability value alone decides how many gates it has to answer for.
+const gatesOf = (a: ToolAvailability): readonly string[] =>
+  a.kind === "always" ? [] : a.bodyClasses;
+
+for (const tool of DOCK_TOOLS) {
+  for (const cls of gatesOf(tool.availability)) {
+    assert(`${tool.id} is gated on body.${cls}, which a script adds`, addedClasses.has(cls));
+  }
+}
+
+console.log("\nEvery tool in the list has a panel authored for it:");
+
+// The two halves of a tool are generated differently: the bar item falls out of
+// `dockTools` automatically, but the panel is a hand-authored section per tool. The
+// compiler cannot see the gap — a tool whose `present` entry is true with no panel block
+// type-checks clean. The dock script does catch it, but only in a browser, and its
+// bijection assert throws BEFORE `tool-dock-ready` is added, so one missing panel takes
+// down the whole dock for every tool rather than failing where it was introduced.
+// `class="tool-panel[^"]*"` rather than an exact match: a panel may carry its own extra
+// class alongside the shared one (the versions panel is `tool-panel version-trail`), and
+// an exact match would silently drop it from this set — reporting a missing panel for a
+// tool that has one, which is a false alarm that teaches the next reader to distrust the
+// check.
+const panelTools = new Set(
+  captured(/class="tool-panel[^"]*"[\s\S]{0,240}?data-tool=\{TOOL\.(\w+)\.id\}/g),
+);
+// A plain string set to compare against: `ids` is ToolId[], and asking it about an
+// arbitrary scraped string is exactly the question this check exists to ask.
+const declaredIds = new Set<string>(ids);
+// The extraction has to find panels at all, or every assertion below passes vacuously.
+assert("the page authors tool panels this check can see", panelTools.size > 0);
+for (const tool of DOCK_TOOLS) {
+  assert(`${tool.id} has a <section class="tool-panel"> of its own`, panelTools.has(tool.id));
+}
+// A panel for a tool the list does not carry is the same bijection broken from the other
+// side — it would reach the page as a panel no bar item can ever open.
+for (const id of panelTools) {
+  assert(`the "${id}" panel belongs to a tool in DOCK_TOOLS`, declaredIds.has(id));
+}
+
+if (process.exitCode) {
+  console.error("\nTool dock checks FAILED.");
+} else {
+  console.log("\nAll tool dock checks passed.");
+}
