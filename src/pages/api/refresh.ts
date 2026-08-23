@@ -1,7 +1,7 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
-import { json, seeOther } from "../../http";
+import { json, seeOther, isJsonRequest } from "../../http";
 import { LIFETIME_CHOICES, lifetimeFromChoice } from "../../types";
 import type { LifetimeChoice } from "../../types";
 
@@ -19,14 +19,15 @@ export const prerender = false;
 const isLifetimeChoice = (v: unknown): v is LifetimeChoice =>
   typeof v === "string" && (LIFETIME_CHOICES as ReadonlyArray<string>).includes(v);
 
-// [LAW:dataflow-not-control-flow] One decode path keyed on content-type, mirroring
-// /api/paste: a JSON fetch from the admin script, or a no-JS <form> POST. Both
-// converge to one (slug, choice) value the handler acts on.
+// [LAW:dataflow-not-control-flow] One decode path keyed on the request's media type,
+// mirroring /api/paste: a JSON fetch from the admin script, or a no-JS <form> POST.
+// Both converge to one (slug, choice) value the handler acts on. The decoder is local
+// because the PAIR is local — the media-type rule itself is isJsonRequest's
+// ([LAW:single-enforcer]), never re-derived here.
 type RefreshRequest = { readonly slug: string; readonly choice: LifetimeChoice };
 
 const decodeRequest = async (request: Request): Promise<RefreshRequest | null> => {
-  const ct = request.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
+  if (isJsonRequest(request)) {
     const body = (await request.json().catch(() => null)) as
       | { slug?: unknown; choice?: unknown }
       | null;
@@ -48,7 +49,7 @@ export const POST: APIRoute = async ({ request }) => {
   // [LAW:dataflow-not-control-flow] Response modality is derived from the request
   // shape, same key decodeRequest uses: a no-JS <form> POST navigates back to the
   // admin view; a JSON fetch gets { slug }. One mutation, two representations.
-  const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
+  const wantsRedirect = !isJsonRequest(request);
   const decoded = await decodeRequest(request);
   if (decoded === null) {
     return json(400, { error: "Missing or invalid 'slug'/'choice'." });

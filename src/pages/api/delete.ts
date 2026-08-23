@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
 import { isValidSlug } from "../../slug";
 import { isHiddenFromPublic } from "../../types";
-import { json, seeOther } from "../../http";
+import { json, seeOther, decodeSlug, isJsonRequest } from "../../http";
 
 export const prerender = false;
 
@@ -14,19 +14,13 @@ export const prerender = false;
 // that returns 200 — idempotent, not an error, because the outcome is the same.)
 
 export const POST: APIRoute = async ({ request }) => {
-  const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
+  // [LAW:single-enforcer] isJsonRequest owns the JSON-vs-form media-type rule and
+  // decodeSlug (http.ts) owns the slug decode built on it — this handler keeps no
+  // copy of either, so a JSON POST cannot be read as a form by one and not the other.
+  const wantsRedirect = !isJsonRequest(request);
+  const slug = await decodeSlug(request);
 
-  let slug: string | null = null;
-  if ((request.headers.get("content-type") ?? "").includes("application/json")) {
-    const body = await request.json().catch(() => null) as { slug?: unknown } | null;
-    if (typeof body?.slug === "string") slug = body.slug;
-  } else {
-    const form = await request.formData().catch(() => null);
-    const raw = form?.get("slug");
-    if (typeof raw === "string") slug = raw;
-  }
-
-  if (!slug || !isValidSlug(slug)) {
+  if (slug === null || !isValidSlug(slug)) {
     return json(400, { error: "Missing or invalid slug." });
   }
 

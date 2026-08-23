@@ -4,7 +4,7 @@ import { deriveTitle } from "../../parser";
 import { ingestRequest } from "../../ingest-request";
 import { putConversation } from "../../storage";
 import { generateSlug } from "../../slug";
-import { json, seeOther } from "../../http";
+import { json, seeOther, isJsonRequest } from "../../http";
 import type { Conversation } from "../../types";
 import { lifetimeFromChoice } from "../../types";
 
@@ -19,7 +19,9 @@ export const POST: APIRoute = async ({ request }) => {
   // from the request's content-type. A form-encoded POST is the no-JS <form> (a
   // browser navigation), so success redirects to the rendered paste; a JSON POST
   // is the editor/API and gets { slug }. (Error bodies stay JSON for both.)
-  const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
+  // [LAW:single-enforcer] The media-type rule is isJsonRequest's, so this modality
+  // and decodeRequest's body decode key off exactly the same judgement.
+  const wantsRedirect = !isJsonRequest(request);
 
   const result = await ingestRequest(request, env);
   if (!result.ok) return json(result.status, { error: result.error });
