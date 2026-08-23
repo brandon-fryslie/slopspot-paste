@@ -27,7 +27,7 @@ import {
 // [LAW:one-source-of-truth] The dock's contract classes are interpolated from the same
 // constant `resolveDock` reads, so the markup and the module cannot spell a region
 // differently — a rename in toolDockView.ts lands here on the next build rather than at a
-// reader's launcher. Classes NOT in this map (tool-dock-bar, tool-dock-slot, tool-panel-title,
+// reader's launcher. Classes NOT in this map (tool-dock-items, tool-dock-slot, tool-panel-title,
 // …) stay literal on purpose: they are styling, not part of the module↔markup contract.
 import { DOCK_SELECTORS } from "../toolDockView";
 
@@ -600,32 +600,42 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       )}
     </div>
 
-    <div class="tool-dock-bar">
-      <button class={DOCK_SELECTORS.launcher} type="button" aria-expanded="false"
-        aria-controls="tool-dock-menu" aria-label="Tools">
-        {/*
-          Both faces are always in the DOM, stacked in one grid cell; the dock's
-          data-state cross-fades them. Swapping innerHTML per state would make the
-          glyph a thing the script has to remember to keep in sync
-          [LAW:dataflow-not-control-flow].
-        */}
-        <span class="tool-dock-launcher-face" data-face="open" set:html={LAUNCHER_ICON} />
-        <span class="tool-dock-launcher-face" data-face="close" set:html={LAUNCHER_CLOSE_ICON} />
-      </button>
-      <div class={DOCK_SELECTORS.menu} id="tool-dock-menu">
-        <ul class="tool-dock-items">
-          {dockTools.map((tool, i) => (
-            <li class="tool-dock-slot" style={`--i:${i}`}>
-              <button class={DOCK_SELECTORS.item} type="button" data-tool={tool.id}
-                data-requires={requiresAttr(tool.availability)}
-                aria-controls={panelDomId(tool.id)} aria-expanded="false" title={tool.hint}>
-                <span class="tool-dock-icon" set:html={tool.icon} />
-                <span class="tool-dock-label">{tool.label}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
+    {/*
+      Launcher and menu are siblings, not one nested pill. The launcher is the only
+      fixture that holds the corner; the menu is a free-standing bar centred on the
+      page. They were one element while the pill GREW out of the circle, and that
+      coupling is what gave the open bar no position of its own — its left edge was
+      wherever the item count left it, so the whole bar slid sideways whenever a
+      capability-gated tool declared itself and the row changed width.
+
+      Source order stays launcher-then-menu: it is the order a keyboard reader tabs
+      through and the order the a11y tree reports, and it is now free of any layout
+      duty, since neither element's position is expressed as "next to the other one".
+    */}
+    <button class={DOCK_SELECTORS.launcher} type="button" aria-expanded="false"
+      aria-controls="tool-dock-menu" aria-label="Tools">
+      {/*
+        Both faces are always in the DOM, stacked in one grid cell; the dock's
+        data-state cross-fades them. Swapping innerHTML per state would make the
+        glyph a thing the script has to remember to keep in sync
+        [LAW:dataflow-not-control-flow].
+      */}
+      <span class="tool-dock-launcher-face" data-face="open" set:html={LAUNCHER_ICON} />
+      <span class="tool-dock-launcher-face" data-face="close" set:html={LAUNCHER_CLOSE_ICON} />
+    </button>
+    <div class={DOCK_SELECTORS.menu} id="tool-dock-menu">
+      <ul class="tool-dock-items">
+        {dockTools.map((tool, i) => (
+          <li class="tool-dock-slot" style={`--i:${i}`}>
+            <button class={DOCK_SELECTORS.item} type="button" data-tool={tool.id}
+              data-requires={requiresAttr(tool.availability)}
+              aria-controls={panelDomId(tool.id)} aria-expanded="false" title={tool.hint}>
+              <span class="tool-dock-icon" set:html={tool.icon} />
+              <span class="tool-dock-label">{tool.label}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   </div>
 

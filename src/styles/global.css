@@ -45,6 +45,20 @@
   --syn-meta: #6b6b6b;
   --radius: 14px;
   --maxw: 820px;
+  /* [LAW:one-source-of-truth] The right rail's centre axis, stated once and derived
+     from the rail's own geometry. The minimap sits on it and the tool dock's launcher
+     is inset to ride it, so the circle and the spine share a centre line. Before this,
+     each fixture reached that edge by its own arithmetic — the dock through strip
+     padding + bar padding + border, the rail through inset + padding + line width —
+     two chains that agreed about nothing and landed 7px apart. Derived means a change
+     to the rail's inset or line width moves the launcher with it. */
+  --rail-inset: 24px;
+  --rail-pad-x: 6px;
+  --rail-line-w: 34px;
+  --rail-axis: calc(var(--rail-inset) + var(--rail-pad-x) + var(--rail-line-w) / 2);
+  /* The launcher's diameter, read by both the circle itself and every inset measured
+     from its edge — so nothing downstream hardcodes half of 44. */
+  --dock-launcher-size: 44px;
   /* [LAW:one-source-of-truth] Hover-lift shadow stated once: geometry here, color
      derived from --fg (the house shadow idiom) so every theme keeps a visible
      lift — a hardcoded black shadow vanishes on the darkest platform themes.
@@ -652,16 +666,16 @@ body:not(.tool-dock-ready) .spine-outline-list {
    [LAW:dataflow-not-control-flow]:
 
      no JS — the rules in THIS block: a plain stack of panels at the foot of the
-             page. The launcher bar is display:none (a launcher that cannot launch
-             is worse than no launcher), and every capability-gated panel is hidden
+             page. The launcher and its menu are display:none (a launcher that cannot
+             launch is worse than no launcher), and every capability-gated panel is hidden
              because its body class will never arrive, so a reader is never shown a
              control that cannot act [LAW:no-silent-failure]. What survives is the
              outline and the version history — the two tools that were only ever
              server-rendered links.
      JS    — the body.tool-dock-ready rules below: the same markup, re-laid as a
-             floating launcher pinned above the viewport's bottom edge, thumb-high
-             on a phone. One icon expands into a horizontal menu; picking an item
-             raises that tool's panel over the conversation.
+             floating launcher pinned in the bottom-right corner, thumb-high on a
+             phone. Tapping it raises a horizontal menu centred on the page; picking
+             an item raises that tool's panel over the conversation.
 
    [LAW:single-enforcer] Panel visibility has exactly one owner per face — the
    :not(.tool-dock-ready) rule for the static one, the script's `hidden` attribute
@@ -677,7 +691,11 @@ body:not(.tool-dock-ready) .spine-outline-list {
   gap: 20px;
 }
 .tool-dock-scrim { display: none; }
-.tool-dock-bar { display: none; }
+/* The no-JS face: a launcher that cannot launch, and a menu whose items open nothing.
+   Both are hidden by the same rule that always hid them — it names two elements now
+   only because they are no longer wrapped in one. */
+.tool-dock-launcher,
+.tool-dock-menu { display: none; }
 body:not(.tool-dock-ready) .tool-panel[data-requires] { display: none; }
 
 /* A panel is the card its tool used to draw for itself: the frame lives here once,
@@ -715,11 +733,26 @@ body:not(.tool-dock-ready) .tool-panel[data-requires] { display: none; }
 }
 
 /* ── The floating face ─────────────────────────────────────────────────────
-   The strip still spans the viewport — the panels need that width to grow into — but
-   its contents sit at the END of both axes, so the launcher rests in the bottom-right
-   corner and every panel rises out of it. The strip is pointer-transparent: only the
-   bar, the panels, and the scrim take clicks, so the dock never eats a tap meant for
-   the conversation behind it. */
+   The strip spans the viewport and centres its contents, so the menu and every panel
+   have a home that does not move: the page's own axis. Only the launcher opts out, to
+   the corner it holds. The strip is pointer-transparent: only the launcher, the menu,
+   the panels, and the scrim take clicks, so the dock never eats a tap meant for the
+   conversation behind it.
+
+   [LAW:one-source-of-truth] --dock-corner-inset is the ONE statement of how far the
+   launcher sits from the right edge, and everything that has to keep clear of the
+   launcher reads it rather than re-deriving the corner. The narrow-viewport override
+   below changes that VALUE; no rule anywhere branches on which case is in play
+   [LAW:dataflow-not-control-flow]. */
+body.tool-dock-ready {
+  --dock-corner-inset: calc(var(--rail-axis) - var(--dock-launcher-size) / 2);
+}
+/* Below the gutter breakpoint the minimap is a slide-over rather than a rail, so there
+   is no axis to ride — what the launcher must clear instead is the mobile timeline
+   toggle (right:16px, 44px wide), and 72px is where its own corner begins. */
+@media (max-width: 1099px) {
+  body.tool-dock-ready.has-timeline { --dock-corner-inset: 72px; }
+}
 body.tool-dock-ready .tool-dock {
   position: fixed;
   left: 0;
@@ -727,18 +760,22 @@ body.tool-dock-ready .tool-dock {
   bottom: calc(max(14px, env(safe-area-inset-bottom)) + var(--dock-lift));
   z-index: 30;
   margin: 0;
-  padding: 0 12px;
-  align-items: flex-end;
+  /* No padding: the strip's job is to state the centre, and a side padding that is not
+     symmetric would quietly shift that centre off the page's. Each child carries its
+     own inset instead. */
+  padding: 0;
+  align-items: center;
   gap: 12px;
   pointer-events: none;
 }
 body.tool-dock-ready .tool-dock > * { pointer-events: auto; }
 body.tool-dock-ready .tool-dock[hidden] { display: none; }
-/* Clear the mobile timeline toggle's corner (right:16px, 44px wide) by shrinking the
-   strip rather than nudging the bar — with the contents end-aligned, the clearance is
-   just this padding. */
-@media (max-width: 1099px) {
-  body.tool-dock-ready.has-timeline .tool-dock { padding-right: 72px; }
+/* The one fixture that keeps the corner, inset so its circle rides the minimap's centre
+   line [LAW:one-source-of-truth] — the two live on the same edge and now say so. */
+body.tool-dock-ready .tool-dock-launcher {
+  display: grid;
+  align-self: flex-end;
+  margin-right: var(--dock-corner-inset);
 }
 
 /* The bound sits on the PANEL, not on this box, and that placement is the whole point:
@@ -749,7 +786,9 @@ body.tool-dock-ready .tool-dock[hidden] { display: none; }
    being exactly this box's width, lost the side bleed of its 44px shadow. Only one panel
    is ever unhidden, so capping each one is the same bound with nothing left to clip. */
 body.tool-dock-ready .tool-dock-panels {
-  width: min(760px, 100%);
+  /* The 12px is the strip's former side padding, moved onto the child that needed it:
+     a panel narrower than the viewport must still not touch its edges. */
+  width: min(760px, 100% - 24px);
 }
 body.tool-dock-ready .tool-panel {
   max-height: min(58vh, 520px);
@@ -776,33 +815,11 @@ body.tool-dock-ready .tool-dock-scrim {
 }
 body.tool-dock-ready .tool-dock-scrim[hidden] { display: none; }
 
-/* The bar is a single pill that GROWS: closed it is exactly the round launcher, open
-   it is the launcher plus the menu. Nothing appears or disappears between the two —
-   the menu's grid column animates from 0fr to 1fr, so the pill interpolates to the
-   items' intrinsic width without anyone measuring anything in JS
-   [LAW:no-ambient-temporal-coupling]. */
-body.tool-dock-ready .tool-dock-bar {
-  display: flex;
-  /* Reversed so the LAUNCHER is the thing pinned in the corner and the menu unfurls
-     leftward from it. Source order stays launcher-then-items — the order a keyboard
-     reader tabs through, and the order the a11y tree reports — so this is purely which
-     end of the pill grows [LAW:one-source-of-truth]. */
-  flex-direction: row-reverse;
-  align-items: center;
-  max-width: 100%;
-  padding: 5px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
-  backdrop-filter: blur(14px);
-  box-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
-}
 .tool-dock-launcher {
   flex: 0 0 auto;
-  display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: var(--dock-launcher-size);
+  height: var(--dock-launcher-size);
   padding: 0;
   border: none;
   border-radius: 999px;
@@ -810,6 +827,9 @@ body.tool-dock-ready .tool-dock-bar {
   color: var(--accent-fg);
   cursor: pointer;
   appearance: none;
+  /* The lift the old wrapping pill used to give it. Standing alone, the circle carries
+     its own separation from the prose it floats over. */
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
 }
 .tool-dock-launcher:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 /* Both faces occupy the same grid cell and cross-rotate; the state decides which one
@@ -827,14 +847,49 @@ body.tool-dock-ready .tool-dock-bar {
   transform: rotate(-90deg) scale(0.7);
 }
 
-.tool-dock-menu {
-  display: grid;
-  grid-template-columns: 0fr;
+/* The menu is its own pill, centred on the page rather than hung off the launcher.
+   Absolutely positioned so the closed one costs no layout: the dock's height is the
+   launcher's whether the menu is up or not, which is what lets --reserve-tool-dock
+   stay a single number instead of a per-state one [LAW:one-source-of-truth].
+
+   `bottom: 0` sits it on the launcher's own row — the launcher is the strip's last
+   in-flow child, so the strip's bottom edge IS the launcher's, and matching heights
+   put the two on one baseline without either measuring the other. */
+body.tool-dock-ready .tool-dock-menu {
+  display: flex;
+  align-items: center;
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  min-height: var(--dock-launcher-size);
+  /* Symmetric, so the bar never reaches under the launcher on either side and the
+     centre stays the centre. Everything it must clear it reads off one value. */
+  max-width: calc(
+    100% - 2 * (var(--dock-corner-inset) + var(--dock-launcher-size) + 12px)
+  );
   min-width: 0;
-  overflow: hidden;
-  transition: grid-template-columns 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
+  /* The pill used to interpolate its WIDTH out of the launcher, which is the coupling
+     that cost it a position of its own. Standing apart it rises into place instead —
+     the same unfolding character (the per-item stagger below is untouched) without the
+     open bar's geometry depending on the closed one's. `translateX(-50%)` is carried in
+     both states so the centring survives the animated transform
+     [LAW:dataflow-not-control-flow]. */
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px) scale(0.97);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.tool-dock:not([data-state="closed"]) .tool-dock-menu { grid-template-columns: 1fr; }
+body.tool-dock-ready .tool-dock:not([data-state="closed"]) .tool-dock-menu {
+  opacity: 1;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
 .tool-dock-items {
   display: flex;
   align-items: center;
@@ -843,14 +898,15 @@ body.tool-dock-ready .tool-dock-bar {
   /* The end inset and the mask are one device: the fade always sits over the last 18px
      of the box, and the inset guarantees those 18px hold nothing but empty space when
      the row FITS — so a faded edge means "there is more, scroll" and never lies about
-     a row that is already whole. The insets ride the END SLOTS rather than this box,
-     because padding on a scroll container cannot be compressed away and would hold the
-     collapsed pill 24px open — a stub of a bar instead of a clean circle. */
+     a row that is already whole. The insets ride the END SLOTS rather than this box
+     because padding on a scroll container cannot be compressed away, so the row would
+     keep 24px of dead space at a width where every pixel is already spoken for. */
   padding: 0;
   mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent);
   list-style: none;
-  /* The grid item's own min-width, not just the container's: a grid item defaults to
-     min-width:auto and would hold the pill open at the row's min-content width. */
+  /* The flex item's own min-width, not just the container's: a flex item defaults to
+     min-width:auto and would refuse to shrink below the row's min-content width,
+     pushing the pill past the max-width that keeps it clear of the launcher. */
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -858,8 +914,8 @@ body.tool-dock-ready .tool-dock-bar {
   scrollbar-width: none;
 }
 .tool-dock-items::-webkit-scrollbar { display: none; }
-/* The items fade in behind the widening pill, each a beat after the last, so the row
-   reads as unfolding rather than popping. --i is the item's index, set server-side. */
+/* The items fade in one beat after another as the pill rises, so the row reads as
+   unfolding rather than popping. --i is the item's index, set server-side. */
 .tool-dock-slot {
   flex: 0 0 auto;
 }
@@ -1013,10 +1069,10 @@ body.tool-dock-ready .tool-dock-bar {
     display: flex;
     position: fixed;
     top: 50%;
-    right: 24px;
+    right: var(--rail-inset);
     transform: translateY(-50%);
     max-height: 80vh;
-    padding: 8px 6px;
+    padding: 8px var(--rail-pad-x);
   }
 }
 @media (max-width: 1099px) {
@@ -1099,7 +1155,7 @@ body.tool-dock-ready .tool-dock-bar {
   padding: 0;
   margin: 0;
   background: none;
-  width: var(--minimap-line-w, 34px);
+  width: var(--minimap-line-w, var(--rail-line-w));
   display: flex;
   flex-direction: column;
   align-items: flex-start;
