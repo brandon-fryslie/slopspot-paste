@@ -715,9 +715,11 @@ body:not(.tool-dock-ready) .tool-panel[data-requires] { display: none; }
 }
 
 /* ── The floating face ─────────────────────────────────────────────────────
-   The strip spans the viewport so its contents can centre themselves, but it is
-   pointer-transparent: only the bar, the panels, and the scrim take clicks, so the
-   dock never eats a tap meant for the conversation behind it. */
+   The strip still spans the viewport — the panels need that width to grow into — but
+   its contents sit at the END of both axes, so the launcher rests in the bottom-right
+   corner and every panel rises out of it. The strip is pointer-transparent: only the
+   bar, the panels, and the scrim take clicks, so the dock never eats a tap meant for
+   the conversation behind it. */
 body.tool-dock-ready .tool-dock {
   position: fixed;
   left: 0;
@@ -726,14 +728,15 @@ body.tool-dock-ready .tool-dock {
   z-index: 30;
   margin: 0;
   padding: 0 12px;
-  align-items: center;
+  align-items: flex-end;
   gap: 12px;
   pointer-events: none;
 }
 body.tool-dock-ready .tool-dock > * { pointer-events: auto; }
 body.tool-dock-ready .tool-dock[hidden] { display: none; }
 /* Clear the mobile timeline toggle's corner (right:16px, 44px wide) by shrinking the
-   strip rather than nudging the bar — the centring then falls out of the box model. */
+   strip rather than nudging the bar — with the contents end-aligned, the clearance is
+   just this padding. */
 @media (max-width: 1099px) {
   body.tool-dock-ready.has-timeline .tool-dock { padding-right: 72px; }
 }
@@ -780,6 +783,11 @@ body.tool-dock-ready .tool-dock-scrim[hidden] { display: none; }
    [LAW:no-ambient-temporal-coupling]. */
 body.tool-dock-ready .tool-dock-bar {
   display: flex;
+  /* Reversed so the LAUNCHER is the thing pinned in the corner and the menu unfurls
+     leftward from it. Source order stays launcher-then-items — the order a keyboard
+     reader tabs through, and the order the a11y tree reports — so this is purely which
+     end of the pill grows [LAW:one-source-of-truth]. */
+  flex-direction: row-reverse;
   align-items: center;
   max-width: 100%;
   padding: 5px;
