@@ -172,8 +172,8 @@ console.log("\nverify-live-version.sh outcomes (slopspot-deploy-d2e):");
     assert("names the version that was expected", mismatch.stderr.includes("b".repeat(40)));
 
     // ── The abbreviated sha (slopspot-deploy-61q) ──
-    // `git log` and `gh` print seven characters, so that is what a human or an agent
-    // copies. The endpoint always serves a full sha, which makes a prefix unambiguous.
+    // `git log --oneline` and `gh` print seven characters, so that is what a human or an
+    // agent copies. The endpoint always serves a full sha, making a prefix unambiguous.
     const abbreviated = await run([LIVE.slice(0, 7), url]);
     assert("exits 0 when an abbreviated sha prefixes the live version", abbreviated.status === 0);
     assert("reports the full version it observed, not the abbreviation", abbreviated.stdout.includes(LIVE));
@@ -191,6 +191,11 @@ console.log("\nverify-live-version.sh outcomes (slopspot-deploy-d2e):");
     // or not: CI bakes exactly this value when it builds from an unclean tree.
     const dirtyExpected = await run([`${LIVE.slice(0, 7)}-dirty`, urlServing(`${LIVE}-dirty`)]);
     assert("exits 0 when a -dirty expectation matches a -dirty live version", dirtyExpected.status === 0);
+    // The full sha is what a hand-deploy actually pastes, and it is the only input where the
+    // derived pattern's interval collapses to zero width against a non-empty suffix — so an
+    // error in that width arithmetic would break here alone while every case above stayed green.
+    const dirtyFull = await run([`${LIVE}-dirty`, urlServing(`${LIVE}-dirty`)]);
+    assert("exits 0 when a full-sha -dirty expectation matches a -dirty live version", dirtyFull.status === 0);
 
     // [LAW:parse-dont-validate] A malformed argument is misuse, answered before any request
     // goes out — never a 180-second wait ending in "the deploy did not take effect" about a

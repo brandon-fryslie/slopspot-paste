@@ -67,9 +67,9 @@ The version is baked in at build time by `astro.config.mjs` (`git rev-parse HEAD
 `-dirty` suffix when the build tree had uncommitted changes, so a hand-built bundle can
 never claim to be a clean commit). `scripts/verify-live-version.sh <sha> [url]` polls that
 endpoint until it matches, and fails loudly at a deadline — run it yourself after any
-manual deploy. The `<sha>` may be abbreviated to the seven characters `git log` prints;
-anything that isn't a commit sha is rejected up front as a usage error, so a bad argument
-can never be mistaken for a failed deploy.
+manual deploy. The `<sha>` may be abbreviated to the seven characters `git log --oneline`
+prints; anything that isn't a commit sha is rejected up front as a usage error, so a bad
+argument can never be mistaken for a failed deploy.
 
 To deploy by hand anyway (an unmerged branch, a hotfix, no network for CI):
 
@@ -79,6 +79,9 @@ CLOUDFLARE_API_TOKEN=… npm run deploy
 
 This runs `npm run test && astro build && wrangler deploy --config dist/server/wrangler.json`
 — the same chain CI runs, so the gate cannot differ between a laptop and the workflow.
+Building from an unclean tree bakes `<sha>-dirty`, so that is what you must pass to
+`verify-live-version.sh` to verify such a build — a bare `<sha>` is a different version
+and the verifier will correctly say so.
 The adapter generates a full Workers config at `dist/server/wrangler.json`
 (including `main`, `[assets]`, and merged bindings) — wrangler reads from there.
 
