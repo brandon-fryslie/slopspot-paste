@@ -530,8 +530,11 @@ body:not(.tool-dock-ready) .spine-outline-list {
    and go to /diff/<this>/<that>. display:none until the script confirms it can
    act and adds body.compare-ready (mirroring the copy pills) — a no-JS reader's
    page is unchanged, never a dead control that round-trips to a 404. */
-.compare { display: none; }
-body.compare-ready .compare { display: block; }
+/* No display gate here: this content IS its panel, and the panel's visibility already
+   has exactly one owner per face — `[hidden]` from the dock script, `[data-requires]`
+   for the no-JS face. A `body.compare-ready` toggle would be a THIRD copy of a gate
+   toolDock.ts already declares, free to drift the day that availability changes and
+   leave an open panel with permanently invisible content [LAW:one-source-of-truth]. */
 /* [LAW:one-type-per-behavior] The inline label + input + pill form row is ONE
    control worn by Compare-with and the semantic search box; the chrome lives here
    once [LAW:one-source-of-truth], each form only names its own classes. */
@@ -598,8 +601,11 @@ body.compare-ready .compare { display: block; }
    body.freshness-ready — the same class that admits the tool to the dock menu, so
    a dead button is unreachable. The result line reuses the muted meta voice; a
    "differs" verdict borrows the accent rail the trail notes wear. */
-.freshness-form { display: none; }
-body.freshness-ready .freshness-form { display: block; }
+/* No display gate here: this content IS its panel, and the panel's visibility already
+   has exactly one owner per face — `[hidden]` from the dock script, `[data-requires]`
+   for the no-JS face. A `body.freshness-ready` toggle would be a THIRD copy of a gate
+   toolDock.ts already declares, free to drift the day that availability changes and
+   leave an open panel with permanently invisible content [LAW:one-source-of-truth]. */
 .freshness-result {
   margin: 8px 0 0;
   font-size: 13px;
@@ -915,8 +921,11 @@ body.tool-dock-ready .tool-dock-bar {
    unchanged, never a dead search box. The results region below the form is a
    pure projection of the client state machine: searching status, ranked hits +
    Clear, or an error with Try again. */
-.semantic-search { display: none; }
-body.search-ready .semantic-search { display: block; }
+/* No display gate here: this content IS its panel, and the panel's visibility already
+   has exactly one owner per face — `[hidden]` from the dock script, `[data-requires]`
+   for the no-JS face. A `body.search-ready` toggle would be a THIRD copy of a gate
+   toolDock.ts already declares, free to drift the day that availability changes and
+   leave an open panel with permanently invisible content [LAW:one-source-of-truth]. */
 .search-status { margin-top: 10px; }
 .search-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .search-clear { margin-left: auto; }
@@ -942,8 +951,11 @@ body.search-ready .semantic-search { display: block; }
    class added to an existing group above (form row, status, head label, error
    row, pill sizes) [LAW:one-type-per-behavior] — only what is ask-specific
    lives here: the reveal, the citation link, and the sources list frame. */
-.semantic-ask { display: none; }
-body.ask-ready .semantic-ask { display: block; }
+/* No display gate here: this content IS its panel, and the panel's visibility already
+   has exactly one owner per face — `[hidden]` from the dock script, `[data-requires]`
+   for the no-JS face. A `body.ask-ready` toggle would be a THIRD copy of a gate
+   toolDock.ts already declares, free to drift the day that availability changes and
+   leave an open panel with permanently invisible content [LAW:one-source-of-truth]. */
 .ask-status { margin-top: 10px; }
 .ask-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .ask-clear { margin-left: auto; }
