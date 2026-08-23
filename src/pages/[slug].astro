@@ -24,6 +24,12 @@ import {
   requiresAttr,
   type ToolId,
 } from "../toolDock";
+// [LAW:one-source-of-truth] The dock's contract classes are interpolated from the same
+// constant `resolveDock` reads, so the markup and the module cannot spell a region
+// differently — a rename in toolDockView.ts lands here on the next build rather than at a
+// reader's launcher. Classes NOT in this map (tool-dock-bar, tool-dock-slot, tool-panel-title,
+// …) stay literal on purpose: they are styling, not part of the module↔markup contract.
+import { DOCK_SELECTORS } from "../toolDockView";
 
 export const prerender = false;
 
@@ -365,12 +371,12 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     asserts the pairing at runtime, since the attribute itself is only a string once
     it reaches the DOM [LAW:no-silent-failure].
   */}
-  <div class="tool-dock" data-state="closed">
-    <div class="tool-dock-scrim" hidden></div>
+  <div class={DOCK_SELECTORS.dock} data-state="closed">
+    <div class={DOCK_SELECTORS.scrim} hidden></div>
 
-    <div class="tool-dock-panels">
+    <div class={DOCK_SELECTORS.panelHost}>
       {present.outline && (
-        <section class="tool-panel" id={panelDomId(TOOL.outline.id)} data-tool={TOOL.outline.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.outline.id)} data-tool={TOOL.outline.id}
           aria-label={TOOL.outline.hint}>
           <h2 class="tool-panel-title">{TOOL.outline.label}<span class="tool-panel-note">{outline.length} turns</span></h2>
           {/*
@@ -401,7 +407,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         transition (searching → hits / error).
       */}
       {present.search && (
-        <section class="tool-panel" id={panelDomId(TOOL.search.id)} data-tool={TOOL.search.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.search.id)} data-tool={TOOL.search.id}
           data-requires={requiresAttr(TOOL.search.availability)} aria-label={TOOL.search.hint}>
           <h2 class="tool-panel-title">{TOOL.search.label}</h2>
           <div class="semantic-search">
@@ -427,7 +433,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         [LAW:one-source-of-truth]. aria-live announces each transition.
       */}
       {present.ask && (
-        <section class="tool-panel" id={panelDomId(TOOL.ask.id)} data-tool={TOOL.ask.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.ask.id)} data-tool={TOOL.ask.id}
           data-requires={requiresAttr(TOOL.ask.availability)} aria-label={TOOL.ask.hint}>
           <h2 class="tool-panel-title">{TOOL.ask.label}</h2>
           <div class="semantic-ask">
@@ -453,7 +459,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         aria-live announces each state transition (loading → summary / error).
       */}
       {present.tldr && (
-        <section class="tool-panel" id={panelDomId(TOOL.tldr.id)} data-tool={TOOL.tldr.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.tldr.id)} data-tool={TOOL.tldr.id}
           data-requires={requiresAttr(TOOL.tldr.availability)} aria-label={TOOL.tldr.hint}>
           <h2 class="tool-panel-title">{TOOL.tldr.label}</h2>
           <div class="tldr" hidden aria-live="polite" data-slug={slug}></div>
@@ -468,7 +474,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         Blob support and wires each one, and either capability alone admits the tool.
       */}
       {present.code && (
-        <section class="tool-panel" id={panelDomId(TOOL.code.id)} data-tool={TOOL.code.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.code.id)} data-tool={TOOL.code.id}
           data-requires={requiresAttr(TOOL.code.availability)} aria-label={TOOL.code.hint}>
           <h2 class="tool-panel-title">{TOOL.code.label}</h2>
           <div class="code-export" set:html={codeExportHtml} />
@@ -481,7 +487,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         client-wiring shape as the code controls above [LAW:one-type-per-behavior].
       */}
       {present.continue && (
-        <section class="tool-panel" id={panelDomId(TOOL.continue.id)} data-tool={TOOL.continue.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.continue.id)} data-tool={TOOL.continue.id}
           data-requires={requiresAttr(TOOL.continue.availability)} aria-label={TOOL.continue.hint}>
           <h2 class="tool-panel-title">{TOOL.continue.label}</h2>
           <p class="tool-panel-lede">Copy the whole conversation plus a continue-here instruction, ready to paste into another assistant.</p>
@@ -498,7 +504,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         [LAW:no-silent-failure].
       */}
       {present.compare && (
-        <section class="tool-panel" id={panelDomId(TOOL.compare.id)} data-tool={TOOL.compare.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.compare.id)} data-tool={TOOL.compare.id}
           data-requires={requiresAttr(TOOL.compare.availability)} aria-label={TOOL.compare.hint}>
           <h2 class="tool-panel-title">{TOOL.compare.label}</h2>
           <div class="compare">
@@ -524,7 +530,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         version remains the privileged /sloppy refetch; checking is public and read-only.
       */}
       {present.freshness && (
-        <section class="tool-panel" id={panelDomId(TOOL.freshness.id)} data-tool={TOOL.freshness.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.freshness.id)} data-tool={TOOL.freshness.id}
           data-requires={requiresAttr(TOOL.freshness.availability)} aria-label={TOOL.freshness.hint}>
           <h2 class="tool-panel-title">{TOOL.freshness.label}</h2>
           <div class="freshness" data-slug={slug}>
@@ -550,7 +556,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         of the page.
       */}
       {present.versions && trail && (
-        <section class="tool-panel version-trail" id={panelDomId(TOOL.versions.id)} data-tool={TOOL.versions.id}
+        <section class={`${DOCK_SELECTORS.panel} version-trail`} id={panelDomId(TOOL.versions.id)} data-tool={TOOL.versions.id}
           aria-label={TOOL.versions.hint}>
           <h2 class="tool-panel-title">
             {TOOL.versions.label}
@@ -595,7 +601,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     </div>
 
     <div class="tool-dock-bar">
-      <button class="tool-dock-launcher" type="button" aria-expanded="false"
+      <button class={DOCK_SELECTORS.launcher} type="button" aria-expanded="false"
         aria-controls="tool-dock-menu" aria-label="Tools">
         {/*
           Both faces are always in the DOM, stacked in one grid cell; the dock's
@@ -606,11 +612,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         <span class="tool-dock-launcher-face" data-face="open" set:html={LAUNCHER_ICON} />
         <span class="tool-dock-launcher-face" data-face="close" set:html={LAUNCHER_CLOSE_ICON} />
       </button>
-      <div class="tool-dock-menu" id="tool-dock-menu">
+      <div class={DOCK_SELECTORS.menu} id="tool-dock-menu">
         <ul class="tool-dock-items">
           {dockTools.map((tool, i) => (
             <li class="tool-dock-slot" style={`--i:${i}`}>
-              <button class="tool-dock-item" type="button" data-tool={tool.id}
+              <button class={DOCK_SELECTORS.item} type="button" data-tool={tool.id}
                 data-requires={requiresAttr(tool.availability)}
                 aria-controls={panelDomId(tool.id)} aria-expanded="false" title={tool.hint}>
                 <span class="tool-dock-icon" set:html={tool.icon} />
@@ -628,258 +634,15 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // reader is looking at. It never touches what a tool DOES — every tool keeps its
     // own script and its own network edge — so this part can be read, changed, or
     // replaced without knowing that /api/search exists.
-    import { isAvailable, parseAvailability } from "../toolDock";
-
-    // [LAW:no-defensive-null-guards] The dock and its two fixtures are unconditional
-    // template output on this page, so a missing one is a broken template invariant,
-    // not an optional feature — throw loudly like the sibling scripts here.
-    const dock = document.querySelector<HTMLElement>(".tool-dock");
-    if (!dock) throw new Error("required .tool-dock region missing");
-    const launcher = dock.querySelector<HTMLButtonElement>(".tool-dock-launcher");
-    const scrim = dock.querySelector<HTMLElement>(".tool-dock-scrim");
-    const menu = dock.querySelector<HTMLElement>(".tool-dock-menu");
-    const panelHost = dock.querySelector<HTMLElement>(".tool-dock-panels");
-    if (!launcher || !scrim || !menu || !panelHost) {
-      throw new Error("tool dock is missing its launcher, scrim, menu, or panel host");
-    }
-    const items = Array.from(dock.querySelectorAll<HTMLButtonElement>(".tool-dock-item"));
-    const panels = Array.from(dock.querySelectorAll<HTMLElement>(".tool-panel"));
-
-    // [LAW:parse-dont-validate] A tool id arrives here as a bare attribute string, so
-    // it gets read through one checkpoint that fails loudly rather than N call sites
-    // each defending with `?? ""` — which would quietly pair every unlabelled element
-    // with every other one under the empty-string key [LAW:no-silent-failure].
-    const toolIdOf = (el: HTMLElement): string => {
-      const id = el.dataset.tool;
-      if (id === undefined) throw new Error("tool dock element carries no data-tool");
-      return id;
-    };
-
-    // [LAW:one-source-of-truth] The server derives bar items and panels from ONE list
-    // (toolDock.ts + the `present` map), so they agree by construction — but the link
-    // between them is a string once it reaches the DOM, and a string can be wrong.
-    // Assert the pairing is a bijection here, at load, where a mismatch is a stack
-    // trace instead of a menu item that opens nothing three clicks later.
-    const panelOf = new Map(panels.map((panel) => [toolIdOf(panel), panel]));
-    if (panelOf.size !== panels.length) throw new Error("two tool panels share one data-tool");
-    if (items.length !== panels.length) {
-      throw new Error(`tool dock has ${items.length} menu items for ${panels.length} panels`);
-    }
-    for (const item of items) {
-      if (!panelOf.has(toolIdOf(item))) {
-        throw new Error(`tool dock menu item "${toolIdOf(item)}" has no panel`);
-      }
-    }
-
-    // [LAW:types-are-the-program] The dock's total state. Three values, and the ones
-    // that would be contradictions elsewhere — a panel open behind a collapsed bar, a
-    // bar expanded with two active items — are not expressible here at all, so nothing
-    // below has to defend against them.
-    type DockState =
-      | { kind: "closed" }
-      | { kind: "menu" }
-      | { kind: "panel"; tool: string };
-
-    const hasBodyClass = (cls: string): boolean => document.body.classList.contains(cls);
-
-    // Everything the scrim covers: the dock's siblings at each level up to <body>. An open
-    // panel is drawn over a dimmed page and reads as modal, so it has to BE modal — without
-    // this a keyboard reader tabs straight out of the panel onto links they cannot see
-    // underneath the scrim. Collected once, and by construction the dock's own subtree is
-    // never in the list: at each level we take the siblings of the node we came up through.
-    const outsideDock: HTMLElement[] = [];
-    for (let node: HTMLElement = dock; node !== document.body; ) {
-      const parent = node.parentElement;
-      if (parent === null) break;
-      for (const sibling of parent.children) {
-        if (sibling !== node && sibling instanceof HTMLElement) outsideDock.push(sibling);
-      }
-      node = parent;
-    }
-
-    // The panels are modal only in THIS face — the no-JS face renders them as a plain
-    // stack with nothing dimmed behind, so the role is announced here rather than in the
-    // markup, where it would lie to a reader who never runs this script. Each section
-    // already carries its own aria-label, so naming needs nothing further.
-    for (const panel of panels) {
-      panel.setAttribute("role", "dialog");
-      panel.setAttribute("aria-modal", "true");
-    }
-
-    // [LAW:dataflow-not-control-flow] One total projection of the state onto the DOM:
-    // every attribute is written on every transition, only the values vary, so there is
-    // no path where a stale aria-expanded survives a change of screen.
     //
-    // [LAW:no-ambient-temporal-coupling] Availability is RE-READ here on every
-    // transition rather than sampled once at load. A tool's capability class is added
-    // by that tool's own script, and script execution order is exactly the kind of
-    // incidental timing this dock must not depend on — reading it at each render makes
-    // "when did the other scripts run" a question the dock never has to ask.
-    const render = (s: DockState): void => {
-      dock.dataset.state = s.kind;
-      launcher.setAttribute("aria-expanded", String(s.kind !== "closed"));
-      scrim.hidden = s.kind !== "panel";
-      // The collapsed menu is CLIPPED, not removed — its items still exist so the pill
-      // can interpolate to their width. `inert` is what keeps a clipped item out of the
-      // tab order and the a11y tree, so a keyboard reader never lands on a button they
-      // cannot see [LAW:one-source-of-truth]: openness is one value, projected onto
-      // both the visual state and the focusability.
-      menu.inert = s.kind === "closed";
-      let available = 0;
-      for (const item of items) {
-        const id = toolIdOf(item);
-        const active = s.kind === "panel" && s.tool === id;
-        const reachable = isAvailable(parseAvailability(item.dataset.requires), hasBodyClass);
-        available += reachable ? 1 : 0;
-        item.hidden = !reachable;
-        item.classList.toggle("is-active", active);
-        item.setAttribute("aria-expanded", String(active));
-      }
-      for (const panel of panels) {
-        panel.hidden = !(s.kind === "panel" && s.tool === toolIdOf(panel));
-      }
-      // A dock with nothing reachable is not a dock — hide the launcher rather than
-      // offer an icon that expands into an empty row [LAW:no-silent-failure].
-      dock.hidden = available === 0;
-      // The page behind an open panel is inert, matching what the scrim already says
-      // visually. Written on every transition like every other attribute here, so there
-      // is no path that dims the page without also taking it out of the tab order
-      // [LAW:dataflow-not-control-flow].
-      for (const region of outsideDock) region.inert = s.kind === "panel";
-    };
+    // The whole state machine lives in ../toolDockView, where scripts/tool-dock-view-
+    // check.ts drives it under jsdom [LAW:verifiable-goals]. What remains here is the
+    // page's half of the seam: this page's document is the markup the dock resolves
+    // against. `resolveDock` throws by name on any broken template invariant, which is
+    // the same loud failure the inline version had, moved to where it can be tested.
+    import { mountDock, resolveDock } from "../toolDockView";
 
-    // The item a tool id names, resolved through a loud checkpoint like `toolIdOf` above
-    // rather than a `?? launcher` at each use — the bijection asserted at load already
-    // guarantees the item exists, so a miss here is a broken invariant, not a fallback
-    // to paper over [LAW:no-silent-failure].
-    const itemOf = new Map(items.map((item) => [toolIdOf(item), item]));
-    const itemFor = (id: string): HTMLButtonElement => {
-      const item = itemOf.get(id);
-      if (item === undefined) throw new Error(`tool dock has no menu item for "${id}"`);
-      return item;
-    };
-
-    let state: DockState = { kind: "closed" };
-
-    // [LAW:dataflow-not-control-flow] Every transition names where focus lands, as a
-    // value it carries rather than a courtesy some call sites remember. `render` hides
-    // the panel a keyboard reader may be typing in, and a focused element that becomes
-    // display:none drops focus to <body> — the reader restarts from the top of the page.
-    //
-    // Focus is only ours to move when it is INSIDE the dock: that is the one case where
-    // `render` can strip it. A reader who clicked out onto the page keeps the caret they
-    // just placed, which is why the outside-click path below needs no special casing —
-    // focus is by definition elsewhere there, and the same rule leaves it alone.
-    const setState = (next: DockState, focusTarget: HTMLElement): void => {
-      const active = document.activeElement;
-      const ours = active instanceof HTMLElement && dock.contains(active);
-      state = next;
-      render(state);
-      if (ours) focusTarget.focus();
-    };
-
-    launcher.addEventListener("click", () => {
-      // The launcher survives every transition it can cause, so it is always a valid
-      // landing place for the focus that is already on it.
-      setState(state.kind === "closed" ? { kind: "menu" } : { kind: "closed" }, launcher);
-    });
-
-    for (const item of items) {
-      item.addEventListener("click", () => {
-        const id = toolIdOf(item);
-        // A second tap on the active tool folds its panel away and leaves the menu up
-        // — the same control, one value flipping [LAW:dataflow-not-control-flow].
-        const next: DockState =
-          state.kind === "panel" && state.tool === id ? { kind: "menu" } : { kind: "panel", tool: id };
-        // Land the caret where the reader is about to type. Panels whose first control
-        // is a button (copy, download, check) keep focus on the menu item, so a
-        // keyboard reader is never thrown to a control they didn't ask for — and folding
-        // a panel away lands there too, since the field is about to be hidden.
-        const field =
-          next.kind === "panel" ? panelOf.get(id)?.querySelector<HTMLElement>("input") : null;
-        setState(next, field ?? item);
-      });
-    }
-
-    // Every anchor inside a panel navigates the page underneath it — an outline entry,
-    // a search hit, an archived snapshot — so the dock gets out of the way rather than
-    // leaving the reader to dismiss it before they can see where they landed.
-    panelHost.addEventListener("click", (event) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest("a")) setState({ kind: "closed" }, launcher);
-    });
-
-    scrim.addEventListener("click", () => setState({ kind: "closed" }, launcher));
-
-    // Escape unwinds one layer at a time — panel to menu, menu to closed — matching the
-    // order the reader opened them in.
-    document.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape" || state.kind === "closed") return;
-      // Unwinding a panel hands focus back to the item that opened it, not to the
-      // launcher — the reader is one Escape from the menu, not out of the dock, so the
-      // caret should sit where the next Escape acts.
-      setState(
-        state.kind === "panel" ? { kind: "menu" } : { kind: "closed" },
-        state.kind === "panel" ? itemFor(state.tool) : launcher,
-      );
-    });
-
-    // A click anywhere outside the dock closes it. The scrim already covers this while
-    // a panel is open; this arm is what dismisses a bare expanded menu.
-    document.addEventListener("click", (event) => {
-      const target = event.target;
-      if (state.kind === "closed") return;
-      if (target instanceof Node && dock.contains(target)) return;
-      setState({ kind: "closed" }, launcher);
-    });
-
-    // Seat the closed state, then hand the dock its floating form. Until this class
-    // lands the same markup is a plain block of panels at the foot of the page, so a
-    // no-JS reader keeps the ungated tools and never meets a launcher that can't launch.
-    render(state);
-    document.body.classList.add("tool-dock-ready");
-
-    // [LAW:no-ambient-temporal-coupling] The capability classes are the dock's real
-    // input, and they arrive whenever each tool's own script finishes wiring — an
-    // instant this script has no way to know and must not guess at. So availability is
-    // level-triggered on that input rather than sampled: any change to body's class set
-    // re-projects the current state. Without this the render above is a one-shot read
-    // taken BEFORE the later tool scripts declare, and `dock.hidden` latches on it —
-    // every path back to `render` runs through the launcher, which the hide has just
-    // removed. That door only opens one way, which is what makes a sampled read fatal
-    // here and a live one correct: the dock now states its independence from script
-    // order instead of resting on the accident that one always-available tool is
-    // present. It also keeps an already-open menu honest when a tool declares late.
-    // [LAW:parse-dont-validate] The observer fires on every WRITE to body's class
-    // attribute, which is a far wider stream than the dock's input: unrelated scripts
-    // toggle their own classes there (the minimap rewrites `has-timeline` on every
-    // resize tick), and the DOM dirties the attribute even when the token set is
-    // unchanged. That raw stream is parsed here into the one fact the dock depends on —
-    // the membership of its own gate classes — and `render` runs on a CHANGE of that
-    // value, never on the noise around it. Level-triggering on the carrier instead of
-    // the fact is what coupled an unrelated animation loop to this render.
-    //
-    // The gate set is read off the items' own `data-requires`, the same attribute
-    // `render` consults, so it cannot drift from what availability actually reads
-    // [LAW:one-source-of-truth]. A REMOVED class counts as a change exactly like an
-    // added one: a capability that goes away must un-offer its tool, and keying on
-    // additions alone would be a one-way door of the same family as the original latch.
-    const gateClasses = [
-      ...new Set(
-        items.flatMap((item) => {
-          const availability = parseAvailability(item.dataset.requires);
-          return availability.kind === "always" ? [] : [...availability.bodyClasses];
-        }),
-      ),
-    ];
-    const gateSignature = (): string => gateClasses.map((cls) => String(hasBodyClass(cls))).join(",");
-    let gates = gateSignature();
-    new MutationObserver(() => {
-      const next = gateSignature();
-      if (next === gates) return;
-      gates = next;
-      render(state);
-    }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    mountDock(resolveDock(document));
   </script>
 
   <script>
