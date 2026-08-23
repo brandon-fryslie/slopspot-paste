@@ -53,11 +53,30 @@ npm run preview      # built worker via wrangler dev (real KV bindings)
 
 ## Deploy
 
+**Production is derived from `master`, not deployed by hand.** Every push to `master`
+runs `.github/workflows/deploy.yml`, which builds that commit, deploys it, and then
+verifies that `https://paste.slopspot.ai` is actually serving it. The same workflow runs
+daily on a schedule, so a missed push event or a rolled-back Worker is re-derived rather
+than left to be noticed. Nobody needs to remember what is live — the site says so:
+
 ```bash
-npm run deploy
+curl https://paste.slopspot.ai/api/version   # the commit sha the live bundle was built from
 ```
 
-This runs `astro build && wrangler deploy --config dist/server/wrangler.json`.
+The version is baked in at build time by `astro.config.mjs` (`git rev-parse HEAD`, plus a
+`-dirty` suffix when the build tree had uncommitted changes, so a hand-built bundle can
+never claim to be a clean commit). `scripts/verify-live-version.sh <sha> [url]` polls that
+endpoint until it matches, and fails loudly at a deadline — run it yourself after any
+manual deploy.
+
+To deploy by hand anyway (an unmerged branch, a hotfix, no network for CI):
+
+```bash
+CLOUDFLARE_API_TOKEN=… npm run deploy
+```
+
+This runs `npm run test && astro build && wrangler deploy --config dist/server/wrangler.json`
+— the same chain CI runs, so the gate cannot differ between a laptop and the workflow.
 The adapter generates a full Workers config at `dist/server/wrangler.json`
 (including `main`, `[assets]`, and merged bindings) — wrangler reads from there.
 

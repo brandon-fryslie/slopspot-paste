@@ -1,0 +1,72 @@
+# Production deploy — paste.slopspot.ai is DERIVED from master, never remembered.
+#
+# [LAW:one-source-of-truth] master is the single authority for what the site is. Before
+# this workflow existed, the live site was a second, hand-maintained copy that someone had
+# to remember to refresh with `npm run deploy`; on 2026-08-23 it was found two weeks and
+# three merged PRs behind, and the detection mechanism was the user noticing. Two
+# representations of one fact do not "risk" divergence, they schedule it. This job demotes
+# production to a derived projection so there is only one map again.
+#
+# [LAW:dataflow-not-control-flow] There is exactly one job and it does the same thing on
+# every invocation: build master, deploy it, verify the live site serves it. Nothing here
+# branches on WHY it ran — the trigger is a value, not a code path. In particular there is
+# deliberately no separate "detect drift and alert" job: an alarm preserves both maps and
+# hands a human the reconciliation, whereas re-deriving on a schedule means a missed push
+# event, a cancelled run, or a rolled-back Worker is corrected within a day instead of
+# merely announced. The scheduled run is idempotent — same commit in, same bundle out.
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  # The safety net for the failure mode a push trigger cannot cover: the push deploy never
+  # ran at all. github.sha is the default branch tip on a scheduled run, so the steps below
+  # need no knowledge of which trigger fired.
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+# [LAW:no-ambient-temporal-coupling] Deploys are serialized under one named owner. Two
+# concurrent `wrangler deploy` runs would race, and whichever finished last would decide
+# what production serves regardless of which commit is newer. cancel-in-progress is false
+# because a half-finished deploy is worse than a queued one.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Actions are pinned by commit sha, matching code-review.yml: a tag is a mutable
+      # pointer the upstream owner can re-point, so `@v6` is a second, drifting map of
+      # "which code runs in CI" [LAW:one-source-of-truth]. The sha is the territory.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # Node 22 (active LTS) is CI's build runtime. The repo declares no node version
+      # anywhere else, so this is the choice itself and not a copy of one — if an engines
+      # field or .nvmrc is ever added, this must become `node-version-file` rather than
+      # a second place the answer lives.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # [LAW:single-enforcer] The quality gate is not re-declared here. `npm run deploy`
+      # is the one deploy command the repo has — `npm run test && astro build && wrangler
+      # deploy` — so CI and a laptop run the identical chain and cannot disagree about what
+      # must pass before shipping. A separate `npm test` step in this workflow would be a
+      # second copy of that rule, free to drift from the package script.
+      - name: Build, test and deploy
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # [LAW:verifiable-goals] Done has a shape and CI checks it: the public hostname
+      # reports the commit this run built. Without this the workflow would only ever prove
+      # that an upload was accepted — the same weak evidence that let production sit stale.
+      - name: Verify production serves this commit
+        run: scripts/verify-live-version.sh "${{ github.sha }}"
