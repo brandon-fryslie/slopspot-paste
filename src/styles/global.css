@@ -67,6 +67,20 @@
      token scoped to the floating face would resolve to nothing there. Same idiom as
      --bubble-hover-shadow below. */
   --dock-pill-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
+  /* The menu's rise, held as a VALUE rather than as a declaration some later rule has
+     to out-rank. The reduced-motion block re-values this token; it never names the menu,
+     so no future change to the menu's selector can silently outrank the override and
+     leave a reader who asked for stillness with an animation anyway
+     [LAW:no-silent-failure]. Specificity is a poor place to keep a promise this
+     important — the failure is invisible to everyone except the person it hurts. */
+  --dock-menu-transition: opacity 180ms ease, transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* The mobile timeline toggle's own geometry, stated where both the toggle and the
+     things that must clear it can read it [LAW:one-source-of-truth]. Deliberately NOT
+     --dock-launcher-size, which is 44px too: they are separate fixtures that happen to
+     share a touch-target size, and one token standing for two unrelated facts would let
+     a tweak to the launcher silently move the toggle. */
+  --mobile-toggle-inset: 16px;
+  --mobile-toggle-size: 44px;
   /* [LAW:one-source-of-truth] Hover-lift shadow stated once: geometry here, color
      derived from --fg (the house shadow idiom) so every theme keeps a visible
      lift — a hardcoded black shadow vanishes on the darkest platform themes.
@@ -772,7 +786,11 @@ body.tool-dock-ready {
 }
 /* Below the gutter breakpoint the minimap is a slide-over rather than a rail, so there
    is no axis to ride — what the launcher must clear instead is the mobile timeline
-   toggle (right:16px, 44px wide), and 72px is where its own corner begins.
+   toggle, so its corner is derived from that toggle's own geometry rather than from a
+   number that happens to equal it today [LAW:one-source-of-truth]. The derivation now
+   reaches further than it looks: it feeds --dock-menu-max and --dock-menu-centre too,
+   so a stale literal here would mis-size and mis-centre the whole row, not just leave
+   a slightly wrong gap.
 
    The menu stops centring on the page here too. The prose is full-bleed at this width,
    so there is no centred column for the bar to line up with, and paying for the corner
@@ -780,7 +798,11 @@ body.tool-dock-ready {
    to scroll. Centred in the band beside the launcher instead, the corner is reserved
    once and that same phone keeps 250px. */
 @media (max-width: 1099px) {
-  body.tool-dock-ready.has-timeline { --dock-corner-inset: 72px; }
+  body.tool-dock-ready.has-timeline {
+    --dock-corner-inset: calc(
+      var(--mobile-toggle-inset) + var(--mobile-toggle-size) + var(--dock-gap)
+    );
+  }
   body.tool-dock-ready {
     --dock-menu-max: calc(
       100% - var(--dock-corner-inset) - var(--dock-launcher-size) - var(--dock-gap) -
@@ -926,7 +948,7 @@ body.tool-dock-ready .tool-dock[data-state] .tool-dock-menu {
   opacity: 0;
   transform: translateX(-50%) translateY(6px) scale(0.97);
   pointer-events: none;
-  transition: opacity 180ms ease, transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: var(--dock-menu-transition);
 }
 body.tool-dock-ready .tool-dock:not([data-state="closed"]) .tool-dock-menu {
   opacity: 1;
@@ -1014,7 +1036,12 @@ body.tool-dock-ready .tool-dock:not([data-state="closed"]) .tool-dock-menu {
 /* Motion is decoration here: every state the animations describe is already legible
    from position, colour, and presence, so removing them costs nothing. */
 @media (prefers-reduced-motion: reduce) {
-  .tool-dock-menu,
+  /* The menu is stilled by re-valuing its token rather than by out-ranking its rule.
+     Its transition is declared on a (0,4,1) selector — the specificity the pointer-events
+     invariant needs — and a media query adds none, so a bare `.tool-dock-menu` here at
+     (0,1,0) would lose silently and animate anyway. Overriding the token instead means
+     this block never has to know what selector the menu is wearing. */
+  :root { --dock-menu-transition: none; }
   .tool-dock-slot,
   .tool-dock-launcher-face { transition: none; }
   body.tool-dock-ready .tool-panel { animation: none; }
@@ -1154,15 +1181,15 @@ body.tool-dock-ready .tool-dock:not([data-state="closed"]) .tool-dock-menu {
   body.has-timeline .minimap-toggle {
     display: flex;
     position: fixed;
-    right: 16px;
+    right: var(--mobile-toggle-inset);
     bottom: max(16px, env(safe-area-inset-bottom));
     z-index: 21;
     flex-direction: column;
     align-items: flex-end;
     justify-content: center;
     gap: 3px;
-    width: 44px;
-    height: 44px;
+    width: var(--mobile-toggle-size);
+    height: var(--mobile-toggle-size);
     padding: 0 11px;
     border: 1px solid var(--border);
     border-radius: 999px;
