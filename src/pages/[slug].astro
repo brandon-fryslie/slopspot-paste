@@ -24,6 +24,12 @@ import {
   requiresAttr,
   type ToolId,
 } from "../toolDock";
+// [LAW:one-source-of-truth] The dock's contract classes are interpolated from the same
+// constant `resolveDock` reads, so the markup and the module cannot spell a region
+// differently — a rename in toolDockView.ts lands here on the next build rather than at a
+// reader's launcher. Classes NOT in this map (tool-dock-bar, tool-dock-slot, tool-panel-title,
+// …) stay literal on purpose: they are styling, not part of the module↔markup contract.
+import { DOCK_SELECTORS } from "../toolDockView";
 
 export const prerender = false;
 
@@ -365,12 +371,12 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     asserts the pairing at runtime, since the attribute itself is only a string once
     it reaches the DOM [LAW:no-silent-failure].
   */}
-  <div class="tool-dock" data-state="closed">
-    <div class="tool-dock-scrim" hidden></div>
+  <div class={DOCK_SELECTORS.dock} data-state="closed">
+    <div class={DOCK_SELECTORS.scrim} hidden></div>
 
-    <div class="tool-dock-panels">
+    <div class={DOCK_SELECTORS.panelHost}>
       {present.outline && (
-        <section class="tool-panel" id={panelDomId(TOOL.outline.id)} data-tool={TOOL.outline.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.outline.id)} data-tool={TOOL.outline.id}
           aria-label={TOOL.outline.hint}>
           <h2 class="tool-panel-title">{TOOL.outline.label}<span class="tool-panel-note">{outline.length} turns</span></h2>
           {/*
@@ -401,7 +407,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         transition (searching → hits / error).
       */}
       {present.search && (
-        <section class="tool-panel" id={panelDomId(TOOL.search.id)} data-tool={TOOL.search.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.search.id)} data-tool={TOOL.search.id}
           data-requires={requiresAttr(TOOL.search.availability)} aria-label={TOOL.search.hint}>
           <h2 class="tool-panel-title">{TOOL.search.label}</h2>
           <div class="semantic-search">
@@ -427,7 +433,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         [LAW:one-source-of-truth]. aria-live announces each transition.
       */}
       {present.ask && (
-        <section class="tool-panel" id={panelDomId(TOOL.ask.id)} data-tool={TOOL.ask.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.ask.id)} data-tool={TOOL.ask.id}
           data-requires={requiresAttr(TOOL.ask.availability)} aria-label={TOOL.ask.hint}>
           <h2 class="tool-panel-title">{TOOL.ask.label}</h2>
           <div class="semantic-ask">
@@ -453,7 +459,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         aria-live announces each state transition (loading → summary / error).
       */}
       {present.tldr && (
-        <section class="tool-panel" id={panelDomId(TOOL.tldr.id)} data-tool={TOOL.tldr.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.tldr.id)} data-tool={TOOL.tldr.id}
           data-requires={requiresAttr(TOOL.tldr.availability)} aria-label={TOOL.tldr.hint}>
           <h2 class="tool-panel-title">{TOOL.tldr.label}</h2>
           <div class="tldr" hidden aria-live="polite" data-slug={slug}></div>
@@ -468,7 +474,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         Blob support and wires each one, and either capability alone admits the tool.
       */}
       {present.code && (
-        <section class="tool-panel" id={panelDomId(TOOL.code.id)} data-tool={TOOL.code.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.code.id)} data-tool={TOOL.code.id}
           data-requires={requiresAttr(TOOL.code.availability)} aria-label={TOOL.code.hint}>
           <h2 class="tool-panel-title">{TOOL.code.label}</h2>
           <div class="code-export" set:html={codeExportHtml} />
@@ -481,7 +487,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         client-wiring shape as the code controls above [LAW:one-type-per-behavior].
       */}
       {present.continue && (
-        <section class="tool-panel" id={panelDomId(TOOL.continue.id)} data-tool={TOOL.continue.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.continue.id)} data-tool={TOOL.continue.id}
           data-requires={requiresAttr(TOOL.continue.availability)} aria-label={TOOL.continue.hint}>
           <h2 class="tool-panel-title">{TOOL.continue.label}</h2>
           <p class="tool-panel-lede">Copy the whole conversation plus a continue-here instruction, ready to paste into another assistant.</p>
@@ -498,7 +504,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         [LAW:no-silent-failure].
       */}
       {present.compare && (
-        <section class="tool-panel" id={panelDomId(TOOL.compare.id)} data-tool={TOOL.compare.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.compare.id)} data-tool={TOOL.compare.id}
           data-requires={requiresAttr(TOOL.compare.availability)} aria-label={TOOL.compare.hint}>
           <h2 class="tool-panel-title">{TOOL.compare.label}</h2>
           <div class="compare">
@@ -524,7 +530,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         version remains the privileged /sloppy refetch; checking is public and read-only.
       */}
       {present.freshness && (
-        <section class="tool-panel" id={panelDomId(TOOL.freshness.id)} data-tool={TOOL.freshness.id}
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.freshness.id)} data-tool={TOOL.freshness.id}
           data-requires={requiresAttr(TOOL.freshness.availability)} aria-label={TOOL.freshness.hint}>
           <h2 class="tool-panel-title">{TOOL.freshness.label}</h2>
           <div class="freshness" data-slug={slug}>
@@ -550,7 +556,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         of the page.
       */}
       {present.versions && trail && (
-        <section class="tool-panel version-trail" id={panelDomId(TOOL.versions.id)} data-tool={TOOL.versions.id}
+        <section class={`${DOCK_SELECTORS.panel} version-trail`} id={panelDomId(TOOL.versions.id)} data-tool={TOOL.versions.id}
           aria-label={TOOL.versions.hint}>
           <h2 class="tool-panel-title">
             {TOOL.versions.label}
@@ -595,7 +601,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     </div>
 
     <div class="tool-dock-bar">
-      <button class="tool-dock-launcher" type="button" aria-expanded="false"
+      <button class={DOCK_SELECTORS.launcher} type="button" aria-expanded="false"
         aria-controls="tool-dock-menu" aria-label="Tools">
         {/*
           Both faces are always in the DOM, stacked in one grid cell; the dock's
@@ -606,11 +612,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         <span class="tool-dock-launcher-face" data-face="open" set:html={LAUNCHER_ICON} />
         <span class="tool-dock-launcher-face" data-face="close" set:html={LAUNCHER_CLOSE_ICON} />
       </button>
-      <div class="tool-dock-menu" id="tool-dock-menu">
+      <div class={DOCK_SELECTORS.menu} id="tool-dock-menu">
         <ul class="tool-dock-items">
           {dockTools.map((tool, i) => (
             <li class="tool-dock-slot" style={`--i:${i}`}>
-              <button class="tool-dock-item" type="button" data-tool={tool.id}
+              <button class={DOCK_SELECTORS.item} type="button" data-tool={tool.id}
                 data-requires={requiresAttr(tool.availability)}
                 aria-controls={panelDomId(tool.id)} aria-expanded="false" title={tool.hint}>
                 <span class="tool-dock-icon" set:html={tool.icon} />

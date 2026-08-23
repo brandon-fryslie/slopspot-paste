@@ -167,22 +167,27 @@ for (const tool of DOCK_TOOLS) {
   }
 }
 
-console.log("\nEvery region the dock resolves is a class the page's markup carries:");
+console.log("\nEvery region the dock resolves is authored in the page's markup:");
 
-// [LAW:one-source-of-truth] The dock's markup is authored in [slug].astro and its
-// selectors are read in toolDockView.ts, so the two ends can drift — a renamed class in
-// the template would leave `resolveDock` throwing "no launcher" at every reader, and
-// nothing in the type system says a word about it. The jsdom check cannot catch this
-// either: it builds its fixture FROM these same constants, so it would rename right along
-// with the module and keep passing. This is the one check positioned to see the gap.
-const classTokens = new Set(
-  [...page.matchAll(/class="([^"{]+)"/g)].flatMap(([, attr]) => (attr ?? "").split(/\s+/)),
+// [LAW:one-source-of-truth] The class STRINGS are no longer this check's business. The page
+// interpolates `DOCK_SELECTORS` for every region the module resolves, so the two ends cannot
+// spell a region differently — a rename lands in the markup on the next build, and the
+// compiler is the enforcer rather than this scrape. That is the higher rung, and taking it
+// deleted the drift this block used to watch for [FRAMING:representation].
+//
+// What no type can see is whether the page authors a region AT ALL: `resolveDock` requires
+// each one and throws for every reader if it is missing, while a template with the block
+// deleted type-checks perfectly clean. The jsdom check cannot see it either — it builds its
+// fixture from these same constants, so it would go missing right along with the page and
+// keep passing. So the scrape is left owning exactly the one question nothing else can ask.
+const referencedRegions = new Set(
+  [...page.matchAll(/DOCK_SELECTORS\.(\w+)/g)].map(([, region]) => region ?? ""),
 );
-// The extraction has to find classes at all, or every assertion below passes vacuously.
-assert("the page authors class attributes this check can see", classTokens.size > 0);
-assert("a fictional class is not found among them", !classTokens.has("no-such-region"));
-for (const [region, cls] of Object.entries(DOCK_SELECTORS)) {
-  assert(`the ${region} region's class "${cls}" appears in the page's markup`, classTokens.has(cls));
+// The extraction has to find references at all, or every assertion below passes vacuously.
+assert("the page interpolates the dock's selectors at all", referencedRegions.size > 0);
+assert("a fictional region is not among them", !referencedRegions.has("noSuchRegion"));
+for (const region of Object.keys(DOCK_SELECTORS)) {
+  assert(`the ${region} region is authored in the page's markup`, referencedRegions.has(region));
 }
 
 console.log("\nEvery tool in the list has a panel authored for it:");
@@ -193,13 +198,16 @@ console.log("\nEvery tool in the list has a panel authored for it:");
 // type-checks clean. The dock script does catch it, but only in a browser, and its
 // bijection assert throws BEFORE `tool-dock-ready` is added, so one missing panel takes
 // down the whole dock for every tool rather than failing where it was introduced.
-// `class="tool-panel[^"]*"` rather than an exact match: a panel may carry its own extra
-// class alongside the shared one (the versions panel is `tool-panel version-trail`), and
-// an exact match would silently drop it from this set — reporting a missing panel for a
-// tool that has one, which is a false alarm that teaches the next reader to distrust the
-// check.
+// The class is matched as an INTERPOLATION of `DOCK_SELECTORS.panel` rather than as a literal
+// string, because that is what the template now authors. It stays loose enough to admit a
+// panel carrying its own extra class beside the shared one (the versions panel is
+// `` `${DOCK_SELECTORS.panel} version-trail` ``); a tighter match would silently drop that
+// panel from this set — reporting a missing panel for a tool that has one, which is a false
+// alarm that teaches the next reader to distrust the check.
 const panelTools = new Set(
-  captured(/class="tool-panel[^"]*"[\s\S]{0,240}?data-tool=\{TOOL\.(\w+)\.id\}/g),
+  captured(
+    /class=\{[^\n]*?DOCK_SELECTORS\.panel\b[^\n]*?\}[\s\S]{0,240}?data-tool=\{TOOL\.(\w+)\.id\}/g,
+  ),
 );
 // A plain string set to compare against: `ids` is ToolId[], and asking it about an
 // arbitrary scraped string is exactly the question this check exists to ask.
@@ -207,7 +215,7 @@ const declaredIds = new Set<string>(ids);
 // The extraction has to find panels at all, or every assertion below passes vacuously.
 assert("the page authors tool panels this check can see", panelTools.size > 0);
 for (const tool of DOCK_TOOLS) {
-  assert(`${tool.id} has a <section class="tool-panel"> of its own`, panelTools.has(tool.id));
+  assert(`${tool.id} has a panel <section> of its own`, panelTools.has(tool.id));
 }
 // A panel for a tool the list does not carry is the same bijection broken from the other
 // side — it would reach the page as a panel no bar item can ever open.
