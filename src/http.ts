@@ -35,13 +35,11 @@ export const seeOther = (location: string): Response =>
 
 // The canonical predicate for "is this request's body JSON". Media types are
 // case-insensitive (RFC 7231 §3.1.1.1), so `Application/JSON` counts — a case-sensitive
-// sniff would mis-route it. This is the intended [LAW:single-enforcer] home for that
-// rule: /api/summarize and /api/refetch delegate to it (both their parse branch and
-// their redirect branch), so those two cannot disagree with themselves. Adoption is
-// still partial — the other JSON endpoints (paste, delete, purge, reproject, augment,
-// refresh, paste-request) currently inline a case-SENSITIVE check; migrating them onto
-// this predicate is tracked in slopspot-http-88l. Until then this comment states the
-// goal and the current reach, not a universal claim.
+// sniff would mis-route it. This is the [LAW:single-enforcer] home for that rule, and
+// adoption is now total (slopspot-http-88l): every endpoint that branches JSON-vs-form
+// delegates here — for its body decode AND for its redirect-vs-JSON response modality —
+// so none can disagree with another, or with itself. That the rule holds repo-wide is
+// not left to vigilance: parser-check asserts no handler carries its own sniff.
 export const isJsonRequest = (request: Request): boolean => {
   // Parse the MEDIA TYPE, not a substring of the whole header: the media type is the
   // part before any `;` parameters. A bare `.includes("application/json")` would also

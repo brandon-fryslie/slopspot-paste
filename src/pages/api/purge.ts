@@ -2,7 +2,7 @@ import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { listConversations, deleteConversation } from "../../storage";
 import { isPurgeable } from "../../types";
-import { json, seeOther } from "../../http";
+import { json, seeOther, isJsonRequest } from "../../http";
 
 export const prerender = false;
 
@@ -15,7 +15,8 @@ export const prerender = false;
 // delete failure because it's irreversible and the caller may not know it happened.
 
 export const POST: APIRoute = async ({ request }) => {
-  const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
+  // [LAW:single-enforcer] isJsonRequest owns the JSON-vs-form media-type rule.
+  const wantsRedirect = !isJsonRequest(request);
   const now = Date.now();
   const conversations = await listConversations(env.PASTES);
 

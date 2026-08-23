@@ -2,7 +2,7 @@ import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
 import { canonicalize, deriveTitle } from "../../parser";
-import { json, seeOther } from "../../http";
+import { json, seeOther, decodeSlug, isJsonRequest } from "../../http";
 
 export const prerender = false;
 
@@ -21,25 +21,16 @@ export const prerender = false;
 // replays a claude-share origin from its STORED bytes, never re-fetching. The
 // optional share-only re-fetch ("freshness") arm is a separate, deferred concern.
 
-// [LAW:dataflow-not-control-flow] One decode path keyed on content-type, mirroring
-// /api/refresh: a JSON fetch from the admin script, or a no-JS <form> POST. Both
-// converge to one slug the handler acts on.
-const decodeSlug = async (request: Request): Promise<string | null> => {
-  const ct = request.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
-    const body = (await request.json().catch(() => null)) as { slug?: unknown } | null;
-    return body && typeof body.slug === "string" ? body.slug : null;
-  }
-  const form = await request.formData().catch(() => null);
-  const slug = form?.get("slug");
-  return typeof slug === "string" ? slug : null;
-};
+// [LAW:single-enforcer] The slug decode is decodeSlug's job (http.ts) — one
+// case-insensitive JSON-or-form decode shared with refetch/summarize/overlay. This
+// handler previously kept a local copy that sniffed the content-type case-SENSITIVELY;
+// the copy is gone, so the rule has one home again.
 
 export const POST: APIRoute = async ({ request }) => {
   // [LAW:dataflow-not-control-flow] Response modality is derived from the request
-  // shape, same key decodeSlug uses: a no-JS <form> POST navigates back to the
+  // shape, same predicate decodeSlug uses: a no-JS <form> POST navigates back to the
   // admin view; a JSON fetch gets { slug }. One mutation, two representations.
-  const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
+  const wantsRedirect = !isJsonRequest(request);
   const slug = await decodeSlug(request);
   if (slug === null) return json(400, { error: "Missing or invalid 'slug'." });
 

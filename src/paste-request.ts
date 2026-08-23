@@ -9,6 +9,7 @@
 import type { Origin, PasteInput, Platform, Turn } from "./types";
 import { isOrigin, isPlatform, isProvider, isSourceKind, isTextArmKind, isTurns, textArmInput } from "./types";
 import { isUrl } from "./parser";
+import { isJsonRequest } from "./http";
 
 // [LAW:types-are-the-program] The trust boundary classifies wire JSON into
 // one of the union arms. Each arm's required field is checked against its
@@ -45,8 +46,10 @@ export type DecodedRequest =
   | { ok: false; reason: string };
 
 export const decodeRequest = async (request: Request): Promise<DecodedRequest> => {
-  const ct = request.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
+  // [LAW:single-enforcer] isJsonRequest (http.ts) is the ONE place the JSON-vs-form
+  // media-type rule lives, so this decoder cannot disagree with the handlers that
+  // key their response modality off the same request.
+  if (isJsonRequest(request)) {
     const body = (await request.json().catch(() => null)) as
       | { source?: unknown; content?: unknown; turns?: unknown; origin?: unknown; platformOverride?: unknown }
       | null;
