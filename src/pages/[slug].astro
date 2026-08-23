@@ -719,14 +719,40 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       dock.hidden = available === 0;
     };
 
+    // The item a tool id names, resolved through a loud checkpoint like `toolIdOf` above
+    // rather than a `?? launcher` at each use — the bijection asserted at load already
+    // guarantees the item exists, so a miss here is a broken invariant, not a fallback
+    // to paper over [LAW:no-silent-failure].
+    const itemOf = new Map(items.map((item) => [toolIdOf(item), item]));
+    const itemFor = (id: string): HTMLButtonElement => {
+      const item = itemOf.get(id);
+      if (item === undefined) throw new Error(`tool dock has no menu item for "${id}"`);
+      return item;
+    };
+
     let state: DockState = { kind: "closed" };
-    const setState = (next: DockState): void => {
+
+    // [LAW:dataflow-not-control-flow] Every transition names where focus lands, as a
+    // value it carries rather than a courtesy some call sites remember. `render` hides
+    // the panel a keyboard reader may be typing in, and a focused element that becomes
+    // display:none drops focus to <body> — the reader restarts from the top of the page.
+    //
+    // Focus is only ours to move when it is INSIDE the dock: that is the one case where
+    // `render` can strip it. A reader who clicked out onto the page keeps the caret they
+    // just placed, which is why the outside-click path below needs no special casing —
+    // focus is by definition elsewhere there, and the same rule leaves it alone.
+    const setState = (next: DockState, focusTarget: HTMLElement): void => {
+      const active = document.activeElement;
+      const ours = active instanceof HTMLElement && dock.contains(active);
       state = next;
       render(state);
+      if (ours) focusTarget.focus();
     };
 
     launcher.addEventListener("click", () => {
-      setState(state.kind === "closed" ? { kind: "menu" } : { kind: "closed" });
+      // The launcher survives every transition it can cause, so it is always a valid
+      // landing place for the focus that is already on it.
+      setState(state.kind === "closed" ? { kind: "menu" } : { kind: "closed" }, launcher);
     });
 
     for (const item of items) {
@@ -736,12 +762,13 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // — the same control, one value flipping [LAW:dataflow-not-control-flow].
         const next: DockState =
           state.kind === "panel" && state.tool === id ? { kind: "menu" } : { kind: "panel", tool: id };
-        setState(next);
         // Land the caret where the reader is about to type. Panels whose first control
         // is a button (copy, download, check) keep focus on the menu item, so a
-        // keyboard reader is never thrown to a control they didn't ask for.
-        const field = next.kind === "panel" ? panelOf.get(id)?.querySelector("input") : null;
-        field?.focus();
+        // keyboard reader is never thrown to a control they didn't ask for — and folding
+        // a panel away lands there too, since the field is about to be hidden.
+        const field =
+          next.kind === "panel" ? panelOf.get(id)?.querySelector<HTMLElement>("input") : null;
+        setState(next, field ?? item);
       });
     }
 
@@ -750,16 +777,22 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // leaving the reader to dismiss it before they can see where they landed.
     panelHost.addEventListener("click", (event) => {
       const target = event.target;
-      if (target instanceof Element && target.closest("a")) setState({ kind: "closed" });
+      if (target instanceof Element && target.closest("a")) setState({ kind: "closed" }, launcher);
     });
 
-    scrim.addEventListener("click", () => setState({ kind: "closed" }));
+    scrim.addEventListener("click", () => setState({ kind: "closed" }, launcher));
 
     // Escape unwinds one layer at a time — panel to menu, menu to closed — matching the
     // order the reader opened them in.
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || state.kind === "closed") return;
-      setState(state.kind === "panel" ? { kind: "menu" } : { kind: "closed" });
+      // Unwinding a panel hands focus back to the item that opened it, not to the
+      // launcher — the reader is one Escape from the menu, not out of the dock, so the
+      // caret should sit where the next Escape acts.
+      setState(
+        state.kind === "panel" ? { kind: "menu" } : { kind: "closed" },
+        state.kind === "panel" ? itemFor(state.tool) : launcher,
+      );
     });
 
     // A click anywhere outside the dock closes it. The scrim already covers this while
@@ -768,7 +801,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       const target = event.target;
       if (state.kind === "closed") return;
       if (target instanceof Node && dock.contains(target)) return;
-      setState({ kind: "closed" });
+      setState({ kind: "closed" }, launcher);
     });
 
     // Seat the closed state, then hand the dock its floating form. Until this class
@@ -788,10 +821,36 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // here and a live one correct: the dock now states its independence from script
     // order instead of resting on the accident that one always-available tool is
     // present. It also keeps an already-open menu honest when a tool declares late.
-    new MutationObserver(() => render(state)).observe(document.body, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
+    // [LAW:parse-dont-validate] The observer fires on every WRITE to body's class
+    // attribute, which is a far wider stream than the dock's input: unrelated scripts
+    // toggle their own classes there (the minimap rewrites `has-timeline` on every
+    // resize tick), and the DOM dirties the attribute even when the token set is
+    // unchanged. That raw stream is parsed here into the one fact the dock depends on —
+    // the membership of its own gate classes — and `render` runs on a CHANGE of that
+    // value, never on the noise around it. Level-triggering on the carrier instead of
+    // the fact is what coupled an unrelated animation loop to this render.
+    //
+    // The gate set is read off the items' own `data-requires`, the same attribute
+    // `render` consults, so it cannot drift from what availability actually reads
+    // [LAW:one-source-of-truth]. A REMOVED class counts as a change exactly like an
+    // added one: a capability that goes away must un-offer its tool, and keying on
+    // additions alone would be a one-way door of the same family as the original latch.
+    const gateClasses = [
+      ...new Set(
+        items.flatMap((item) => {
+          const availability = parseAvailability(item.dataset.requires);
+          return availability.kind === "always" ? [] : [...availability.bodyClasses];
+        }),
+      ),
+    ];
+    const gateSignature = (): string => gateClasses.map((cls) => String(hasBodyClass(cls))).join(",");
+    let gates = gateSignature();
+    new MutationObserver(() => {
+      const next = gateSignature();
+      if (next === gates) return;
+      gates = next;
+      render(state);
+    }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
   </script>
 
   <script>
