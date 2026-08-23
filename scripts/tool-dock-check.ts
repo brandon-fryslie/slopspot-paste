@@ -122,19 +122,47 @@ console.log("\nEvery gate names a class the page actually adds:");
 // reader can never reach, with nothing in the type system to say so.
 const pagePath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "pages", "[slug].astro");
 const page = readFileSync(pagePath, "utf8");
-// The question is whether the page NAMES the class, not how it applies it: two of them
-// arrive through a shared wirePayloadCopy(…, readyClass) call rather than an inline
-// classList.add, and a check that only recognised one spelling would be asserting the
-// shape of the code instead of the fact [LAW:behavior-not-structure].
-const names = (cls: string): boolean => page.includes(`"${cls}"`);
-assert("the paste page names capability classes at all", names("search-ready"));
+// [LAW:parse-dont-validate] The page is parsed ONCE into the set of classes it actually
+// ADDS to document.body; every gate is then a membership question against that set. The
+// weaker question — does this quoted string appear anywhere in the file — let a class
+// named only in a comment, a selector, or a data attribute pass as added, which is the
+// exact false pass this check exists to prevent.
+//
+// Two seams do the adding: most tools call classList.add with the literal, while the two
+// payload tools route through wirePayloadCopy(…, readyClass) and add a parameter. Both
+// are read. A THIRD seam introduced later falls outside this extraction, and every gate
+// through it then fails as "no script adds it" — loudly wrong rather than quietly passing
+// [LAW:no-silent-failure]. That is the only failure direction that keeps the check worth
+// running: a miss here costs a false alarm, never an invisible tool.
+const captured = (pattern: RegExp): readonly string[] =>
+  [...page.matchAll(pattern)].map(([match, cls]) => {
+    if (cls === undefined) {
+      throw new Error(`tool-dock-check: ${pattern} matched ${match} without capturing a class`);
+    }
+    return cls;
+  });
+
+const addedClasses = new Set([
+  ...captured(/document\.body\.classList\.add\("([^"]+)"\)/g),
+  ...captured(/wirePayloadCopy\([^)]*"([^"]+)"\s*\)/g),
+]);
+
+// One positive control per seam: an extraction that silently matched nothing would make
+// every assertion below fail for the wrong reason, so each spelling proves itself first.
+assert("the inline classList.add seam is read", addedClasses.has("search-ready"));
+assert("the wirePayloadCopy seam is read", addedClasses.has("copy-all-ready"));
 // A class no tool script has ever heard of must fail, or this check proves nothing.
-assert("a fictional class is not found", !names("no-such-tool-ready"));
+assert("a fictional class is not found", !addedClasses.has("no-such-tool-ready"));
+
+// [LAW:dataflow-not-control-flow] An ungated tool contributes an empty list of classes
+// rather than skipping the loop body — the same iteration runs for every tool, and the
+// availability value alone decides how many gates it has to answer for.
+const gatesOf = (a: ToolAvailability): readonly string[] =>
+  a.kind === "always" ? [] : a.bodyClasses;
+
 for (const tool of DOCK_TOOLS) {
-  const a = tool.availability;
-  if (a.kind === "always") continue;
-  for (const cls of a.bodyClasses) {
-    assert(`${tool.id} is gated on body.${cls}, which the page names`, names(cls));
+  for (const cls of gatesOf(tool.availability)) {
+    assert(`${tool.id} is gated on body.${cls}, which a script adds`, addedClasses.has(cls));
   }
 }
 
