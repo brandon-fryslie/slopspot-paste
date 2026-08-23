@@ -42,7 +42,7 @@ import { EditorStore, type Draft, type DraftLoadResult, type EditorIo, type Subm
 import { persistDrafts } from "../src/editor/mount";
 import type { ParseResult, Turn } from "../src/types";
 import { compareLines, findCredentialLeaks, scrubCredentials } from "./capture-fixture";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { scrapeRequestBody } from "../src/firecrawl";
 import {
   buildSummaryPrompt,
@@ -3200,6 +3200,38 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "   " }),
     }));
     assertEq("decodeSlug treats a whitespace-only slug as absent (null)", decodedBlank, null);
+
+    // [LAW:single-enforcer] The assertions above pin what the predicate DOES; this one
+    // is a tripwire on the idiom that regressed. Six handlers plus paste-request each
+    // carried a private case-SENSITIVE sniff (slopspot-http-88l) — every one a latent
+    // mis-route of `Application/JSON`, and none visible from http.ts. The handlers
+    // import `cloudflare:workers` so they cannot be invoked under node; scanning the
+    // source is the available enforcement, and what it forbids is a DUPLICATE of a
+    // shared rule, not any particular implementation — so it constrains no refactor
+    // that keeps routing through the one enforcer.
+    //
+    // [FRAMING:representation] The label below states exactly what the regex catches
+    // and no more: a `content-type` read off a REQUEST binding, outside http.ts. Two
+    // deliberate edges, both named rather than papered over:
+    //   - The receiver must be `request`/`req` (what an Astro APIRoute destructures),
+    //     so inspecting a fetched RESPONSE's content-type — firecrawl.ts fetches
+    //     external URLs and may well want to — does not trip an unrelated failure.
+    //   - Lexical, so it cannot see every re-derivation: `headers.entries()`, a
+    //     wrapper around `.get`, or a differently-named binding all slip past. It
+    //     catches the spelling that actually appeared seven times, which is the
+    //     regression it exists to prevent — not a proof that none exists.
+    const tsFilesUnder = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? tsFilesUnder(`${dir}/${e.name}`)
+        : e.name.endsWith(".ts") ? [`${dir}/${e.name}`]
+        : []);
+    const sniffers = tsFilesUnder("src")
+      .filter((f) => f !== "src/http.ts")
+      .filter((f) => /\b(?:request|req)\.headers\.get\(\s*["'`]content-type["'`]\s*\)/i
+        .test(readFileSync(f, "utf8")));
+    assertEq(
+      `no file outside src/http.ts reads content-type off a request (found: ${sniffers.join(", ") || "none"})`,
+      sniffers, []);
   })();
 }
 

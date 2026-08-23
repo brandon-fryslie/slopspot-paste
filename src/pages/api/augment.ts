@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { getConversation, putConversation } from "../../storage";
 import { canonicalize, deriveTitle } from "../../parser";
 import { augmentJsonlWithSubagents } from "../../parsers/jsonl";
-import { json, seeOther } from "../../http";
+import { json, seeOther, isJsonRequest } from "../../http";
 import type { Origin } from "../../types";
 import { MAX_PASTE_BYTES, MAX_PASTE_LABEL } from "../../types";
 
@@ -23,13 +23,14 @@ export const prerender = false;
 // place. All JSONL-schema validation (session membership, subagent identity) lives
 // in augmentJsonlWithSubagents; this handler is schema-blind.
 
-// [LAW:dataflow-not-control-flow] One decode path keyed on content-type, mirroring
-// /api/reproject: a JSON fetch from the page's copy-agent-prompt recipe, or a no-JS
-// <form> POST. Both converge to one { slug, content } the handler acts on.
+// [LAW:dataflow-not-control-flow] One decode path keyed on the request's media type,
+// mirroring /api/reproject: a JSON fetch from the page's copy-agent-prompt recipe, or
+// a no-JS <form> POST. Both converge to one { slug, content } the handler acts on. The
+// decoder is local because the PAIR is local — the media-type rule itself is
+// isJsonRequest's ([LAW:single-enforcer]), never re-derived here.
 type Decoded = { readonly slug: string; readonly content: string } | null;
 const decodeRequest = async (request: Request): Promise<Decoded> => {
-  const ct = request.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
+  if (isJsonRequest(request)) {
     const body = (await request.json().catch(() => null)) as
       | { slug?: unknown; content?: unknown }
       | null;
@@ -50,7 +51,7 @@ const decodeRequest = async (request: Request): Promise<Decoded> => {
 const sizeOf = (s: string): number => new Blob([s]).size;
 
 export const POST: APIRoute = async ({ request }) => {
-  const wantsRedirect = !(request.headers.get("content-type") ?? "").includes("application/json");
+  const wantsRedirect = !isJsonRequest(request);
   const decoded = await decodeRequest(request);
   if (decoded === null) return json(400, { error: "Missing or invalid 'slug' / 'content'." });
 
