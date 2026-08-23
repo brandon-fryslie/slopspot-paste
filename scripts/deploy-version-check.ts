@@ -196,7 +196,12 @@ console.log("\nverify-live-version.sh outcomes (slopspot-deploy-d2e):");
     // goes out — never a 180-second wait ending in "the deploy did not take effect" about a
     // deploy that was fine. The generous timeout here is what makes the speed observable:
     // a regression to polling would take 30s and fail, rather than passing by luck.
-    for (const bad of ["abc", "nothexx", `${LIVE}zz`, "ABCDEF0"]) {
+    // The accepting edges of the 7..40 interval are pinned above — exactly 7 by the
+    // abbreviated case, exactly 40 by the full-sha case. These pin the rejecting edges:
+    // "a".repeat(6) and "a".repeat(41) are valid hex, so length is the only thing that can
+    // reject them, which is what makes an off-by-one in the interval visible here.
+    const malformedExpectations = ["abc", "nothexx", `${LIVE}zz`, "ABCDEF0", "a".repeat(6), "a".repeat(41)];
+    for (const bad of malformedExpectations) {
       const started = Date.now();
       const malformed = await run([bad, url], "30");
       assert(`exits 2 on the malformed expectation '${bad}'`, malformed.status === 2);
