@@ -20,11 +20,19 @@ on:
   push:
     branches: [master]
   # The safety net for the failure mode a push trigger cannot cover: the push deploy never
-  # ran at all. github.sha is the default branch tip on a scheduled run, so the steps below
-  # need no knowledge of which trigger fired.
+  # ran at all.
   schedule:
     - cron: "17 9 * * *"
+  # Dispatchable from any ref without that meaning anything: the checkout below names
+  # master explicitly, so a dispatch selecting some other branch still deploys master.
   workflow_dispatch:
+
+# [LAW:no-shared-mutable-globals] The token's privileges are declared here rather than
+# inherited from whatever the repo/org default happens to be — an ambient fact with no
+# owner in the source. `contents: read` is all actions/checkout needs; the Cloudflare
+# credential is a separate secret and unaffected by this scope.
+permissions:
+  contents: read
 
 # [LAW:no-ambient-temporal-coupling] Deploys are serialized under one named owner. Two
 # concurrent `wrangler deploy` runs would race, and whichever finished last would decide
@@ -42,7 +50,24 @@ jobs:
       # Actions are pinned by commit sha, matching code-review.yml: a tag is a mutable
       # pointer the upstream owner can re-point, so `@v6` is a second, drifting map of
       # "which code runs in CI" [LAW:one-source-of-truth]. The sha is the territory.
+      #
+      # [LAW:one-source-of-truth] `ref: master` is what makes this workflow's own header
+      # true. Without it the job deploys whatever ref invoked it, so a workflow_dispatch
+      # against a feature branch would put unreviewed code into production — reinstating
+      # the hand-maintained second copy this file exists to delete. Naming the branch here
+      # means there is no ref to restrict, because there is no ref that varies: master is
+      # the subject by construction, not by a guard that skips the job
+      # [LAW:dataflow-not-control-flow].
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: master
+
+      # The commit actually checked out — not `github.sha`, which is the ref that triggered
+      # the run and therefore means something slightly different per trigger. Reading it
+      # back from the working tree keeps "what we built" and "what we assert is live" the
+      # same fact read from the same place, and leaves no step aware of which trigger fired.
+      - id: target
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Node 22 (active LTS) is CI's build runtime. The repo declares no node version
       # anywhere else, so this is the choice itself and not a copy of one — if an engines
@@ -69,4 +94,4 @@ jobs:
       # reports the commit this run built. Without this the workflow would only ever prove
       # that an upload was accepted — the same weak evidence that let production sit stale.
       - name: Verify production serves this commit
-        run: scripts/verify-live-version.sh "${{ github.sha }}"
+        run: scripts/verify-live-version.sh "${{ steps.target.outputs.commit }}"

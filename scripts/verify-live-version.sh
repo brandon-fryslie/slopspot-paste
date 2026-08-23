@@ -46,11 +46,19 @@ while :; do
     observed="request failed (curl exit $?)"
   fi
 
-  if [ "$SECONDS" -ge "$deadline" ]; then
+  remaining=$(( deadline - SECONDS ))
+  if [ "$remaining" -le 0 ]; then
     echo "ERROR: $url reports '$observed' after ${timeout_seconds}s; expected '$expected'." >&2
     echo "Production is NOT serving this commit. The deploy did not take effect —" >&2
     echo "investigate before assuming master and paste.slopspot.ai agree." >&2
     exit 1
   fi
-  sleep "$poll_interval_seconds"
+
+  # Never sleep past the deadline: the timeout is a bound the caller set, so a final
+  # poll interval that overruns it would make the reported "after Ns" a lie.
+  if [ "$remaining" -lt "$poll_interval_seconds" ]; then
+    sleep "$remaining"
+  else
+    sleep "$poll_interval_seconds"
+  fi
 done
