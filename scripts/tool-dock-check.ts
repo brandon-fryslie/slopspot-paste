@@ -21,6 +21,7 @@ import {
   requiresAttr,
   type ToolAvailability,
 } from "../src/toolDock";
+import { DOCK_SELECTORS } from "../src/toolDockView";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -164,6 +165,24 @@ for (const tool of DOCK_TOOLS) {
   for (const cls of gatesOf(tool.availability)) {
     assert(`${tool.id} is gated on body.${cls}, which a script adds`, addedClasses.has(cls));
   }
+}
+
+console.log("\nEvery region the dock resolves is a class the page's markup carries:");
+
+// [LAW:one-source-of-truth] The dock's markup is authored in [slug].astro and its
+// selectors are read in toolDockView.ts, so the two ends can drift — a renamed class in
+// the template would leave `resolveDock` throwing "no launcher" at every reader, and
+// nothing in the type system says a word about it. The jsdom check cannot catch this
+// either: it builds its fixture FROM these same constants, so it would rename right along
+// with the module and keep passing. This is the one check positioned to see the gap.
+const classTokens = new Set(
+  [...page.matchAll(/class="([^"{]+)"/g)].flatMap(([, attr]) => (attr ?? "").split(/\s+/)),
+);
+// The extraction has to find classes at all, or every assertion below passes vacuously.
+assert("the page authors class attributes this check can see", classTokens.size > 0);
+assert("a fictional class is not found among them", !classTokens.has("no-such-region"));
+for (const [region, cls] of Object.entries(DOCK_SELECTORS)) {
+  assert(`the ${region} region's class "${cls}" appears in the page's markup`, classTokens.has(cls));
 }
 
 console.log("\nEvery tool in the list has a panel authored for it:");
