@@ -360,10 +360,33 @@ export const mountDock = (d: ResolvedDock): void => {
   // whose own capability is withdrawn while other tools remain keeps the dock in `menu` and
   // hides that item. Asking what happened to the element covers both; asking what happened
   // to the state covers only one.
+  // What a rescued caret does, derived from the projection rather than assumed. The launcher
+  // is the dock's own landing place and survives every transition the READER can cause — but
+  // a gate change is the one transition that can withdraw the whole dock, and a launcher
+  // inside a hidden root is no landing place at all. Aiming there regardless is a rescue that
+  // silently doesn't rescue [LAW:no-silent-failure]: a real browser has already dropped the
+  // caret on <body> by the time this runs and the call moves nothing, while jsdom happily
+  // "succeeds" onto the hidden button — so the failure would sit behind a green fixture.
+  //
+  // With the dock gone there is no landing place left to name. This module knows the dock and
+  // nothing of the page around it [LAW:decomposition], so parking the caret on some arbitrary
+  // page element is not its call to make; RELEASING it is. `blur` is also what makes the two
+  // environments agree on the outcome — the browser has already done it, jsdom does it here —
+  // and an outcome both agree on is the only kind worth asserting [LAW:verifiable-goals].
+  //
+  // It asks `stripped` about the launcher rather than re-testing `reachable.size` on purpose:
+  // `stripped` is already the one reading of "did the render take this element away", so the
+  // rescue cannot drift from what `renderDock` actually hid [LAW:one-source-of-truth], and it
+  // stays exact if the projection ever hides something new.
+  const rescueCaret = (held: HTMLElement): void => {
+    if (stripped(d.launcher)) held.blur();
+    else d.launcher.focus();
+  };
+
   const reactToGateChange = (): void => {
     const held = ourFocus();
     commit(settle(state, reachableTools(d)));
-    if (held !== null && stripped(held)) d.launcher.focus();
+    if (held !== null && stripped(held)) rescueCaret(held);
   };
 
   d.launcher.addEventListener("click", () => {

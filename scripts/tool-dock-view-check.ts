@@ -546,7 +546,10 @@ console.log("\nA dock with nothing reachable hides — and comes back (bug 1):")
   // page's life. A one-way door.
   const h = mount([
     { id: "search", requires: "search-ready", field: true },
-    { id: "tldr", requires: "tldr-ready" },
+    // The late tool carries a field so the caret has somewhere real to sit when its
+    // capability is withdrawn below. Without one the focus step there is a no-op and every
+    // claim about the caret downstream of it is fiction that passes.
+    { id: "tldr", requires: "tldr-ready", field: true },
   ]);
 
   assert("with no capability at all, the dock hides rather than offering an empty row", h.dock.root.hidden);
@@ -564,7 +567,15 @@ console.log("\nA dock with nothing reachable hides — and comes back (bug 1):")
 
   // Withdraw the capability while that tool's panel is OPEN and the caret is inside it —
   // the sequence that made the page unusable before the state was settled on a gate change.
-  h.panel("tldr").querySelector<HTMLInputElement>("input")?.focus();
+  // Placed through a loud lookup, not `?.focus()`. An optional chain here lets the fixture
+  // CLAIM a caret it never placed — which is exactly what it did: the tool carried no field,
+  // the focus silently did nothing, and every assertion below about where the caret went
+  // passed by describing a caret that was never there [LAW:no-silent-failure].
+  const field = h.panel("tldr").querySelector<HTMLInputElement>("input");
+  if (field === null) throw new Error("fixture: the tldr panel has no field to put a caret in");
+  field.focus();
+  assert("precondition: the caret really is inside the open panel", h.focused() === "tldr-field");
+
   h.body.classList.remove("tldr-ready");
   await h.settle();
   assert("the last capability going away hides the dock again", h.dock.root.hidden);
@@ -579,10 +590,16 @@ console.log("\nA dock with nothing reachable hides — and comes back (bug 1):")
     ),
   );
   assert("...the dock no longer claims a panel is open", h.state() === "closed");
-  // Deliberately NOT asserted: where the caret ends up. jsdom does not block .focus() on a
-  // hidden element, so any claim here would pass on a behaviour jsdom fabricates and a real
-  // browser does not share. What matters — and is true in both — is that the page is
-  // reachable again, so a reader whose caret was dropped can Tab back into it.
+  // Where the caret goes IS asserted here, where it once deliberately was not. The rescue
+  // used to aim at the launcher, which this path hides — and jsdom lets `.focus()` succeed on
+  // a hidden element, so the caret ended up parked on a button no reader can see, while a real
+  // browser dropped it to <body>. Two environments, two outcomes, nothing assertable. The
+  // rescue now releases the caret instead, which is the move the browser has already made and
+  // jsdom makes here, so both land on <body> and the claim finally means something.
+  assert(
+    "...and the caret it took away is released to <body>, not parked on the hidden launcher",
+    h.focused() === "body",
+  );
 }
 
 console.log("\nA capability arriving elsewhere never disturbs a caret that is still valid:");
