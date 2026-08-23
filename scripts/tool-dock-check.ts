@@ -166,6 +166,36 @@ for (const tool of DOCK_TOOLS) {
   }
 }
 
+console.log("\nEvery tool in the list has a panel authored for it:");
+
+// The two halves of a tool are generated differently: the bar item falls out of
+// `dockTools` automatically, but the panel is a hand-authored section per tool. The
+// compiler cannot see the gap — a tool whose `present` entry is true with no panel block
+// type-checks clean. The dock script does catch it, but only in a browser, and its
+// bijection assert throws BEFORE `tool-dock-ready` is added, so one missing panel takes
+// down the whole dock for every tool rather than failing where it was introduced.
+// `class="tool-panel[^"]*"` rather than an exact match: a panel may carry its own extra
+// class alongside the shared one (the versions panel is `tool-panel version-trail`), and
+// an exact match would silently drop it from this set — reporting a missing panel for a
+// tool that has one, which is a false alarm that teaches the next reader to distrust the
+// check.
+const panelTools = new Set(
+  captured(/class="tool-panel[^"]*"[\s\S]{0,240}?data-tool=\{TOOL\.(\w+)\.id\}/g),
+);
+// A plain string set to compare against: `ids` is ToolId[], and asking it about an
+// arbitrary scraped string is exactly the question this check exists to ask.
+const declaredIds = new Set<string>(ids);
+// The extraction has to find panels at all, or every assertion below passes vacuously.
+assert("the page authors tool panels this check can see", panelTools.size > 0);
+for (const tool of DOCK_TOOLS) {
+  assert(`${tool.id} has a <section class="tool-panel"> of its own`, panelTools.has(tool.id));
+}
+// A panel for a tool the list does not carry is the same bijection broken from the other
+// side — it would reach the page as a panel no bar item can ever open.
+for (const id of panelTools) {
+  assert(`the "${id}" panel belongs to a tool in DOCK_TOOLS`, declaredIds.has(id));
+}
+
 if (process.exitCode) {
   console.error("\nTool dock checks FAILED.");
 } else {
