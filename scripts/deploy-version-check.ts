@@ -196,6 +196,10 @@ console.log("\nverify-live-version.sh outcomes (slopspot-deploy-d2e):");
     // error in that width arithmetic would break here alone while every case above stayed green.
     const dirtyFull = await run([`${LIVE}-dirty`, urlServing(`${LIVE}-dirty`)]);
     assert("exits 0 when a full-sha -dirty expectation matches a -dirty live version", dirtyFull.status === 0);
+    // The fourth cell of expectation-cleanliness x live-cleanliness: cleanliness has to
+    // discriminate in both directions, or the suffix is decoration rather than identity.
+    const cleanLiveDirtyExpected = await run([`${LIVE}-dirty`, url]);
+    assert("exits 1 when a -dirty expectation meets a clean live version", cleanLiveDirtyExpected.status === 1);
 
     // [LAW:parse-dont-validate] A malformed argument is misuse, answered before any request
     // goes out — never a 180-second wait ending in "the deploy did not take effect" about a
