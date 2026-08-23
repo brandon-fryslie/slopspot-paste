@@ -1774,7 +1774,16 @@ body {
   padding-bottom: calc(var(--reserve-overlay-bar) + var(--reserve-tool-dock));
 }
 body.overlay-bar-present { --reserve-overlay-bar: 72px; --dock-lift: 66px; }
-body.tool-dock-ready { --reserve-tool-dock: 84px; }
+/* [LAW:one-source-of-truth] The reserve is a PROJECTION of the dock's visibility, read
+   off the very bit that decides it: `hidden`, which the dock script writes from its own
+   availability count. Keying this on `tool-dock-ready` alone would be a second, parallel
+   claim about "is there a dock to make room for" — true when the script has run, which is
+   not the same question — so a dock with nothing reachable would reserve 84px for a
+   launcher that is not on the page. Reading `[hidden]` cannot drift from `dock.hidden`
+   because it IS `dock.hidden`. Both conditions are load-bearing: `tool-dock-ready` says
+   the dock is FLOATING (until it lands, the same markup is a plain block at the foot of
+   the page and displaces its own height), `:not([hidden])` says there is one to clear. */
+body.tool-dock-ready:has(.tool-dock:not([hidden])) { --reserve-tool-dock: 84px; }
 
 /* ─── Tool-call bubbles ──────────────────────────────────────────────── */
 .bubble-tool-call {
