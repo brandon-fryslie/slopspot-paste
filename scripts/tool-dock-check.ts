@@ -125,12 +125,21 @@ const pagePath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "pag
 const page = readFileSync(pagePath, "utf8");
 const cssPath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "styles", "global.css");
 const css = readFileSync(cssPath, "utf8");
-// [LAW:parse-dont-validate] Commentary is not markup. Every scrape below asks what the page
-// AUTHORS, and a commented-out `class={…}` — the shape a half-finished edit leaves behind —
-// still reads as one to any regex that works on raw text. Strip the comments once, here, and
-// the question the patterns ask is the question they were meant to ask; asking it of `page`
-// instead measures what the file merely CONTAINS.
-const markup = page.replace(/<!--[\s\S]*?-->/g, "");
+// [LAW:parse-dont-validate] Commentary is neither markup nor a stylesheet. Every scrape below
+// asks what a file AUTHORS, and a commented-out `class={…}`, or a class named in prose, still
+// reads as the real thing to any regex over raw text. Both sources are parsed to their
+// authored form once, here, so the patterns ask the question they were written to ask.
+//
+// The two strips are deliberately separate rather than one shared helper: `//` and `<!-- -->`
+// are not CSS comments (a `url(//host)` would be eaten), and `{/* … */}` is not a CSS form.
+// One function spanning both would be a false unification of two comment grammars.
+//
+// The block form is what matters for the template and is the one an earlier version of this
+// missed: [slug].astro carries ZERO `<!-- -->` comments and comments exclusively with
+// `{/* … */}`, so stripping only HTML comments was a no-op against the very file it cleaned —
+// and a mutation test written in `<!-- -->` "confirmed" it, because the mutation was written
+// in the idiom of the patch instead of the idiom of the file [LAW:verifiable-goals].
+const markup = page.replace(/<!--[\s\S]*?-->/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
 // [LAW:parse-dont-validate] The page is parsed ONCE into the set of classes it actually
 // ADDS to document.body; every gate is then a membership question against that set. The
 // weaker question — does this quoted string appear anywhere in the file — let a class
@@ -219,8 +228,14 @@ console.log("\nEvery region the dock resolves is a class the stylesheet still st
 //
 // The boundary matters: `.tool-dock` must not be satisfied by `.tool-dock-scrim`. A substring
 // test would pass on the prefix and be worth nothing for the exact rename this exists to catch.
-const styledAsClass = (cls: string): boolean => new RegExp(`\\.${cls}(?![\\w-])`).test(css);
-assert("the stylesheet is readable and non-empty", css.length > 0);
+// Matched against the stylesheet's SELECTORS, not its prose. `.tool-dock-panels` is already
+// named in an explanatory comment (global.css:385) as well as in its real rules — so a raw
+// match would keep reporting the class "styled" after the rules themselves were deleted,
+// reading a name out of the commentary that explains them. That is the same silent drift this
+// block exists to catch, arriving through the file's own documentation.
+const styles = css.replace(/\/\*[\s\S]*?\*\//g, "");
+const styledAsClass = (cls: string): boolean => new RegExp(`\\.${cls}(?![\\w-])`).test(styles);
+assert("the stylesheet is readable and non-empty", styles.length > 0);
 assert("a fictional class is not styled", !styledAsClass("no-such-region"));
 for (const [region, cls] of Object.entries(DOCK_SELECTORS)) {
   assert(`the ${region} region's class ".${cls}" is styled in global.css`, styledAsClass(cls));
