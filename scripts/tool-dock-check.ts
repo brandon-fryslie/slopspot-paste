@@ -123,6 +123,14 @@ console.log("\nEvery gate names a class the page actually adds:");
 // reader can never reach, with nothing in the type system to say so.
 const pagePath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "pages", "[slug].astro");
 const page = readFileSync(pagePath, "utf8");
+const cssPath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "styles", "global.css");
+const css = readFileSync(cssPath, "utf8");
+// [LAW:parse-dont-validate] Commentary is not markup. Every scrape below asks what the page
+// AUTHORS, and a commented-out `class={…}` — the shape a half-finished edit leaves behind —
+// still reads as one to any regex that works on raw text. Strip the comments once, here, and
+// the question the patterns ask is the question they were meant to ask; asking it of `page`
+// instead measures what the file merely CONTAINS.
+const markup = page.replace(/<!--[\s\S]*?-->/g, "");
 // [LAW:parse-dont-validate] The page is parsed ONCE into the set of classes it actually
 // ADDS to document.body; every gate is then a membership question against that set. The
 // weaker question — does this quoted string appear anywhere in the file — let a class
@@ -136,7 +144,7 @@ const page = readFileSync(pagePath, "utf8");
 // [LAW:no-silent-failure]. That is the only failure direction that keeps the check worth
 // running: a miss here costs a false alarm, never an invisible tool.
 const captured = (pattern: RegExp): readonly string[] =>
-  [...page.matchAll(pattern)].map(([match, cls]) => {
+  [...markup.matchAll(pattern)].map(([match, cls]) => {
     if (cls === undefined) {
       throw new Error(`tool-dock-check: ${pattern} matched ${match} without capturing a class`);
     }
@@ -180,14 +188,42 @@ console.log("\nEvery region the dock resolves is authored in the page's markup:"
 // deleted type-checks perfectly clean. The jsdom check cannot see it either — it builds its
 // fixture from these same constants, so it would go missing right along with the page and
 // keep passing. So the scrape is left owning exactly the one question nothing else can ask.
+// Anchored inside a `class={…}` attribute, exactly as the panel scrape below is. A bare
+// `/DOCK_SELECTORS\.(\w+)/` would count the token wherever it appears — including the prose
+// above the import, which already discusses these regions by name. A future edit that deletes
+// `class={DOCK_SELECTORS.launcher}` while mentioning it in a comment would then keep this
+// green while `resolveDock` throws for every reader: the check would be measuring that the
+// page TALKS about a region, not that it authors one [LAW:verifiable-goals].
 const referencedRegions = new Set(
-  [...page.matchAll(/DOCK_SELECTORS\.(\w+)/g)].map(([, region]) => region ?? ""),
+  [...markup.matchAll(/class=\{[^\n]*?DOCK_SELECTORS\.(\w+)\b/g)].map(([, region]) => region ?? ""),
 );
 // The extraction has to find references at all, or every assertion below passes vacuously.
 assert("the page interpolates the dock's selectors at all", referencedRegions.size > 0);
 assert("a fictional region is not among them", !referencedRegions.has("noSuchRegion"));
 for (const region of Object.keys(DOCK_SELECTORS)) {
   assert(`the ${region} region is authored in the page's markup`, referencedRegions.has(region));
+}
+
+console.log("\nEvery region the dock resolves is a class the stylesheet still styles:");
+
+// [LAW:one-source-of-truth] global.css is the THIRD spelling of these names, and the only one
+// that cannot follow a rename on its own — CSS has no way to import a TS constant, so where the
+// template got interpolation this file gets a machine that re-reads it.
+//
+// Interpolating the template made this necessary rather than optional. Before it, a rename in
+// DOCK_SELECTORS left the markup's literals stale and the old scrape failed loudly, putting a
+// developer in front of every spelling at once. Now the markup and `resolveDock` follow a
+// rename automatically and the stylesheet is the one place that silently does not — the dock
+// would keep working and render entirely unstyled, with nothing red anywhere. Guarding the near
+// half of a two-ended coupling and leaving the far half open is worse than not having moved.
+//
+// The boundary matters: `.tool-dock` must not be satisfied by `.tool-dock-scrim`. A substring
+// test would pass on the prefix and be worth nothing for the exact rename this exists to catch.
+const styledAsClass = (cls: string): boolean => new RegExp(`\\.${cls}(?![\\w-])`).test(css);
+assert("the stylesheet is readable and non-empty", css.length > 0);
+assert("a fictional class is not styled", !styledAsClass("no-such-region"));
+for (const [region, cls] of Object.entries(DOCK_SELECTORS)) {
+  assert(`the ${region} region's class ".${cls}" is styled in global.css`, styledAsClass(cls));
 }
 
 console.log("\nEvery tool in the list has a panel authored for it:");
