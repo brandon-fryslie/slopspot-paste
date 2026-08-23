@@ -315,21 +315,55 @@ export const mountDock = (d: ResolvedDock): void => {
     return item;
   };
 
-  // [LAW:dataflow-not-control-flow] Every transition names where focus lands, as a value it
-  // carries rather than a courtesy some call sites remember. `renderDock` hides the panel a
-  // keyboard reader may be typing in, and a focused element that becomes display:none drops
-  // focus to <body> — the reader restarts from the top of the page.
-  //
-  // Focus is only ours to move when it is INSIDE the dock: that is the one case where
-  // `renderDock` can strip it. A reader who clicked out onto the page keeps the caret they
-  // just placed, which is why the outside-click path below needs no special casing — focus
-  // is by definition elsewhere there, and the same rule leaves it alone.
-  const setState = (next: DockState, focusTarget: HTMLElement): void => {
+  // The element the caret sits on, but only while it is INSIDE the dock: that is the one
+  // case where a re-projection can pull the ground out from under the reader. A null means
+  // the caret is somewhere the dock has no business touching — a reader who clicked out onto
+  // the page keeps what they just placed, which is why the outside-click path below needs no
+  // special casing.
+  const ourFocus = (): HTMLElement | null => {
     const active = doc.activeElement;
-    const ours = active instanceof d.win.HTMLElement && d.root.contains(active);
+    return active instanceof d.win.HTMLElement && d.root.contains(active) ? active : null;
+  };
+
+  // Whether the render just took an element away. `hidden` and `inert` are the whole of what
+  // `renderDock` writes to make something unreachable, so asking the element itself — rather
+  // than inferring it from which state we came from — is the exact question, and it stays
+  // exact if the projection ever hides something new [LAW:one-source-of-truth].
+  const stripped = (el: HTMLElement): boolean => el.closest("[hidden],[inert]") !== null;
+
+  // The one place the state is written and projected. Both paths below commit through it, so
+  // there is no way to re-project without the state that produced it [LAW:single-enforcer].
+  const commit = (next: DockState): void => {
     state = next;
     renderDock(d, state);
-    if (ours) focusTarget.focus();
+  };
+
+  // A transition the READER asked for. [LAW:dataflow-not-control-flow] Every one names where
+  // focus lands, as a value it carries rather than a courtesy some call sites remember —
+  // and it lands there unconditionally, because a reader who just opened a panel wants to be
+  // in it whether or not their previous foothold survived.
+  const setState = (next: DockState, focusTarget: HTMLElement): void => {
+    const held = ourFocus();
+    commit(next);
+    if (held !== null) focusTarget.focus();
+  };
+
+  // A re-projection the reader did NOT ask for: some tool's capability arrived or went away
+  // on its own schedule. [LAW:decomposition] It is a different job from `setState` in exactly
+  // one respect, which is why it is a different function rather than a flag on that one
+  // [LAW:no-mode-explosion] — it may only RESCUE a caret, never place one. Moving focus
+  // because an unrelated tool finished wiring up would yank the reader out of the field they
+  // are typing in, which is bug 2's symptom arriving through a new door.
+  //
+  // Note it is not enough to ask whether the settled state differs. A gate change can leave
+  // the state alone and still hide the focused element — the caret resting on a menu item
+  // whose own capability is withdrawn while other tools remain keeps the dock in `menu` and
+  // hides that item. Asking what happened to the element covers both; asking what happened
+  // to the state covers only one.
+  const reactToGateChange = (): void => {
+    const held = ourFocus();
+    commit(settle(state, reachableTools(d)));
+    if (held !== null && stripped(held)) d.launcher.focus();
   };
 
   d.launcher.addEventListener("click", () => {
@@ -424,12 +458,6 @@ export const mountDock = (d: ResolvedDock): void => {
     const next = gateSignature();
     if (next === gates) return;
     gates = next;
-    // Through `setState`, not straight to `renderDock`, for two reasons that are really one:
-    // a gate change is a TRANSITION like any other. It can invalidate the current state (a
-    // panel whose tool just went away), so it goes through `settle`; and it can hide the
-    // element the reader's caret is sitting in, so it goes through the same focus rule every
-    // other transition uses [LAW:single-enforcer]. A second focus-restoration path here
-    // would be one more thing to keep in step with the first.
-    setState(settle(state, reachableTools(d)), d.launcher);
+    reactToGateChange();
   }).observe(doc.body, { attributes: true, attributeFilter: ["class"] });
 };

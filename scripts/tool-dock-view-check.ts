@@ -585,6 +585,63 @@ console.log("\nA dock with nothing reachable hides — and comes back (bug 1):")
   // reachable again, so a reader whose caret was dropped can Tab back into it.
 }
 
+console.log("\nA capability arriving elsewhere never disturbs a caret that is still valid:");
+{
+  // A gate change is not a transition the reader asked for, so it may only RESCUE a caret,
+  // never place one. Every gated tool's script wires up on its own schedule, so a reader
+  // typing in one panel while another tool finishes loading is the ordinary case, not an
+  // exotic one — and yanking them onto the launcher there is bug 2 arriving through a door
+  // the historical framing does not cover.
+  const h = mount([
+    { id: "search", requires: "search-ready", field: true },
+    { id: "tldr", requires: "tldr-ready" },
+  ]);
+  h.body.classList.add("search-ready");
+  await h.settle();
+
+  h.dock.launcher.focus();
+  h.dock.launcher.click();
+  h.item("search").click();
+  h.panel("search").querySelector<HTMLInputElement>("input")?.focus();
+  assert("precondition: the reader is typing in the search panel's field", h.focused() === "search-field");
+
+  h.body.classList.add("tldr-ready");
+  await h.settle();
+  assert("an unrelated capability ARRIVING leaves the caret in the field", h.focused() === "search-field");
+  assert("...and the panel stays open", h.state() === "panel");
+  assert("...while the tool that declared joins the menu", !h.item("tldr").hidden);
+
+  h.body.classList.remove("tldr-ready");
+  await h.settle();
+  assert("an unrelated capability GOING AWAY leaves the caret alone too", h.focused() === "search-field");
+  assert("...and withdraws only its own tool", h.item("tldr").hidden && h.state() === "panel");
+}
+
+console.log("\n...but a caret the render DOES take away is still rescued:");
+{
+  // The complement, and the reason the rule is "was the focused element stripped" rather
+  // than "did the settled state differ". Here the state does NOT change — the dock stays in
+  // `menu`, since `settle` only corrects an open panel — yet the render hides the very item
+  // the caret is resting on. A rule keyed on the state would leave the reader on a hidden
+  // element and drop them to <body>, which is precisely bug 2.
+  const h = mount([{ id: "outline" }, { id: "tldr", requires: "tldr-ready" }]);
+  h.body.classList.add("tldr-ready");
+  await h.settle();
+
+  h.dock.launcher.focus();
+  h.dock.launcher.click();
+  h.item("tldr").focus();
+  assert("precondition: the caret rests on a gated menu item, dock in 'menu'", h.state() === "menu");
+  assert("...on that item specifically", h.doc.activeElement === h.item("tldr"));
+
+  h.body.classList.remove("tldr-ready");
+  await h.settle();
+  assert("the settled state is unchanged — this is not a panel", h.state() === "menu");
+  assert("...yet the item the caret was on is now hidden", h.item("tldr").hidden);
+  assert("the caret is rescued to the launcher rather than dropped", h.doc.activeElement === h.dock.launcher);
+  assert("...and never falls to <body>", h.focused() !== "body");
+}
+
 console.log("\nWithdrawing one tool's capability leaves the others reachable:");
 {
   // The same settlement, one step short of hiding the dock: the open tool goes away but
