@@ -306,6 +306,19 @@ export const mountDock = (d: ResolvedDock): void => {
     panel.setAttribute("aria-modal", "true");
   }
 
+  // Seat the closed state BEFORE a single listener goes on. This is the call that proves the
+  // dock is actually in the document — `regionsOutside` walks to <body> and throws if it never
+  // arrives — and the two listeners below are bound to the shared `doc`, which outlives a
+  // failed mount. Registering them first meant a dock that resolved but sat detached threw
+  // here having already left two handlers on the page's document, holding a half-built closure
+  // for the rest of its life. That they happen to early-return today is an accident of the
+  // current state machine, not a property anything enforces [LAW:no-ambient-temporal-coupling].
+  //
+  // Ordering, not defence: the render reads only `d` and `state`, so this is the same call it
+  // always was, moved to where its failure costs nothing. A failed mount now leaves the shared
+  // document exactly as it found it.
+  renderDock(d, state);
+
   // The item a tool id names, resolved through a loud checkpoint rather than a
   // `?? launcher` at each use — the bijection proved in `resolveDock` already guarantees
   // the item exists, so a miss here is a broken invariant, not a fallback to paper over.
@@ -446,10 +459,11 @@ export const mountDock = (d: ResolvedDock): void => {
     setState({ kind: "closed" }, d.launcher);
   });
 
-  // Seat the closed state, then hand the dock its floating form. Until this class lands the
-  // same markup is a plain block of panels at the foot of the page, so a no-JS reader keeps
-  // the ungated tools and never meets a launcher that can't launch.
-  renderDock(d, state);
+  // The state was seated above, before the listeners; what is left is to hand the dock its
+  // floating form. Until this class lands the same markup is a plain block of panels at the
+  // foot of the page, so a no-JS reader keeps the ungated tools and never meets a launcher
+  // that can't launch. It goes on LAST, so a mount that throws part-way leaves the page in the
+  // no-JS face it already had rather than in the floating one with nothing driving it.
   doc.body.classList.add(DOCK_READY_CLASS);
 
   // [LAW:no-ambient-temporal-coupling] The capability classes are the dock's real input,

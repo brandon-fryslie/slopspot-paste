@@ -222,13 +222,31 @@ refuses("no dock region at all", `<!DOCTYPE html><body><main></main>`);
   const dom = new JSDOM(`<!DOCTYPE html><body></body>`);
   const detached = dom.window.document.createElement("div");
   detached.innerHTML = dockMarkup([{ id: "outline" }]);
+
+  // Count what the failed mount leaves on the shared document. The dock's own subtree is
+  // broken and going nowhere, but `doc` belongs to the PAGE and outlives the refusal — a
+  // listener stranded there is residue no reader can reach and nothing can remove. Refusing
+  // to mount is only half the contract; the other half is leaving no trace while doing it.
+  const docListeners: string[] = [];
+  const realAdd = dom.window.document.addEventListener.bind(dom.window.document);
+  dom.window.document.addEventListener = ((type: string, ...rest: unknown[]) => {
+    docListeners.push(type);
+    return (realAdd as (t: string, ...r: unknown[]) => void)(type, ...rest);
+  }) as typeof dom.window.document.addEventListener;
+
   let threw = false;
   try {
     mountDock(resolveDock(detached));
   } catch {
     threw = true;
   }
+  dom.window.document.addEventListener = realAdd;
+
   assert("a dock in a subtree that never reaches <body> refuses to mount", threw);
+  assert(
+    "...and the refusal leaves nothing behind on the page's document",
+    docListeners.length === 0,
+  );
 }
 {
   // A document with no browsing context: resolvable markup, but no window to own the
@@ -663,16 +681,35 @@ console.log("\nWithdrawing one tool's capability leaves the others reachable:");
 {
   // The same settlement, one step short of hiding the dock: the open tool goes away but
   // another remains, so the dock falls back to the menu rather than closing.
-  const h = mount([{ id: "outline" }, { id: "tldr", requires: "tldr-ready" }]);
+  const h = mount([{ id: "outline" }, { id: "tldr", requires: "tldr-ready", field: true }]);
   h.body.classList.add("tldr-ready");
   await h.settle();
   h.dock.launcher.click();
   h.item("tldr").click();
   assert("precondition: the gated tool's panel is open", h.state() === "panel");
 
+  // The caret goes INTO the panel, which is what makes this a third distinct rescue and not a
+  // rerun of the other two. Here the settlement itself moves the state (panel → menu) while
+  // the held field is stripped by `panel.hidden` — two different mechanisms, where the
+  // menu-item case changes no state and the dock-withdrawn case hides everything. Covering
+  // this one by symmetry with those is precisely the assumption worth not making.
+  //
+  // Placed through a loud lookup: `?.focus()` here is what let the bug-1 fixture assert on a
+  // caret it never placed [LAW:no-silent-failure].
+  const field = h.panel("tldr").querySelector<HTMLInputElement>("input");
+  if (field === null) throw new Error("fixture: the tldr panel has no field to put a caret in");
+  field.focus();
+  assert("precondition: the caret is in the open panel's field", h.focused() === "tldr-field");
+
   h.body.classList.remove("tldr-ready");
   await h.settle();
   assert("the panel of a withdrawn tool does not stay open", h.state() === "menu");
+  // The dock survives here — `outline` is still reachable — so the launcher is a real landing
+  // place and the caret belongs on it, not released to <body> as it is when the dock goes.
+  assert(
+    "...and the caret it stripped is rescued to the launcher, not dropped",
+    h.doc.activeElement === h.dock.launcher,
+  );
   assert("...its panel is down", h.panel("tldr").hidden);
   assert(
     "...the page is not left inert",
