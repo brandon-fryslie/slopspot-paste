@@ -380,6 +380,16 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   padding: 0;
   list-style: none;
 }
+/* The outline is ungated (`always`), so it is the one panel a no-JS reader always gets —
+   and that face has no dock to bound it. The JS face draws its cap from
+   .tool-dock-panels (max-height + overflow-y) above; without `tool-dock-ready` that rule
+   never applies and a several-hundred-turn conversation ends in a screen-tall wall of
+   links. One bound per face, scoped so neither carries a cap the other already provides
+   [LAW:one-source-of-truth]. */
+body:not(.tool-dock-ready) .spine-outline-list {
+  max-height: min(52vh, 460px);
+  overflow-y: auto;
+}
 .spine-outline-item { margin: 0; }
 .spine-outline-link {
   display: flex;
@@ -722,13 +732,20 @@ body.tool-dock-ready .tool-dock[hidden] { display: none; }
   body.tool-dock-ready.has-timeline .tool-dock { padding-right: 72px; }
 }
 
+/* The bound sits on the PANEL, not on this box, and that placement is the whole point:
+   an element's own box-shadow is never clipped by its own overflow, only by an
+   ancestor's. Scrolling here made this a clip box on BOTH axes — the overflow spec gives
+   no way to scroll one axis and leave the other visible, and `clip` next to a scrolling
+   axis computes to `hidden`, where overflow-clip-margin does not apply — so the panel,
+   being exactly this box's width, lost the side bleed of its 44px shadow. Only one panel
+   is ever unhidden, so capping each one is the same bound with nothing left to clip. */
 body.tool-dock-ready .tool-dock-panels {
   width: min(760px, 100%);
+}
+body.tool-dock-ready .tool-panel {
   max-height: min(58vh, 520px);
   overflow-y: auto;
   overscroll-behavior: contain;
-}
-body.tool-dock-ready .tool-panel {
   box-shadow: 0 14px 44px color-mix(in srgb, var(--fg) 18%, transparent);
   animation: tool-panel-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
