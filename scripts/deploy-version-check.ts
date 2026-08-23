@@ -126,13 +126,18 @@ console.log("\n/api/version response contract (slopspot-deploy-d2e):");
 console.log("\nverify-live-version.sh outcomes (slopspot-deploy-d2e):");
 {
   const LIVE = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  const server = createServer((_req, res) => {
+  // The requested path IS the version served, so a case that needs a different live value
+  // (a '-dirty' bundle, say) asks for a different URL rather than mutating a shared
+  // variable between runs [LAW:no-ambient-temporal-coupling] — the checks below stay
+  // order-independent and could run concurrently.
+  const server = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    res.end(`${LIVE}\n`);
+    res.end(`${(req.url ?? "/").slice(1)}\n`);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
-  const url = `http://127.0.0.1:${port}/api/version`;
+  const urlServing = (version: string): string => `http://127.0.0.1:${port}/${version}`;
+  const url = urlServing(LIVE);
 
   // Executed directly, not via `bash …`: that makes the committed executable bit part of
   // what this check covers — losing it would make the CI step fail on permissions alone.
@@ -141,10 +146,13 @@ console.log("\nverify-live-version.sh outcomes (slopspot-deploy-d2e):");
   // process, so a synchronous child would block the event loop that has to serve them and
   // every request would time out — the checks would still go green on the exit codes they
   // expect, for entirely the wrong reason [LAW:no-ambient-temporal-coupling].
-  const run = (args: string[]): Promise<{ status: number | null; stderr: string; stdout: string }> =>
+  const run = (
+    args: string[],
+    timeoutSeconds = "1",
+  ): Promise<{ status: number | null; stderr: string; stdout: string }> =>
     new Promise((resolve) => {
       const child = spawn(verifyScript, args, {
-        env: { ...process.env, VERIFY_TIMEOUT_SECONDS: "1" },
+        env: { ...process.env, VERIFY_TIMEOUT_SECONDS: timeoutSeconds },
       });
       let stdout = "";
       let stderr = "";
@@ -162,6 +170,42 @@ console.log("\nverify-live-version.sh outcomes (slopspot-deploy-d2e):");
     assert("exits 1 when the live version differs", mismatch.status === 1);
     assert("names the version actually observed", mismatch.stderr.includes(LIVE));
     assert("names the version that was expected", mismatch.stderr.includes("b".repeat(40)));
+
+    // ── The abbreviated sha (slopspot-deploy-61q) ──
+    // `git log` and `gh` print seven characters, so that is what a human or an agent
+    // copies. The endpoint always serves a full sha, which makes a prefix unambiguous.
+    const abbreviated = await run([LIVE.slice(0, 7), url]);
+    assert("exits 0 when an abbreviated sha prefixes the live version", abbreviated.status === 0);
+    assert("reports the full version it observed, not the abbreviation", abbreviated.stdout.includes(LIVE));
+
+    const abbreviatedMismatch = await run(["b".repeat(7), url]);
+    assert("exits 1 when an abbreviated sha is not a prefix of the live version", abbreviatedMismatch.status === 1);
+
+    // Cleanliness is part of the identity, so a hand-built bundle can never satisfy an
+    // expectation of the clean commit it was built from — the whole point of the suffix.
+    const dirty = await run([LIVE, urlServing(`${LIVE}-dirty`)]);
+    assert("exits 1 when the live version is the -dirty build of the expected sha", dirty.status === 1);
+    const dirtyAbbreviated = await run([LIVE.slice(0, 7), urlServing(`${LIVE}-dirty`)]);
+    assert("an abbreviated sha does not match a -dirty live version either", dirtyAbbreviated.status === 1);
+    // …and an expectation that asks for the dirty build is still satisfiable, abbreviated
+    // or not: CI bakes exactly this value when it builds from an unclean tree.
+    const dirtyExpected = await run([`${LIVE.slice(0, 7)}-dirty`, urlServing(`${LIVE}-dirty`)]);
+    assert("exits 0 when a -dirty expectation matches a -dirty live version", dirtyExpected.status === 0);
+
+    // [LAW:parse-dont-validate] A malformed argument is misuse, answered before any request
+    // goes out — never a 180-second wait ending in "the deploy did not take effect" about a
+    // deploy that was fine. The generous timeout here is what makes the speed observable:
+    // a regression to polling would take 30s and fail, rather than passing by luck.
+    for (const bad of ["abc", "nothexx", `${LIVE}zz`, "ABCDEF0"]) {
+      const started = Date.now();
+      const malformed = await run([bad, url], "30");
+      assert(`exits 2 on the malformed expectation '${bad}'`, malformed.status === 2);
+      assert(`rejects '${bad}' without polling`, Date.now() - started < 5_000);
+      assert(
+        `says '${bad}' is a usage error rather than a deploy failure`,
+        malformed.stderr.includes("not a deploy failure") && !malformed.stderr.includes("did not take effect"),
+      );
+    }
 
     // [LAW:no-silent-failure] An unreachable site is a distinct failure from a mismatched
     // one, and the message has to say which — a verifier that reports "expected X, got X"

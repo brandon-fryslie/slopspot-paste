@@ -22,9 +22,35 @@ set -euo pipefail
 expected="${1-}"
 if [ -z "$expected" ]; then
   echo "usage: $0 <expected-version> [url]" >&2
+  echo "  <expected-version> is a full or abbreviated commit sha (>=7 hex chars)," >&2
+  echo "  optionally suffixed '-dirty' to expect a hand-built bundle." >&2
   exit 2
 fi
 url="${2:-https://paste.slopspot.ai/api/version}"
+
+# [LAW:parse-dont-validate] The argument is parsed into its two domain facts — which commit,
+# and whether the tree was clean — before a single request goes out. An unparseable
+# expectation is misuse (exit 2) and says so immediately; the alternative, discovered for
+# real on 2026-08-23, is polling the full deadline and then blaming a deploy that was
+# perfectly healthy. A loud WRONG failure costs as much as a silent one.
+case "$expected" in
+  *-dirty) expected_sha="${expected%-dirty}"; expected_dirty="-dirty" ;;
+  *)       expected_sha="$expected";          expected_dirty="" ;;
+esac
+
+if ! [[ "$expected_sha" =~ ^[0-9a-f]{7,40}$ ]]; then
+  echo "ERROR: '$expected' is not a commit sha. Expected 7-40 lowercase hex chars," >&2
+  echo "optionally suffixed '-dirty'. Nothing was requested; this is a usage error," >&2
+  echo "not a deploy failure." >&2
+  exit 2
+fi
+
+# [LAW:types-are-the-program] The parsed expectation IS the matcher: the live value must be a
+# full 40-char sha that begins with the sha we were given and agrees on cleanliness. Deriving
+# one regex from the parse — rather than splitting the observed value a second time — means
+# there is no second copy of the version grammar to drift, and no separate guard is needed to
+# keep '<sha>-dirty' from satisfying '<sha>': the anchored suffix already forbids it.
+expected_pattern="^${expected_sha}[0-9a-f]{$(( 40 - ${#expected_sha} ))}${expected_dirty}$"
 timeout_seconds="${VERIFY_TIMEOUT_SECONDS:-180}"
 poll_interval_seconds=5
 
@@ -38,7 +64,7 @@ while :; do
   # for a second or two); ignoring the outcome would not be.
   if response="$(curl -fsS --max-time 10 "$url")"; then
     observed="$(printf '%s' "$response" | tr -d '[:space:]')"
-    if [ "$observed" = "$expected" ]; then
+    if [[ "$observed" =~ $expected_pattern ]]; then
       echo "$url reports $observed — production is serving this commit."
       exit 0
     fi

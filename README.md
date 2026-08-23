@@ -67,7 +67,9 @@ The version is baked in at build time by `astro.config.mjs` (`git rev-parse HEAD
 `-dirty` suffix when the build tree had uncommitted changes, so a hand-built bundle can
 never claim to be a clean commit). `scripts/verify-live-version.sh <sha> [url]` polls that
 endpoint until it matches, and fails loudly at a deadline — run it yourself after any
-manual deploy.
+manual deploy. The `<sha>` may be abbreviated to the seven characters `git log` prints;
+anything that isn't a commit sha is rejected up front as a usage error, so a bad argument
+can never be mistaken for a failed deploy.
 
 To deploy by hand anyway (an unmerged branch, a hotfix, no network for CI):
 
