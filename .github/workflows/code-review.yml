@@ -50,6 +50,17 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          # This is an UNTRUSTED checkout — the PR head, from any fork. The default
+          # (persist-credentials: true) writes GITHUB_TOKEN into .git/config inside that
+          # tree, where anything later executing out of the checkout can read a credential
+          # it was never handed. The token's scope here is issues+PR write, not the
+          # contents:read the checkout itself needs, so what leaks is broader than what
+          # the step does. Nothing in this job pushes or fetches over authenticated git —
+          # the review reads the diff through the API with the GITHUB_TOKEN input, and
+          # DEPENDENCY_DIFF uses the compare API — so persisting it buys nothing and is
+          # off. The review action still gets a token explicitly, via its own
+          # `default: ${{ github.token }}` input; this only stops the copy on disk.
+          persist-credentials: false
 
       # Pinned by SHA rather than by tag, and deliberately so: this step receives a
       # long-lived subscription token, and a tag can be moved under it without any diff
@@ -63,7 +74,7 @@ jobs:
       # is simply never read. The action fails loudly, before spending anything, if the
       # credential for the CURRENT target is the one missing.
       - name: Code Review
-        uses: promptctl/copirate-code-review-agent@669c4ea7b3b2a4d7c3bc88a96c73a42302ebe046
+        uses: promptctl/copirate-code-review-agent@669c4ea7b3b2a4d7c3bc88a96c73a42302ebe046  # v1.43.0
         with:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
