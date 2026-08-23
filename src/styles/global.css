@@ -368,53 +368,25 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .source-origin a:hover { border-bottom-color: currentColor; }
 
 /* ─── Topic spine outline ─────────────────────────────────────────────────
-   A server-rendered, no-JS table of contents: one row per spine node, each a
-   real anchor into the turn's t<N> id (see spineOutline.ts / [slug].astro). It
-   is the labeled companion to the minimap — same turns, same derived labels —
-   collapsed by default via native <details> so it never pushes the conversation
-   down until the reader opens it. */
-.spine-outline {
-  margin-bottom: 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elev);
-  overflow: hidden;
-}
-.spine-outline-summary {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 11px 15px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg);
-  list-style: none;
-  user-select: none;
-}
-.spine-outline-summary::-webkit-details-marker { display: none; }
-.spine-outline-summary::before {
-  content: "▸";
-  color: var(--fg-muted);
-  font-size: 11px;
-  transition: transform 0.15s ease;
-}
-.spine-outline[open] .spine-outline-summary::before { transform: rotate(90deg); }
-.spine-outline-count { color: var(--fg-muted); font-weight: 400; }
+   A server-rendered table of contents: one row per spine node, each a real
+   anchor into the turn's t<N> id (see spineOutline.ts / [slug].astro). It is the
+   labeled companion to the minimap — same turns, same derived labels — and it
+   lives in the dock's Outline panel, which is its disclosure; the list itself
+   carries no frame and no collapse of its own. The row classes below are shared
+   verbatim by the search hits and the answer citations
+   [LAW:one-type-per-behavior], so they are styled once here. */
 .spine-outline-list {
   margin: 0;
-  padding: 4px 0 6px;
+  padding: 0;
   list-style: none;
-  border-top: 1px solid var(--border);
-  max-height: min(52vh, 460px);
-  overflow-y: auto;
 }
 .spine-outline-item { margin: 0; }
 .spine-outline-link {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 5px 15px;
+  padding: 6px 8px;
+  border-radius: 8px;
   color: var(--fg);
   text-decoration: none;
   font-size: 13px;
@@ -438,18 +410,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 }
 
 /* ─── On-demand TL;DR ─────────────────────────────────────────────────────
-   A client-revealed enrichment card ([slug].astro): server-rendered empty and
-   hidden, so a no-JS page is byte-identical. Shares the outline card's frame
-   (bordered, elevated, rounded) since it sits in the same header stack. Its
-   inner content is a projection of the client state machine — idle trigger,
-   loading status, ready summary + Regenerate, or an error with Try again. */
-.tldr {
-  margin-bottom: 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elev);
-  padding: 14px 16px;
-}
+   A client-revealed enrichment mount ([slug].astro): server-rendered empty and
+   hidden, so a no-JS page is byte-identical. It carries no frame of its own —
+   the dock panel around it is the card. Its inner content is a projection of the
+   client state machine — idle trigger, loading status, ready summary +
+   Regenerate, or an error with Try again. */
 /* [LAW:one-type-per-behavior] The trigger, Regenerate, and retry buttons are ONE
    control type — a mono pill over the card — differing only by size and where they
    sit in their row. The shared chrome + hover + focus live here once, so a token
@@ -555,7 +520,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
    and go to /diff/<this>/<that>. display:none until the script confirms it can
    act and adds body.compare-ready (mirroring the copy pills) — a no-JS reader's
    page is unchanged, never a dead control that round-trips to a 404. */
-.compare { display: none; margin-bottom: 24px; }
+.compare { display: none; }
 body.compare-ready .compare { display: block; }
 /* [LAW:one-type-per-behavior] The inline label + input + pill form row is ONE
    control worn by Compare-with and the semantic search box; the chrome lives here
@@ -617,17 +582,12 @@ body.compare-ready .compare { display: block; }
 .compare-error { flex: 1 1 100%; }
 
 /* ─── Freshness surface (slopspot-freshness-eck.4) ───────────────────────
-   The url-arm snapshot's age (static server content, meaningful without JS) and
-   the compare-only "check the live page" affordance. Only the FORM is gated on
-   body.freshness-ready (the compare reveal) — a no-JS reader keeps the age line
-   and never meets a dead button. The result line reuses the muted meta voice;
-   a "differs" verdict borrows the accent rail the trail notes wear. */
-.freshness { margin-bottom: 24px; }
-.freshness-age {
-  margin: 0 0 8px;
-  font-size: 13px;
-  color: var(--fg-muted);
-}
+   The compare-only "check the live page" affordance, living in the dock's Live
+   page panel. The snapshot's AGE is not here: it is passive provenance and rides
+   the header meta line, where a no-JS reader still meets it. The form is gated on
+   body.freshness-ready — the same class that admits the tool to the dock menu, so
+   a dead button is unreachable. The result line reuses the muted meta voice; a
+   "differs" verdict borrows the accent rail the trail notes wear. */
 .freshness-form { display: none; }
 body.freshness-ready .freshness-form { display: block; }
 .freshness-result {
@@ -644,20 +604,13 @@ body.freshness-ready .freshness-form { display: block; }
 .freshness-result.freshness-error { border-left-color: var(--border); }
 
 /* ─── Version trail (slopspot-freshness-eck.3) ───────────────────────────
-   The archived snapshots a changed refetch preserved, server-rendered on the
-   paste page (no JS reveal — the list is static content, meaningful without a
-   script). The stale/withheld notes reuse the muted meta voice: honest
-   annotations, not alarms. */
-.version-trail { margin-bottom: 24px; }
-.version-trail-heading {
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-  margin: 0 0 4px;
-}
+   The archived snapshots a changed refetch preserved, server-rendered into the
+   dock's Versions panel. Ungated by any capability class, so it is one of the two
+   tools a no-JS reader still meets, as a plain block at the foot of the page. The
+   stale/withheld notes reuse the muted meta voice: honest annotations, not
+   alarms. */
 .version-trail-list {
-  margin: 8px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
   display: flex;
@@ -676,6 +629,267 @@ body.freshness-ready .freshness-form { display: block; }
   padding-left: 10px;
 }
 
+/* ─── The tool dock ───────────────────────────────────────────────────────
+   Every reader tool on the paste page, gathered into one region at the end of the
+   document ([slug].astro). The dock has exactly two faces, and which one a reader
+   gets is a capability fact rather than a choice anyone makes
+   [LAW:dataflow-not-control-flow]:
+
+     no JS — the rules in THIS block: a plain stack of panels at the foot of the
+             page. The launcher bar is display:none (a launcher that cannot launch
+             is worse than no launcher), and every capability-gated panel is hidden
+             because its body class will never arrive, so a reader is never shown a
+             control that cannot act [LAW:no-silent-failure]. What survives is the
+             outline and the version history — the two tools that were only ever
+             server-rendered links.
+     JS    — the body.tool-dock-ready rules below: the same markup, re-laid as a
+             floating launcher pinned above the viewport's bottom edge, thumb-high
+             on a phone. One icon expands into a horizontal menu; picking an item
+             raises that tool's panel over the conversation.
+
+   [LAW:single-enforcer] Panel visibility has exactly one owner per face — the
+   :not(.tool-dock-ready) rule for the static one, the script's `hidden` attribute
+   for the floating one — so the two can never argue about whether a panel is up. */
+.tool-dock {
+  margin-top: 44px;
+  display: flex;
+  flex-direction: column;
+}
+.tool-dock-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.tool-dock-scrim { display: none; }
+.tool-dock-bar { display: none; }
+body:not(.tool-dock-ready) .tool-panel[data-requires] { display: none; }
+
+/* A panel is the card its tool used to draw for itself: the frame lives here once,
+   and every tool's inner markup (.tldr, .compare, .semantic-search, …) is now bare
+   content inside it [LAW:one-source-of-truth]. */
+.tool-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  padding: 14px 16px;
+}
+.tool-panel[hidden] { display: none; }
+.tool-panel-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.tool-panel-note {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+.tool-panel-lede {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* ── The floating face ─────────────────────────────────────────────────────
+   The strip spans the viewport so its contents can centre themselves, but it is
+   pointer-transparent: only the bar, the panels, and the scrim take clicks, so the
+   dock never eats a tap meant for the conversation behind it. */
+body.tool-dock-ready .tool-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + var(--dock-lift));
+  z-index: 30;
+  margin: 0;
+  padding: 0 12px;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+}
+body.tool-dock-ready .tool-dock > * { pointer-events: auto; }
+body.tool-dock-ready .tool-dock[hidden] { display: none; }
+/* Clear the mobile timeline toggle's corner (right:16px, 44px wide) by shrinking the
+   strip rather than nudging the bar — the centring then falls out of the box model. */
+@media (max-width: 1099px) {
+  body.tool-dock-ready.has-timeline .tool-dock { padding-right: 72px; }
+}
+
+body.tool-dock-ready .tool-dock-panels {
+  width: min(760px, 100%);
+  max-height: min(58vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+body.tool-dock-ready .tool-panel {
+  box-shadow: 0 14px 44px color-mix(in srgb, var(--fg) 18%, transparent);
+  animation: tool-panel-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes tool-panel-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+}
+
+body.tool-dock-ready .tool-dock-scrim {
+  display: block;
+  position: fixed;
+  inset: 0;
+  /* Behind the dock's own children but above the page, inside the stacking context
+     the dock's z-index opened — one layer, no second z-index to keep in step. */
+  z-index: -1;
+  /* [LAW:one-type-per-behavior] The same wash the minimap slide-over uses. A scrim
+     always DARKENS: a --fg-derived tint would brighten the page on a dark theme,
+     which is the opposite of pushing it back. */
+  background: rgb(0 0 0 / 32%);
+}
+body.tool-dock-ready .tool-dock-scrim[hidden] { display: none; }
+
+/* The bar is a single pill that GROWS: closed it is exactly the round launcher, open
+   it is the launcher plus the menu. Nothing appears or disappears between the two —
+   the menu's grid column animates from 0fr to 1fr, so the pill interpolates to the
+   items' intrinsic width without anyone measuring anything in JS
+   [LAW:no-ambient-temporal-coupling]. */
+body.tool-dock-ready .tool-dock-bar {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 16%, transparent);
+}
+.tool-dock-launcher {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+  appearance: none;
+}
+.tool-dock-launcher:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* Both faces occupy the same grid cell and cross-rotate; the state decides which one
+   has opacity, so there is never a frame with no glyph at all. */
+.tool-dock-launcher-face {
+  grid-area: 1 / 1;
+  display: grid;
+  place-items: center;
+  transition: opacity 180ms ease, transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tool-dock-launcher-face svg { width: 19px; height: 19px; }
+.tool-dock[data-state="closed"] .tool-dock-launcher-face[data-face="close"],
+.tool-dock:not([data-state="closed"]) .tool-dock-launcher-face[data-face="open"] {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.7);
+}
+
+.tool-dock-menu {
+  display: grid;
+  grid-template-columns: 0fr;
+  min-width: 0;
+  overflow: hidden;
+  transition: grid-template-columns 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tool-dock:not([data-state="closed"]) .tool-dock-menu { grid-template-columns: 1fr; }
+.tool-dock-items {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  /* The end inset and the mask are one device: the fade always sits over the last 18px
+     of the box, and the inset guarantees those 18px hold nothing but empty space when
+     the row FITS — so a faded edge means "there is more, scroll" and never lies about
+     a row that is already whole. The insets ride the END SLOTS rather than this box,
+     because padding on a scroll container cannot be compressed away and would hold the
+     collapsed pill 24px open — a stub of a bar instead of a clean circle. */
+  padding: 0;
+  mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent);
+  list-style: none;
+  /* The grid item's own min-width, not just the container's: a grid item defaults to
+     min-width:auto and would hold the pill open at the row's min-content width. */
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.tool-dock-items::-webkit-scrollbar { display: none; }
+/* The items fade in behind the widening pill, each a beat after the last, so the row
+   reads as unfolding rather than popping. --i is the item's index, set server-side. */
+.tool-dock-slot {
+  flex: 0 0 auto;
+}
+.tool-dock-slot:first-child { padding-left: 6px; }
+.tool-dock-slot:last-child { padding-right: 18px; }
+.tool-dock-slot {
+  opacity: 0;
+  transform: translateX(-8px);
+  transition: opacity 200ms ease, transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tool-dock:not([data-state="closed"]) .tool-dock-slot {
+  opacity: 1;
+  transform: none;
+  transition-delay: calc(var(--i) * 30ms);
+}
+.tool-dock-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+  transition: color 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+}
+.tool-dock-item[hidden] { display: none; }
+.tool-dock-item:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.tool-dock-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tool-dock-item.is-active {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* A thumb needs more than a cursor does; the condition is the input device, not the
+   window width, so a touch laptop gets the bigger target too. */
+@media (pointer: coarse) {
+  .tool-dock-item { min-height: 44px; padding: 0 15px; }
+}
+.tool-dock-icon { display: grid; place-items: center; }
+.tool-dock-icon svg { width: 16px; height: 16px; }
+
+/* Motion is decoration here: every state the animations describe is already legible
+   from position, colour, and presence, so removing them costs nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .tool-dock-menu,
+  .tool-dock-slot,
+  .tool-dock-launcher-face { transition: none; }
+  body.tool-dock-ready .tool-panel { animation: none; }
+}
+
 /* ─── Semantic in-page search ─────────────────────────────────────────────
    A client-revealed search affordance ([slug].astro): the reader asks in their
    own words, /api/search ranks turns by meaning, and the hits render as a jump
@@ -684,23 +898,22 @@ body.freshness-ready .freshness-form { display: block; }
    unchanged, never a dead search box. The results region below the form is a
    pure projection of the client state machine: searching status, ranked hits +
    Clear, or an error with Try again. */
-.semantic-search { display: none; margin-bottom: 24px; }
+.semantic-search { display: none; }
 body.search-ready .semantic-search { display: block; }
 .search-status { margin-top: 10px; }
 .search-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .search-clear { margin-left: auto; }
-/* The hit list — and the ask affordance's cited-turns list — wear the outline
-   card's frame; their rows wear the outline's own row classes
+/* The hit list — and the ask affordance's cited-turns list — sit inside a dock
+   panel that is already the card, so they take a hairline separator rather than a
+   second frame. Their rows wear the outline's own row classes
    (spine-outline-link/dot/label), so a hit row, a citation row, and an outline
-   row are one control [LAW:one-type-per-behavior] — this only frames the list. */
+   row are one control [LAW:one-type-per-behavior]. */
 .search-hits,
 .ask-sources {
-  margin: 8px 0 0;
-  padding: 4px 0 6px;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
   list-style: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
 }
 .search-empty { margin: 8px 0 0; font-size: 13px; color: var(--fg-muted); }
 .search-error { margin-top: 10px; }
@@ -712,7 +925,7 @@ body.search-ready .semantic-search { display: block; }
    class added to an existing group above (form row, status, head label, error
    row, pill sizes) [LAW:one-type-per-behavior] — only what is ask-specific
    lives here: the reveal, the citation link, and the sources list frame. */
-.semantic-ask { display: none; margin-bottom: 24px; }
+.semantic-ask { display: none; }
 body.ask-ready .semantic-ask { display: block; }
 .ask-status { margin-top: 10px; }
 .ask-head { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
@@ -1548,7 +1761,20 @@ body.overlay-editing .minimap-scrim { display: none; }
 /* Keep the fixed bar from covering the last turn. Gated on the bar's PRESENCE, not on
    edit mode — the notice bar (non-owner/error) is fixed at the bottom too, and needs the
    same clearance even though it never adds overlay-editing. */
-body.overlay-bar-present { padding-bottom: 72px; }
+/* [LAW:one-source-of-truth] The page's bottom reserve is ONE derived sum, never a
+   per-flag padding rule that the next flag silently overwrites. Each floating fixture
+   contributes its own height as a value; the flags that raise them are independent, so
+   a page carrying both the overlay bar and the tool dock reserves room for both
+   [LAW:dataflow-not-control-flow]. --dock-lift is what the dock reads to sit ABOVE the
+   overlay bar rather than under it. */
+body {
+  --reserve-overlay-bar: 0px;
+  --reserve-tool-dock: 0px;
+  --dock-lift: 0px;
+  padding-bottom: calc(var(--reserve-overlay-bar) + var(--reserve-tool-dock));
+}
+body.overlay-bar-present { --reserve-overlay-bar: 72px; --dock-lift: 66px; }
+body.tool-dock-ready { --reserve-tool-dock: 84px; }
 
 /* ─── Tool-call bubbles ──────────────────────────────────────────────── */
 .bubble-tool-call {
@@ -2068,7 +2294,7 @@ body.agent-prompt-ready .copy-agent-prompt.copied {
    Chrome lives once on .mono-pill (shared with the Compare button); .code-export-pill
    adds only what differs — hidden until its own client reveal, plus the .copied/
    .downloaded accent states the reveal rules never override. */
-.code-export { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 8px; }
+.code-export { display: flex; flex-wrap: wrap; gap: 8px; }
 .code-export-pill { display: none; }
 body.copy-all-ready .copy-all-code,
 body.download-ready .download-all-code { display: inline-block; }
@@ -2081,7 +2307,7 @@ body.download-ready .download-all-code { display: inline-block; }
    chrome from .mono-pill, hidden until the client confirms clipboard support
    and wires it (body.copy-continuation-ready), payload in a hidden sibling
    <pre>, section absent when there is no readable conversation to continue. */
-.continuation { margin-bottom: 24px; display: flex; flex-wrap: wrap; gap: 8px; }
+.continuation { display: flex; flex-wrap: wrap; gap: 8px; }
 .continuation-pill { display: none; }
 body.copy-continuation-ready .copy-continuation { display: inline-block; }
 .continuation-pill.copied { color: var(--accent); border-color: var(--accent); }

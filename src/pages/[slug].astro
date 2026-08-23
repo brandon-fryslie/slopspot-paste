@@ -15,6 +15,15 @@ import { fetchedAgeLabel } from "../freshnessView";
 import { derivePasteMeta, isUrlPaste, sourceUrlOf, utcDate, viewLifetime } from "../types";
 import { hostLabel } from "../url";
 import { MAX_QUESTION_CHARS } from "../ask";
+import {
+  DOCK_TOOLS,
+  LAUNCHER_CLOSE_ICON,
+  LAUNCHER_ICON,
+  TOOL,
+  panelDomId,
+  requiresAttr,
+  type ToolId,
+} from "../toolDock";
 
 export const prerender = false;
 
@@ -99,26 +108,50 @@ const codeExportHtml = renderCodeExportControl(extractArtifacts(dialogue.map((d)
 // paste, filling the gap for pastes with no live original thread to reopen.
 const continuationHtml = renderContinuationControl(dialogue);
 
+// [LAW:one-source-of-truth] "Does this paste have an upstream page?" asked once. Both
+// the version trail (archived only by the refetch path, which takes a UrlPaste) and the
+// freshness surface (nothing to be fresher THAN without an upstream) read this one
+// answer rather than each re-testing the origin arm.
+const hasUpstream = isUrlPaste(conversation);
+
 // [LAW:effects-at-boundaries] The trail's one extra KV read — a keys-only list of this
-// slug's version stamps — gated on isUrlPaste: versions are archived only by the refetch
-// path, which operates on url-arm pastes alone (planRefetch takes UrlPaste), so for a
-// text/editor paste the list is provably empty and the read is skipped, keeping those
-// pastes untouched by this feature (the ticket's contract). Everything after is the pure
-// derivation (versionTrail.ts): null = no versions = no affordance rendered.
-const versionStamps = isUrlPaste(conversation)
+// slug's version stamps — gated on hasUpstream: for a text/editor paste the list is
+// provably empty and the read is skipped, keeping those pastes untouched by this
+// feature (the ticket's contract). Everything after is the pure derivation
+// (versionTrail.ts): null = no versions = no affordance rendered.
+const versionStamps = hasUpstream
   ? await listPasteVersionStamps(env.PASTES, conversation.slug)
   : [];
 const trail = deriveVersionTrail(conversation, versionStamps);
 
-// The freshness surface (slopspot-freshness-eck.4) exists only for url-arm pastes —
-// a text/editor paste has no upstream page to be fresher or staler than. null = no
-// surface (the template skips it, a value not a branch); the present arm carries the
-// derived age line, itself null for pre-stamping records — honest absence, never a
-// fabricated instant [LAW:no-silent-failure]. The check affordance is pure client
-// enhancement over /api/freshness; the server renders only the static age.
-const freshness = isUrlPaste(conversation)
-  ? { ageLabel: fetchedAgeLabel(conversation.origin) }
-  : null;
+// How old this snapshot is — passive provenance the reader should meet without
+// tapping anything, so it rides the header meta line rather than the dock. null for
+// a text/editor paste (no upstream) and for pre-stamping records (no captured
+// instant): honest absence, never a fabricated one [LAW:no-silent-failure].
+const fetchedAge = hasUpstream ? fetchedAgeLabel(conversation.origin) : null;
+
+// [LAW:one-source-of-truth] Which tools this paste HAS, answered exactly once. Both
+// the dock's bar (below, via `dockTools`) and each panel's `{present.x && …}` read
+// this one map, so a menu item without a panel — or a panel no item can reach — is
+// not a bug you can write here. `satisfies Record<ToolId, boolean>` makes the map
+// compiler-checked total over the tool set: adding a ToolId in toolDock.ts forces an
+// answer here rather than defaulting a new tool into absence
+// [LAW:types-are-the-program].
+const present = {
+  // Server-rendered on every paste; their controls are client-gated, not content-gated.
+  outline: outline.length > 0,
+  search: true,
+  ask: true,
+  tldr: true,
+  compare: true,
+  // Content-gated: the renderers return "" when there is nothing to export or continue,
+  // and the freshness/version surfaces exist only for url-arm pastes that have them.
+  code: codeExportHtml !== "",
+  continue: continuationHtml !== "",
+  freshness: hasUpstream,
+  versions: trail !== null,
+} satisfies Record<ToolId, boolean>;
+const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -137,6 +170,14 @@ const freshness = isUrlPaste(conversation)
       <span>{conversation.turns.length} turns</span>
       <span aria-hidden="true">·</span>
       <span>{lifetimeLabel}</span>
+      {/*
+        Snapshot age joins the meta line rather than the dock: it is something the
+        reader should MEET, not something they DO, and the dock holds only tools.
+        Absent for a text paste and for pre-stamping records — a value the template
+        skips, not a branch [LAW:dataflow-not-control-flow].
+      */}
+      {fetchedAge && <span aria-hidden="true">·</span>}
+      {fetchedAge && <span>{fetchedAge}</span>}
     </p>
     {sourceUrl && (
       <p class="source-origin">
@@ -146,27 +187,6 @@ const freshness = isUrlPaste(conversation)
       </p>
     )}
   </section>
-
-  {/*
-    The freshness surface (slopspot-freshness-eck.4): how old this url-arm snapshot
-    is, plus an explicit COMPARE-ONLY check against the live page. The age line is
-    static server content (stamped records only — a legacy record carries no fetch
-    instant and shows none). The check form is progressive enhancement: hidden until
-    the script below adds body.freshness-ready, so a no-JS reader sees the age and
-    never a dead button. The check POSTs /api/freshness — a byte comparison that
-    writes nothing to the paste record; its verdict wording (freshnessView.ts)
-    claims only what bytes prove. Adopting a new version remains the privileged
-    /sloppy refetch; checking is public and read-only.
-  */}
-  {freshness && (
-    <section class="freshness" data-slug={slug}>
-      {freshness.ageLabel && <p class="freshness-age">{freshness.ageLabel}</p>}
-      <form class="freshness-form">
-        <button class="mono-pill freshness-check" type="submit">Check the live page</button>
-      </form>
-      <p class="freshness-result" aria-live="polite" hidden></p>
-    </section>
-  )}
 
   <script>
     // [LAW:decomposition] The freshness check is its own part, cut apart from the
@@ -252,34 +272,13 @@ const freshness = isUrlPaste(conversation)
         void check();
       });
 
-      // Seat idle, then reveal — a no-JS viewer never reaches here, so the form
-      // stays display:none and the page shows only the static age line.
+      // Seat idle, then declare the tool reachable — a no-JS viewer never reaches
+      // here, so the dock never offers a check button that cannot fire, and the
+      // header's static age line remains the whole freshness story.
       render({ kind: "idle" });
       document.body.classList.add("freshness-ready");
     }
   </script>
-
-  {/*
-    [LAW:effects-at-boundaries] The "Compare with…" control mints a /diff/<this>/<other>
-    URL and navigates — no new server work. It carries no slug of its own: the client script
-    reads this paste's slug from the one server-rendered data-slug on .conversation
-    [LAW:one-source-of-truth], and validates the entered reference before navigating so a typo
-    is a legible inline error, not a silent 404 round-trip [LAW:no-silent-failure].
-    [LAW:dataflow-not-control-flow] display:none until the script confirms it can act and adds
-    body.compare-ready (mirroring the copy pills): with JavaScript disabled the reader's page
-    is unchanged — the form is never a dead control that can't perform its one effect.
-  */}
-  <section class="compare">
-    <form class="compare-form">
-      <label class="compare-label" for="compare-input">Compare with another paste</label>
-      <span class="compare-field">
-        <input class="compare-input" id="compare-input" type="text" autocomplete="off"
-          spellcheck="false" placeholder="paste slug or link…" aria-describedby="compare-error" />
-        <button class="mono-pill compare-go" type="submit">Compare</button>
-      </span>
-      <p class="form-error compare-error" id="compare-error" role="alert" hidden></p>
-    </form>
-  </section>
 
   <script>
     // [LAW:effects-at-boundaries] The Compare-with control is pure client navigation: its
@@ -336,161 +335,448 @@ const freshness = isUrlPaste(conversation)
   </script>
 
   {/*
-    The version trail (slopspot-freshness-eck.3): the archived snapshots a changed
-    refetch preserved, newest first. Server-rendered from the trail VALUE
-    (versionTrail.ts) — the template draws the arm, it never re-decides the privacy
-    gate: `diffable` links each snapshot to its aligned diff against current;
-    `withheld` lists dates only, because this paste's overlay withholds content
-    (hide/feature) and the un-redacted old snapshots must not be exposed. The
-    staleness note is DERIVED at read time (outOfRangeTarget), never stored — it
-    surfaces that a display directive no longer matches the refetched content
-    [LAW:no-silent-failure].
-  */}
-  {trail && (
-    <section class="version-trail">
-      <h2 class="version-trail-heading">Version history</h2>
-      <p class="conversation-meta">
-        <span>
-          {trail.stamps.length === 1
-            ? "1 archived snapshot from before a refetch"
-            : `${trail.stamps.length} archived snapshots from before refetches`}
-        </span>
-      </p>
-      {trail.staleFault && (
-        <p class="version-trail-stale" role="note">
-          A display directive on this paste no longer matches its refetched content:{" "}
-          {describeTargetFault(trail.staleFault)}
-        </p>
-      )}
-      {trail.kind === "diffable" ? (
-        <ul class="version-trail-list">
-          {[...trail.stamps].reverse().map((at) => (
-            <li>
-              <a href={versionPath(conversation.slug, at)}>
-                Snapshot replaced {utcDate(at)}
-              </a>
-              <span class="version-trail-hint"> — compare with current</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <Fragment>
-          <ul class="version-trail-list">
-            {[...trail.stamps].reverse().map((at) => (
-              <li>Snapshot replaced {utcDate(at)}</li>
-            ))}
-          </ul>
-          <p class="version-trail-withheld" role="note">
-            This paste redacts content, so its archived snapshots are not publicly
-            viewable.
-          </p>
-        </Fragment>
-      )}
-    </section>
-  )}
-
-  {/*
-    [LAW:one-source-of-truth] The TL;DR region carries NO summary content — it is an
-    empty mount the client reveals and fills from /api/summarize. The summary is the
-    most disposable projection of all (regenerated on demand, never stored authority),
-    so nothing about it belongs in the stored paste or in this server render.
-    [LAW:dataflow-not-control-flow] `hidden` until JS reveals it: with JavaScript
-    disabled the page is byte-identical (an on-demand LLM enrichment is never required
-    to read the conversation), and a no-JS viewer never meets a dead Summarize button —
-    the same render-hidden-then-reveal move the copy controls make. aria-live announces
-    each state transition (loading → summary / error) to assistive tech.
-  */}
-  <section class="tldr" hidden aria-live="polite" data-slug={slug}></section>
-
-  {/*
-    [LAW:effects-at-boundaries] Semantic in-page search: the server emits only this
-    inert form and an empty results region — the ranked hits are a network fact the
-    client fetches from /api/search on demand, never server-rendered state.
-    [LAW:dataflow-not-control-flow] display:none until the script confirms it can act
-    and adds body.search-ready (the compare-form reveal): with JavaScript disabled the
-    reader's page is unchanged and never carries a dead search box — /api/search is
-    JSON-only by design, so there is no no-JS form arm this could degrade to.
-    aria-live announces each results transition (searching → hits / error).
-  */}
-  <section class="semantic-search">
-    <form class="search-form">
-      <label class="search-label" for="semantic-search-input">Search this conversation</label>
-      <span class="search-field">
-        <input class="search-input" id="semantic-search-input" type="search" autocomplete="off"
-          spellcheck="false" placeholder="ask in your own words…" />
-        <button class="mono-pill search-go" type="submit">Search</button>
-      </span>
-    </form>
-    <div class="search-results" aria-live="polite"></div>
-  </section>
-
-  {/*
-    [LAW:effects-at-boundaries] Ask this conversation: the server emits only this
-    inert form and an empty answer region — the answer is a network fact the client
-    fetches from /api/ask on demand, never server-rendered state. Same
-    render-hidden-then-reveal move as the search box (body.ask-ready): a no-JS
-    reader's page is unchanged and never carries a dead ask box. maxlength derives
-    from the ONE question bound the server enforces (ask.ts MAX_QUESTION_CHARS) —
-    a client courtesy stamped from the same constant, never a second value
-    [LAW:one-source-of-truth]. aria-live announces each transition (asking →
-    answer / error).
-  */}
-  <section class="semantic-ask">
-    <form class="ask-form">
-      <label class="ask-label" for="semantic-ask-input">Ask this conversation</label>
-      <span class="ask-field">
-        <input class="ask-input" id="semantic-ask-input" type="search" autocomplete="off"
-          spellcheck="false" placeholder="ask a question, get a cited answer…"
-          maxlength={MAX_QUESTION_CHARS} />
-        <button class="mono-pill ask-go" type="submit">Ask</button>
-      </span>
-    </form>
-    <div class="ask-results" aria-live="polite"></div>
-  </section>
-
-  {outline.length > 0 && (
-    <details class="spine-outline">
-      <summary class="spine-outline-summary">
-        <span class="spine-outline-title">Outline</span>
-        <span class="spine-outline-count">{outline.length} turns</span>
-      </summary>
-      <ol class="spine-outline-list">
-        {outline.map((entry) => (
-          <li class="spine-outline-item">
-            <a class="spine-outline-link" href={`#${entry.anchor}`}>
-              <span class="spine-outline-dot" data-role={entry.role} aria-hidden="true"></span>
-              <span class="spine-outline-label">{entry.label}</span>
-            </a>
-          </li>
-        ))}
-      </ol>
-    </details>
-  )}
-
-  {/*
-    [LAW:dataflow-not-control-flow] The document-scoped "Copy all code" control. Rendered
-    only when there IS code to copy — codeExportHtml is "" otherwise, so the section is
-    simply absent, never an empty box or a dead button. The button + its hidden payload are
-    inert markup; the client script below confirms clipboard support and wires the copy,
-    revealing the button (body.copy-all-ready) exactly as the per-code-block copy does.
-  */}
-  {codeExportHtml && <section class="code-export" set:html={codeExportHtml} />}
-
-  {/*
-    [LAW:dataflow-not-control-flow] The document-scoped continuation control. Rendered only
-    when there IS readable conversation to continue — continuationHtml is "" otherwise, so
-    the section is simply absent, never a dead button. Same inert-markup + client-reveal
-    shape as the code control above [LAW:one-type-per-behavior].
-  */}
-  {continuationHtml && <section class="continuation" set:html={continuationHtml} />}
-
-  {/*
     [LAW:one-source-of-truth] data-slug is the ONE client-readable slug: a projection of
     the server `slug` (Astro.params), carried on the section every client script here
     already depends on. The scripts read it rather than each re-deriving the slug from
     location.pathname — a second derivation that would drift if the URL scheme ever changed.
   */}
   <section class="conversation" aria-label="Conversation" data-slug={slug} set:html={renderDialogueHtml(dialogue)} />
+
+  {/*
+    ─── The tool dock ──────────────────────────────────────────────────────────
+    Every reader tool this paste offers, gathered into one region at the END of the
+    document so the conversation begins directly under its title. The dock has two
+    faces, and which one a reader gets is a capability fact, not a branch anyone
+    chose [LAW:dataflow-not-control-flow]:
+
+      no JS  — this is a plain block of stacked panels at the foot of the page. Only
+               the ungated tools carry content there (outline, version history); the
+               CSS hides every `data-requires` panel because none of those body
+               classes will ever be added, so no dead control is ever shown.
+      JS     — the dock script adds body.tool-dock-ready and the same markup becomes
+               a floating launcher pinned to the bottom of the viewport: one icon that
+               expands into a horizontal menu, one item per tool, each opening its
+               panel above the bar.
+
+    [LAW:one-source-of-truth] The bar items below are rendered from `dockTools`, and
+    every panel's presence is `present.<id>` from the SAME map, so a menu item without
+    a panel is unwritable here. Each panel addresses itself with TOOL.<id>.id rather
+    than a retyped string, making a mismatched id a type error; the dock script still
+    asserts the pairing at runtime, since the attribute itself is only a string once
+    it reaches the DOM [LAW:no-silent-failure].
+  */}
+  <div class="tool-dock" data-state="closed">
+    <div class="tool-dock-scrim" hidden></div>
+
+    <div class="tool-dock-panels">
+      {present.outline && (
+        <section class="tool-panel" id={panelDomId(TOOL.outline.id)} data-tool={TOOL.outline.id}
+          aria-label={TOOL.outline.hint}>
+          <h2 class="tool-panel-title">{TOOL.outline.label}<span class="tool-panel-note">{outline.length} turns</span></h2>
+          {/*
+            The dock IS the disclosure, so the outline is a bare list here — the
+            <details> wrapper it used to carry would be a second collapse around an
+            already-collapsed panel.
+          */}
+          <ol class="spine-outline-list">
+            {outline.map((entry) => (
+              <li class="spine-outline-item">
+                <a class="spine-outline-link" href={`#${entry.anchor}`}>
+                  <span class="spine-outline-dot" data-role={entry.role} aria-hidden="true"></span>
+                  <span class="spine-outline-label">{entry.label}</span>
+                </a>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
+      {/*
+        [LAW:effects-at-boundaries] Semantic in-page search: the server emits only this
+        inert form and an empty results region — the ranked hits are a network fact the
+        client fetches from /api/search on demand, never server-rendered state. The
+        section stays display:none until its script adds body.search-ready, which is
+        also the class that admits this tool to the dock menu, so a no-JS reader is
+        never offered a search box that cannot search. aria-live announces each results
+        transition (searching → hits / error).
+      */}
+      {present.search && (
+        <section class="tool-panel" id={panelDomId(TOOL.search.id)} data-tool={TOOL.search.id}
+          data-requires={requiresAttr(TOOL.search.availability)} aria-label={TOOL.search.hint}>
+          <h2 class="tool-panel-title">{TOOL.search.label}</h2>
+          <div class="semantic-search">
+            <form class="search-form">
+              <label class="search-label visually-hidden" for="semantic-search-input">Search this conversation</label>
+              <span class="search-field">
+                <input class="search-input" id="semantic-search-input" type="search" autocomplete="off"
+                  spellcheck="false" placeholder="ask in your own words…" />
+                <button class="mono-pill search-go" type="submit">Search</button>
+              </span>
+            </form>
+            <div class="search-results" aria-live="polite"></div>
+          </div>
+        </section>
+      )}
+
+      {/*
+        [LAW:effects-at-boundaries] Ask this conversation: the server emits only this
+        inert form and an empty answer region — the answer is a network fact the client
+        fetches from /api/ask on demand, never server-rendered state. maxlength derives
+        from the ONE question bound the server enforces (ask.ts MAX_QUESTION_CHARS) — a
+        client courtesy stamped from the same constant, never a second value
+        [LAW:one-source-of-truth]. aria-live announces each transition.
+      */}
+      {present.ask && (
+        <section class="tool-panel" id={panelDomId(TOOL.ask.id)} data-tool={TOOL.ask.id}
+          data-requires={requiresAttr(TOOL.ask.availability)} aria-label={TOOL.ask.hint}>
+          <h2 class="tool-panel-title">{TOOL.ask.label}</h2>
+          <div class="semantic-ask">
+            <form class="ask-form">
+              <label class="ask-label visually-hidden" for="semantic-ask-input">Ask this conversation</label>
+              <span class="ask-field">
+                <input class="ask-input" id="semantic-ask-input" type="search" autocomplete="off"
+                  spellcheck="false" placeholder="ask a question, get a cited answer…"
+                  maxlength={MAX_QUESTION_CHARS} />
+                <button class="mono-pill ask-go" type="submit">Ask</button>
+              </span>
+            </form>
+            <div class="ask-results" aria-live="polite"></div>
+          </div>
+        </section>
+      )}
+
+      {/*
+        [LAW:one-source-of-truth] The TL;DR region carries NO summary content — it is an
+        empty mount the client reveals and fills from /api/summarize. The summary is the
+        most disposable projection of all (regenerated on demand, never stored authority),
+        so nothing about it belongs in the stored paste or in this server render.
+        aria-live announces each state transition (loading → summary / error).
+      */}
+      {present.tldr && (
+        <section class="tool-panel" id={panelDomId(TOOL.tldr.id)} data-tool={TOOL.tldr.id}
+          data-requires={requiresAttr(TOOL.tldr.availability)} aria-label={TOOL.tldr.hint}>
+          <h2 class="tool-panel-title">{TOOL.tldr.label}</h2>
+          <div class="tldr" hidden aria-live="polite" data-slug={slug}></div>
+        </section>
+      )}
+
+      {/*
+        [LAW:dataflow-not-control-flow] The document-scoped code controls. Present only
+        when there IS code — codeExportHtml is "" otherwise, so the panel and its menu
+        item are both simply absent, never an empty box or a dead button. The buttons +
+        their hidden payloads are inert markup; the client script confirms clipboard and
+        Blob support and wires each one, and either capability alone admits the tool.
+      */}
+      {present.code && (
+        <section class="tool-panel" id={panelDomId(TOOL.code.id)} data-tool={TOOL.code.id}
+          data-requires={requiresAttr(TOOL.code.availability)} aria-label={TOOL.code.hint}>
+          <h2 class="tool-panel-title">{TOOL.code.label}</h2>
+          <div class="code-export" set:html={codeExportHtml} />
+        </section>
+      )}
+
+      {/*
+        [LAW:dataflow-not-control-flow] The document-scoped continuation control. Present
+        only when there IS readable conversation to continue. Same inert-markup +
+        client-wiring shape as the code controls above [LAW:one-type-per-behavior].
+      */}
+      {present.continue && (
+        <section class="tool-panel" id={panelDomId(TOOL.continue.id)} data-tool={TOOL.continue.id}
+          data-requires={requiresAttr(TOOL.continue.availability)} aria-label={TOOL.continue.hint}>
+          <h2 class="tool-panel-title">{TOOL.continue.label}</h2>
+          <p class="tool-panel-lede">Copy the whole conversation plus a continue-here instruction, ready to paste into another assistant.</p>
+          <div class="continuation" set:html={continuationHtml} />
+        </section>
+      )}
+
+      {/*
+        [LAW:effects-at-boundaries] The "Compare with…" control mints a /diff/<this>/<other>
+        URL and navigates — no new server work. It carries no slug of its own: the client
+        script reads this paste's slug from the one server-rendered data-slug on
+        .conversation [LAW:one-source-of-truth], and validates the entered reference before
+        navigating so a typo is a legible inline error, not a silent 404 round-trip
+        [LAW:no-silent-failure].
+      */}
+      {present.compare && (
+        <section class="tool-panel" id={panelDomId(TOOL.compare.id)} data-tool={TOOL.compare.id}
+          data-requires={requiresAttr(TOOL.compare.availability)} aria-label={TOOL.compare.hint}>
+          <h2 class="tool-panel-title">{TOOL.compare.label}</h2>
+          <div class="compare">
+            <form class="compare-form">
+              <label class="compare-label visually-hidden" for="compare-input">Compare with another paste</label>
+              <span class="compare-field">
+                <input class="compare-input" id="compare-input" type="text" autocomplete="off"
+                  spellcheck="false" placeholder="paste slug or link…" aria-describedby="compare-error" />
+                <button class="mono-pill compare-go" type="submit">Compare</button>
+              </span>
+              <p class="form-error compare-error" id="compare-error" role="alert" hidden></p>
+            </form>
+          </div>
+        </section>
+      )}
+
+      {/*
+        The freshness surface (slopspot-freshness-eck.4): an explicit COMPARE-ONLY check
+        against the live page. The snapshot's age is passive provenance and lives in the
+        header meta line; only the ACT of checking is a tool. The check POSTs
+        /api/freshness — a byte comparison that writes nothing to the paste record; its
+        verdict wording (freshnessView.ts) claims only what bytes prove. Adopting a new
+        version remains the privileged /sloppy refetch; checking is public and read-only.
+      */}
+      {present.freshness && (
+        <section class="tool-panel" id={panelDomId(TOOL.freshness.id)} data-tool={TOOL.freshness.id}
+          data-requires={requiresAttr(TOOL.freshness.availability)} aria-label={TOOL.freshness.hint}>
+          <h2 class="tool-panel-title">{TOOL.freshness.label}</h2>
+          <div class="freshness" data-slug={slug}>
+            <p class="tool-panel-lede">Fetch the original page again and compare it, byte for byte, with this snapshot. Nothing is stored.</p>
+            <form class="freshness-form">
+              <button class="mono-pill freshness-check" type="submit">Check the live page</button>
+            </form>
+            <p class="freshness-result" aria-live="polite" hidden></p>
+          </div>
+        </section>
+      )}
+
+      {/*
+        The version trail (slopspot-freshness-eck.3): the archived snapshots a changed
+        refetch preserved, newest first. Server-rendered from the trail VALUE
+        (versionTrail.ts) — the template draws the arm, it never re-decides the privacy
+        gate: `diffable` links each snapshot to its aligned diff against current;
+        `withheld` lists dates only, because this paste's overlay withholds content
+        (hide/feature) and the un-redacted old snapshots must not be exposed. The
+        staleness note is DERIVED at read time (outOfRangeTarget), never stored — it
+        surfaces that a display directive no longer matches the refetched content
+        [LAW:no-silent-failure]. Ungated, so a no-JS reader still meets it at the foot
+        of the page.
+      */}
+      {present.versions && trail && (
+        <section class="tool-panel version-trail" id={panelDomId(TOOL.versions.id)} data-tool={TOOL.versions.id}
+          aria-label={TOOL.versions.hint}>
+          <h2 class="tool-panel-title">
+            {TOOL.versions.label}
+            <span class="tool-panel-note">
+              {trail.stamps.length === 1
+                ? "1 archived snapshot from before a refetch"
+                : `${trail.stamps.length} archived snapshots from before refetches`}
+            </span>
+          </h2>
+          {trail.staleFault && (
+            <p class="version-trail-stale" role="note">
+              A display directive on this paste no longer matches its refetched content:{" "}
+              {describeTargetFault(trail.staleFault)}
+            </p>
+          )}
+          {trail.kind === "diffable" ? (
+            <ul class="version-trail-list">
+              {[...trail.stamps].reverse().map((at) => (
+                <li>
+                  <a href={versionPath(conversation.slug, at)}>
+                    Snapshot replaced {utcDate(at)}
+                  </a>
+                  <span class="version-trail-hint"> — compare with current</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Fragment>
+              <ul class="version-trail-list">
+                {[...trail.stamps].reverse().map((at) => (
+                  <li>Snapshot replaced {utcDate(at)}</li>
+                ))}
+              </ul>
+              <p class="version-trail-withheld" role="note">
+                This paste redacts content, so its archived snapshots are not publicly
+                viewable.
+              </p>
+            </Fragment>
+          )}
+        </section>
+      )}
+    </div>
+
+    <div class="tool-dock-bar">
+      <button class="tool-dock-launcher" type="button" aria-expanded="false"
+        aria-controls="tool-dock-menu" aria-label="Tools">
+        {/*
+          Both faces are always in the DOM, stacked in one grid cell; the dock's
+          data-state cross-fades them. Swapping innerHTML per state would make the
+          glyph a thing the script has to remember to keep in sync
+          [LAW:dataflow-not-control-flow].
+        */}
+        <span class="tool-dock-launcher-face" data-face="open" set:html={LAUNCHER_ICON} />
+        <span class="tool-dock-launcher-face" data-face="close" set:html={LAUNCHER_CLOSE_ICON} />
+      </button>
+      <div class="tool-dock-menu" id="tool-dock-menu">
+        <ul class="tool-dock-items">
+          {dockTools.map((tool, i) => (
+            <li class="tool-dock-slot" style={`--i:${i}`}>
+              <button class="tool-dock-item" type="button" data-tool={tool.id}
+                data-requires={requiresAttr(tool.availability)}
+                aria-controls={panelDomId(tool.id)} aria-expanded="false" title={tool.hint}>
+                <span class="tool-dock-icon" set:html={tool.icon} />
+                <span class="tool-dock-label">{tool.label}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // [LAW:decomposition] The dock owns exactly one thing: which tool region the
+    // reader is looking at. It never touches what a tool DOES — every tool keeps its
+    // own script and its own network edge — so this part can be read, changed, or
+    // replaced without knowing that /api/search exists.
+    import { isAvailable, parseAvailability } from "../toolDock";
+
+    // [LAW:no-defensive-null-guards] The dock and its two fixtures are unconditional
+    // template output on this page, so a missing one is a broken template invariant,
+    // not an optional feature — throw loudly like the sibling scripts here.
+    const dock = document.querySelector<HTMLElement>(".tool-dock");
+    if (!dock) throw new Error("required .tool-dock region missing");
+    const launcher = dock.querySelector<HTMLButtonElement>(".tool-dock-launcher");
+    const scrim = dock.querySelector<HTMLElement>(".tool-dock-scrim");
+    const menu = dock.querySelector<HTMLElement>(".tool-dock-menu");
+    const panelHost = dock.querySelector<HTMLElement>(".tool-dock-panels");
+    if (!launcher || !scrim || !menu || !panelHost) {
+      throw new Error("tool dock is missing its launcher, scrim, menu, or panel host");
+    }
+    const items = Array.from(dock.querySelectorAll<HTMLButtonElement>(".tool-dock-item"));
+    const panels = Array.from(dock.querySelectorAll<HTMLElement>(".tool-panel"));
+
+    // [LAW:parse-dont-validate] A tool id arrives here as a bare attribute string, so
+    // it gets read through one checkpoint that fails loudly rather than N call sites
+    // each defending with `?? ""` — which would quietly pair every unlabelled element
+    // with every other one under the empty-string key [LAW:no-silent-failure].
+    const toolIdOf = (el: HTMLElement): string => {
+      const id = el.dataset.tool;
+      if (id === undefined) throw new Error("tool dock element carries no data-tool");
+      return id;
+    };
+
+    // [LAW:one-source-of-truth] The server derives bar items and panels from ONE list
+    // (toolDock.ts + the `present` map), so they agree by construction — but the link
+    // between them is a string once it reaches the DOM, and a string can be wrong.
+    // Assert the pairing is a bijection here, at load, where a mismatch is a stack
+    // trace instead of a menu item that opens nothing three clicks later.
+    const panelOf = new Map(panels.map((panel) => [toolIdOf(panel), panel]));
+    if (panelOf.size !== panels.length) throw new Error("two tool panels share one data-tool");
+    if (items.length !== panels.length) {
+      throw new Error(`tool dock has ${items.length} menu items for ${panels.length} panels`);
+    }
+    for (const item of items) {
+      if (!panelOf.has(toolIdOf(item))) {
+        throw new Error(`tool dock menu item "${toolIdOf(item)}" has no panel`);
+      }
+    }
+
+    // [LAW:types-are-the-program] The dock's total state. Three values, and the ones
+    // that would be contradictions elsewhere — a panel open behind a collapsed bar, a
+    // bar expanded with two active items — are not expressible here at all, so nothing
+    // below has to defend against them.
+    type DockState =
+      | { kind: "closed" }
+      | { kind: "menu" }
+      | { kind: "panel"; tool: string };
+
+    const hasBodyClass = (cls: string): boolean => document.body.classList.contains(cls);
+
+    // [LAW:dataflow-not-control-flow] One total projection of the state onto the DOM:
+    // every attribute is written on every transition, only the values vary, so there is
+    // no path where a stale aria-expanded survives a change of screen.
+    //
+    // [LAW:no-ambient-temporal-coupling] Availability is RE-READ here on every
+    // transition rather than sampled once at load. A tool's capability class is added
+    // by that tool's own script, and script execution order is exactly the kind of
+    // incidental timing this dock must not depend on — reading it at each render makes
+    // "when did the other scripts run" a question the dock never has to ask.
+    const render = (s: DockState): void => {
+      dock.dataset.state = s.kind;
+      launcher.setAttribute("aria-expanded", String(s.kind !== "closed"));
+      scrim.hidden = s.kind !== "panel";
+      // The collapsed menu is CLIPPED, not removed — its items still exist so the pill
+      // can interpolate to their width. `inert` is what keeps a clipped item out of the
+      // tab order and the a11y tree, so a keyboard reader never lands on a button they
+      // cannot see [LAW:one-source-of-truth]: openness is one value, projected onto
+      // both the visual state and the focusability.
+      menu.inert = s.kind === "closed";
+      let available = 0;
+      for (const item of items) {
+        const id = toolIdOf(item);
+        const active = s.kind === "panel" && s.tool === id;
+        const reachable = isAvailable(parseAvailability(item.dataset.requires), hasBodyClass);
+        available += reachable ? 1 : 0;
+        item.hidden = !reachable;
+        item.classList.toggle("is-active", active);
+        item.setAttribute("aria-expanded", String(active));
+      }
+      for (const panel of panels) {
+        panel.hidden = !(s.kind === "panel" && s.tool === toolIdOf(panel));
+      }
+      // A dock with nothing reachable is not a dock — hide the launcher rather than
+      // offer an icon that expands into an empty row [LAW:no-silent-failure].
+      dock.hidden = available === 0;
+    };
+
+    let state: DockState = { kind: "closed" };
+    const setState = (next: DockState): void => {
+      state = next;
+      render(state);
+    };
+
+    launcher.addEventListener("click", () => {
+      setState(state.kind === "closed" ? { kind: "menu" } : { kind: "closed" });
+    });
+
+    for (const item of items) {
+      item.addEventListener("click", () => {
+        const id = toolIdOf(item);
+        // A second tap on the active tool folds its panel away and leaves the menu up
+        // — the same control, one value flipping [LAW:dataflow-not-control-flow].
+        const next: DockState =
+          state.kind === "panel" && state.tool === id ? { kind: "menu" } : { kind: "panel", tool: id };
+        setState(next);
+        // Land the caret where the reader is about to type. Panels whose first control
+        // is a button (copy, download, check) keep focus on the menu item, so a
+        // keyboard reader is never thrown to a control they didn't ask for.
+        const field = next.kind === "panel" ? panelOf.get(id)?.querySelector("input") : null;
+        field?.focus();
+      });
+    }
+
+    // Every anchor inside a panel navigates the page underneath it — an outline entry,
+    // a search hit, an archived snapshot — so the dock gets out of the way rather than
+    // leaving the reader to dismiss it before they can see where they landed.
+    panelHost.addEventListener("click", (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest("a")) setState({ kind: "closed" });
+    });
+
+    scrim.addEventListener("click", () => setState({ kind: "closed" }));
+
+    // Escape unwinds one layer at a time — panel to menu, menu to closed — matching the
+    // order the reader opened them in.
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || state.kind === "closed") return;
+      setState(state.kind === "panel" ? { kind: "menu" } : { kind: "closed" });
+    });
+
+    // A click anywhere outside the dock closes it. The scrim already covers this while
+    // a panel is open; this arm is what dismisses a bare expanded menu.
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (state.kind === "closed") return;
+      if (target instanceof Node && dock.contains(target)) return;
+      setState({ kind: "closed" });
+    });
+
+    // Seat the closed state, then hand the dock its floating form. Until this class
+    // lands the same markup is a plain block of panels at the foot of the page, so a
+    // no-JS reader keeps the ungated tools and never meets a launcher that can't launch.
+    render(state);
+    document.body.classList.add("tool-dock-ready");
+  </script>
 
   <script>
     import { enhanceClampBlocks } from "../clampBlocks";
@@ -1290,10 +1576,14 @@ const freshness = isUrlPaste(conversation)
       region.replaceChildren(...tldrChildren(s));
     };
 
-    // Reveal the until-now hidden mount and seat it in the idle state. A no-JS viewer
-    // never reaches here, so the region stays display:none and the page is unchanged.
+    // Reveal the until-now hidden mount, seat it idle, and declare the tool reachable
+    // — body.tldr-ready is what admits TL;DR to the dock menu (toolDock.ts), so a
+    // no-JS viewer, who never reaches here, is never offered a summarize button that
+    // cannot summarize [LAW:one-type-per-behavior]: the same capability handshake
+    // every other tool makes.
     region.hidden = false;
     render({ kind: "idle" });
+    document.body.classList.add("tldr-ready");
   </script>
 
   <script>
