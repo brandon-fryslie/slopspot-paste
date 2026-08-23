@@ -3202,18 +3202,24 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
     assertEq("decodeSlug treats a whitespace-only slug as absent (null)", decodedBlank, null);
 
     // [LAW:single-enforcer] The assertions above pin what the predicate DOES; this one
-    // pins that it is the only thing doing it. Six handlers plus paste-request each
+    // is a tripwire on the idiom that regressed. Six handlers plus paste-request each
     // carried a private case-SENSITIVE sniff (slopspot-http-88l) — every one a latent
     // mis-route of `Application/JSON`, and none visible from http.ts. The handlers
     // import `cloudflare:workers` so they cannot be invoked under node; scanning the
-    // source is the available way to hold the invariant, and what it forbids is a
-    // DUPLICATE of a shared rule, not any particular implementation — so it constrains
-    // no refactor that keeps routing through the one enforcer.
+    // source is the available enforcement, and what it forbids is a DUPLICATE of a
+    // shared rule, not any particular implementation — so it constrains no refactor
+    // that keeps routing through the one enforcer.
     //
-    // The rule is "only http.ts reads a request's content-type", deliberately wider
-    // than the literal `.includes("application/json")` this ticket removed: it catches
-    // the next spelling (startsWith, ===, a regex) as well. Response construction sets
-    // `"content-type"` as an object key, never `.get(...)`, so it is untouched.
+    // [FRAMING:representation] The label below states exactly what the regex catches
+    // and no more: a `content-type` read off a REQUEST binding, outside http.ts. Two
+    // deliberate edges, both named rather than papered over:
+    //   - The receiver must be `request`/`req` (what an Astro APIRoute destructures),
+    //     so inspecting a fetched RESPONSE's content-type — firecrawl.ts fetches
+    //     external URLs and may well want to — does not trip an unrelated failure.
+    //   - Lexical, so it cannot see every re-derivation: `headers.entries()`, a
+    //     wrapper around `.get`, or a differently-named binding all slip past. It
+    //     catches the spelling that actually appeared seven times, which is the
+    //     regression it exists to prevent — not a proof that none exists.
     const tsFilesUnder = (dir: string): string[] =>
       readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
         e.isDirectory() ? tsFilesUnder(`${dir}/${e.name}`)
@@ -3221,9 +3227,10 @@ console.log("\nOn-demand summary boundary (slopspot-summary-daf.2):");
         : []);
     const sniffers = tsFilesUnder("src")
       .filter((f) => f !== "src/http.ts")
-      .filter((f) => /\.get\(\s*["'`]content-type["'`]\s*\)/i.test(readFileSync(f, "utf8")));
+      .filter((f) => /\b(?:request|req)\.headers\.get\(\s*["'`]content-type["'`]\s*\)/i
+        .test(readFileSync(f, "utf8")));
     assertEq(
-      `only src/http.ts inspects a request's content-type (found: ${sniffers.join(", ") || "none"})`,
+      `no file outside src/http.ts reads content-type off a request (found: ${sniffers.join(", ") || "none"})`,
       sniffers, []);
   })();
 }

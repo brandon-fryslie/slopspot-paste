@@ -38,8 +38,9 @@ export const seeOther = (location: string): Response =>
 // sniff would mis-route it. This is the [LAW:single-enforcer] home for that rule, and
 // adoption is now total (slopspot-http-88l): every endpoint that branches JSON-vs-form
 // delegates here — for its body decode AND for its redirect-vs-JSON response modality —
-// so none can disagree with another, or with itself. That the rule holds repo-wide is
-// not left to vigilance: parser-check asserts no handler carries its own sniff.
+// so none can disagree with another, or with itself. Re-growing a private copy is not
+// left purely to vigilance: parser-check trips on any file outside this one that reads
+// content-type off a request — a tripwire on the idiom that regressed, not a proof.
 export const isJsonRequest = (request: Request): boolean => {
   // Parse the MEDIA TYPE, not a substring of the whole header: the media type is the
   // part before any `;` parameters. A bare `.includes("application/json")` would also
