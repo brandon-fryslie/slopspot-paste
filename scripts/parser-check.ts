@@ -1352,6 +1352,73 @@ console.log("\nclaude-share chart recovery (slopspot-mobile-parity-8s8.1.1):");
     (parseClaudeShareWithCharts(md, noAxisHtml) ?? []).some((t) => t.kind === "chart"),
     false,
   );
+
+  // A nested icon `<svg>` (legend/tooltip glyph) inside the chart's own outer
+  // `<svg>`, closing BEFORE the real axis ticks — regression for the
+  // non-greedy `<svg>...?</svg>` bug that truncated extraction at the first
+  // `</svg>` it found. The balanced-depth span finder must still recover the
+  // full chart past the nested close.
+  const nestedIconHtml = html.replace(
+    '<line class="cds-chart-axis-line"></line>',
+    '<line class="cds-chart-axis-line"></line><svg class="icon"><path d="M0 0"></path></svg>',
+  );
+  const withNestedIcon = parseClaudeShareWithCharts(md, nestedIconHtml);
+  const nestedCharts = (withNestedIcon ?? []).filter((t) => t.kind === "chart");
+  assertEq("chart recovery: nested <svg> icon does not truncate extraction", nestedCharts.length, 1);
+  if (nestedCharts[0]?.kind === "chart") {
+    assertEq(
+      "chart recovery: full series recovered past a nested <svg>",
+      JSON.stringify(nestedCharts[0].series[0]!.points),
+      JSON.stringify([
+        { x: 1, y: 3.33 },
+        { x: 2, y: 6.67 },
+      ]),
+    );
+  }
+
+  // An unlabeled gridline `<g>` (no <text> inside) sits between the two
+  // labeled y-ticks — regression for the non-greedy Y_TICK_RE bug that would
+  // skip past the gridline's own (missing) label and steal the NEXT tick's
+  // label, mispairing a pixel with the wrong value. The bounded per-tick
+  // match must abstain on the gridline and still pair the real ticks
+  // correctly.
+  const unlabeledGridlineHtml = html.replace(
+    '<g transform="translate(0,150)"><line></line><text text-anchor="end">0</text></g>',
+    '<g transform="translate(0,150)"><line></line><text text-anchor="end">0</text></g>' +
+      '<g transform="translate(0,75)"><line></line></g>',
+  );
+  const withGridline = parseClaudeShareWithCharts(md, unlabeledGridlineHtml);
+  const gridlineCharts = (withGridline ?? []).filter((t) => t.kind === "chart");
+  if (gridlineCharts[0]?.kind === "chart") {
+    assertEq(
+      "chart recovery: unlabeled gridline does not mispair a neighboring tick's label",
+      JSON.stringify(gridlineCharts[0].series[0]!.points),
+      JSON.stringify([
+        { x: 1, y: 3.33 },
+        { x: 2, y: 6.67 },
+      ]),
+    );
+  } else {
+    assert("chart recovery: unlabeled gridline case still recovers a chart", false);
+  }
+
+  // Render-path regression: a chart's <circle>/<text> marks appear in the
+  // source SVG's DOM/paint order, not necessarily ascending by x — extractChart
+  // groups by series only and never re-sorts. The polyline drawn from those
+  // points must still trace left-to-right by x, or the line zig-zags even
+  // though the recovered values are correct.
+  const outOfOrderTurns: ReadonlyArray<Turn> = [
+    { kind: "message", role: "assistant", content: "chart" },
+    { kind: "chart", series: [{ points: [{ x: 2, y: 1 }, { x: 0, y: 5 }, { x: 1, y: 3 }] }] },
+  ];
+  const chartHtml = renderDialogueHtml(plainView(deriveDialogue(outOfOrderTurns)));
+  const polyline = chartHtml.match(/<polyline[^>]*points="([^"]*)"/);
+  assert("chart render: polyline present for out-of-order points", polyline !== null);
+  if (polyline) {
+    const xs = polyline[1]!.trim().split(/\s+/).map((pair) => Number(pair.split(",")[0]));
+    const sorted = [...xs].sort((a, b) => a - b);
+    assertEq("chart render: polyline x-pixels are ascending left-to-right", JSON.stringify(xs), JSON.stringify(sorted));
+  }
 }
 
 console.log("\nclaude-share tool indicators (claude-share-4pf):");

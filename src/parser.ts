@@ -260,13 +260,21 @@ export const ingestPaste = async (
   const fetched = await firecrawlScrape(url, waitFor(provider, wantsHtml), env, wantsHtml);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
   // [LAW:single-enforcer] The same size cap that the API applies to user input
-  // also governs fetched content — otherwise a tiny URL could smuggle an
-  // arbitrarily large markdown (+ html) body past the boundary into parse + KV
-  // storage. Both fetched artifacts are stored on the origin, so both count.
-  const fetchedBytes =
-    new TextEncoder().encode(fetched.markdown).length +
-    (fetched.html ? new TextEncoder().encode(fetched.html).length : 0);
-  if (fetchedBytes > MAX_PASTE_BYTES) {
+  // also governs fetched markdown — otherwise a tiny URL could smuggle an
+  // arbitrarily large body past the boundary into parse + KV storage.
+  //
+  // [LAW:one-source-of-truth] html is a SEPARATE artifact with its own cap,
+  // checked independently rather than summed into markdown's. A full SSR'd
+  // page (rawHtml, fetched only for chart recovery — slopspot-mobile-parity-
+  // 8s8.1.1) commonly outweighs its own markdown many times over; summing the
+  // two would let html bloat reject a markdown body that was, on its own,
+  // well under the cap — a previously-fine claude-share paste failing to
+  // ingest for a reason its error message doesn't even name.
+  const markdownBytes = new TextEncoder().encode(fetched.markdown).length;
+  if (markdownBytes > MAX_PASTE_BYTES) {
+    return { ok: false, reason: `Fetched content exceeds the ${MAX_PASTE_LABEL} limit.` };
+  }
+  if (fetched.html !== undefined && new TextEncoder().encode(fetched.html).length > MAX_PASTE_BYTES) {
     return { ok: false, reason: `Fetched content exceeds the ${MAX_PASTE_LABEL} limit.` };
   }
   const turns = parserFor(provider)(fetched.markdown, fetched.html ?? null);

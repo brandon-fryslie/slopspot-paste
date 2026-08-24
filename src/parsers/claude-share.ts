@@ -290,13 +290,42 @@ export const parseClaudeShare = (markdown: string): Turn[] | null => {
 const isChartEligible = (svg: string): boolean =>
   svg.includes("<circle") && svg.includes("cds-chart-axis");
 
-const SVG_RE = /<svg[\s\S]*?<\/svg>/g;
+// [LAW:types-are-the-program] Depth-balanced SVG span finder — NOT a
+// non-greedy `<svg>...?</svg>` regex. This design system nests a legend/
+// tooltip-icon `<svg>` inside the chart's own outer `<svg>`; a non-greedy
+// match stops at that inner icon's `</svg>`, silently truncating the real
+// chart's later ticks/circles before extraction ever sees them. Tracking
+// open/close depth instead returns the FULL top-level element every time.
+const SVG_TAG_RE = /<svg\b[^>]*>|<\/svg>/g;
+const svgSpans = (html: string): ReadonlyArray<{ readonly start: number; readonly end: number }> => {
+  const spans: Array<{ start: number; end: number }> = [];
+  let depth = 0;
+  let start = -1;
+  for (const m of html.matchAll(SVG_TAG_RE)) {
+    if (m[0].startsWith("</")) {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        spans.push({ start, end: m.index + m[0].length });
+        start = -1;
+      }
+    } else {
+      if (depth === 0) start = m.index;
+      depth += 1;
+    }
+  }
+  return spans;
+};
 
 // A y-axis tick: `<g transform="translate(0,PIXEL)">…<text … text-anchor="end"
 // …>VALUE</text></g>` — the gridline and its label share the tick's own
 // vertical offset, so the wrapping `<g>`'s translate Y IS the tick's pixel
-// position.
-const Y_TICK_RE = /<g transform="translate\(0,(-?[\d.]+)\)">[\s\S]*?text-anchor="end"[^>]*>(-?[\d.]+)<\/text>/g;
+// position. Bounded to stop at this tick's own `</g>` — so an
+// unlabeled gridline `<g>` between two labeled ticks abstains on ITS pixel
+// rather than a greedy scan stealing the NEXT tick's label and mispairing a
+// wrong (not merely missing) value onto this one.
+const Y_TICK_RE = /<g transform="translate\(0,(-?[\d.]+)\)">((?:(?!<\/g>)[\s\S])*?)<\/g>/g;
+const Y_TICK_LABEL_RE = /text-anchor="end"[^>]*>(-?[\d.]+)<\/text>/;
 
 // An x-axis tick: a bare `<text x="PIXEL" y="…" text-anchor="middle" …>VALUE
 // </text>` — no wrapping group; the tick's own x attribute is its pixel
@@ -349,11 +378,28 @@ const tickPairs = (svg: string, re: RegExp): ReadonlyArray<readonly [number, num
   return pairs;
 };
 
+// y-ticks pair pixel↔value in two steps, unlike x-ticks' single regex: find
+// each tick's OWN bounded `<g>...</g>` (Y_TICK_RE), then look for its label
+// only inside that span. A tick `<g>` with no label inside (an unlabeled
+// gridline) simply contributes no pair — proof-or-abstain per tick, never a
+// label borrowed from a neighboring tick's span.
+const yTickPairs = (svg: string): ReadonlyArray<readonly [number, number]> => {
+  const pairs: Array<readonly [number, number]> = [];
+  for (const m of svg.matchAll(Y_TICK_RE)) {
+    const pixel = Number(m[1]);
+    const label = m[2]!.match(Y_TICK_LABEL_RE);
+    if (!Number.isFinite(pixel) || label === null) continue;
+    const value = Number(label[1]);
+    if (Number.isFinite(value)) pairs.push([pixel, value]);
+  }
+  return pairs;
+};
+
 // One SVG → its recovered series, or null if this SVG isn't a chart this
 // method can invert (ineligible fingerprint, or either axis doesn't fit).
 const extractChart = (svg: string): ReadonlyArray<ChartSeries> | null => {
   if (!isChartEligible(svg)) return null;
-  const yFit = linearFit(tickPairs(svg, Y_TICK_RE));
+  const yFit = linearFit(yTickPairs(svg));
   const xFit = linearFit(tickPairs(svg, X_TICK_RE));
   if (yFit === null || xFit === null) return null;
 
@@ -375,9 +421,9 @@ const extractChart = (svg: string): ReadonlyArray<ChartSeries> | null => {
 // exchange it belongs to.
 const extractCharts = (html: string): ReadonlyArray<{ offset: number; series: ReadonlyArray<ChartSeries> }> => {
   const out: Array<{ offset: number; series: ReadonlyArray<ChartSeries> }> = [];
-  for (const m of html.matchAll(SVG_RE)) {
-    const series = extractChart(m[0]);
-    if (series !== null) out.push({ offset: m.index, series });
+  for (const { start, end } of svgSpans(html)) {
+    const series = extractChart(html.slice(start, end));
+    if (series !== null) out.push({ offset: start, series });
   }
   return out;
 };

@@ -305,8 +305,15 @@ const chartHtml = (series: ReadonlyArray<ChartSeries>): string => {
   const seriesHtml = series
     .map((s, i) => {
       const slot = (i % 3) + 1;
-      const linePoints = s.points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
-      const dots = s.points
+      // [LAW:one-source-of-truth] A line chart's polyline traces left-to-right
+      // by x, regardless of the order the source SVG happened to emit its
+      // `<circle>` marks in (DOM/paint order, not data order — extractChart
+      // groups by series only, never re-sorts). Sorting HERE, at the one place
+      // that draws the line, keeps the recovered points themselves in their
+      // original extraction order for every other consumer.
+      const ordered = [...s.points].sort((a, b) => a.x - b.x);
+      const linePoints = ordered.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
+      const dots = ordered
         .map(
           (p) =>
             `<circle class="chart-point-${slot}" cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="2.5"></circle>`,
