@@ -3211,18 +3211,29 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .speech-stop[disabled] { opacity: 0.45; cursor: default; }
 .speech-stop[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
 
-/* The turn currently being spoken. A left rule plus a wash — deliberately quieter
-   than the search-hit highlight, because this one moves every few seconds and a
-   strong colour pulsing down the page is exhausting to read alongside. */
+/* The turn currently being spoken. Box-shadow only, deliberately — NOT `background`:
+   every bubble already carries a role-tinted background (.bubble-user/-assistant/-system,
+   set above at the same one-class specificity), and a `background` declaration here would
+   fully REPLACE that colour rather than mark it, since the two rules tie in specificity
+   and this one is later in the file [LAW:one-source-of-truth]. box-shadow has no such
+   collision — it paints independently of background-color — so the role colour is never
+   lost while a turn speaks.
+   It also declares no transition of its own: `.bubble` already transitions box-shadow
+   (the hover rule above), so the mark fades in for free through that existing rule rather
+   than through a second declaration that would only re-fight the same specificity tie. */
 .speaking {
-  box-shadow: inset 3px 0 0 var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  transition: background 0.25s ease, box-shadow 0.25s ease;
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
-/* [LAW:no-ambient-temporal-coupling] The follow-along scroll and this fade are the
-   only motion the tool adds, and a reader who has asked for less motion gets the
-   mark without the animation — the mark itself is never withheld, since it is the
-   only thing showing where the audio is. */
+/* [LAW:no-ambient-temporal-coupling] The follow-along scroll and this fade are the only
+   motion the tool adds, and a reader who has asked for less motion gets the mark without
+   the animation. Scoped to match `.conversation > .bubble`'s own specificity (two classes)
+   plus `.speaking` (three) so it actually wins the transition property it is disabling,
+   rather than losing the same tie the rule above was written to avoid. */
 @media (prefers-reduced-motion: reduce) {
-  .speaking { transition: none; }
+  .conversation > .bubble.speaking,
+  .bubbles > .bubble.speaking {
+    transition: none;
+  }
 }

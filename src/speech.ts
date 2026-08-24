@@ -15,7 +15,7 @@
 // [LAW:one-way-deps] It depends on the model (dialogue); the model never depends on it.
 
 import type { DisplayNode, SpineNode, ViewableDialogue, AssistantBlock } from "./dialogue";
-import { blockVisibility, nodeVisibleProse, turnAnchorId } from "./dialogue";
+import { blockVisibility, nodeVisibleProse, turnAnchorId, spineNodeLabel } from "./dialogue";
 
 // [LAW:types-are-the-program] Who is speaking — and the ONE discriminator that carries
 // the difference between the author's words and ours. `narrator` marks every utterance
@@ -54,7 +54,13 @@ type Segment =
   | { readonly kind: "quoted"; readonly text: string }
   | { readonly kind: "announced"; readonly text: string };
 
-const FENCE = /^[ \t]*(?:```+|~~~+)[ \t]*([^\s`]*)[ \t]*$/;
+// [LAW:types-are-the-program] Captures the delimiter run itself (group 1), not just
+// whether one was present, because CommonMark's closing rule needs it: a closing fence
+// must reuse the SAME character as its opener and be at least as long. Without tracking
+// that, a code block opened with ``` that discusses fence syntax and contains a nested
+// ~~~ example — or a shorter ``` — would close on the wrong line, splitting one block
+// into a truncated fence plus stray "prose" that gets spoken instead of announced.
+const FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*([^\s`]*)[ \t]*$/;
 
 const plural = (n: number, unit: string): string => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
@@ -75,6 +81,9 @@ const codeAnnouncement = (language: string, lines: number): string => {
 // noise or as nothing; text that carries MEANING (a link's label, an inline identifier)
 // is kept. A URL is dropped rather than read: "h t t p s colon slash slash" is the single
 // worst thing a screen reader does, and the label already says where it goes.
+//
+// Inline code is NOT among these — it is protected below, before this list ever runs, so
+// markdown syntax written literally inside a code span reaches nothing here.
 const INLINE_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   // Images announce their alt text — the picture cannot be spoken, but what it was
   // labelled can, so it is described rather than dropped [LAW:no-silent-failure].
@@ -82,9 +91,6 @@ const INLINE_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   // Links keep the label, lose the target.
   [/\[([^\]]+)\]\([^)]*\)/g, "$1"],
   [/<https?:\/\/[^>]+>/g, "link"],
-  // Inline code is usually an identifier or a flag — short, and genuinely part of the
-  // sentence, so it is READ. Only its backticks go.
-  [/`([^`]*)`/g, "$1"],
   // Emphasis markers, in the one order that keeps *** from leaving a stray star.
   [/\*\*\*([^*]+)\*\*\*/g, "$1"],
   [/\*\*([^*]+)\*\*/g, "$1"],
@@ -103,16 +109,72 @@ const LEADING_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/^[ \t]*\d+[.)][ \t]+/, ""], // ordered item
 ];
 
+const isTableDivider = (line: string): boolean =>
+  /^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$/.test(line);
+
 // A rule that is entirely presentational: a horizontal rule or a table's divider row has
 // no spoken form at all, so the line is dropped rather than voiced as punctuation.
 const isRuleLine = (line: string): boolean =>
-  /^[ \t]*(?:[-*_][ \t]*){3,}$/.test(line) || /^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$/.test(line);
+  /^[ \t]*(?:[-*_][ \t]*){3,}$/.test(line) || isTableDivider(line);
 
-const speakLine = (line: string): string => {
-  const led = LEADING_RULES.reduce((acc, [re, to]) => acc.replace(re, to), line);
+// [LAW:parse-dont-validate] A literal "|" means "table cell boundary" in exactly one
+// context: adjacent to the divider row every GFM table requires. Everywhere else it is
+// ordinary punctuation — a shell pipe, a boolean-or, absolute-value bars — and reading
+// "a | b" as "a, b" there would rewrite an ordinary sentence's meaning. So table
+// membership is PROVEN once, from the divider outward (the header immediately above it,
+// then every contiguous pipe-bearing row below), never guessed line by line from a bare
+// pipe. A line not reachable from a real divider is never treated as a table row.
+const tableLineIndices = (lines: ReadonlyArray<string>): ReadonlySet<number> => {
+  const rows = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    if (!isTableDivider(lines[i]!)) continue;
+    rows.add(i);
+    const header = lines[i - 1];
+    if (header !== undefined && header.trim() !== "" && header.includes("|")) rows.add(i - 1);
+    for (let j = i + 1; j < lines.length; j++) {
+      const row = lines[j]!;
+      if (row.trim() === "" || !row.includes("|")) break;
+      rows.add(j);
+    }
+  }
+  return rows;
+};
+
+// A code span, matched non-greedily so back-to-back spans on one line stay distinct
+// rather than one match swallowing everything between the first opener and the last
+// closer.
+const CODE_SPAN = /`([^`]*)`/g;
+// The placeholder wrapper: a NUL character, built with String.fromCharCode rather than
+// written as a literal in this source file — a control byte that cannot occur in real
+// markdown, so restoring a span can never collide with prose that happens to contain the
+// same digits. A PRINTABLE wrapper (even a bare space) risks exactly that collision:
+// "wait 5 minutes" already has the shape "space, digit, space".
+const SHIELD = String.fromCharCode(0);
+const SHIELD_RE = new RegExp(`${SHIELD}(\\d+)${SHIELD}`, "g");
+
+const speakLine = (line: string, isTable: boolean): string => {
+  // Inline code is protected from every other inline rule by being pulled out FIRST and
+  // swapped back in verbatim after — the same isolation fenced blocks get at the line
+  // level, applied here at the span level. Without this, a markdown token literally
+  // written inside a code span (a link, a bold marker, a literal pipe) would be
+  // interpreted as real markdown by rules meant for the surrounding prose, corrupting
+  // the exact syntax the span exists to display verbatim.
+  const shielded: string[] = [];
+  const withPlaceholders = line.replace(CODE_SPAN, (_match, content: string) => {
+    const token = `${SHIELD}${shielded.length}${SHIELD}`;
+    shielded.push(content);
+    return token;
+  });
+
+  const led = LEADING_RULES.reduce((acc, [re, to]) => acc.replace(re, to), withPlaceholders);
   const inlined = INLINE_RULES.reduce((acc, [re, to]) => acc.replace(re, to), led);
-  // A table row's pipes are column furniture; the cells are the content.
-  return inlined.replace(/[ \t]*\|[ \t]*/g, ", ").replace(/^,[ \t]*|,[ \t]*$/g, "");
+  const restored = inlined.replace(SHIELD_RE, (_match, i: string) => shielded[Number(i)] ?? "");
+
+  if (!isTable) return restored;
+  // A table row's pipes are column furniture; the cells are the content. This runs
+  // AFTER restoration, so a literal pipe protected inside a code span is never mistaken
+  // for a cell boundary.
+  return restored.replace(/[ \t]*\|[ \t]*/g, ", ").replace(/^,[ \t]*|,[ \t]*$/g, "");
 };
 
 const collapse = (text: string): string => text.replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, " ").trim();
@@ -129,7 +191,7 @@ const collapse = (text: string): string => text.replace(/[ \t]+/g, " ").replace(
 export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
   const segments: Segment[] = [];
   let prose: string[] = [];
-  let fence: { language: string; lines: number } | null = null;
+  let fence: { char: string; length: number; language: string; lines: number } | null = null;
 
   const flushProse = (): void => {
     const text = collapse(prose.join("\n"));
@@ -142,21 +204,28 @@ export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
     fence = null;
   };
 
-  for (const line of markdown.split("\n")) {
+  const lines = markdown.split("\n");
+  const tableRows = tableLineIndices(lines);
+
+  lines.forEach((line, i) => {
     const fenced = FENCE.exec(line);
     if (fence !== null) {
-      // Inside a block: the only line that means anything is the one that closes it.
-      if (fenced === null) fence.lines += 1;
+      // Inside a block: the only line that closes it reuses the SAME delimiter character
+      // as the opener and is at least as long — CommonMark's own rule, and the reason a
+      // nested example using the other fence character (or a shorter run) does not
+      // prematurely end the block it lives inside.
+      const closes = fenced !== null && fenced[1]![0] === fence.char && fenced[1]!.length >= fence.length;
+      if (!closes) fence.lines += 1;
       else flushFence();
-      continue;
+      return;
     }
     if (fenced !== null) {
       flushProse();
-      fence = { language: fenced[1] ?? "", lines: 0 };
-      continue;
+      fence = { char: fenced[1]![0]!, length: fenced[1]!.length, language: fenced[2] ?? "", lines: 0 };
+      return;
     }
-    prose.push(isRuleLine(line) ? "" : speakLine(line));
-  }
+    prose.push(isRuleLine(line) ? "" : speakLine(line, tableRows.has(i)));
+  });
   flushProse();
   flushFence();
   return segments;
@@ -164,26 +233,48 @@ export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
 
 // ── dialogue → utterances ────────────────────────────────────────────────────────────
 
-// [LAW:one-source-of-truth] What a node's detail holds, counted rather than re-listed.
-// The visual renderer folds thinking / tool calls / subagents behind a disclosure, so the
-// audio does not read them — but it does SAY they are there. A listener who is told
-// "2 tool calls" knows the conversation had a shape the audio abridged; one who is told
-// nothing has been quietly handed a different conversation [LAW:no-silent-failure].
+// [LAW:one-source-of-truth] What a node's UNSPOKEN activity holds, counted rather than
+// re-listed. The visual renderer folds thinking / tool calls / subagents behind a
+// disclosure, so the audio does not read them — but it does SAY they are there. A
+// listener who is told "2 tool calls" knows the conversation had a shape the audio
+// abridged; one who is told nothing has been quietly handed a different conversation
+// [LAW:no-silent-failure]. Token usage joins the same announcement for the same reason,
+// on the numeric side rather than the folded side: the renderer shows it as a widget of
+// raw counts, and reading digits aloud would be noise no differently than a diff would be.
 //
-// It counts by blockVisibility rather than by naming kinds, so a new AssistantBlock kind
-// is classified once, in dialogue.ts, and reaches this announcement for free.
+// It counts detail blocks by blockVisibility rather than by naming kinds, so a new
+// AssistantBlock kind is classified once, in dialogue.ts, and reaches this announcement
+// for free. usage is checked by kind directly because it is the one "meta" kind that is
+// genuinely unspeakable as numbers — turn-summary, the other meta kind, is real prose and
+// is SPOKEN below, not folded into this count.
 const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
   const detail = blocks.filter((b) => blockVisibility(b) === "detail");
   const tools = detail.filter((b) => b.kind === "tool-call").length;
   const thinking = detail.filter((b) => b.kind === "thinking").length;
   const subagents = detail.filter((b) => b.kind === "subagent").length;
+  const hasUsage = blocks.some((b) => b.kind === "usage");
   const parts = [
     tools > 0 ? plural(tools, "tool call") : "",
     thinking > 0 ? plural(thinking, "thinking block") : "",
     subagents > 0 ? plural(subagents, "subagent run") : "",
+    hasUsage ? "a token usage note" : "",
   ].filter((p) => p !== "");
   return parts.length === 0 ? "" : `${parts.join(", ")} not read aloud`;
 };
+
+// [LAW:one-source-of-truth] turn-summary is the one "meta" block kind that carries real,
+// page-visible prose — renderDialogueHtml draws it as a visible <aside>, never folded
+// behind a disclosure — so it is SPOKEN, through the same markdown rules as spine text,
+// rather than merely announced by count like the folded detail above. It speaks in the
+// narrator voice because it is the source's OWN annotation about the conversation (a
+// compaction marker, typically), not a line either party actually said.
+const turnSummaryUtterances = (
+  blocks: ReadonlyArray<AssistantBlock>,
+  at: (voice: Voice, text: string) => Utterance,
+): ReadonlyArray<Utterance> =>
+  blocks
+    .filter((b): b is Extract<AssistantBlock, { kind: "turn-summary" }> => b.kind === "turn-summary")
+    .flatMap((b) => speakableSegments(b.text).map((seg) => at("narrator", seg.text)));
 
 // The voice a spine node speaks in. An assistant node is the assistant; a spoken node is
 // whichever of user/system it carries — the same discriminant the renderer colours by.
@@ -191,20 +282,29 @@ const nodeVoice = (node: SpineNode): Voice => (node.kind === "spoken" ? node.rol
 
 // [LAW:dataflow-not-control-flow] One node in, its utterances out — the same operations
 // for every node, with the node's data deciding how many utterances come back (possibly
-// zero, for a node whose visible prose is empty). Nothing here branches on node kind
-// beyond the voice above, because nodeVisibleProse already answered "what does a reader
-// of this node actually see" for both arms.
-const nodeUtterances = ({ index, node }: DisplayNode): ReadonlyArray<Utterance> => {
+// zero, for a node whose visible prose is empty). Nothing here branches on node KIND
+// beyond the voice above and the turn-summary/detail extraction, because nodeVisibleProse
+// already answered "what does a reader of this node actually see" for both arms.
+const nodeUtterances = ({ index, node, collapsed }: DisplayNode): ReadonlyArray<Utterance> => {
   const anchor = turnAnchorId(index);
   const at = (voice: Voice, text: string): Utterance => ({ index, anchor, voice, text });
+
+  // [LAW:one-source-of-truth] A collapsed spine node sits behind a native <details>,
+  // shown only on demand — the SAME fold the renderer already applies for feature/
+  // highlight-reel overlays. Speech mirrors it exactly the way it mirrors the detail
+  // fold inside an assistant turn: announced by the node's own label, the SAME text the
+  // visual <summary> reads, rather than read in full. Reusing spineNodeLabel is what
+  // keeps the two from ever naming the same fold two different ways.
+  if (collapsed) return [at("narrator", `Folded: ${spineNodeLabel(node)}.`)];
 
   const voice = nodeVoice(node);
   const spoken = speakableSegments(nodeVisibleProse(node)).map((seg) =>
     at(seg.kind === "quoted" ? voice : "narrator", seg.text),
   );
 
+  const summary = node.kind === "assistant" ? turnSummaryUtterances(node.blocks, at) : [];
   const detail = node.kind === "assistant" ? detailAnnouncement(node.blocks) : "";
-  return detail === "" ? spoken : [...spoken, at("narrator", detail)];
+  return [...spoken, ...summary, ...(detail === "" ? [] : [at("narrator", detail)])];
 };
 
 // [LAW:one-source-of-truth] The spoken projection of the SAME ViewableDialogue the

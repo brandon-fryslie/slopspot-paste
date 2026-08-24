@@ -20,7 +20,7 @@
 // implementation of the same contract passes.
 
 import { JSDOM } from "jsdom";
-import { plainView, type Dialogue } from "../src/dialogue";
+import { plainView, spineNodeLabel, type Dialogue, type SpineNode } from "../src/dialogue";
 import { deriveUtterances, speakableSegments, type Utterance } from "../src/speech";
 import { advance, assignVoices, createPlayer, type PlayerState } from "../src/speechPlayer";
 
@@ -90,6 +90,25 @@ console.log("\nMarkdown → speech (slopspot-speech-ins):");
   assert("a table's divider row is not spoken", !heard("| a | b |\n| --- | --- |\n| 1 | 2 |").includes("---"));
   assert("table cells are read, separated", heard("| a | b |\n| --- | --- |\n| 1 | 2 |") === "a, b 1, 2");
 
+  // ── a bare pipe outside a real table is punctuation, not a cell boundary ──
+  // Nothing here is adjacent to a divider row, so none of it is table-shaped.
+  assert("a shell pipe in prose keeps its meaning", heard("run `ls | grep foo`") === "run ls | grep foo");
+  assert("a boolean-or in prose is not rewritten", heard("use `a || b` for OR") === "use a || b for OR");
+  assert("absolute-value bars are not read as a table row", heard("the distance is |x - y|") === "the distance is |x - y|");
+
+  // ── fenced blocks close only on a matching, at-least-as-long delimiter (CommonMark) ──
+  const nestedTilde = "```python\ndef f():\n    pass\n~~~\nstill code\n```\nafter";
+  assert("a nested ~~~ line inside a backtick fence does not close it early", announced(nestedTilde)[0] === "python code block, 4 lines");
+  assert("prose after the real close is still spoken", heard(nestedTilde) === "after");
+
+  const shorterInner = "````\nouter\n```\nstill inside\n````\nafter";
+  assert("a shorter run of the same character does not close a longer fence", announced(shorterInner)[0] === "code block, 3 lines");
+
+  // ── inline code is protected from every other inline rule ──
+  assert("a link written inside a code span is not turned into a link", heard("say `[text](url)`") === "say [text](url)");
+  assert("emphasis markers inside a code span survive", heard("write `**bold**` literally") === "write **bold** literally");
+  assert("a literal pipe inside a code span is not a table boundary", heard("the flag is `a|b`") === "the flag is a|b");
+
   assert("empty input yields nothing to say", speakableSegments("").length === 0);
   assert("whitespace-only input yields nothing to say", speakableSegments("   \n\n  ").length === 0);
 }
@@ -123,8 +142,12 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   // A distinctive sentinel, not a short token: "ls" would match the announcement's own
   // "tool calls" and pass for the wrong reason.
   assert("a tool call's arguments are not read aloud", !all.includes("UNSPEAKABLE_ARGS"));
-  // …but the listener is told the conversation had a shape the audio abridged.
-  assert("folded detail is announced by count", all.includes("2 tool calls, 1 thinking block not read aloud"));
+  // …but the listener is told the conversation had a shape the audio abridged, including
+  // the token-usage widget — a numeric readout, unspeakable the same way a diff is.
+  assert(
+    "folded detail is announced by count, usage included",
+    all.includes("2 tool calls, 1 thinking block, a token usage note not read aloud"),
+  );
   assert("the detail announcement is narrated, not attributed to the assistant", utterances.at(-1)?.voice === "narrator");
 
   // [LAW:one-source-of-truth] The anchor is the renderer's own t<N>, and the index is the
@@ -151,6 +174,49 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   assert("code inside an assistant message is announced", coded.some((u) => u.text === "sh code block, 1 line"));
   assert("the announcement inside a message is narrated", coded.find((u) => u.text.includes("code block"))?.voice === "narrator");
   assert("the prose around it stays the assistant's", coded[0]?.voice === "assistant");
+
+  // A turn-summary block is real, page-visible prose (renderDialogueHtml draws it as a
+  // visible <aside>, never folded) — so it is SPOKEN, not merely counted like the folded
+  // detail above. Silently dropping it would violate this module's own no-silent-failure
+  // claim, since the reader can see it on the page.
+  const summarized = deriveUtterances(
+    plainView([
+      {
+        kind: "assistant",
+        blocks: [
+          { kind: "text", content: "Done." },
+          { kind: "turn-summary", text: "Session compacted at 40k tokens." },
+        ],
+      },
+    ]),
+  );
+  assert("a turn-summary's text is spoken, not silently dropped", summarized.some((u) => u.text === "Session compacted at 40k tokens."));
+  assert("turn-summary speaks in the narrator voice", summarized.find((u) => u.text.includes("compacted"))?.voice === "narrator");
+  assert("the assistant's own text still comes first", summarized[0]?.text === "Done.");
+
+  // A usage-only turn (no thinking/tool-calls at all) still gets its own announcement —
+  // the detail count and the usage note are independent, not one gating the other.
+  const usageOnly = deriveUtterances(
+    plainView([{ kind: "assistant", blocks: [{ kind: "usage", usage: { input: 1, output: 1, cacheCreation: 0, cacheRead: 0 } }] }]),
+  );
+  assert("a bare usage block still yields an announcement", usageOnly.some((u) => u.text === "a token usage note not read aloud"));
+  assert("raw token counts are never read as digits", !usageOnly.some((u) => /\d/.test(u.text)));
+
+  // [LAW:one-source-of-truth] A collapsed spine node (an authored feature/highlight-reel
+  // fold) sits behind a native <details>, shown only on demand — the SAME fold the
+  // rendered page applies. Speech mirrors it: announced by the node's own label rather
+  // than read in full, exactly like folded detail inside a turn.
+  const longContent =
+    "This is a much longer message than the label truncation length allows, so the full " +
+    "text would run well past what a folded turn's summary line is meant to show, and it " +
+    "keeps going for a while yet.";
+  const foldedNode: SpineNode = { kind: "spoken", role: "user", content: longContent };
+  const folded = deriveUtterances([{ index: 3, node: foldedNode, collapsed: true }]);
+  assert("a collapsed node yields exactly one utterance, not its full content", folded.length === 1);
+  assert("a collapsed node's announcement is truncated, not the full text", folded[0]!.text.length < longContent.length);
+  assert("a collapsed node is announced by its own rendered label", folded[0]?.text === `Folded: ${spineNodeLabel(foldedNode)}.`);
+  assert("the fold announcement is narrated, not attributed to the folded speaker", folded[0]?.voice === "narrator");
+  assert("a collapsed node still anchors to its own carried index", folded[0]?.anchor === "t3");
 }
 
 console.log("\nPlayer position machine (slopspot-speech-ins):");
@@ -344,6 +410,84 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     player.send({ kind: "jump", to: 2 });
     const narrated = synth.spoken.at(-1);
     assert("narration is delivered differently from speech", narrated?.rate !== 1 || narrated?.pitch !== 1);
+  }
+
+  // The bug this design exists to prevent: jumping while paused cancels the live sentence
+  // without requeuing it (advance()'s pure spec says "stay paused at the new place", and
+  // nothing SHOULD speak yet) — so a naive "same index => resume" shortcut on the
+  // subsequent Play would call synth.resume() on a synthesizer holding nothing at all,
+  // producing silence with the transport stuck reporting "speaking" forever.
+  {
+    const { window, synth } = stand();
+    const states: PlayerState[] = [];
+    const player = createPlayer({ window, utterances, onUtterance: () => {}, onState: (s) => states.push(s) });
+    if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
+
+    player.send({ kind: "play" }); // speaking at 0
+    player.send({ kind: "pause" }); // paused at 0
+    player.send({ kind: "jump", to: 2 }); // paused at 2 — nothing queued for index 2
+    assert("jumping while paused does not resume the synthesizer", synth.resumes === 0);
+    assert("jumping while paused reports the player still paused", states.at(-1)?.kind === "paused");
+
+    const resumesBeforePlay = synth.resumes;
+    const spokenBeforePlay = synth.spoken.length;
+    player.send({ kind: "play" });
+    assert("playing after a paused jump speaks fresh rather than resuming stale state", synth.resumes === resumesBeforePlay);
+    assert("playing after a paused jump actually queues the jumped-to utterance", synth.spoken.length === spokenBeforePlay + 1);
+    assert("the utterance queued is the one jumped to, not the one abandoned before pausing", synth.spoken.at(-1)?.text === "third");
+    assert("the player is genuinely speaking, not stuck silent", player.state().kind === "speaking");
+  }
+
+  // Redundant events that advance() itself treats as no-ops must not touch the
+  // synthesizer at all — the general branch would otherwise cancel a sentence that was
+  // never asked to stop, for an event that changed nothing.
+  {
+    const { window, synth } = stand();
+    const states: PlayerState[] = [];
+    const player = createPlayer({ window, utterances, onUtterance: () => {}, onState: (s) => states.push(s) });
+    if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
+
+    player.send({ kind: "play" });
+    player.send({ kind: "pause" });
+    const cancelsBeforeRedundant = synth.cancels;
+    const statesBeforeRedundant = states.length;
+    player.send({ kind: "pause" }); // already paused — advance() returns the same state
+    assert("a redundant pause does not cancel the held sentence", synth.cancels === cancelsBeforeRedundant);
+    assert("a redundant pause reports no new state change", states.length === statesBeforeRedundant);
+  }
+
+  // The header comment's stated invariant: voices are assigned FRESH per utterance, never
+  // cached at construction. A stub whose getVoices() answer changes mid-session is the
+  // only way to observe that — every earlier stub returned the same (empty) list for its
+  // whole lifetime, which cannot distinguish "recomputed every time" from "read once".
+  {
+    const dom = new JSDOM(`<!DOCTYPE html><body></body>`);
+    const w = dom.window as unknown as Window & typeof globalThis;
+    const voice = (name: string): SpeechSynthesisVoice =>
+      ({ name, lang: "en-US", default: false, localService: true, voiceURI: name }) as SpeechSynthesisVoice;
+    let available: SpeechSynthesisVoice[] = [];
+    const spoken: StubUtterance[] = [];
+    Object.defineProperty(w, "speechSynthesis", {
+      configurable: true,
+      value: {
+        getVoices: () => available,
+        speak: (u: StubUtterance) => spoken.push(u),
+        cancel: () => {},
+        pause: () => {},
+        resume: () => {},
+      },
+    });
+    Object.defineProperty(w, "SpeechSynthesisUtterance", { configurable: true, value: StubUtterance });
+
+    const player = createPlayer({ window: w, utterances, onUtterance: () => {}, onState: () => {} });
+    if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
+
+    player.send({ kind: "play" }); // getVoices() still returns [] here
+    assert("no voice is assigned while the browser has none to offer", spoken[0]?.voice === null);
+
+    available = [voice("Late")]; // the voice list arrives AFTER the first utterance started
+    spoken[0]?.onend?.();
+    assert("a voice list that arrives late is picked up by the very next utterance", spoken[1]?.voice?.name === "Late");
   }
 }
 

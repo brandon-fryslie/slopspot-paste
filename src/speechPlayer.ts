@@ -167,10 +167,15 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
   const { utterances, onUtterance, onState } = config;
 
   let state: PlayerState = { kind: "idle" };
-  // The utterance object currently handed to the synthesizer. It is held ONLY so that a
-  // late `end` from a cancelled sentence can be recognised and ignored: the browser fires
-  // `end` on cancel, and without this the player would advance a turn nobody heard.
+  // The utterance object currently handed to the synthesizer, and which position it is
+  // FOR. `live` alone answers "is a late `end` from a cancelled sentence real" (the
+  // browser fires `end` on cancel, and without this the player would advance a turn
+  // nobody heard); `liveAt` additionally answers "does the synthesizer actually hold
+  // the utterance for THIS index" — the fact the resume shortcut below needs, since a
+  // paused player whose index changed via `jump` has a live-utterance slot that no
+  // longer agrees with `state.at` at all.
   let live: SpeechSynthesisUtterance | null = null;
+  let liveAt: number | null = null;
 
   const speak = (at: number): void => {
     const utterance = utterances[at];
@@ -191,6 +196,7 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
       send({ kind: "finished" });
     };
     live = spoken;
+    liveAt = at;
     onUtterance(utterance);
     synth.speak(spoken);
   };
@@ -201,16 +207,27 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
   const send = (event: PlayerEvent): void => {
     const before = state;
     const after = advance(before, event, utterances.length);
+
+    // A TRUE no-op — advance() returns `state` itself, unchanged, exactly for the cases
+    // it is legitimately ignoring (e.g. `finished` arriving while paused, `pause` while
+    // already paused). Nothing below may run for these: the general branch would cancel
+    // a sentence that is still correctly playing/held, for no reason a caller asked for.
+    if (after === before) return;
     state = after;
 
     // Pause/resume are the synthesizer's own — they hold the sentence mid-word, which is
     // what a listener expects, and are the one case where re-speaking would be wrong.
+    // The resume shortcut fires ONLY when the synthesizer still genuinely holds the
+    // utterance for `after.at` (`liveAt`, not merely `before.at === after.at`): a `jump`
+    // taken while paused moves the position without ever calling speak() again — the
+    // general branch below cancels whatever was live and reports nothing playing — so a
+    // subsequent Play at that same index has nothing to resume and must speak() fresh.
     if (before.kind === "speaking" && after.kind === "paused") {
       synth.pause();
       onState(after);
       return;
     }
-    if (before.kind === "paused" && after.kind === "speaking" && before.at === after.at) {
+    if (before.kind === "paused" && after.kind === "speaking" && liveAt === after.at) {
       synth.resume();
       onState(after);
       return;
@@ -220,6 +237,7 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
     // start the new one or fall silent. `live = null` BEFORE cancel() is what disarms the
     // `end` this cancel is about to fire.
     live = null;
+    liveAt = null;
     synth.cancel();
     if (after.kind === "speaking") {
       speak(after.at);

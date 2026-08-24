@@ -493,7 +493,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       {present.listen && (
         <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.listen.id)} data-tool={TOOL.listen.id}
           data-requires={requiresAttr(TOOL.listen.availability)} aria-label={TOOL.listen.hint}>
-          <h2 class="tool-panel-title">{TOOL.listen.label}<span class="tool-panel-note">{utterances.length} passages</span></h2>
+          <h2 class="tool-panel-title">{TOOL.listen.label}<span class="tool-panel-note">{utterances.length} {utterances.length === 1 ? "passage" : "passages"}</span></h2>
           <p class="tool-panel-lede">Read aloud in your browser, a different voice per speaker. Code blocks are announced rather than spelled out.</p>
           <div class="speech-controls">
             <button class="mono-pill speech-play" type="button">Play</button>
