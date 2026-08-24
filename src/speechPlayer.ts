@@ -61,10 +61,14 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
 
   switch (event.kind) {
     case "play":
-      // Play from where we are: resuming a pause keeps its position, starting from idle
-      // begins at the top. One arm, because "where do we start" is a property of the state
-      // we are in, not a separate decision.
-      return { kind: "speaking", at: state.kind === "idle" ? 0 : state.at };
+      // Already speaking is a true no-op, matching every other arm's pattern (pause,
+      // stop, finished, jump's identical-position guard): `send()`'s no-op short-circuit
+      // is a reference check, and a redundant `play` that allocated a fresh object would
+      // fall into the general branch and cancel-then-restart the sentence already in
+      // progress, discarding whatever the listener had already heard of it.
+      // Otherwise: play from where we are — resuming a pause keeps its position, starting
+      // from idle begins at the top.
+      return state.kind === "speaking" ? state : { kind: "speaking", at: state.kind === "idle" ? 0 : state.at };
     case "pause":
       return state.kind === "speaking" ? { kind: "paused", at: state.at } : state;
     case "stop":

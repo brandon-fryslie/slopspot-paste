@@ -14,8 +14,8 @@
 //
 // [LAW:one-way-deps] It depends on the model (dialogue); the model never depends on it.
 
-import type { DisplayNode, SpineNode, ViewableDialogue, AssistantBlock } from "./dialogue";
-import { blockVisibility, nodeVisibleProse, turnAnchorId, spineNodeLabel } from "./dialogue";
+import type { DisplayNode, ViewableDialogue, AssistantBlock } from "./dialogue";
+import { blockVisibility, blockText, turnAnchorId, spineNodeLabel } from "./dialogue";
 
 // [LAW:types-are-the-program] Who is speaking — and the ONE discriminator that carries
 // the difference between the author's words and ours. `narrator` marks every utterance
@@ -123,8 +123,16 @@ const LEADING_RULES: ReadonlyArray<readonly [RegExp, string]> = [
 // divider) — matching marked's actual table recognition, which is what render.ts hands
 // transcripts to. A stricter `-{2,}` here would leave a real table's pipes unconverted
 // whenever an author wrote the shortest legal divider.
+//
+// Every group in the regex below is independently optional, so the pattern alone matches
+// a bare `---` thematic break — zero pipes at all — as a one-cell "divider". The explicit
+// `line.includes("|")` precondition is what render.ts's own SEPARATOR_RE gets for free
+// from its `+` repetition: a divider needs at least one REAL pipe, or a plain horizontal
+// rule sitting next to unrelated prose (`ls | grep foo` on the line just above or below a
+// `---`) would sweep that prose into the table set and corrupt its pipe as a cell
+// boundary — the exact class of bug this file's table-membership proof exists to prevent.
 const isTableDivider = (line: string): boolean =>
-  /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/.test(line);
+  line.includes("|") && /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/.test(line);
 
 // A rule that is entirely presentational: a horizontal rule or a table's divider row has
 // no spoken form at all, so the line is dropped rather than voiced as punctuation.
@@ -154,10 +162,15 @@ const tableLineIndices = (lines: ReadonlyArray<string>): ReadonlySet<number> => 
   return rows;
 };
 
-// A code span, matched non-greedily so back-to-back spans on one line stay distinct
-// rather than one match swallowing everything between the first opener and the last
-// closer.
-const CODE_SPAN = /`([^`]*)`/g;
+// A code span. Group 1 is the opening backtick RUN, greedily matched, and the closing
+// delimiter is a backreference to it (`\1`) rather than a bare single backtick — a code
+// span containing a literal backtick is written with a longer run as its delimiter
+// (CommonMark: ``` ``a`b`` ``` for the literal text `` a`b ``). A single-backtick pattern
+// pairs the first ` with the very next one — the interior ` — mis-splitting the span into
+// an empty span plus a stray "`b`", leaking literal markdown syntax into prose. Content is
+// matched non-greedily so back-to-back spans stay distinct rather than one match
+// swallowing everything between the first opener and the last closer.
+const CODE_SPAN = /(`+)(.*?)\1/g;
 // The placeholder wrapper: a NUL character, built with String.fromCharCode rather than
 // written as a literal in this source file — a control byte that cannot occur in real
 // markdown, so restoring a span can never collide with prose that happens to contain the
@@ -174,7 +187,7 @@ const speakLine = (line: string, isTable: boolean): string => {
   // interpreted as real markdown by rules meant for the surrounding prose, corrupting
   // the exact syntax the span exists to display verbatim.
   const shielded: string[] = [];
-  const withPlaceholders = line.replace(CODE_SPAN, (_match, content: string) => {
+  const withPlaceholders = line.replace(CODE_SPAN, (_match, _delim: string, content: string) => {
     const token = `${SHIELD}${shielded.length}${SHIELD}`;
     shielded.push(content);
     return token;
@@ -192,13 +205,17 @@ const speakLine = (line: string, isTable: boolean): string => {
     led = stripped;
   }
   const inlined = INLINE_RULES.reduce((acc, [re, to]) => acc.replace(re, to), led);
-  const restored = inlined.replace(SHIELD_RE, (_match, i: string) => shielded[Number(i)] ?? "");
 
-  if (!isTable) return restored;
-  // A table row's pipes are column furniture; the cells are the content. This runs
-  // AFTER restoration, so a literal pipe protected inside a code span is never mistaken
-  // for a cell boundary.
-  return restored.replace(/[ \t]*\|[ \t]*/g, ", ").replace(/^,[ \t]*|,[ \t]*$/g, "");
+  // A table row's pipes are column furniture; the cells are the content. This runs on
+  // `inlined` — BEFORE code spans are restored — so a literal pipe protected inside a code
+  // span is still a shield placeholder here and cannot be mistaken for a cell boundary.
+  // Restoring first would put the real "|" back too early: a cell like `` `a|b` `` would
+  // read as two cells instead of one, silently splitting content the shield exists to keep
+  // intact.
+  const tabled = isTable
+    ? inlined.replace(/[ \t]*\|[ \t]*/g, ", ").replace(/^,[ \t]*|,[ \t]*$/g, "")
+    : inlined;
+  return tabled.replace(SHIELD_RE, (_match, i: string) => shielded[Number(i)] ?? "");
 };
 
 const collapse = (text: string): string => text.replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, " ").trim();
@@ -317,29 +334,46 @@ const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
   return parts.length === 0 ? "" : `${parts.join(", ")} not read aloud`;
 };
 
-// [LAW:one-source-of-truth] turn-summary is the one "meta" block kind that carries real,
-// page-visible prose — renderDialogueHtml draws it as a visible <aside>, never folded
-// behind a disclosure — so it is SPOKEN, through the same markdown rules as spine text,
-// rather than merely announced by count like the folded detail above. It speaks in the
-// narrator voice because it is the source's OWN annotation about the conversation (a
-// compaction marker, typically), not a line either party actually said.
-const turnSummaryUtterances = (
+// [LAW:one-source-of-truth] An assistant node's blocks, spoken in ONE pass over their
+// ACTUAL array order — not spine text followed by turn-summary followed by a detail
+// count, three groups concatenated regardless of where each really sits. deriveDialogue
+// pushes blocks in the order the parser saw them, and renderDialogueHtml draws each block
+// at its real position; a turn-summary block sitting between two chunks of assistant text
+// in one continuous turn (a mid-turn compaction marker — closeAssistant() only fires on a
+// user/system message) renders on the page BEFORE the text that follows it. Concatenating
+// groups would always speak it AFTER all of that text instead, breaking this module's own
+// "speech mirrors what the renderer draws" invariant for ORDER, not just presence.
+//
+// turn-summary is the one "meta" block kind that carries real, page-visible prose —
+// rendered as a visible <aside>, never folded behind a disclosure — so it is SPOKEN,
+// through the same markdown rules as spine text, in the narrator voice: it is the
+// source's OWN annotation about the conversation, not a line either party actually said.
+// Detail blocks (thinking/tool-call/subagent) are still COUNTED rather than positioned —
+// a listener hears "N tool calls... not read aloud" once, at the end, not scattered
+// through the turn every time one occurs — because detailAnnouncement's per-kind map
+// already answers "how many of each", which speaking each occurrence in place would not
+// improve.
+const assistantUtterances = (
   blocks: ReadonlyArray<AssistantBlock>,
   at: (voice: Voice, text: string) => Utterance,
-): ReadonlyArray<Utterance> =>
-  blocks
-    .filter((b): b is Extract<AssistantBlock, { kind: "turn-summary" }> => b.kind === "turn-summary")
-    .flatMap((b) => speakableSegments(b.text).map((seg) => at("narrator", seg.text)));
+): ReadonlyArray<Utterance> => {
+  const spoken = blocks.flatMap((b) => {
+    if (blockVisibility(b) === "spine") {
+      return speakableSegments(blockText(b)).map((seg) => at(seg.kind === "quoted" ? "assistant" : "narrator", seg.text));
+    }
+    if (b.kind === "turn-summary") {
+      return speakableSegments(b.text).map((seg) => at("narrator", seg.text));
+    }
+    return [];
+  });
+  const detail = detailAnnouncement(blocks);
+  return detail === "" ? spoken : [...spoken, at("narrator", detail)];
+};
 
-// The voice a spine node speaks in. An assistant node is the assistant; a spoken node is
-// whichever of user/system it carries — the same discriminant the renderer colours by.
-const nodeVoice = (node: SpineNode): Voice => (node.kind === "spoken" ? node.role : "assistant");
-
-// [LAW:dataflow-not-control-flow] One node in, its utterances out — the same operations
-// for every node, with the node's data deciding how many utterances come back (possibly
-// zero, for a node whose visible prose is empty). Nothing here branches on node KIND
-// beyond the voice above and the turn-summary/detail extraction, because nodeVisibleProse
-// already answered "what does a reader of this node actually see" for both arms.
+// [LAW:dataflow-not-control-flow] One node in, its utterances out. A spoken (user/system)
+// node has no blocks to interleave, so it stays a single speakableSegments pass over its
+// own content; an assistant node hands off to assistantUtterances above, which owns the
+// ordering an assistant turn actually needs.
 const nodeUtterances = ({ index, node, collapsed }: DisplayNode): ReadonlyArray<Utterance> => {
   const anchor = turnAnchorId(index);
   const at = (voice: Voice, text: string): Utterance => ({ index, anchor, voice, text });
@@ -352,14 +386,11 @@ const nodeUtterances = ({ index, node, collapsed }: DisplayNode): ReadonlyArray<
   // keeps the two from ever naming the same fold two different ways.
   if (collapsed) return [at("narrator", `Folded: ${spineNodeLabel(node)}.`)];
 
-  const voice = nodeVoice(node);
-  const spoken = speakableSegments(nodeVisibleProse(node)).map((seg) =>
-    at(seg.kind === "quoted" ? voice : "narrator", seg.text),
-  );
+  if (node.kind === "spoken") {
+    return speakableSegments(node.content).map((seg) => at(seg.kind === "quoted" ? node.role : "narrator", seg.text));
+  }
 
-  const summary = node.kind === "assistant" ? turnSummaryUtterances(node.blocks, at) : [];
-  const detail = node.kind === "assistant" ? detailAnnouncement(node.blocks) : "";
-  return [...spoken, ...summary, ...(detail === "" ? [] : [at("narrator", detail)])];
+  return assistantUtterances(node.blocks, at);
 };
 
 // [LAW:one-source-of-truth] The spoken projection of the SAME ViewableDialogue the

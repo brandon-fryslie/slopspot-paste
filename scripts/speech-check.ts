@@ -131,6 +131,24 @@ console.log("\nMarkdown → speech (slopspot-speech-ins):");
   // ── nested leading markers are stripped to a fixpoint, not just the outermost one ──
   assert("a heading quoted inside a blockquote loses both markers", heard("> ## Heading") === "Heading");
   assert("a bullet inside a blockquote loses both markers", heard("> - item") === "item");
+
+  // ── a bare thematic break (no pipe at all) is never a table divider ──
+  assert(
+    "a shell pipe above a plain horizontal rule keeps its meaning",
+    heard("See `a | b` above.\n\n---\n\nnext paragraph") === "See a | b above. next paragraph",
+  );
+  assert(
+    "a shell pipe below a plain horizontal rule keeps its meaning",
+    heard("Notes\n\n---\nUse `ls | grep foo` to filter.") === "Notes Use ls | grep foo to filter.",
+  );
+
+  // ── a literal pipe inside a code span, in a REAL table row, is not a cell boundary ──
+  const realTable = "| flag | example |\n| --- | --- |\n| x | `a|b` |";
+  assert("a code span's pipe survives inside a genuine table cell", heard(realTable) === "flag, example x, a|b");
+
+  // ── a code span whose content contains a backtick uses a longer delimiter run ──
+  assert("a doubled-backtick span protects a literal backtick inside it", heard("say ``a`b`` now") === "say a`b now");
+  assert("a doubled-backtick span is not split by its own interior backtick", heard("``a`b``") === "a`b");
 }
 
 console.log("\nDialogue → utterances (slopspot-speech-ins):");
@@ -214,6 +232,26 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   assert("turn-summary speaks in the narrator voice", summarized.find((u) => u.text.includes("compacted"))?.voice === "narrator");
   assert("the assistant's own text still comes first", summarized[0]?.text === "Done.");
 
+  // A turn-summary sitting BETWEEN two chunks of assistant text (a mid-turn compaction
+  // marker) renders on the page at its real block position — speech must speak it there
+  // too, not after all the spine text regardless of where it actually sits.
+  const midTurn = deriveUtterances(
+    plainView([
+      {
+        kind: "assistant",
+        blocks: [
+          { kind: "text", content: "Before the marker." },
+          { kind: "turn-summary", text: "Compacted here." },
+          { kind: "text", content: "After the marker." },
+        ],
+      },
+    ]),
+  );
+  assert(
+    "a mid-turn summary is spoken in its actual block position, not after all the spine text",
+    midTurn.map(textOf).join(" | ") === "Before the marker. | Compacted here. | After the marker.",
+  );
+
   // A usage-only turn (no thinking/tool-calls at all) still gets its own announcement —
   // the detail count and the usage note are independent, not one gating the other.
   const usageOnly = deriveUtterances(
@@ -284,6 +322,7 @@ console.log("\nPlayer position machine (slopspot-speech-ins):");
   const speakingAt1: PlayerState = { kind: "speaking", at: 1 };
   assert("jumping to the position already speaking at is a true no-op", advance(speakingAt1, { kind: "jump", to: 1 }, N) === speakingAt1);
   assert("stopping while already idle is a true no-op", advance(idle, { kind: "stop" }, N) === idle);
+  assert("playing while already speaking is a true no-op", advance(speakingAt1, { kind: "play" }, N) === speakingAt1);
 }
 
 console.log("\nVoice assignment (slopspot-speech-ins):");
