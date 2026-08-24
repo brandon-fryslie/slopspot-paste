@@ -56,8 +56,12 @@ export type PlayerEvent =
 // whether "advance past here" means a next utterance or the end of the conversation.
 export const advance = (state: PlayerState, event: PlayerEvent, length: number): PlayerState => {
   // A conversation with nothing to say cannot be played into a speaking state; every event
-  // resolves to idle. Stated once, here, so no arm below carries an emptiness check.
-  if (length <= 0) return { kind: "idle" };
+  // resolves to idle. Stated once, here, so no arm below carries an emptiness check. Same
+  // reference when already idle — matching every arm's no-op pattern — because `send()`'s
+  // short-circuit is a reference check: without this, a player constructed with an empty
+  // `utterances` array would never pass its own no-op check and would cancel/report on
+  // every single event for its whole life, even the redundant ones.
+  if (length <= 0) return state.kind === "idle" ? state : { kind: "idle" };
 
   switch (event.kind) {
     case "play":
@@ -257,14 +261,21 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
       return;
     }
 
-    // Everything else is a position change: abandon whatever is mid-sentence and either
-    // start the new one or fall silent. `live = null` BEFORE cancel() is what disarms the
-    // `end` this cancel is about to fire.
+    // Everything else is a position change: abandon whatever is mid-sentence, then either
+    // start the new one, hold at a new PAUSED position, or fall silent. `live = null`
+    // BEFORE cancel() is what disarms the `end` this cancel is about to fire.
     live = null;
     liveAt = null;
     synth.cancel();
     if (after.kind === "speaking") {
       speak(after.at);
+    } else if (after.kind === "paused") {
+      // A jump taken while paused (paused@1 → jump{to:2} → paused@2) has a position worth
+      // showing even though nothing is vocalizing — the SAME reasoning the pause shortcut
+      // above already applies when pausing from speaking. Reporting null here would clear
+      // the "now playing" highlight for a player that is still meaningfully paused
+      // somewhere, and desync the page from state.at even though Stop stays enabled.
+      onUtterance(utterances[after.at] ?? null);
     } else {
       onUtterance(null);
     }

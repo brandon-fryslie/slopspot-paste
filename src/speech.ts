@@ -148,24 +148,47 @@ const isRuleLine = (line: string): boolean =>
 // literal "|"; a genuine row, in every transcript this tool has seen, always does.
 const looksLikeTableRow = (line: string): boolean => /^[ \t]*\|.*\|[ \t]*$/.test(line);
 
+// Pipes are unescaped `|` (not `\|`) — the same escape rule render.ts's own cellCount/
+// splitPipes uses to detect the real <table> the page renders, so a cell that escapes its
+// own separator ("a\|b") counts as ONE cell here too, not two.
+const splitCells = (line: string): ReadonlyArray<string> => {
+  const trimmed = line.trim();
+  if (trimmed === "") return [];
+  const inner = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  return inner.split(/(?<!\\)\|/);
+};
+
 // [LAW:parse-dont-validate] A literal "|" means "table cell boundary" in exactly one
 // context: adjacent to the divider row every GFM table requires. Everywhere else it is
 // ordinary punctuation — a shell pipe, a boolean-or, absolute-value bars — and reading
 // "a | b" as "a, b" there would rewrite an ordinary sentence's meaning. So table
 // membership is PROVEN once, from the divider outward (the header immediately above it,
-// then every contiguous pipe-bearing row below), never guessed line by line from a bare
-// pipe. A line not reachable from a real divider is never treated as a table row — and
-// "reachable" means shaped like a row (looksLikeTableRow), not merely containing a pipe
-// somewhere in its text: the previous round's fix for isTableDivider's zero-pipe gap
-// closed the divider-adjacency version of this same corruption, but left this exact
-// continuation loop open to it.
+// then every contiguous row below), never guessed line by line from a bare pipe.
+//
+// The header and the continuation rows are proven DIFFERENTLY, on purpose. GFM (and this
+// codebase's own render.ts::normalizeTables) does not require outer pipes at all — `a | b`
+// over `--- | ---` is a fully valid, pipeless table — so gating strictly on shape would
+// leave a real on-page <table> partly unspoken. A header is accepted by shape
+// (looksLikeTableRow) OR by its cell count exactly matching the divider it immediately
+// precedes: a divider is a highly specific run of dash-groups a stray sentence essentially
+// never precedes by coincidence, so this looser signal is safe there. A continuation row
+// below stays shape-gated ONLY — no cell-count fallback — because that is exactly where
+// the corruption this file was already burned by lived: ordinary prose trailing a real
+// table's last row, sharing its column count purely by chance ("See y | z for details."
+// right after a 2-column table). A trailing sentence has no comparable structural pairing
+// to a divider that would make a false positive rare, so a pipeless table's BODY rows are
+// deliberately NOT spoken as a table here — only a pipeless header is. Full symmetry would
+// need the real GFM table lexer, not a line-level heuristic.
 const tableLineIndices = (lines: ReadonlyArray<string>): ReadonlySet<number> => {
   const rows = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     if (!isTableDivider(lines[i]!)) continue;
     rows.add(i);
+    const dividerCells = splitCells(lines[i]!).length;
     const header = lines[i - 1];
-    if (header !== undefined && looksLikeTableRow(header)) rows.add(i - 1);
+    if (header !== undefined && (looksLikeTableRow(header) || splitCells(header).length === dividerCells)) {
+      rows.add(i - 1);
+    }
     for (let j = i + 1; j < lines.length; j++) {
       const row = lines[j]!;
       if (!looksLikeTableRow(row)) break;
@@ -270,8 +293,17 @@ const speakLine = (line: string, isTable: boolean): string => {
   // Restoring first would put the real "|" back too early: a cell like `` `a|b` `` would
   // read as two cells instead of one, silently splitting content the shield exists to keep
   // intact.
+  //
+  // `(?<!\\)` excludes an ESCAPED pipe from the boundary rewrite — GFM (and this
+  // codebase's own render.ts, which actually renders these pastes as a real <table>)
+  // treats `\|` inside a cell as a literal character, not a separator, so a cell written
+  // `` a\|b `` is one cell "a|b" on the page and must stay one utterance here too. The
+  // trailing unescape restores the literal pipe the boundary rewrite deliberately skipped.
   const tabled = isTable
-    ? inlined.replace(/[ \t]*\|[ \t]*/g, ", ").replace(/^,[ \t]*|,[ \t]*$/g, "")
+    ? inlined
+        .replace(/[ \t]*(?<!\\)\|[ \t]*/g, ", ")
+        .replace(/^,[ \t]*|,[ \t]*$/g, "")
+        .replace(/\\\|/g, "|")
     : inlined;
   return tabled.replace(SHIELD_RE, (_match, i: string) => shielded[Number(i)] ?? "");
 };
@@ -374,13 +406,21 @@ const DETAIL_UNIT: { readonly [K in AssistantBlock["kind"]]: string | null } = {
 // usage is checked by kind directly because it is the one "meta" kind that is genuinely
 // unspeakable as numbers — turn-summary, the other meta kind, is real prose and is SPOKEN
 // below, not folded into this count.
+//
+// usage is COUNTED, not merely detected: a single continuous agentic turn (several
+// tool-call round-trips, each its own LLM completion) commonly carries several distinct
+// usage blocks — buildTurns flushes one per message id, and deriveDialogue only closes an
+// assistant node on a user/system message — and renderDialogueHtml draws each one as its
+// own separate widget. A boolean collapsed every count to "a token usage note" (always
+// singular), silently undercounting the exact way the sibling per-kind counts above were
+// already fixed to avoid.
 const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
   const counts: Partial<Record<AssistantBlock["kind"], number>> = {};
   for (const b of blocks) {
     if (blockVisibility(b) !== "detail") continue;
     counts[b.kind] = (counts[b.kind] ?? 0) + 1;
   }
-  const hasUsage = blocks.some((b) => b.kind === "usage");
+  const usageCount = blocks.filter((b) => b.kind === "usage").length;
   const counted = (Object.keys(DETAIL_UNIT) as ReadonlyArray<AssistantBlock["kind"]>)
     .map((kind) => {
       const n = counts[kind];
@@ -388,7 +428,7 @@ const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
       return n !== undefined && unit !== null ? plural(n, unit) : "";
     })
     .filter((p) => p !== "");
-  const parts = hasUsage ? [...counted, "a token usage note"] : counted;
+  const parts = usageCount > 0 ? [...counted, plural(usageCount, "token usage note")] : counted;
   return parts.length === 0 ? "" : `${parts.join(", ")} not read aloud`;
 };
 
@@ -403,9 +443,16 @@ const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
 // "speech mirrors what the renderer draws" invariant for ORDER, not just presence.
 //
 // turn-summary is the one "meta" block kind that carries real, page-visible prose —
-// rendered as a visible <aside>, never folded behind a disclosure — so it is SPOKEN,
-// through the same markdown rules as spine text, in the narrator voice: it is the
-// source's OWN annotation about the conversation, not a line either party actually said.
+// rendered as a visible <aside> — so it is SPOKEN, in the narrator voice, because it is
+// the source's OWN annotation about the conversation, not a line either party actually
+// said. It is spoken VERBATIM (collapsed whitespace only), NOT through speakableSegments'
+// markdown-stripping pipeline: renderDialogueHtml draws it with escapeHtml alone, never
+// renderMarkdown — unlike text/insight blocks, whose renderer counterpart genuinely does
+// call renderMarkdown, which is what makes speakableSegments the right transform for
+// THEM. Running turn-summary through the same markdown-stripping rules would silently
+// speak clean prose ("Tool calls: Bash, Read") for text the page shows completely literal
+// ("Tool calls: `Bash`, `Read`") — diverging from what a reader actually sees, the one
+// thing this module exists to mirror.
 // Detail blocks (thinking/tool-call/subagent) are still COUNTED rather than positioned —
 // a listener hears "N tool calls... not read aloud" once, at the end, not scattered
 // through the turn every time one occurs — because detailAnnouncement's per-kind map
@@ -420,7 +467,8 @@ const assistantUtterances = (
       return speakableSegments(blockText(b)).map((seg) => at(seg.kind === "quoted" ? "assistant" : "narrator", seg.text));
     }
     if (b.kind === "turn-summary") {
-      return speakableSegments(b.text).map((seg) => at("narrator", seg.text));
+      const text = collapse(b.text);
+      return text === "" ? [] : [at("narrator", text)];
     }
     return [];
   });

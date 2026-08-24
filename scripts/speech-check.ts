@@ -162,6 +162,17 @@ console.log("\nMarkdown → speech (slopspot-speech-ins):");
     "absolute-value bars right after a real table's last row keep their meaning",
     heard(absValueAfterTable) === "a, b 1, 2 The absolute value is |x - y| here.",
   );
+
+  // ── an escaped pipe inside a table cell is one cell's content, not two cells ──
+  const escapedPipeCell = "| flag | example |\n| --- | --- |\n| x | uses a\\|b flag |";
+  assert(
+    "an escaped pipe inside a table cell stays one cell",
+    heard(escapedPipeCell) === "flag, example x, uses a|b flag",
+  );
+
+  // ── a pipeless GFM table's header is still recognized (render.ts supports this shape) ──
+  const pipelessTable = "a | b\n--- | ---\n1 | 2";
+  assert("a pipeless table's header cells are converted", heard(pipelessTable).startsWith("a, b"));
 }
 
 console.log("\nDialogue → utterances (slopspot-speech-ins):");
@@ -197,7 +208,7 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   // the token-usage widget — a numeric readout, unspeakable the same way a diff is.
   assert(
     "folded detail is announced by count, usage included",
-    all.includes("2 tool calls, 1 thinking block, a token usage note not read aloud"),
+    all.includes("2 tool calls, 1 thinking block, 1 token usage note not read aloud"),
   );
   assert("the detail announcement is narrated, not attributed to the assistant", utterances.at(-1)?.voice === "narrator");
 
@@ -245,6 +256,17 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   assert("turn-summary speaks in the narrator voice", summarized.find((u) => u.text.includes("compacted"))?.voice === "narrator");
   assert("the assistant's own text still comes first", summarized[0]?.text === "Done.");
 
+  // renderDialogueHtml draws a turn-summary with escapeHtml alone, never renderMarkdown —
+  // unlike text/insight blocks. Speech must match: markdown syntax in a turn-summary is
+  // spoken LITERALLY, not stripped, or it would diverge from what the page actually shows.
+  const literalSummary = deriveUtterances(
+    plainView([{ kind: "assistant", blocks: [{ kind: "turn-summary", text: "Tool calls: `Bash`, `Read`." }] }]),
+  );
+  assert(
+    "a turn-summary's markdown syntax is spoken literally, matching the page's escaped rendering",
+    literalSummary[0]?.text === "Tool calls: `Bash`, `Read`.",
+  );
+
   // A turn-summary sitting BETWEEN two chunks of assistant text (a mid-turn compaction
   // marker) renders on the page at its real block position — speech must speak it there
   // too, not after all the spine text regardless of where it actually sits.
@@ -266,12 +288,32 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   );
 
   // A usage-only turn (no thinking/tool-calls at all) still gets its own announcement —
-  // the detail count and the usage note are independent, not one gating the other.
+  // the detail count and the usage note are independent, not one gating the other. The
+  // usage object's own raw counts (a distinctive value, so a leak is unmistakable) are
+  // what must never be read as digits — the announcement's OWN count (how many usage
+  // blocks) is a different number entirely and is meant to be spoken.
   const usageOnly = deriveUtterances(
-    plainView([{ kind: "assistant", blocks: [{ kind: "usage", usage: { input: 1, output: 1, cacheCreation: 0, cacheRead: 0 } }] }]),
+    plainView([{ kind: "assistant", blocks: [{ kind: "usage", usage: { input: 24601, output: 24601, cacheCreation: 0, cacheRead: 0 } }] }]),
   );
-  assert("a bare usage block still yields an announcement", usageOnly.some((u) => u.text === "a token usage note not read aloud"));
-  assert("raw token counts are never read as digits", !usageOnly.some((u) => /\d/.test(u.text)));
+  assert("a bare usage block still yields a singular announcement", usageOnly.some((u) => u.text === "1 token usage note not read aloud"));
+  assert("raw token counts are never read as digits", !usageOnly.some((u) => u.text.includes("24601")));
+
+  // Several usage blocks in one continuous turn (a multi-step agentic turn spanning
+  // several LLM completions, each its own message id) are COUNTED, not collapsed to a
+  // bare presence check that would always say "a token usage note" regardless of how many.
+  const multiUsage = deriveUtterances(
+    plainView([
+      {
+        kind: "assistant",
+        blocks: [
+          { kind: "usage", usage: { input: 1, output: 1, cacheCreation: 0, cacheRead: 0 } },
+          { kind: "usage", usage: { input: 1, output: 1, cacheCreation: 0, cacheRead: 0 } },
+          { kind: "usage", usage: { input: 1, output: 1, cacheCreation: 0, cacheRead: 0 } },
+        ],
+      },
+    ]),
+  );
+  assert("several usage blocks are counted and pluralized", multiUsage.some((u) => u.text === "3 token usage notes not read aloud"));
 
   // [LAW:one-source-of-truth] A collapsed spine node (an authored feature/highlight-reel
   // fold) sits behind a native <details>, shown only on demand — the SAME fold the
@@ -336,6 +378,11 @@ console.log("\nPlayer position machine (slopspot-speech-ins):");
   assert("jumping to the position already speaking at is a true no-op", advance(speakingAt1, { kind: "jump", to: 1 }, N) === speakingAt1);
   assert("stopping while already idle is a true no-op", advance(idle, { kind: "stop" }, N) === idle);
   assert("playing while already speaking is a true no-op", advance(speakingAt1, { kind: "play" }, N) === speakingAt1);
+
+  // A player constructed with an empty utterance list (nothing in the type prevents it)
+  // must ALSO true-no-op when already idle, or every single event would fall into
+  // send()'s general branch for the whole life of that player.
+  assert("an already-idle player with nothing to say stays a true no-op", advance(idle, { kind: "stop" }, 0) === idle);
 }
 
 console.log("\nVoice assignment (slopspot-speech-ins):");
@@ -501,7 +548,8 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
   {
     const { window, synth } = stand();
     const states: PlayerState[] = [];
-    const player = createPlayer({ window, utterances, onUtterance: () => {}, onState: (s) => states.push(s) });
+    const seen: (Utterance | null)[] = [];
+    const player = createPlayer({ window, utterances, onUtterance: (u) => seen.push(u), onState: (s) => states.push(s) });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
     player.send({ kind: "play" }); // speaking at 0
@@ -509,6 +557,10 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     player.send({ kind: "jump", to: 2 }); // paused at 2 — nothing queued for index 2
     assert("jumping while paused does not resume the synthesizer", synth.resumes === 0);
     assert("jumping while paused reports the player still paused", states.at(-1)?.kind === "paused");
+    // A jumped-to PAUSE position is still worth showing — the same reasoning the
+    // pause-from-speaking shortcut already gets — so this must NOT clear to null the way
+    // idling does.
+    assert("jumping while paused reports the jumped-to utterance, not null", seen.at(-1)?.anchor === "t2");
 
     const resumesBeforePlay = synth.resumes;
     const spokenBeforePlay = synth.spoken.length;

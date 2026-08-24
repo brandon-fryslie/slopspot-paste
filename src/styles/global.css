@@ -1657,7 +1657,13 @@ body.code-copy-ready pre.code-block:hover .code-lang {
    top edge when jumped to. The highlight flashes an accent ring once, then
    settles into a faint persistent ring so the linked-to turn stays identifiable. */
 .conversation > [data-index] { scroll-margin-top: 24px; }
-.conversation > [data-index]:target {
+/* :not(.speaking) here for the same reason the hover rule carries it: a RUNNING
+   animation's computed value for an animated property wins over any cascaded
+   declaration regardless of specificity, so the flash would mask .speaking's ring
+   for its whole 1.6s on a permalink that deep-links straight to the turn Listen is
+   currently on — no specificity fix could win that; only never animating the
+   property on a speaking bubble does [LAW:single-enforcer]. */
+.conversation > [data-index]:target:not(.speaking) {
   outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: 3px;
   animation: turn-target-flash 1.6s ease-out;
