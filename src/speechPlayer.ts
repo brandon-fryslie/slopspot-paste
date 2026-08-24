@@ -1,0 +1,233 @@
+// The Listen tool's browser edge: it performs the utterances speech.ts derived, and owns
+// the one thing a synthesizer cannot be trusted with — WHERE we are in the conversation.
+//
+// [LAW:decomposition] One sentence, no "and": this module plays an ordered list of
+// utterances against a Web Speech synthesizer. It does not decide what is said (speech.ts
+// did) and knows nothing of the dock, the panel's markup, or the page around it — the
+// caller hands it a highlight callback and it calls that; it never reaches for a turn card.
+//
+// [LAW:no-ambient-temporal-coupling] Two pieces of ambient timing are deliberately refused:
+//
+//  1. We speak ONE utterance at a time and advance on its `end` event, rather than queueing
+//     the whole conversation into the synthesizer. The browser queue is a global the page
+//     shares with anything else that speaks, it cannot be seeked, and `cancel()` empties it
+//     wholesale — so a queued design would have pause/stop fighting a structure it does not
+//     own. Position lives HERE, in one state value, which is what makes stop-and-resume,
+//     skip, and "which turn is playing" answerable at all.
+//  2. Voices load asynchronously and `getVoices()` is empty on first call in most browsers.
+//     Nothing here caches a voice list at construction; the assignment is recomputed at each
+//     utterance, so a voice list that arrives late simply takes effect on the next sentence
+//     rather than leaving the whole session stuck on the default voice.
+
+import type { Utterance, Voice } from "./speech";
+import { VOICES } from "./speech";
+
+// The window the player lives in, carried rather than reached for as a global — the same
+// shape toolDockView uses, and for the same reason: the check drives this module against a
+// jsdom window carrying a stub synthesizer, so every behaviour below has something standing
+// in front of it [LAW:verifiable-goals] [LAW:no-shared-mutable-globals].
+export type SpeechWindow = Window & typeof globalThis;
+
+// [LAW:types-are-the-program] The player's total state. `at` is an index into the utterance
+// list and exists ONLY while there is something to be at — an idle player holding a stale
+// position, or a paused player with no position, are not expressible, so nothing below has
+// to defend against them.
+export type PlayerState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "speaking"; readonly at: number }
+  | { readonly kind: "paused"; readonly at: number };
+
+// [LAW:types-are-the-program] Everything that can move the player, as data. The set is
+// closed, so `advance` below can be a total function over it and the compiler forces any
+// new event to be given a meaning at every state rather than defaulting to "no change".
+export type PlayerEvent =
+  | { readonly kind: "play" }
+  | { readonly kind: "pause" }
+  | { readonly kind: "stop" }
+  | { readonly kind: "finished" }
+  | { readonly kind: "jump"; readonly to: number };
+
+// [LAW:dataflow-not-control-flow] The whole state machine as one pure total function:
+// (state, event, length) → state. It performs nothing — no speaking, no highlighting — so
+// the check can assert every transition directly, including the ones that are awkward to
+// reach through a real synthesizer (finishing the last utterance, jumping while paused).
+//
+// `length` is passed rather than closed over because it is the one fact that decides
+// whether "advance past here" means a next utterance or the end of the conversation.
+export const advance = (state: PlayerState, event: PlayerEvent, length: number): PlayerState => {
+  // A conversation with nothing to say cannot be played into a speaking state; every event
+  // resolves to idle. Stated once, here, so no arm below carries an emptiness check.
+  if (length <= 0) return { kind: "idle" };
+
+  switch (event.kind) {
+    case "play":
+      // Play from where we are: resuming a pause keeps its position, starting from idle
+      // begins at the top. One arm, because "where do we start" is a property of the state
+      // we are in, not a separate decision.
+      return { kind: "speaking", at: state.kind === "idle" ? 0 : state.at };
+    case "pause":
+      return state.kind === "speaking" ? { kind: "paused", at: state.at } : state;
+    case "stop":
+      return { kind: "idle" };
+    case "finished": {
+      // Only a speaking player advances. A `finished` arriving while paused or idle is the
+      // synthesizer reporting on an utterance we already abandoned — cancel() fires `end`
+      // on whatever was mid-sentence — and acting on it would skip a turn the listener
+      // never heard. Ignoring it is the whole reason position lives here and not in the
+      // browser's queue.
+      if (state.kind !== "speaking") return state;
+      const next = state.at + 1;
+      return next >= length ? { kind: "idle" } : { kind: "speaking", at: next };
+    }
+    case "jump": {
+      // A jump out of range is not a silent clamp: an out-of-range target is a caller bug,
+      // and clamping it would play a turn the caller did not ask for while reporting success
+      // [LAW:no-silent-failure].
+      if (!Number.isInteger(event.to) || event.to < 0 || event.to >= length) {
+        throw new RangeError(`speech player: cannot jump to ${event.to} of ${length} utterances`);
+      }
+      // Jumping while paused keeps you paused at the new place — the listener asked to move,
+      // not to start playing.
+      return state.kind === "paused" ? { kind: "paused", at: event.to } : { kind: "speaking", at: event.to };
+    }
+  }
+};
+
+// ── voices ───────────────────────────────────────────────────────────────────────────
+
+// The per-voice delivery. Narration is OUR words about the conversation, so it is set
+// apart by how it sounds rather than by a spoken label like "narrator:" on every line —
+// the listener learns the timbre in one sentence and never has to hear the word again.
+const DELIVERY: { readonly [K in Voice]: { readonly rate: number; readonly pitch: number } } = {
+  user: { rate: 1, pitch: 1 },
+  assistant: { rate: 1, pitch: 0.95 },
+  system: { rate: 1, pitch: 1.05 },
+  narrator: { rate: 1.12, pitch: 0.85 },
+};
+
+// [LAW:dataflow-not-control-flow] Assign a distinct synthesizer voice to each of our four
+// voices, from whatever the browser offers. Total by construction: a browser with one voice
+// (or none) yields nulls, and null means "the synthesizer's default" — a legitimate value
+// the caller passes straight through, never an error and never a silently dropped utterance.
+//
+// English voices are preferred but not required: the ordering puts them first and then
+// takes what is left, so a browser with no English voice still gets four assignments rather
+// than none. Deterministic given the same list, which is what makes it testable.
+export const assignVoices = (available: ReadonlyArray<SpeechSynthesisVoice>): {
+  readonly [K in Voice]: SpeechSynthesisVoice | null;
+} => {
+  const ordered = [...available].sort((a, b) => {
+    const en = (v: SpeechSynthesisVoice): number => (v.lang.toLowerCase().startsWith("en") ? 0 : 1);
+    return en(a) - en(b);
+  });
+  const chosen = {} as { [K in Voice]: SpeechSynthesisVoice | null };
+  VOICES.forEach((voice, i) => {
+    chosen[voice] = ordered[i % Math.max(ordered.length, 1)] ?? null;
+  });
+  return chosen;
+};
+
+// ── the player ───────────────────────────────────────────────────────────────────────
+
+// What the page hands the player: where to speak, what to say, and the two ways the player
+// reports back. Both callbacks are REQUIRED rather than optional — an optional callback
+// invites a caller to build a player nobody can see the state of, and every real caller
+// wants both [LAW:no-defensive-null-guards].
+export interface PlayerConfig {
+  readonly window: SpeechWindow;
+  readonly utterances: ReadonlyArray<Utterance>;
+  // Called with the utterance now being spoken, and with null when nothing is.
+  readonly onUtterance: (utterance: Utterance | null) => void;
+  readonly onState: (state: PlayerState) => void;
+}
+
+export interface Player {
+  readonly send: (event: PlayerEvent) => void;
+  readonly state: () => PlayerState;
+}
+
+// [LAW:parse-dont-validate] The capability check, as a parser: it returns the synthesizer
+// (a type that could not exist if the browser lacked one) or null, so `createPlayer` below
+// takes a proven synthesizer and never re-asks. The page uses the same answer to decide
+// whether the Listen tool exists at all — a browser with no speech shows no button, rather
+// than a button that does nothing [LAW:no-silent-failure].
+export const speechSupport = (
+  w: SpeechWindow,
+): { readonly synth: SpeechSynthesis; readonly Utter: typeof SpeechSynthesisUtterance } | null => {
+  const synth: unknown = w.speechSynthesis;
+  const Utter: unknown = w.SpeechSynthesisUtterance;
+  if (!synth || typeof synth !== "object" || typeof Utter !== "function") return null;
+  return { synth: synth as SpeechSynthesis, Utter: Utter as typeof SpeechSynthesisUtterance };
+};
+
+export const createPlayer = (config: PlayerConfig): Player | null => {
+  const support = speechSupport(config.window);
+  if (support === null) return null;
+  const { synth, Utter } = support;
+  const { utterances, onUtterance, onState } = config;
+
+  let state: PlayerState = { kind: "idle" };
+  // The utterance object currently handed to the synthesizer. It is held ONLY so that a
+  // late `end` from a cancelled sentence can be recognised and ignored: the browser fires
+  // `end` on cancel, and without this the player would advance a turn nobody heard.
+  let live: SpeechSynthesisUtterance | null = null;
+
+  const speak = (at: number): void => {
+    const utterance = utterances[at];
+    if (utterance === undefined) {
+      throw new RangeError(`speech player: no utterance at ${at} of ${utterances.length}`);
+    }
+    const voices = assignVoices(synth.getVoices());
+    const spoken = new Utter(utterance.text);
+    const delivery = DELIVERY[utterance.voice];
+    spoken.rate = delivery.rate;
+    spoken.pitch = delivery.pitch;
+    // A null assignment leaves the synthesizer's own default in place — the honest
+    // encoding of "this browser had nothing to choose from".
+    const chosen = voices[utterance.voice];
+    if (chosen !== null) spoken.voice = chosen;
+    spoken.onend = (): void => {
+      if (spoken !== live) return;
+      send({ kind: "finished" });
+    };
+    live = spoken;
+    onUtterance(utterance);
+    synth.speak(spoken);
+  };
+
+  // [LAW:single-enforcer] The ONE place state changes and effects are applied. Every
+  // control on the page routes through here, so "cancel the current sentence before
+  // starting another" is guaranteed by the shape rather than remembered at four call sites.
+  const send = (event: PlayerEvent): void => {
+    const before = state;
+    const after = advance(before, event, utterances.length);
+    state = after;
+
+    // Pause/resume are the synthesizer's own — they hold the sentence mid-word, which is
+    // what a listener expects, and are the one case where re-speaking would be wrong.
+    if (before.kind === "speaking" && after.kind === "paused") {
+      synth.pause();
+      onState(after);
+      return;
+    }
+    if (before.kind === "paused" && after.kind === "speaking" && before.at === after.at) {
+      synth.resume();
+      onState(after);
+      return;
+    }
+
+    // Everything else is a position change: abandon whatever is mid-sentence and either
+    // start the new one or fall silent. `live = null` BEFORE cancel() is what disarms the
+    // `end` this cancel is about to fire.
+    live = null;
+    synth.cancel();
+    if (after.kind === "speaking") {
+      speak(after.at);
+    } else {
+      onUtterance(null);
+    }
+    onState(after);
+  };
+
+  return { send, state: () => state };
+};

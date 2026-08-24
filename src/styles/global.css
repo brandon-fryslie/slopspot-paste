@@ -3183,3 +3183,46 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 /* The tool-call edit fields sit in the reader's condensed body; the summary row
    above already carries bottom padding, the fields need only a hair of air. */
 .pv-tool-fields { padding-top: 4px; }
+
+/* ─── Listen (slopspot-speech-ins) ────────────────────────────────────────
+   The transport in the dock's Listen panel, and the mark on the turn being
+   spoken. Both halves of the audio's visible presence live here together, so
+   the "which turn is playing" colour and the control that started it cannot
+   drift apart [LAW:one-source-of-truth]. The buttons wear .mono-pill for their
+   chrome; only the row's layout is local. */
+.speech-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+/* The position readout is a status line, not a control: it takes the muted meta
+   voice the other panels' status rows use rather than competing with the buttons. */
+.speech-now {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+/* A disabled Stop is dimmed rather than hidden: the control's absence would move
+   the row's layout on every play/stop, and a reader tracking the audio should not
+   have the buttons shifting under the pointer. */
+.speech-stop[disabled] { opacity: 0.45; cursor: default; }
+.speech-stop[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
+
+/* The turn currently being spoken. A left rule plus a wash — deliberately quieter
+   than the search-hit highlight, because this one moves every few seconds and a
+   strong colour pulsing down the page is exhausting to read alongside. */
+.speaking {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+/* [LAW:no-ambient-temporal-coupling] The follow-along scroll and this fade are the
+   only motion the tool adds, and a reader who has asked for less motion gets the
+   mark without the animation — the mark itself is never withheld, since it is the
+   only thing showing where the audio is. */
+@media (prefers-reduced-motion: reduce) {
+  .speaking { transition: none; }
+}
