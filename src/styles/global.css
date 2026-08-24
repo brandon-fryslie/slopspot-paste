@@ -1346,8 +1346,14 @@ body.search-active .minimap-marker.is-hit .minimap-line {
 .bubbles > .bubble {
   transition: box-shadow 0.22s ease-out;
 }
-.conversation > .bubble:hover:not(.collapsed-turn),
-.bubbles > .bubble:hover:not(.collapsed-turn) {
+/* :not(.speaking) is load-bearing, not decorative: box-shadow does not merge across
+   rules, so without it hovering the turn currently being read (a natural thing to
+   do — the follow-along scroll can carry the auto-scrolled turn under a stationary
+   cursor) would replace .speaking's accent ring with this generic lift shadow
+   wholesale for as long as the pointer stayed there, silently hiding the one marker
+   that says which turn is playing [LAW:single-enforcer]. */
+.conversation > .bubble:hover:not(.collapsed-turn):not(.speaking),
+.bubbles > .bubble:hover:not(.collapsed-turn):not(.speaking) {
   box-shadow: var(--bubble-hover-shadow);
   transition: box-shadow 0.13s ease-out;
 }
@@ -1651,7 +1657,13 @@ body.code-copy-ready pre.code-block:hover .code-lang {
    top edge when jumped to. The highlight flashes an accent ring once, then
    settles into a faint persistent ring so the linked-to turn stays identifiable. */
 .conversation > [data-index] { scroll-margin-top: 24px; }
-.conversation > [data-index]:target {
+/* :not(.speaking) here for the same reason the hover rule carries it: a RUNNING
+   animation's computed value for an animated property wins over any cascaded
+   declaration regardless of specificity, so the flash would mask .speaking's ring
+   for its whole 1.6s on a permalink that deep-links straight to the turn Listen is
+   currently on — no specificity fix could win that; only never animating the
+   property on a speaking bubble does [LAW:single-enforcer]. */
+.conversation > [data-index]:target:not(.speaking) {
   outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: 3px;
   animation: turn-target-flash 1.6s ease-out;
@@ -3183,3 +3195,61 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 /* The tool-call edit fields sit in the reader's condensed body; the summary row
    above already carries bottom padding, the fields need only a hair of air. */
 .pv-tool-fields { padding-top: 4px; }
+
+/* ─── Listen (slopspot-speech-ins) ────────────────────────────────────────
+   The transport in the dock's Listen panel, and the mark on the turn being
+   spoken. Both halves of the audio's visible presence live here together, so
+   the "which turn is playing" colour and the control that started it cannot
+   drift apart [LAW:one-source-of-truth]. The buttons wear .mono-pill for their
+   chrome; only the row's layout is local. */
+.speech-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+/* The position readout is a status line, not a control: it takes the muted meta
+   voice the other panels' status rows use rather than competing with the buttons. */
+.speech-now {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+/* A disabled Stop is dimmed rather than hidden: the control's absence would move
+   the row's layout on every play/stop, and a reader tracking the audio should not
+   have the buttons shifting under the pointer. */
+.speech-stop[disabled] { opacity: 0.45; cursor: default; }
+.speech-stop[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
+
+/* The turn currently being spoken. Box-shadow only, deliberately — NOT `background`:
+   every bubble already carries a role-tinted background (.bubble-user/-assistant/-system,
+   set above at the same one-class specificity), and a `background` declaration here would
+   fully REPLACE that colour rather than mark it, since the two rules tie in specificity
+   and this one is later in the file [LAW:one-source-of-truth]. box-shadow has no such
+   collision — it paints independently of background-color — so the role colour is never
+   lost while a turn speaks.
+   It also declares no transition of its own: `.bubble` already transitions box-shadow
+   (the hover rule above), so the mark fades in for free through that existing rule rather
+   than through a second declaration that would only re-fight the same specificity tie.
+   The hover rule above excludes `.speaking` explicitly (`:not(.speaking)`) rather than
+   this rule trying to out-specify it — a specificity race is exactly the trap this
+   comment already warns about with `background`, so hover is kept from ever touching a
+   speaking bubble's box-shadow at all, instead of merely winning against it. */
+.speaking {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+/* [LAW:no-ambient-temporal-coupling] The follow-along scroll and this fade are the only
+   motion the tool adds, and a reader who has asked for less motion gets the mark without
+   the animation. Scoped to match `.conversation > .bubble`'s own specificity (two classes)
+   plus `.speaking` (three) so it actually wins the transition property it is disabling,
+   rather than losing the same tie the rule above was written to avoid. */
+@media (prefers-reduced-motion: reduce) {
+  .conversation > .bubble.speaking,
+  .bubbles > .bubble.speaking {
+    transition: none;
+  }
+}
