@@ -165,15 +165,23 @@ export const parseFallback = (markdown: string): Turn[] => raceTextArms(normaliz
 // [LAW:single-enforcer] The one resolution of "which parser projects this url
 // origin's bytes", keyed on the resolved provider (null = unclaimed host →
 // fallback). Both ingest and reproject route through it, so a paste is replayed
-// through the same parser that first projected it.
-const parserFor = (provider: Provider | null): ((markdown: string) => Turn[] | null) =>
-  provider === null ? parseFallback : PROVIDER_REGISTRY[provider].parser;
+// through the same parser that first projected it. Uniform two-argument shape
+// ([LAW:one-type-per-behavior]) matches ProviderEntry.parser — the fallback
+// simply has no html-derived behavior to apply.
+const parserFor = (provider: Provider | null): ((markdown: string, html: string | null) => Turn[] | null) =>
+  provider === null ? (markdown) => parseFallback(markdown) : PROVIDER_REGISTRY[provider].parser;
 
 // [LAW:single-enforcer] The companion resolution of "how to wait for this url's
 // host to hydrate" — a named provider's selector strategy, or the settle fallback
 // for an unclaimed host. Only ingest fetches, so only ingest needs this.
-const waitFor = (provider: Provider | null): WaitStrategy =>
-  provider === null ? FALLBACK_WAIT : PROVIDER_REGISTRY[provider].wait;
+// `wantsHtml` selects the provider's `htmlWait` when it fetches html (a chart's
+// animation-in delay, verified live for claude-share — providers.ts), else the
+// cheap default `wait`, so a markdown-only fetch never pays a settle it doesn't need.
+const waitFor = (provider: Provider | null, wantsHtml: boolean): WaitStrategy => {
+  if (provider === null) return FALLBACK_WAIT;
+  const entry = PROVIDER_REGISTRY[provider];
+  return wantsHtml ? (entry.htmlWait ?? entry.wait) : entry.wait;
+};
 
 // [LAW:types-are-the-program] parseInput commits to the kind the caller named.
 // No silent fallback to a different parser — a wrong pick is a typed failure.
@@ -246,15 +254,22 @@ export const ingestPaste = async (
   // bubble of the fetched content), never dropped — the user's intent that any
   // posted link becomes a conversation, never a lone raw bubble of the link text.
   const provider = resolveProvider(url);
-  const fetched = await firecrawlScrape(url, waitFor(provider), env);
+  // [LAW:single-enforcer] Whether to also fetch html is a per-provider VALUE
+  // (ProviderEntry.wantsHtml) — this call site never decides it itself.
+  const wantsHtml = provider !== null && PROVIDER_REGISTRY[provider].wantsHtml;
+  const fetched = await firecrawlScrape(url, waitFor(provider, wantsHtml), env, wantsHtml);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
   // [LAW:single-enforcer] The same size cap that the API applies to user input
   // also governs fetched content — otherwise a tiny URL could smuggle an
-  // arbitrarily large markdown body past the boundary into parse + KV storage.
-  if (new TextEncoder().encode(fetched.markdown).length > MAX_PASTE_BYTES) {
+  // arbitrarily large markdown (+ html) body past the boundary into parse + KV
+  // storage. Both fetched artifacts are stored on the origin, so both count.
+  const fetchedBytes =
+    new TextEncoder().encode(fetched.markdown).length +
+    (fetched.html ? new TextEncoder().encode(fetched.html).length : 0);
+  if (fetchedBytes > MAX_PASTE_BYTES) {
     return { ok: false, reason: `Fetched content exceeds the ${MAX_PASTE_LABEL} limit.` };
   }
-  const turns = parserFor(provider)(fetched.markdown);
+  const turns = parserFor(provider)(fetched.markdown, fetched.html ?? null);
   if (turns === null || turns.length === 0) {
     // Reachable only for a NAMED provider whose parser rejected the bytes — the
     // fallback is total, so an unclaimed host always yields ≥1 turn above.
@@ -267,7 +282,9 @@ export const ingestPaste = async (
   // fetched markdown alongside the link AND the resolved provider, so re-projection
   // parses these stored bytes through that provider's parser and never has to
   // re-hit the network (a refetch could 404, drift, or cost money — the captured
-  // bytes are the authority).
+  // bytes are the authority). html rides alongside for the same reason, when the
+  // provider requested it — the one fetched artifact chart re-derivation needs
+  // (slopspot-mobile-parity-8s8.1.1).
   // [LAW:effects-at-boundaries] The fetch instant is stamped HERE, at the boundary
   // that performed the fetch — the one place the clock and the effect meet
   // (slopspot-freshness-eck.4). Every freshly ingested url origin carries its age
@@ -278,7 +295,14 @@ export const ingestPaste = async (
   return {
     ok: true,
     turns,
-    origin: { kind: "url", url, fetched: fetched.markdown, provider, fetchedAt: Date.now() },
+    origin: {
+      kind: "url",
+      url,
+      fetched: fetched.markdown,
+      provider,
+      fetchedAt: Date.now(),
+      ...(fetched.html ? { html: fetched.html } : {}),
+    },
   };
 };
 
@@ -369,7 +393,7 @@ export const reprojectOrigin = (origin: Origin): ReadonlyArray<Turn> | null => {
     case "editor":
       return null;
     case "url":
-      return parserFor(origin.provider)(origin.fetched);
+      return parserFor(origin.provider)(origin.fetched, origin.html ?? null);
     default:
       return PARSER_BY_KIND[origin.kind](normalize(origin.content));
   }

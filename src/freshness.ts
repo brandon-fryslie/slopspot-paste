@@ -39,7 +39,13 @@ export interface FreshFetch {
 //
 // `now` is a parameter — the clock is the boundary's effect, keeping this pure.
 export const planRefetch = (existing: UrlPaste, fresh: FreshFetch, now: number): RefetchPlan => {
-  if (fresh.origin.fetched === existing.origin.fetched) return { kind: "unchanged" };
+  // html is part of the origin now too (slopspot-mobile-parity-8s8.1.1) — a
+  // refetch whose markdown is byte-identical but whose chart html changed
+  // (e.g. new chart data with unchanged prose) is still a real change; both
+  // fields must agree for "unchanged" to be honest.
+  if (fresh.origin.fetched === existing.origin.fetched && fresh.origin.html === existing.origin.html) {
+    return { kind: "unchanged" };
+  }
   return {
     kind: "changed",
     // The archive: the prior origin VERBATIM (bytes, url, provider, its own fetch

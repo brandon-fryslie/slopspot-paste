@@ -15,18 +15,19 @@
 import type { Role, Turn } from "../types";
 import { isSpokenTurn, type SpokenTurn } from "../dialogue";
 
-// [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. Both `usage`
-// (token accounting) and `subagent` (a reattached nested run) are source-DERIVED,
-// not something a human types, splits, or kind-converts — so both are excluded
-// from the type the editor operates on. This makes "a block never holds a usage
-// or subagent turn" a compile-time fact (every switch below stays exhaustive
-// without a nonsensical case) rather than a runtime convention; these turns are
-// filtered out at the single load seam (store.loadTurns) before they could ever
-// reach a Block. Hand-authoring nested subagent structure is out of scope —
-// editing content, not display, is unchanged.
-export type AuthorableTurn = Exclude<Turn, { kind: "usage" | "subagent" }>;
+// [LAW:types-are-the-program] The editor edits AUTHOR-ABLE turns. `usage`
+// (token accounting), `subagent` (a reattached nested run), and `chart`
+// (pixel-recovered chart data, slopspot-mobile-parity-8s8.1.1) are all
+// source-DERIVED, not something a human types, splits, or kind-converts — so
+// all three are excluded from the type the editor operates on. This makes "a
+// block never holds a usage, subagent, or chart turn" a compile-time fact
+// (every switch below stays exhaustive without a nonsensical case) rather than
+// a runtime convention; these turns are filtered out at the single load seam
+// (store.loadTurns) before they could ever reach a Block. Hand-authoring chart
+// data is out of scope — editing content, not display, is unchanged.
+export type AuthorableTurn = Exclude<Turn, { kind: "usage" | "subagent" | "chart" }>;
 export const isAuthorable = (turn: Turn): turn is AuthorableTurn =>
-  turn.kind !== "usage" && turn.kind !== "subagent";
+  turn.kind !== "usage" && turn.kind !== "subagent" && turn.kind !== "chart";
 
 export interface Block {
   readonly id: string;

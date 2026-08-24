@@ -8,7 +8,7 @@
 import { canonicalize, detectSources, ingestPaste, isUrl, parseFallback, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { decodeRequest } from "../src/paste-request";
 import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
-import { parseClaudeShare } from "../src/parsers/claude-share";
+import { parseClaudeShare, parseClaudeShareWithCharts } from "../src/parsers/claude-share";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { INPUT_KINDS, isOrigin, isTurns, PROVIDERS, sourceOf, sourceUrlOf, TEXT_ARM_KINDS, textArmInput } from "../src/types";
 import { hostLabel } from "../src/url";
@@ -1285,6 +1285,75 @@ console.log("\nGeneric URL detection (isUrl — url-ingestion-wfd.4):");
   }
 }
 
+console.log("\nclaude-share chart recovery (slopspot-mobile-parity-8s8.1.1):");
+{
+  // A hand-authored MINIMAL synthetic fixture, not a captured page — this repo's
+  // fixture pipeline forbids committing a raw scrape (test/fixtures/README.md),
+  // and this is a durable regression test, not an investigation artifact. It
+  // reproduces just the structural shapes extractChart depends on: the
+  // cds-chart-axis fingerprint, two y-axis ticks (pixel 150→value 0, pixel 0→value
+  // 10) and two x-axis ticks (pixel 0→value 1, pixel 100→value 2), and two data
+  // points. Verified against the LIVE reference share during 8s8.1.1 (never
+  // committed); this fixture exists only to pin the pixel→value arithmetic.
+  const md = "## You said: hi\n\nhi\n\n## Claude responded: chart\n\nSome analysis text\n";
+  const html =
+    '<html><body><div data-testid="user-message">hi</div><div><svg>' +
+    '<line class="cds-chart-axis-line"></line>' +
+    '<circle cx="0" cy="100" r="3" fill="var(--cds-chart-categorical-1)"></circle>' +
+    '<circle cx="100" cy="50" r="3" fill="var(--cds-chart-categorical-1)"></circle>' +
+    '<g transform="translate(0,150)"><line></line><text text-anchor="end">0</text></g>' +
+    '<g transform="translate(0,0)"><line></line><text text-anchor="end">10</text></g>' +
+    '<text x="0" y="200" text-anchor="middle">1</text>' +
+    '<text x="100" y="200" text-anchor="middle">2</text>' +
+    "</svg></div></body></html>";
+
+  const withCharts = parseClaudeShareWithCharts(md, html);
+  assert("chart recovery: parses", withCharts !== null);
+  const charts = (withCharts ?? []).filter((t) => t.kind === "chart");
+  assertEq("chart recovery: one chart turn recovered", charts.length, 1);
+  if (charts[0]?.kind === "chart") {
+    assertEq("chart recovery: one series", charts[0].series.length, 1);
+    assertEq(
+      "chart recovery: pixel positions inverted through the tick scale",
+      JSON.stringify(charts[0].series[0]!.points),
+      JSON.stringify([
+        { x: 1, y: 3.33 },
+        { x: 2, y: 6.67 },
+      ]),
+    );
+  }
+  // The chart lands AFTER the assistant turn's own bodyTurns, not before or
+  // interleaved arbitrarily — the boundary insertion point.
+  const chartIdx = (withCharts ?? []).findIndex((t) => t.kind === "chart");
+  assertEq("chart recovery: chart is the LAST turn (end of the one assistant exchange)",
+    chartIdx, (withCharts ?? []).length - 1);
+
+  // No html → identical to parseClaudeShare's own output (no chart, no crash).
+  assertEq(
+    "chart recovery: null html reproduces parseClaudeShare exactly",
+    JSON.stringify(parseClaudeShareWithCharts(md, null)),
+    JSON.stringify(parseClaudeShare(md)),
+  );
+
+  // A user-marker count that disagrees with the markdown's user-heading count
+  // is a proof failure — no chart is attached, never a guessed placement.
+  const mismatchedHtml = html.replace('<div data-testid="user-message">hi</div>', "");
+  assertEq(
+    "chart recovery: marker/heading count mismatch → no chart attached",
+    (parseClaudeShareWithCharts(md, mismatchedHtml) ?? []).some((t) => t.kind === "chart"),
+    false,
+  );
+
+  // An svg with no circles, or ticks that don't fit a line, yields no chart —
+  // proof-or-abstain, never a fabricated series.
+  const noAxisHtml = html.replace("cds-chart-axis-line", "not-a-chart");
+  assertEq(
+    "chart recovery: svg missing the chart fingerprint → no chart attached",
+    (parseClaudeShareWithCharts(md, noAxisHtml) ?? []).some((t) => t.kind === "chart"),
+    false,
+  );
+}
+
 console.log("\nclaude-share tool indicators (claude-share-4pf):");
 {
   // Fixtures are real share pages captured via the production Firecrawl call
@@ -2498,6 +2567,7 @@ console.log("\nDerived nested dialogue (deriveDialogue — cbm.1):");
         stepCount: 0,
         body: { kind: "summary-only", prompt: "", result: "" },
       },
+      chart: { kind: "chart", series: [{ points: [{ x: 0, y: 0 }] }] },
     };
     return blockVisibility(sample[kind]);
   };
@@ -2508,6 +2578,7 @@ console.log("\nDerived nested dialogue (deriveDialogue — cbm.1):");
   assertEq("subagent is detail", visOf("subagent"), "detail");
   assertEq("turn-summary is meta", visOf("turn-summary"), "meta");
   assertEq("usage is meta", visOf("usage"), "meta");
+  assertEq("chart is spine", visOf("chart"), "spine");
 
   // Empty stream → empty dialogue. A system message becomes its own spoken node
   // and breaks the assistant run.
@@ -3023,7 +3094,7 @@ console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — per-provid
   // drops the action, or stops threading the selector, fails loudly here.
   for (const provider of PROVIDERS) {
     const entry = PROVIDER_REGISTRY[provider];
-    const body = scrapeRequestBody("https://example.test/x", entry.wait);
+    const body = scrapeRequestBody("https://example.test/x", entry.wait, entry.wantsHtml);
     assert(`scrapeRequestBody[${provider}] includes formats:markdown`, body.formats.includes("markdown"));
     const waitAction = body.actions.find((a) => a.type === "wait");
     assert(`scrapeRequestBody[${provider}] has a wait action`, waitAction !== undefined);
@@ -3054,7 +3125,7 @@ console.log("\nFirecrawl scrape request body (firecrawl-fetch-bq8 — per-provid
   // not a DOM selector — the spike proved there is no universal hydration selector,
   // so a wrong one would time out. Assert it maps to a milliseconds wait action
   // carrying NO selector (firecrawl's only selector-less wait mode).
-  const fallbackBody = scrapeRequestBody("https://example.test/x", FALLBACK_WAIT);
+  const fallbackBody = scrapeRequestBody("https://example.test/x", FALLBACK_WAIT, false);
   const fallbackWait = fallbackBody.actions.find((a) => a.type === "wait");
   const fallbackMs = FALLBACK_WAIT.kind === "settle" ? FALLBACK_WAIT.ms : -1;
   assert("FALLBACK_WAIT is a settle strategy", FALLBACK_WAIT.kind === "settle");

@@ -278,6 +278,7 @@ const fold = (
         return;
       case "turn-summary":
       case "usage":
+      case "chart":
         return;
       default:
         return assertNever(block);

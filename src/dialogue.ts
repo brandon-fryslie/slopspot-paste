@@ -20,7 +20,7 @@
 // produce a nested `Dialogue` — which is why Dialogue is named and recursive-ready
 // below, and why the same renderer can draw any depth.
 
-import type { Role, Turn, ToolOutput, Usage, SubagentTranscript } from "./types";
+import type { ChartSeries, Role, Turn, ToolOutput, Usage, SubagentTranscript } from "./types";
 
 // [LAW:types-are-the-program] A block of agent activity inside one assistant turn.
 // Each arm carries exactly the fields its kind needs — a tool-call's result lives
@@ -55,6 +55,14 @@ export type AssistantBlock =
       readonly description: string | null;
       readonly stepCount: number;
       readonly body: SubagentBody;
+    }
+  | {
+      // [LAW:types-are-the-program] Recovered chart data (slopspot-mobile-
+      // parity-8s8.1.1) — real content the reader wants to SEE, not a
+      // collapsed detail like thinking/tool-call, so it carries the series
+      // straight through with no display-shape transform here.
+      readonly kind: "chart";
+      readonly series: ReadonlyArray<ChartSeries>;
     };
 
 // [LAW:types-are-the-program] The display twin of SubagentTranscript: `captured`
@@ -155,6 +163,9 @@ export const BLOCK_VISIBILITY: { readonly [K in AssistantBlock["kind"]]: Visibil
   subagent: "detail",
   "turn-summary": "meta",
   usage: "meta",
+  // A chart is real, wanted content — not collapsed noise like thinking or a
+  // tool call — so it rides the spine alongside text/insight.
+  chart: "spine",
 };
 
 export const blockVisibility = (block: AssistantBlock): Visibility =>
@@ -187,6 +198,10 @@ export const blockText = (block: AssistantBlock): string => {
     case "subagent":
       return block.description ?? block.agentType ?? "";
     case "usage":
+      return "";
+    // Numeric points carry no readable prose — nothing here for an outline
+    // label, a spine snippet, or a summary prompt to quote.
+    case "chart":
       return "";
   }
 };
@@ -340,6 +355,9 @@ export const deriveDialogue = (turns: ReadonlyArray<Turn>): Dialogue => {
           stepCount: turn.stepCount,
           body: deriveSubagentBody(turn.transcript),
         });
+        break;
+      case "chart":
+        openAssistant().push({ kind: "chart", series: turn.series });
         break;
       default:
         return assertNever(turn);

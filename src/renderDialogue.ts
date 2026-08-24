@@ -19,7 +19,7 @@
 
 import type { AssistantBlock, ViewableDialogue } from "./dialogue";
 import { turnAnchorId, spineNodeLabel, plainView } from "./dialogue";
-import type { Role, Usage } from "./types";
+import type { ChartSeries, Role, Usage } from "./types";
 import { condenseToolCall, type ToolStatus } from "./toolCall";
 import { escapeHtml, escapeAttr, renderMarkdown, toolOutputHtml } from "./render";
 
@@ -250,6 +250,84 @@ const turnSummaryHtml = (text: string): string =>
   `<span>${escapeHtml(text)}</span>` +
   `</aside>`;
 
+// [LAW:one-source-of-truth] slopspot's OWN chart, drawn entirely from the
+// recovered (x,y) values through slopspot's own --chart-* CSS tokens
+// (global.css) — never the source page's markup or its `var(--cds-chart-*)`
+// names (which resolve to nothing outside claude.ai's own stylesheet; see the
+// investigation note on the `chart` Turn arm, types.ts). A rebuilt owned
+// projection can't drift the way an embedded foreign snapshot would.
+const CHART_W = 640;
+const CHART_H = 220;
+const CHART_PAD = 30;
+
+const formatTick = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+
+const chartHtml = (series: ReadonlyArray<ChartSeries>): string => {
+  const points = series.flatMap((s) => s.points);
+  if (points.length === 0) return "";
+
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const yMin = Math.min(...ys);
+  const yMax = Math.max(...ys);
+  const xSpan = xMax - xMin || 1;
+  const ySpan = yMax - yMin || 1;
+  const plotW = CHART_W - CHART_PAD * 2;
+  const plotH = CHART_H - CHART_PAD * 2;
+  // SVG y grows downward; the chart's y VALUE should grow upward, so this is
+  // the one place that inverts — every coordinate downstream reads plotted-y
+  // directly off this function, never re-deriving the flip.
+  const sx = (x: number): number => CHART_PAD + ((x - xMin) / xSpan) * plotW;
+  const sy = (y: number): number => CHART_PAD + plotH - ((y - yMin) / ySpan) * plotH;
+
+  const gridHtml = [0, 0.5, 1]
+    .map((f) => {
+      const y = (CHART_PAD + f * plotH).toFixed(1);
+      return `<line class="chart-grid" x1="${CHART_PAD}" y1="${y}" x2="${CHART_W - CHART_PAD}" y2="${y}"></line>`;
+    })
+    .join("");
+  const yLabelHtml = [
+    [yMax, 0],
+    [(yMin + yMax) / 2, 0.5],
+    [yMin, 1],
+  ]
+    .map(
+      ([value, f]) =>
+        `<text class="chart-axis-label" x="${CHART_PAD - 6}" y="${(CHART_PAD + f! * plotH).toFixed(1)}" text-anchor="end" dominant-baseline="middle">${escapeHtml(formatTick(value!))}</text>`,
+    )
+    .join("");
+  const xLabelHtml =
+    `<text class="chart-axis-label" x="${CHART_PAD}" y="${CHART_H - 8}" text-anchor="start">${escapeHtml(formatTick(xMin))}</text>` +
+    `<text class="chart-axis-label" x="${CHART_W - CHART_PAD}" y="${CHART_H - 8}" text-anchor="end">${escapeHtml(formatTick(xMax))}</text>`;
+
+  const seriesHtml = series
+    .map((s, i) => {
+      const slot = (i % 3) + 1;
+      const linePoints = s.points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
+      const dots = s.points
+        .map(
+          (p) =>
+            `<circle class="chart-point-${slot}" cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="2.5"></circle>`,
+        )
+        .join("");
+      return `<polyline class="chart-series chart-series-${slot}" points="${linePoints}"></polyline>${dots}`;
+    })
+    .join("");
+
+  return (
+    `<div class="assistant-chart" data-kind="chart">` +
+    `<svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" aria-label="Recovered chart">` +
+    gridHtml +
+    yLabelHtml +
+    xLabelHtml +
+    seriesHtml +
+    `</svg>` +
+    `</div>`
+  );
+};
+
 const groupThousands = (n: number): string =>
   String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
@@ -318,6 +396,8 @@ const renderDialogueHtml = (view: ViewableDialogue, topLevel: boolean = true): s
       case "usage":
         cumulativeOutput += block.usage.output;
         return usageHtml(block.usage, cumulativeOutput);
+      case "chart":
+        return chartHtml(block.series);
     }
   };
 

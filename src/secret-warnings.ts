@@ -49,6 +49,9 @@ const turnScanText = (turn: Turn): string => {
       return "";
     case "subagent":
       return transcriptScanText(turn.transcript);
+    // Numeric coordinates only — no free text a secret could hide in.
+    case "chart":
+      return "";
   }
 };
 

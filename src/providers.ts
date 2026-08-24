@@ -1,7 +1,7 @@
 import type { Provider, Turn } from "./types";
 import { PROVIDERS } from "./types";
 import type { WaitStrategy } from "./firecrawl";
-import { parseClaudeShare } from "./parsers/claude-share";
+import { parseClaudeShareWithCharts } from "./parsers/claude-share";
 import { parseChatgptShare } from "./parsers/chatgpt-share";
 import { singleLineUrl } from "./url";
 
@@ -26,10 +26,13 @@ export interface ProviderEntry {
   // an already-trimmed, single-line URL, so the pattern need not re-encode those
   // guards — it states only the host/path contract.
   readonly urlPattern: RegExp;
-  // Pure projection of fetched markdown into turns. null = "these bytes are not a
-  // conversation in this provider's format" — never a throw, never a guess
-  // ([LAW:no-silent-failure]).
-  readonly parser: (markdown: string) => Turn[] | null;
+  // Pure projection of fetched markdown (+ html, when wantsHtml fetched it) into
+  // turns. null = "these bytes are not a conversation in this provider's format"
+  // — never a throw, never a guess ([LAW:no-silent-failure]). Every provider
+  // takes the same two-argument shape ([LAW:one-type-per-behavior]) — a provider
+  // with no html-derived content (chatgpt-share) simply ignores the second
+  // argument rather than carrying a different parser shape.
+  readonly parser: (markdown: string, html: string | null) => Turn[] | null;
   // [LAW:no-ambient-temporal-coupling] How to wait for this host's client-rendered
   // conversation to hydrate before the scrape reads it. A known provider uses a
   // `selector` strategy — the DOM node that proves its messages rendered — because
@@ -39,6 +42,21 @@ export interface ProviderEntry {
   // timed out after 20s on that host. (The unclaimed-host fallback uses the
   // selector-less `settle` strategy — see FALLBACK_WAIT.)
   readonly wait: WaitStrategy;
+  // [LAW:carrying-cost] Whether this provider's display needs the raw HTML fetch
+  // alongside markdown — true only for claude-share, whose inline charts have no
+  // markdown representation at all (slopspot-mobile-parity-8s8.1.1). false for
+  // every other provider keeps their fetch at the original single-format cost;
+  // this is a per-provider VALUE, not a global toggle, so widening one provider's
+  // needs never taxes the others.
+  readonly wantsHtml: boolean;
+  // [LAW:no-ambient-temporal-coupling] The wait strategy for an html-requesting
+  // fetch, when it differs from `wait` — verified live for claude-share: its
+  // charts finish animating in AFTER the `wait` selector's hydration proof
+  // fires, so the plain selector wait reliably captured zero chart points.
+  // Absent = `wait` is already sufficient (every provider that doesn't set
+  // wantsHtml true). Kept separate from `wait` rather than replacing it so the
+  // cheap, common markdown-only fetch never pays the extra settle.
+  readonly htmlWait?: WaitStrategy;
 }
 
 // [LAW:types-are-the-program] Keyed by Provider, so the type system forces
@@ -48,12 +66,19 @@ export interface ProviderEntry {
 export const PROVIDER_REGISTRY: { readonly [P in Provider]: ProviderEntry } = {
   "claude-share": {
     urlPattern: /^https?:\/\/claude\.ai\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i,
-    parser: parseClaudeShare,
+    parser: parseClaudeShareWithCharts,
     wait: { kind: "selector", selector: '[data-testid="user-message"]' },
+    wantsHtml: true,
+    // 3s verified live (slopspot-mobile-parity-8s8.1.1): the reference share's
+    // charts had zero rendered points at the selector-wait instant and were
+    // fully drawn once this settle elapsed.
+    htmlWait: { kind: "selector-then-settle", selector: '[data-testid="user-message"]', ms: 3000 },
   },
   "chatgpt-share": {
     urlPattern: /^https?:\/\/chatgpt\.com\/share\/[A-Za-z0-9_-]+\/?(?:\?.*)?$/i,
-    parser: parseChatgptShare,
+    // chatgpt-share has no html-derived content (yet) — the extra argument is
+    // simply unused, keeping every provider's parser the same shape.
+    parser: (markdown) => parseChatgptShare(markdown),
     // [LAW:no-ambient-temporal-coupling] The hydration proof for chatgpt.com,
     // resolved by the wfd.1 spike via live DOM inspection: the spike confirmed
     // chatgpt.com never renders claude.ai's [data-testid="user-message"] (a
@@ -61,6 +86,7 @@ export const PROVIDER_REGISTRY: { readonly [P in Provider]: ProviderEntry } = {
     // carries data-message-author-role. Waiting on it proves the conversation
     // hydrated before the scrape read it.
     wait: { kind: "selector", selector: "[data-message-author-role]" },
+    wantsHtml: false,
   },
 };
 

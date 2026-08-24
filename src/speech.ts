@@ -401,6 +401,10 @@ const DETAIL_UNIT: { readonly [K in AssistantBlock["kind"]]: string | null } = {
   subagent: "subagent run",
   "turn-summary": null,
   usage: null,
+  // A chart is spine-visible like text/insight, not a "detail" count — and its
+  // blockText is "", so the spoken pass simply contributes nothing for it
+  // (honest silence, never an invented narration of numbers).
+  chart: null,
 };
 
 // usage is checked by kind directly because it is the one "meta" kind that is genuinely

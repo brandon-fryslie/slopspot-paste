@@ -7,33 +7,59 @@
 // failure mode is a representable value, no throws across the module boundary.
 // Callers structurally handle ok vs not-ok; there is no third state.
 
+// [LAW:one-source-of-truth] `html` is present exactly when the caller asked for
+// it (wantHtml) AND Firecrawl returned one — absence is honest ("not
+// requested" or "requested but the host returned none"), never a fabricated
+// empty string standing in for either.
 export type FirecrawlResult =
-  | { readonly ok: true; readonly markdown: string }
+  | { readonly ok: true; readonly markdown: string; readonly html?: string }
   | { readonly ok: false; readonly reason: string };
 
 // [LAW:types-are-the-program] How the scrape waits for a client-rendered page to
-// hydrate before reading its DOM. Two honest strategies, each mapping to one
-// Firecrawl wait action (verified against the scrape API — those are the only two
-// wait modes; there is no networkidle):
-//   selector — wait until a DOM node proving the messages rendered appears. The
-//              strong choice: it fires the instant hydration completes. Used by
-//              every registered provider, whose message contract we know.
-//   settle   — wait a fixed duration with NO selector. The honest fallback for a
-//              host no provider claims: the spike proved there is no universal
-//              hydration selector, so an unknown page can only be given time.
-//              [LAW:no-ambient-temporal-coupling] this is a blind delay BY
-//              NECESSITY, scoped to the one case where no proof-of-hydration
-//              signal exists — a deliberate value, not an ambient assumption.
+// hydrate before reading its DOM. Three honest strategies, each mapping to one
+// or two Firecrawl wait actions (verified against the scrape API — there is no
+// networkidle mode):
+//   selector            — wait until a DOM node proving the messages rendered
+//                          appears. The strong choice: it fires the instant
+//                          hydration completes. Used by every registered
+//                          provider for its default (markdown-only) fetch.
+//   settle              — wait a fixed duration with NO selector. The honest
+//                          fallback for a host no provider claims: the spike
+//                          proved there is no universal hydration selector, so
+//                          an unknown page can only be given time.
+//                          [LAW:no-ambient-temporal-coupling] this is a blind
+//                          delay BY NECESSITY, scoped to the one case where no
+//                          proof-of-hydration signal exists.
+//   selector-then-settle — wait for the hydration selector, THEN hold for a
+//                          further fixed duration. Verified live against
+//                          claude.ai/share (slopspot-mobile-parity-8s8.1.1):
+//                          the message DOM node the `selector` strategy waits
+//                          on appears BEFORE its charts finish drawing — chart
+//                          SVGs animate their points in over roughly a second
+//                          after hydration, so a bare selector wait reliably
+//                          captured zero circles. This is a claude-share-only
+//                          html-fetch concern (ProviderEntry.htmlWait), never
+//                          the default markdown-only wait.
 export type WaitStrategy =
   | { readonly kind: "selector"; readonly selector: string }
-  | { readonly kind: "settle"; readonly ms: number };
+  | { readonly kind: "settle"; readonly ms: number }
+  | { readonly kind: "selector-then-settle"; readonly selector: string; readonly ms: number };
 
 // [LAW:dataflow-not-control-flow] One match maps the strategy VALUE to its wire
-// action; the caller never branches on wait mode, it passes a WaitStrategy.
-const waitAction = (wait: WaitStrategy) =>
-  wait.kind === "selector"
-    ? { type: "wait" as const, selector: wait.selector }
-    : { type: "wait" as const, milliseconds: wait.ms };
+// action(s); the caller never branches on wait mode, it passes a WaitStrategy.
+const waitActions = (wait: WaitStrategy) => {
+  switch (wait.kind) {
+    case "selector":
+      return [{ type: "wait" as const, selector: wait.selector }];
+    case "settle":
+      return [{ type: "wait" as const, milliseconds: wait.ms }];
+    case "selector-then-settle":
+      return [
+        { type: "wait" as const, selector: wait.selector },
+        { type: "wait" as const, milliseconds: wait.ms },
+      ];
+  }
+};
 
 export interface FirecrawlEnv {
   readonly FIRECRAWL_API_KEY?: string;
@@ -48,7 +74,7 @@ const FIRECRAWL_TIMEOUT_MS = 20_000;
 
 interface ScrapeResponse {
   readonly success?: boolean;
-  readonly data?: { readonly markdown?: string };
+  readonly data?: { readonly markdown?: string; readonly rawHtml?: string };
   readonly error?: string;
 }
 
@@ -57,11 +83,19 @@ interface ScrapeResponse {
 // before reading the DOM. [LAW:single-enforcer] HOW to wait is NOT this module's
 // to decide — it is a WaitStrategy VALUE the caller supplies (a provider's
 // hydration selector from the registry, or the settle fallback for an unclaimed
-// host). This file owns only the wire format: turning that value into the action.
-export const scrapeRequestBody = (url: string, wait: WaitStrategy) => ({
+// host). This file owns only the wire format: turning that value into the
+// action(s).
+// [LAW:single-enforcer] `wantHtml` is a VALUE the caller supplies (a provider's
+// own need, from the registry — slopspot-mobile-parity-8s8.1.1) so this file
+// stays the one place the formats list is assembled; no caller builds its own.
+// Requests Firecrawl's `rawHtml` format, NOT `html` — verified live: `html` is
+// a cleaned/boilerplate-stripped projection that silently drops the chart SVGs
+// entirely (confirmed empty of <circle>/chart markup), while `rawHtml` is the
+// literal DOM the browser rendered.
+export const scrapeRequestBody = (url: string, wait: WaitStrategy, wantHtml: boolean) => ({
   url,
-  formats: ["markdown"],
-  actions: [waitAction(wait)],
+  formats: wantHtml ? ["markdown", "rawHtml"] : ["markdown"],
+  actions: waitActions(wait),
 });
 
 // [LAW:no-defensive-null-guards] This IS a trust boundary — Firecrawl is an
@@ -72,6 +106,7 @@ export const firecrawlScrape = async (
   url: string,
   wait: WaitStrategy,
   env: FirecrawlEnv,
+  wantHtml: boolean = false,
 ): Promise<FirecrawlResult> => {
   const key = env.FIRECRAWL_API_KEY;
   if (!key) {
@@ -92,7 +127,7 @@ export const firecrawlScrape = async (
       "content-type": "application/json",
       authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify(scrapeRequestBody(url, wait)),
+    body: JSON.stringify(scrapeRequestBody(url, wait, wantHtml)),
     signal: AbortSignal.timeout(FIRECRAWL_TIMEOUT_MS),
   }).catch((e: unknown): unknown => e);
 
@@ -126,5 +161,10 @@ export const firecrawlScrape = async (
   if (typeof md !== "string" || md.length === 0) {
     return { ok: false, reason: "Firecrawl returned no markdown for this URL." };
   }
-  return { ok: true, markdown: md };
+  // [LAW:no-silent-failure] html is honestly OPTIONAL even when requested — a
+  // missing/empty value here means "not recoverable", never fabricated into "".
+  const html = body.data?.rawHtml;
+  return typeof html === "string" && html.length > 0
+    ? { ok: true, markdown: md, html }
+    : { ok: true, markdown: md };
 };

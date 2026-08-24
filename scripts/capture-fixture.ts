@@ -201,9 +201,12 @@ const main = async (): Promise<void> => {
   // registry ingestion uses, so the gate cannot diverge from production parsing.
   // `entry` is const, so its non-null narrowing holds inside the closure — the
   // gate reads the registered parser directly, no assertion.
+  // Capture fetches markdown only (this pipeline commits .md fixtures, never
+  // raw html — test/fixtures/README.md), so the gate always projects with no
+  // html to hand a provider's parser.
   const fixtureGate: (md: string) => boolean = entry
     ? (md) => {
-        const turns = entry.parser(md);
+        const turns = entry.parser(md, null);
         return turns !== null && turns.length > 0;
       }
     : () => true;

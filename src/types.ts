@@ -17,6 +17,29 @@ export type Role = (typeof ROLES)[number];
 export const TOOL_OUTPUT_KINDS = ["terminal", "file-read", "diff", "generic"] as const;
 export type ToolOutputKind = (typeof TOOL_OUTPUT_KINDS)[number];
 
+// [LAW:types-are-the-program] A chart point carries exactly x/y — a REAL data
+// value recovered by reading a chart's own axis tick labels (numeric, not a
+// pixel guess) and mapping each mark's pixel position through that scale
+// (slopspot-mobile-parity-8s8.1.1). This is deliberately NOT a raw SVG
+// snapshot: embedding the source's own live-rendered markup would couple
+// every future render to Anthropic's undocumented CSS custom-property names
+// (`var(--cds-chart-categorical-1)`, no literal fallback — confirmed absent
+// during investigation), which can rename or restructure with no signal,
+// silently breaking colors. Owned numbers have no such dependency.
+export interface ChartPoint {
+  readonly x: number;
+  readonly y: number;
+}
+// A chart's one series-worth of points, in the source's own point order. A
+// chart carries an array of these (not a single flat point list) because the
+// source chart library supports multiple categorical series in one chart —
+// no semantic label survives the recovery (a categorical color SLOT is not a
+// series NAME), so a series is exactly the shape that is honestly
+// recoverable: an ordered points list, nothing claimed beyond it.
+export interface ChartSeries {
+  readonly points: ReadonlyArray<ChartPoint>;
+}
+
 // [LAW:types-are-the-program] A tool result carries its rendered text AND whether
 // it errored. `isError` is real source structure (the Claude tool_result block's
 // `is_error`), not a heuristic over `text` — a pass/fail badge derived from a
@@ -76,6 +99,14 @@ export type Turn =
       readonly description: string | null;
       readonly stepCount: number;
       readonly transcript: SubagentTranscript;
+    }
+  | {
+      // [LAW:types-are-the-program] Like `usage` and `subagent`, source-DERIVED —
+      // recovered by parsing a fetched page's own chart markup, never something a
+      // human types — so the editor excludes it via AuthorableTurn (editor/blocks.ts)
+      // exactly as it does those two.
+      readonly kind: "chart";
+      readonly series: ReadonlyArray<ChartSeries>;
     };
 
 // [LAW:types-are-the-program] A captured transcript always has at least the
@@ -131,6 +162,23 @@ const isUsage = (v: unknown): v is Usage => {
   );
 };
 
+const isFiniteNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+const isChartPoint = (v: unknown): v is ChartPoint => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { x?: unknown; y?: unknown };
+  return isFiniteNumber(o.x) && isFiniteNumber(o.y);
+};
+
+// A series with zero points carries no data — the degenerate "recovered but
+// empty" state a real extraction never produces, rejected here rather than
+// stored and rendered as a blank line.
+const isChartSeries = (v: unknown): v is ChartSeries => {
+  if (!v || typeof v !== "object") return false;
+  const o = v as { points?: unknown };
+  return Array.isArray(o.points) && o.points.length > 0 && o.points.every(isChartPoint);
+};
+
 export const isTurn = (v: unknown): v is Turn => {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
@@ -161,6 +209,8 @@ export const isTurn = (v: unknown): v is Turn => {
         isCount(o.stepCount) &&
         isSubagentTranscript(o.transcript)
       );
+    case "chart":
+      return Array.isArray(o.series) && o.series.length > 0 && o.series.every(isChartSeries);
     default:
       return false;
   }
@@ -619,6 +669,18 @@ export type ReplayableOrigin =
       readonly fetched: string;
       readonly provider: Provider | null;
       readonly fetchedAt?: number;
+      // [LAW:one-source-of-truth] The verbatim HTML fetched alongside the
+      // markdown, for providers whose display needs bytes markdown provably
+      // does not carry (claude-share's charts: no <img>, no markdown image
+      // syntax at all — slopspot-mobile-parity-8s8.1.1). This is NOT a second
+      // representation of the SAME fact markdown already holds — the
+      // conversation text stays markdown-authoritative, unchanged; html
+      // exists only because it is the one fetched artifact chart extraction
+      // can replay from without re-hitting the network. Absent = fetched
+      // before this field existed, or the provider never requested it
+      // (chatgpt-share) — honest absence, re-derivation simply yields no
+      // charts, never a fabricated empty chart.
+      readonly html?: string;
     };
 
 export type Origin =
@@ -635,7 +697,15 @@ export const isTextArmKind = (v: unknown): v is TextArmKind =>
 
 const isReplayableOrigin = (v: unknown): v is ReplayableOrigin => {
   if (!v || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; content?: unknown; url?: unknown; fetched?: unknown; provider?: unknown; fetchedAt?: unknown };
+  const o = v as {
+    kind?: unknown;
+    content?: unknown;
+    url?: unknown;
+    fetched?: unknown;
+    provider?: unknown;
+    fetchedAt?: unknown;
+    html?: unknown;
+  };
   if (o.kind === "url") {
     return (
       typeof o.url === "string" &&
@@ -643,7 +713,8 @@ const isReplayableOrigin = (v: unknown): v is ReplayableOrigin => {
       (o.provider === null || isProvider(o.provider)) &&
       // Absent = written before stamping; present must be a real instant (isCount:
       // non-negative finite), so a corrupted stamp is rejected at the boundary.
-      (o.fetchedAt === undefined || isCount(o.fetchedAt))
+      (o.fetchedAt === undefined || isCount(o.fetchedAt)) &&
+      (o.html === undefined || typeof o.html === "string")
     );
   }
   return isTextArmKind(o.kind) && typeof o.content === "string";

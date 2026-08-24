@@ -32,6 +32,18 @@
   --terminal-bg: #0f1419;
   --terminal-fg: #d6deeb;
   --terminal-prompt: #c792ea;
+  /* [LAW:one-source-of-truth] Recovered-chart styling (slopspot-mobile-parity-
+     8s8.1.1) — slopspot's OWN tokens, deliberately independent of the source
+     page's `var(--cds-chart-*)` names (which carry no fallback and resolve to
+     nothing outside claude.ai's own stylesheet). A chart's SERIES INDEX
+     (first, second, third recovered series) picks a slot here; the source's
+     categorical color assignment is not reproduced, because it was never
+     recoverable in the first place. */
+  --chart-grid: var(--border);
+  --chart-axis: var(--fg-muted);
+  --chart-series-1: #6366f1;
+  --chart-series-2: #10b981;
+  --chart-series-3: #f59e0b;
   /* [LAW:one-source-of-truth] Syntax-highlight token hues stated once. Every
      hljs-* token class below reads these, and a platform theme re-tints code in
      one place by overriding them. Tuned for the light --bg-code surface. */
@@ -128,6 +140,9 @@
     --terminal-bg: #07090c;
     --terminal-fg: #d6deeb;
     --terminal-prompt: #c792ea;
+    --chart-series-1: #818cf8;
+    --chart-series-2: #34d399;
+    --chart-series-3: #fbbf24;
     --syn-keyword: #c792ea;
     --syn-string: #c3e88d;
     --syn-comment: #717784;
@@ -2285,6 +2300,31 @@ details.bubble-tool-call[open] > .tool-summary { margin-bottom: 10px; }
   line-height: 1.6;
 }
 .assistant-insight .bubble-body { font-size: 15px; }
+
+/* Recovered chart (slopspot-mobile-parity-8s8.1.1) — an owned line-plot SVG
+   built from pixel-recovered (x,y) values, styled entirely with slopspot's own
+   --chart-* tokens so it always renders correctly in both themes; it carries
+   none of the source page's own chart markup or CSS variables. */
+.assistant-chart {
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+.assistant-chart svg { display: block; width: 100%; height: auto; }
+.assistant-chart .chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.assistant-chart .chart-axis-label {
+  fill: var(--chart-axis);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.assistant-chart .chart-series { fill: none; stroke-width: 2; }
+.assistant-chart .chart-series-1 { stroke: var(--chart-series-1); }
+.assistant-chart .chart-series-2 { stroke: var(--chart-series-2); }
+.assistant-chart .chart-series-3 { stroke: var(--chart-series-3); }
+.assistant-chart .chart-point-1 { fill: var(--chart-series-1); }
+.assistant-chart .chart-point-2 { fill: var(--chart-series-2); }
+.assistant-chart .chart-point-3 { fill: var(--chart-series-3); }
 
 /* Condensed detail row: one collapsible <details> per thinking/tool-call block.
    [LAW:no-ambient-temporal-coupling] native <details> owns open/closed — no JS. */
