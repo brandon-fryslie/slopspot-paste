@@ -149,6 +149,19 @@ console.log("\nMarkdown → speech (slopspot-speech-ins):");
   // ── a code span whose content contains a backtick uses a longer delimiter run ──
   assert("a doubled-backtick span protects a literal backtick inside it", heard("say ``a`b`` now") === "say a`b now");
   assert("a doubled-backtick span is not split by its own interior backtick", heard("``a`b``") === "a`b");
+  assert("a backtick run with no matching close is left as literal text", heard("odd `` run") === "odd `` run");
+
+  // ── table-adjacency requires the row to be SHAPED like a row, not merely contain a pipe ──
+  const proseAfterTable = "| a | b |\n| --- | --- |\n| 1 | 2 |\nSee y | z for details.";
+  assert(
+    "ordinary prose right after a real table's last row is not swept into it",
+    heard(proseAfterTable) === "a, b 1, 2 See y | z for details.",
+  );
+  const absValueAfterTable = "| a | b |\n| --- | --- |\n| 1 | 2 |\nThe absolute value is |x - y| here.";
+  assert(
+    "absolute-value bars right after a real table's last row keep their meaning",
+    heard(absValueAfterTable) === "a, b 1, 2 The absolute value is |x - y| here.",
+  );
 }
 
 console.log("\nDialogue → utterances (slopspot-speech-ins):");

@@ -139,38 +139,42 @@ const isTableDivider = (line: string): boolean =>
 const isRuleLine = (line: string): boolean =>
   /^[ \t]*(?:[-*_][ \t]*){3,}$/.test(line) || isTableDivider(line);
 
+// A candidate table row: begins AND ends with a pipe, once trimmed — the shape every
+// genuine markdown table row an LLM transcript actually uses. `row.includes("|")` alone
+// is not a real test: an ordinary sentence with exactly one stray pipe ("See y | z for
+// details.", "the value is |x - y| here") splits into the same two-or-three "cells" a
+// real row would, purely by coincidence, so counting cells cannot tell them apart either
+// — only the delimiter SHAPE can. Prose essentially never both opens and closes on a
+// literal "|"; a genuine row, in every transcript this tool has seen, always does.
+const looksLikeTableRow = (line: string): boolean => /^[ \t]*\|.*\|[ \t]*$/.test(line);
+
 // [LAW:parse-dont-validate] A literal "|" means "table cell boundary" in exactly one
 // context: adjacent to the divider row every GFM table requires. Everywhere else it is
 // ordinary punctuation — a shell pipe, a boolean-or, absolute-value bars — and reading
 // "a | b" as "a, b" there would rewrite an ordinary sentence's meaning. So table
 // membership is PROVEN once, from the divider outward (the header immediately above it,
 // then every contiguous pipe-bearing row below), never guessed line by line from a bare
-// pipe. A line not reachable from a real divider is never treated as a table row.
+// pipe. A line not reachable from a real divider is never treated as a table row — and
+// "reachable" means shaped like a row (looksLikeTableRow), not merely containing a pipe
+// somewhere in its text: the previous round's fix for isTableDivider's zero-pipe gap
+// closed the divider-adjacency version of this same corruption, but left this exact
+// continuation loop open to it.
 const tableLineIndices = (lines: ReadonlyArray<string>): ReadonlySet<number> => {
   const rows = new Set<number>();
   for (let i = 0; i < lines.length; i++) {
     if (!isTableDivider(lines[i]!)) continue;
     rows.add(i);
     const header = lines[i - 1];
-    if (header !== undefined && header.trim() !== "" && header.includes("|")) rows.add(i - 1);
+    if (header !== undefined && looksLikeTableRow(header)) rows.add(i - 1);
     for (let j = i + 1; j < lines.length; j++) {
       const row = lines[j]!;
-      if (row.trim() === "" || !row.includes("|")) break;
+      if (!looksLikeTableRow(row)) break;
       rows.add(j);
     }
   }
   return rows;
 };
 
-// A code span. Group 1 is the opening backtick RUN, greedily matched, and the closing
-// delimiter is a backreference to it (`\1`) rather than a bare single backtick — a code
-// span containing a literal backtick is written with a longer run as its delimiter
-// (CommonMark: ``` ``a`b`` ``` for the literal text `` a`b ``). A single-backtick pattern
-// pairs the first ` with the very next one — the interior ` — mis-splitting the span into
-// an empty span plus a stray "`b`", leaking literal markdown syntax into prose. Content is
-// matched non-greedily so back-to-back spans stay distinct rather than one match
-// swallowing everything between the first opener and the last closer.
-const CODE_SPAN = /(`+)(.*?)\1/g;
 // The placeholder wrapper: a NUL character, built with String.fromCharCode rather than
 // written as a literal in this source file — a control byte that cannot occur in real
 // markdown, so restoring a span can never collide with prose that happens to contain the
@@ -179,6 +183,65 @@ const CODE_SPAN = /(`+)(.*?)\1/g;
 const SHIELD = String.fromCharCode(0);
 const SHIELD_RE = new RegExp(`${SHIELD}(\\d+)${SHIELD}`, "g");
 
+// [LAW:effects-at-boundaries] A hand-written linear scan, not a backtracking regex —
+// deliberately, because this runs server-side on every page view with no cache and no
+// length guard (this.astro's `prerender = false`), against UNTRUSTED paste content. A
+// backreferenced backtick-run pattern (`/(`+)(.*?)\1/`) is exactly the shape that invites
+// catastrophic backtracking: a crafted line of thousands of backticks with no matching
+// close forces the engine to retry every run-length against every content-length before
+// giving up. This scan visits each character a bounded number of times regardless of
+// input shape, so a hostile paste costs proportionally more CPU, never combinatorially
+// more.
+//
+// The delimiter rule mirrors CommonMark: a run of backticks opens a span, and it closes
+// on the NEXT run of the SAME length (not merely at-least — unlike code fences, a code
+// span's closer must match exactly). A run with no same-length closer later on the line
+// is not a span at all; its backticks are left as literal text, exactly as an unclosed
+// span reads on the page.
+const shieldCodeSpans = (line: string): { readonly text: string; readonly shielded: ReadonlyArray<string> } => {
+  const shielded: string[] = [];
+  let out = "";
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      out += line[i];
+      i++;
+      continue;
+    }
+    let openEnd = i;
+    while (line[openEnd] === "`") openEnd++;
+    const openLength = openEnd - i;
+
+    let k = openEnd;
+    let closeStart = -1;
+    while (k < line.length) {
+      if (line[k] === "`") {
+        let runEnd = k;
+        while (line[runEnd] === "`") runEnd++;
+        if (runEnd - k === openLength) {
+          closeStart = k;
+          break;
+        }
+        k = runEnd;
+      } else {
+        k++;
+      }
+    }
+
+    if (closeStart === -1) {
+      // No same-length closer anywhere ahead: this run is literal text, not a delimiter.
+      out += line.slice(i, openEnd);
+      i = openEnd;
+      continue;
+    }
+    const token = `${SHIELD}${shielded.length}${SHIELD}`;
+    shielded.push(line.slice(openEnd, closeStart));
+    out += token;
+    i = closeStart + openLength;
+  }
+  return { text: out, shielded };
+};
+
 const speakLine = (line: string, isTable: boolean): string => {
   // Inline code is protected from every other inline rule by being pulled out FIRST and
   // swapped back in verbatim after — the same isolation fenced blocks get at the line
@@ -186,12 +249,7 @@ const speakLine = (line: string, isTable: boolean): string => {
   // written inside a code span (a link, a bold marker, a literal pipe) would be
   // interpreted as real markdown by rules meant for the surrounding prose, corrupting
   // the exact syntax the span exists to display verbatim.
-  const shielded: string[] = [];
-  const withPlaceholders = line.replace(CODE_SPAN, (_match, _delim: string, content: string) => {
-    const token = `${SHIELD}${shielded.length}${SHIELD}`;
-    shielded.push(content);
-    return token;
-  });
+  const { text: withPlaceholders, shielded } = shieldCodeSpans(line);
 
   // Applied to a FIXPOINT, not a single pass: a leading marker can nest ("> ## Heading" is
   // a heading quoted inside a blockquote), and a single pass only ever recognizes the
