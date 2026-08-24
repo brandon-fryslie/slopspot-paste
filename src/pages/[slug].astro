@@ -4,6 +4,7 @@ import Base from "../layouts/Base.astro";
 import { renderDialogueHtml } from "../renderDialogue";
 import { deriveViewableDialogue } from "../overlay";
 import { deriveSpineOutline } from "../spineOutline";
+import { deriveUtterances } from "../speech";
 import { extractArtifacts } from "../artifacts";
 import { renderCodeExportControl } from "../codeExport";
 import { renderContinuationControl } from "../continuation";
@@ -100,6 +101,14 @@ const oembedHref = `${Astro.url.origin}/api/oembed?url=${encodeURIComponent(`${A
 const dialogue = deriveViewableDialogue(conversation);
 const outline = deriveSpineOutline(dialogue);
 
+// [LAW:one-source-of-truth] The spoken projection — a FOURTH reading of the same viewable
+// `dialogue`, alongside the rendered HTML, the outline, and the code artifacts. Deriving it
+// here rather than in the browser is what keeps the audio and the page telling one story: a
+// redacted or overlay-omitted node is already absent from `dialogue`, so it can no more be
+// spoken than it can be read. [LAW:effects-at-boundaries] this is the pure half; the page's
+// script performs it.
+const utterances = deriveUtterances(dialogue);
+
 // [LAW:one-source-of-truth] Code artifacts are a THIRD projection of the SAME viewable
 // `dialogue` the renderer and outline read — extracted from its already-redacted nodes,
 // never the raw stored turns, so "Copy all code" copies exactly what the reader sees and
@@ -152,6 +161,11 @@ const present = {
   compare: true,
   // Content-gated: the renderers return "" when there is nothing to export or continue,
   // and the freshness/version surfaces exist only for url-arm pastes that have them.
+  // Content-gated on there being something to say: a paste whose spine is entirely
+  // blank/whitespace turns yields no utterances (a fenced code block still gets an
+  // "announced" utterance, never zero), and offering to read silence aloud would be a
+  // promise the button can't keep.
+  listen: utterances.length > 0,
   code: codeExportHtml !== "",
   continue: continuationHtml !== "",
   freshness: hasUpstream,
@@ -467,6 +481,32 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       )}
 
       {/*
+        The Listen controls. The transport is inert markup plus a hidden payload — the SAME
+        shape the code and continuation controls use [LAW:one-type-per-behavior] — and the
+        client script wires it only after confirming a synthesizer exists, which is what adds
+        `speech-ready` and reveals the dock item.
+
+        [LAW:one-source-of-truth] The payload is the server's derived Utterance[], not the
+        page text re-scraped from the DOM. Deriving speech from rendered markup would make
+        the audio depend on the renderer's classes — an upward dependency on a disposable
+        projection [LAW:one-way-deps] — and would re-answer "what does a reader see" a second
+        way, free to disagree with the first.
+      */}
+      {present.listen && (
+        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.listen.id)} data-tool={TOOL.listen.id}
+          data-requires={requiresAttr(TOOL.listen.availability)} aria-label={TOOL.listen.hint}>
+          <h2 class="tool-panel-title">{TOOL.listen.label}<span class="tool-panel-note">{utterances.length} {utterances.length === 1 ? "passage" : "passages"}</span></h2>
+          <p class="tool-panel-lede">Read aloud in your browser, a different voice per speaker. Code blocks are announced rather than spelled out.</p>
+          <div class="speech-controls">
+            <button class="mono-pill speech-play" type="button">Play</button>
+            <button class="mono-pill speech-stop" type="button" disabled>Stop</button>
+            <p class="speech-now" aria-live="polite">Not playing</p>
+          </div>
+          <pre class="speech-payload" hidden aria-hidden="true">{JSON.stringify(utterances)}</pre>
+        </section>
+      )}
+
+      {/*
         [LAW:dataflow-not-control-flow] The document-scoped code controls. Present only
         when there IS code — codeExportHtml is "" otherwise, so the panel and its menu
         item are both simply absent, never an empty box or a dead button. The buttons +
@@ -653,6 +693,80 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { mountDock, resolveDock } from "../toolDockView";
 
     mountDock(resolveDock(document));
+  </script>
+
+  <script>
+    // The Listen tool's page half. Everything with judgement in it — what is said, in whose
+    // voice, and where we are in the conversation — lives in ../speech and ../speechPlayer,
+    // where scripts/speech-check.ts drives both (the player against a stub synthesizer under
+    // jsdom) [LAW:verifiable-goals]. What remains here is the seam: this page's markup, this
+    // page's turn cards, and the capability gate.
+    import { createPlayer, speechSupport, type PlayerState } from "../speechPlayer";
+    import type { Utterance } from "../speech";
+
+    const panel = document.querySelector(".speech-controls");
+    const payloadEl = document.querySelector(".speech-payload");
+
+    // A page with no speakable prose renders neither, so their joint absence is the normal
+    // empty case. One present without the other is a broken template invariant, and the
+    // player below would otherwise wire a button to nothing [LAW:no-silent-failure].
+    if (panel && payloadEl) {
+      const play = panel.querySelector<HTMLButtonElement>(".speech-play");
+      const stop = panel.querySelector<HTMLButtonElement>(".speech-stop");
+      const now = panel.querySelector<HTMLParagraphElement>(".speech-now");
+      if (!play || !stop || !now) throw new Error("listen: the speech panel is missing a control");
+
+      const utterances = JSON.parse(payloadEl.textContent ?? "[]") as Utterance[];
+
+      // [LAW:parse-dont-validate] The same capability answer the player uses, asked once
+      // here so the dock item is revealed only when there is genuinely something behind it.
+      // A browser without a synthesizer leaves `speech-ready` off and shows no Listen at all.
+      if (speechSupport(window) !== null) {
+        // The turn the audio is currently on, marked in the page so the reader can follow
+        // along. Exactly one card carries the class at a time — it is removed from whatever
+        // held it before it is granted, so there is no ambient "clear everything" sweep.
+        let lit: Element | null = null;
+        const follow = (utterance: Utterance | null): void => {
+          lit?.classList.remove("speaking");
+          lit = utterance === null ? null : document.getElementById(utterance.anchor);
+          lit?.classList.add("speaking");
+          // Only follow the reader down the page while the audio is genuinely moving; a
+          // stop should leave them where they were reading, not yank the viewport. The
+          // motion preference is read HERE, per move, rather than sampled once at wiring
+          // time — a reader who changes the setting mid-session is honoured on the next
+          // passage rather than at the next reload [LAW:no-ambient-temporal-coupling].
+          const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          lit?.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
+          now.textContent =
+            utterance === null
+              ? "Not playing"
+              : `Passage ${utterances.indexOf(utterance) + 1} of ${utterances.length}`;
+        };
+
+        const player = createPlayer({
+          window,
+          utterances,
+          onUtterance: follow,
+          onState: (state: PlayerState) => {
+            play.textContent = state.kind === "speaking" ? "Pause" : state.kind === "paused" ? "Resume" : "Play";
+            stop.disabled = state.kind === "idle";
+          },
+        });
+        // speechSupport already proved a synthesizer exists, so this is the impossible arm.
+        if (!player) throw new Error("listen: speech support vanished between the check and the player");
+
+        play.addEventListener("click", () => player.send({ kind: player.state().kind === "speaking" ? "pause" : "play" }));
+        stop.addEventListener("click", () => player.send({ kind: "stop" }));
+
+        // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
+        // the synthesizer on its own — speech outlives the document that started it, and a
+        // paste that keeps talking after the reader has left is the one bug every Web Speech
+        // integration ships with. The teardown is owned here, explicitly.
+        window.addEventListener("pagehide", () => player.send({ kind: "stop" }));
+
+        document.body.classList.add("speech-ready");
+      }
+    }
   </script>
 
   <script>
