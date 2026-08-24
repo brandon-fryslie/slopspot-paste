@@ -161,8 +161,10 @@ const present = {
   compare: true,
   // Content-gated: the renderers return "" when there is nothing to export or continue,
   // and the freshness/version surfaces exist only for url-arm pastes that have them.
-  // Content-gated on there being something to say: a paste of nothing but code blocks
-  // yields no utterances, and offering to read it aloud would be a promise of silence.
+  // Content-gated on there being something to say: a paste whose spine is entirely
+  // blank/whitespace turns yields no utterances (a fenced code block still gets an
+  // "announced" utterance, never zero), and offering to read silence aloud would be a
+  // promise the button can't keep.
   listen: utterances.length > 0,
   code: codeExportHtml !== "",
   continue: continuationHtml !== "",

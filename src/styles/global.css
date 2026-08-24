@@ -1346,8 +1346,14 @@ body.search-active .minimap-marker.is-hit .minimap-line {
 .bubbles > .bubble {
   transition: box-shadow 0.22s ease-out;
 }
-.conversation > .bubble:hover:not(.collapsed-turn),
-.bubbles > .bubble:hover:not(.collapsed-turn) {
+/* :not(.speaking) is load-bearing, not decorative: box-shadow does not merge across
+   rules, so without it hovering the turn currently being read (a natural thing to
+   do — the follow-along scroll can carry the auto-scrolled turn under a stationary
+   cursor) would replace .speaking's accent ring with this generic lift shadow
+   wholesale for as long as the pointer stayed there, silently hiding the one marker
+   that says which turn is playing [LAW:single-enforcer]. */
+.conversation > .bubble:hover:not(.collapsed-turn):not(.speaking),
+.bubbles > .bubble:hover:not(.collapsed-turn):not(.speaking) {
   box-shadow: var(--bubble-hover-shadow);
   transition: box-shadow 0.13s ease-out;
 }
@@ -3220,7 +3226,11 @@ body:has(.diff-aligned) main { max-width: 1400px; }
    lost while a turn speaks.
    It also declares no transition of its own: `.bubble` already transitions box-shadow
    (the hover rule above), so the mark fades in for free through that existing rule rather
-   than through a second declaration that would only re-fight the same specificity tie. */
+   than through a second declaration that would only re-fight the same specificity tie.
+   The hover rule above excludes `.speaking` explicitly (`:not(.speaking)`) rather than
+   this rule trying to out-specify it — a specificity race is exactly the trap this
+   comment already warns about with `background`, so hover is kept from ever touching a
+   speaking bubble's box-shadow at all, instead of merely winning against it. */
 .speaking {
   box-shadow:
     inset 3px 0 0 var(--accent),

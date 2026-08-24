@@ -111,6 +111,26 @@ console.log("\nMarkdown → speech (slopspot-speech-ins):");
 
   assert("empty input yields nothing to say", speakableSegments("").length === 0);
   assert("whitespace-only input yields nothing to say", speakableSegments("   \n\n  ").length === 0);
+
+  // ── GFM's actual divider requirement is 1+ hyphens per cell, not 2+ ──
+  assert("a single-hyphen divider is still a real table", heard("| a | b |\n| - | - |\n| 1 | 2 |") === "a, b 1, 2");
+
+  // ── a fence opener may carry more than a bare language ──
+  assert("an info string with trailing annotation is still recognized as a fence", announced("```js twoslash\nx\n```")[0] === "js code block, 1 line");
+  assert("only the first info-string token is spoken as the language", announced("```js {1,3}\nx\n```")[0] === "js code block, 1 line");
+  assert("the fenced content itself never reaches the synthesizer", !heard("```js twoslash\nx\n```").includes("x"));
+  assert("trailing whitespace alone still yields a bare language", announced("```python   \nx\n```")[0] === "python code block, 1 line");
+
+  // ── a closing fence must carry NO info string, even if char/length match (CommonMark) ──
+  const nestedSameChar = "```md\nExample:\n```js\nx\n```\n```\nend";
+  assert(
+    "a nested opener sharing the outer delimiter's char and length does not close it early",
+    announced(nestedSameChar)[0] === "md code block, 3 lines",
+  );
+
+  // ── nested leading markers are stripped to a fixpoint, not just the outermost one ──
+  assert("a heading quoted inside a blockquote loses both markers", heard("> ## Heading") === "Heading");
+  assert("a bullet inside a blockquote loses both markers", heard("> - item") === "item");
 }
 
 console.log("\nDialogue → utterances (slopspot-speech-ins):");
@@ -255,6 +275,15 @@ console.log("\nPlayer position machine (slopspot-speech-ins):");
   assert("jumping to a fractional index throws", throwsOn(1.5));
 
   assert("a conversation with nothing to say cannot be played", advance(idle, { kind: "play" }, 0).kind === "idle");
+
+  // [LAW:one-source-of-truth] send()'s no-op short-circuit is a REFERENCE check
+  // (`after === before`), not a value check — so every arm that is conceptually already
+  // there must return the SAME state object, not merely an equal-looking one.
+  const pausedAt1: PlayerState = { kind: "paused", at: 1 };
+  assert("jumping to the position already paused at is a true no-op", advance(pausedAt1, { kind: "jump", to: 1 }, N) === pausedAt1);
+  const speakingAt1: PlayerState = { kind: "speaking", at: 1 };
+  assert("jumping to the position already speaking at is a true no-op", advance(speakingAt1, { kind: "jump", to: 1 }, N) === speakingAt1);
+  assert("stopping while already idle is a true no-op", advance(idle, { kind: "stop" }, N) === idle);
 }
 
 console.log("\nVoice assignment (slopspot-speech-ins):");

@@ -68,7 +68,12 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
     case "pause":
       return state.kind === "speaking" ? { kind: "paused", at: state.at } : state;
     case "stop":
-      return { kind: "idle" };
+      // Already idle is a true no-op, not merely an equivalent state: `send()` below
+      // decides whether to touch the synthesizer at all by reference-comparing the
+      // before/after state, so a `stop` sent while idle (the page's `pagehide` handler
+      // fires this unconditionally on every navigation) must return the SAME object or
+      // it will cancel a synthesizer that was never given anything to cancel.
+      return state.kind === "idle" ? state : { kind: "idle" };
     case "finished": {
       // Only a speaking player advances. A `finished` arriving while paused or idle is the
       // synthesizer reporting on an utterance we already abandoned — cancel() fires `end`
@@ -86,6 +91,13 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
       if (!Number.isInteger(event.to) || event.to < 0 || event.to >= length) {
         throw new RangeError(`speech player: cannot jump to ${event.to} of ${length} utterances`);
       }
+      // A jump to the SAME index the player is already at (paused or speaking) is a true
+      // no-op, not merely an equivalent-looking state: `send()` decides whether to cancel
+      // and re-speak by reference-comparing before/after, and a paused player jumped to its
+      // own position has nothing to resume from if this allocates a fresh object — the
+      // general branch would cancel the held utterance and the next Play would restart it
+      // from the beginning instead of resuming where the listener paused.
+      if (state.kind !== "idle" && state.at === event.to) return state;
       // Jumping while paused keeps you paused at the new place — the listener asked to move,
       // not to start playing.
       return state.kind === "paused" ? { kind: "paused", at: event.to } : { kind: "speaking", at: event.to };
@@ -113,6 +125,14 @@ const DELIVERY: { readonly [K in Voice]: { readonly rate: number; readonly pitch
 // English voices are preferred but not required: the ordering puts them first and then
 // takes what is left, so a browser with no English voice still gets four assignments rather
 // than none. Deterministic given the same list, which is what makes it testable.
+//
+// The modulo is already the OPTIMAL spread a pigeonhole allows, not a shortcut that could
+// be tightened: four roles poured into fewer than four voices must pair at least
+// `4 - ordered.length` of them onto a voice something else already has, and `i %
+// ordered.length` is exactly "use every available voice once before any voice repeats" —
+// with 2 voices, (user, system) and (assistant, narrator) pair up; with 3, only one role
+// repeats. No reassignment scheme does better once ordered.length < 4; DELIVERY's per-role
+// rate/pitch is what keeps a paired role from sounding IDENTICAL, not merely different.
 export const assignVoices = (available: ReadonlyArray<SpeechSynthesisVoice>): {
   readonly [K in Voice]: SpeechSynthesisVoice | null;
 } => {

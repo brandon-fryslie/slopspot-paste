@@ -60,7 +60,17 @@ type Segment =
 // that, a code block opened with ``` that discusses fence syntax and contains a nested
 // ~~~ example — or a shorter ``` — would close on the wrong line, splitting one block
 // into a truncated fence plus stray "prose" that gets spoken instead of announced.
-const FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*([^\s`]*)[ \t]*$/;
+//
+// Group 2 is the WHOLE info string, not just a language token: a real opener can carry
+// more than a bare language (```jsx twoslash, ```js {1,3} line-highlight annotations) —
+// requiring nothing-but-whitespace after the language would fail to recognize those as
+// fences at all, spilling the fenced block's own backticks into prose to be read aloud
+// character by character, which is exactly the invariant this module exists to prevent.
+// The language spoken in the announcement is the info string's first token (see below);
+// a closing line, by contrast, must have an EMPTY info string — CommonMark's rule that a
+// close "may be followed only by spaces or tabs" — so the two uses read the same capture
+// two different ways rather than needing two regexes.
+const FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*(.*)$/;
 
 const plural = (n: number, unit: string): string => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
@@ -109,8 +119,12 @@ const LEADING_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/^[ \t]*\d+[.)][ \t]+/, ""], // ordered item
 ];
 
+// GFM requires only ONE OR MORE hyphens per delimiter cell (`| - | - |` is a legal
+// divider) — matching marked's actual table recognition, which is what render.ts hands
+// transcripts to. A stricter `-{2,}` here would leave a real table's pipes unconverted
+// whenever an author wrote the shortest legal divider.
 const isTableDivider = (line: string): boolean =>
-  /^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*$/.test(line);
+  /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/.test(line);
 
 // A rule that is entirely presentational: a horizontal rule or a table's divider row has
 // no spoken form at all, so the line is dropped rather than voiced as punctuation.
@@ -166,7 +180,17 @@ const speakLine = (line: string, isTable: boolean): string => {
     return token;
   });
 
-  const led = LEADING_RULES.reduce((acc, [re, to]) => acc.replace(re, to), withPlaceholders);
+  // Applied to a FIXPOINT, not a single pass: a leading marker can nest ("> ## Heading" is
+  // a heading quoted inside a blockquote), and a single pass only ever recognizes the
+  // OUTERMOST one — the blockquote strip exposes a fresh "##" that a one-shot pass has
+  // already moved past. Looping until nothing matches is what "line-leading structure the
+  // ear does not need" actually means when markers stack.
+  let led = withPlaceholders;
+  for (;;) {
+    const stripped = LEADING_RULES.reduce((acc, [re, to]) => acc.replace(re, to), led);
+    if (stripped === led) break;
+    led = stripped;
+  }
   const inlined = INLINE_RULES.reduce((acc, [re, to]) => acc.replace(re, to), led);
   const restored = inlined.replace(SHIELD_RE, (_match, i: string) => shielded[Number(i)] ?? "");
 
@@ -211,17 +235,29 @@ export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
     const fenced = FENCE.exec(line);
     if (fence !== null) {
       // Inside a block: the only line that closes it reuses the SAME delimiter character
-      // as the opener and is at least as long — CommonMark's own rule, and the reason a
-      // nested example using the other fence character (or a shorter run) does not
-      // prematurely end the block it lives inside.
-      const closes = fenced !== null && fenced[1]![0] === fence.char && fenced[1]!.length >= fence.length;
+      // as the opener, is at least as long, and carries no trailing info string —
+      // CommonMark's own rules. Without the length+char check, a nested example using the
+      // other fence character (or a shorter run) would prematurely end the block it lives
+      // inside; without the empty-info-string check, a nested fence opener that happens to
+      // share the outer delimiter's char and length (```md containing an inner ```js
+      // example) would be mistaken for the outer close, leaking the inner block's content
+      // into prose instead of staying announced.
+      const closes =
+        fenced !== null &&
+        fenced[1]![0] === fence.char &&
+        fenced[1]!.length >= fence.length &&
+        fenced[2]!.trim() === "";
       if (!closes) fence.lines += 1;
       else flushFence();
       return;
     }
     if (fenced !== null) {
       flushProse();
-      fence = { char: fenced[1]![0]!, length: fenced[1]!.length, language: fenced[2] ?? "", lines: 0 };
+      const info = fenced[2]!.trim();
+      // The announcement speaks only the LANGUAGE — the info string's first token — never
+      // the rest of an annotation (twoslash, {1,3}) a listener has no use for.
+      const language = info === "" ? "" : info.split(/\s+/)[0]!;
+      fence = { char: fenced[1]![0]!, length: fenced[1]!.length, language, lines: 0 };
       return;
     }
     prose.push(isRuleLine(line) ? "" : speakLine(line, tableRows.has(i)));
@@ -242,23 +278,42 @@ export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
 // on the numeric side rather than the folded side: the renderer shows it as a widget of
 // raw counts, and reading digits aloud would be noise no differently than a diff would be.
 //
-// It counts detail blocks by blockVisibility rather than by naming kinds, so a new
-// AssistantBlock kind is classified once, in dialogue.ts, and reaches this announcement
-// for free. usage is checked by kind directly because it is the one "meta" kind that is
-// genuinely unspeakable as numbers — turn-summary, the other meta kind, is real prose and
-// is SPOKEN below, not folded into this count.
+// [LAW:types-are-the-program] The exhaustive counterpart, for THIS module, to
+// dialogue.ts's own BLOCK_VISIBILITY: every AssistantBlock kind names the unit spoken for
+// it here (or null, for a kind that never contributes a count). A new "detail" kind added
+// to dialogue.ts is correctly excluded from being read verbatim by BLOCK_VISIBILITY alone
+// — but without an entry HERE too, it would land in blockVisibility's "detail" bucket and
+// contribute nothing to this announcement, silently under-counting exactly the "quietly
+// handed a different conversation" failure this file's header warns against. Adding a kind
+// to AssistantBlock now fails to compile until it is classified in both maps.
+const DETAIL_UNIT: { readonly [K in AssistantBlock["kind"]]: string | null } = {
+  text: null,
+  insight: null,
+  "tool-call": "tool call",
+  thinking: "thinking block",
+  subagent: "subagent run",
+  "turn-summary": null,
+  usage: null,
+};
+
+// usage is checked by kind directly because it is the one "meta" kind that is genuinely
+// unspeakable as numbers — turn-summary, the other meta kind, is real prose and is SPOKEN
+// below, not folded into this count.
 const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
-  const detail = blocks.filter((b) => blockVisibility(b) === "detail");
-  const tools = detail.filter((b) => b.kind === "tool-call").length;
-  const thinking = detail.filter((b) => b.kind === "thinking").length;
-  const subagents = detail.filter((b) => b.kind === "subagent").length;
+  const counts: Partial<Record<AssistantBlock["kind"], number>> = {};
+  for (const b of blocks) {
+    if (blockVisibility(b) !== "detail") continue;
+    counts[b.kind] = (counts[b.kind] ?? 0) + 1;
+  }
   const hasUsage = blocks.some((b) => b.kind === "usage");
-  const parts = [
-    tools > 0 ? plural(tools, "tool call") : "",
-    thinking > 0 ? plural(thinking, "thinking block") : "",
-    subagents > 0 ? plural(subagents, "subagent run") : "",
-    hasUsage ? "a token usage note" : "",
-  ].filter((p) => p !== "");
+  const counted = (Object.keys(DETAIL_UNIT) as ReadonlyArray<AssistantBlock["kind"]>)
+    .map((kind) => {
+      const n = counts[kind];
+      const unit = DETAIL_UNIT[kind];
+      return n !== undefined && unit !== null ? plural(n, unit) : "";
+    })
+    .filter((p) => p !== "");
+  const parts = hasUsage ? [...counted, "a token usage note"] : counted;
   return parts.length === 0 ? "" : `${parts.join(", ")} not read aloud`;
 };
 
