@@ -102,9 +102,11 @@ const TOOLS = [
       '<path d="M4.5 8.2v3.6"/><path d="M7.6 5.6v8.8"/><path d="M10.7 3.4v13.2"/>' +
         '<path d="M13.8 6.4v7.2"/><path d="M16.9 8.8v2.4"/>',
     ),
-    // Speech synthesis is absent on more browsers than one would guess (and behind a flag
-    // on some), so the item appears only once the page has confirmed a synthesizer exists
-    // — a reader without one sees no Listen, rather than a play button that stays silent.
+    // The item appears once the page has found a performer that MAY work: a speech
+    // synthesizer (absent on more browsers than one would guess, and behind a flag on
+    // some) for the browser voice, or WebGPU for the neural voice, whose full answer comes
+    // only from the worker the first tap spawns. A reader with neither sees no Listen,
+    // rather than a play button that stays silent.
     availability: { kind: "when", bodyClasses: ["speech-ready"] },
   },
   {

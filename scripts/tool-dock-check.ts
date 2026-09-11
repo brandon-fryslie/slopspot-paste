@@ -146,9 +146,10 @@ const markup = page.replace(/<!--[\s\S]*?-->/g, "").replace(/\/\*[\s\S]*?\*\//g,
 // named only in a comment, a selector, or a data attribute pass as added, which is the
 // exact false pass this check exists to prevent.
 //
-// Two seams do the adding: most tools call classList.add with the literal, while the two
-// payload tools route through wirePayloadCopy(…, readyClass) and add a parameter. Both
-// are read. A THIRD seam introduced later falls outside this extraction, and every gate
+// Three seams do the adding: most tools call classList.add with the literal, the two
+// payload tools route through wirePayloadCopy(…, readyClass) and add a parameter, and
+// Listen, whose class answers two capabilities, calls classList.toggle with the literal
+// and the answer. All three are read. A FOURTH seam introduced later falls outside this extraction, and every gate
 // through it then fails as "no script adds it" — loudly wrong rather than quietly passing
 // [LAW:no-silent-failure]. That is the only failure direction that keeps the check worth
 // running: a miss here costs a false alarm, never an invisible tool.
@@ -163,12 +164,14 @@ const captured = (pattern: RegExp): readonly string[] =>
 const addedClasses = new Set([
   ...captured(/document\.body\.classList\.add\("([^"]+)"\)/g),
   ...captured(/wirePayloadCopy\([^)]*"([^"]+)"\s*\)/g),
+  ...captured(/document\.body\.classList\.toggle\("([^"]+)",/g),
 ]);
 
 // One positive control per seam: an extraction that silently matched nothing would make
 // every assertion below fail for the wrong reason, so each spelling proves itself first.
 assert("the inline classList.add seam is read", addedClasses.has("search-ready"));
 assert("the wirePayloadCopy seam is read", addedClasses.has("copy-all-ready"));
+assert("the classList.toggle seam is read", addedClasses.has("speech-ready"));
 // A class no tool script has ever heard of must fail, or this check proves nothing.
 assert("a fictional class is not found", !addedClasses.has("no-such-tool-ready"));
 

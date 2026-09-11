@@ -86,7 +86,7 @@ console.log("step: the way to audio");
   assert("a tap while probing changes nothing", step(probing.state, tapPlay).state === probing.state);
 
   const unsupported = step(probing.state, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } }));
-  assert("unsupported: the reason is shown and the browser voice is pointed to", unsupported.state.kind === "unsupported" && readout(unsupported.state).status.includes("no WebGPU") && readout(unsupported.state).status.includes("browser voice") && !readout(unsupported.state).play.enabled);
+  assert("unsupported: the reason is shown, Play is off", unsupported.state.kind === "unsupported" && readout(unsupported.state).status === "This device can't run the neural voice: this browser has no WebGPU." && !readout(unsupported.state).play.enabled);
 
   const preparing = step(probing.state, worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } }));
   assert("supported: load is sent", preparing.state.kind === "preparing" && effects(preparing) === "load");
@@ -107,16 +107,26 @@ console.log("step: the way to audio");
   throws("a script reply with another id is not ours", () => step(scripting.state, worker({ kind: "script", id: 7, units })));
 
   const listening = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("the scheduler's first view enters listening", listening.state.kind === "listening" && readout(listening.state).status === "Ready" && readout(listening.state).play.label === "Listen");
+  assert("the scheduler's first view enters listening, with the passages read once from the script", listening.state.kind === "listening" && listening.state.passages.length === 2 && readout(listening.state).status === "Ready" && readout(listening.state).play.label === "Listen");
+  const again = step(listening.state, { kind: "view", view: viewOf({ kind: "idle" }) });
+  assert("a later view keeps the passages already read", listening.state.kind === "listening" && again.state.kind === "listening" && again.state.passages === listening.state.passages);
+
+  const crashed = step(downloading.state, { kind: "worker-error", message: "the worker bundle failed to load" });
+  assert("a worker error: crashed, the worker discarded, the failure named, Play reads Retry", crashed.state.kind === "crashed" && effects(crashed) === "discard" && readout(crashed.state).play.label === "Retry" && readout(crashed.state).play.enabled && !readout(crashed.state).stop.enabled && readout(crashed.state).status === "The neural voice worker failed: the worker bundle failed to load");
+  assert("an error with no message still names the failure", readout(step(listening.state, { kind: "worker-error", message: "" }).state).status === "The neural voice worker failed");
+  assert("the discarded scheduler's last view is not ours: crashed stays", step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }).state === crashed.state);
+  const respawned = step(crashed.state, tapPlay);
+  assert("Retry spawns a fresh worker and probes", respawned.state.kind === "probing" && effects(respawned) === "spawn");
 }
 
 console.log("step: listening");
 {
   const at = { unitIndex: 1, offsetMs: 0 };
-  const idle: PanelState = { kind: "listening", view: viewOf({ kind: "idle" }) };
-  const waiting: PanelState = { kind: "listening", view: viewOf({ kind: "speaking", at, flow: "waiting" }) };
-  const playing: PanelState = { kind: "listening", view: viewOf({ kind: "speaking", at, flow: "audio" }) };
-  const paused: PanelState = { kind: "listening", view: viewOf({ kind: "paused", at }) };
+  const listeningOf = (view: SchedulerView): PanelState => ({ kind: "listening", view, passages: passages(units) });
+  const idle = listeningOf(viewOf({ kind: "idle" }));
+  const waiting = listeningOf(viewOf({ kind: "speaking", at, flow: "waiting" }));
+  const playing = listeningOf(viewOf({ kind: "speaking", at, flow: "audio" }));
+  const paused = listeningOf(viewOf({ kind: "paused", at }));
   assert("idle: tap play plays; Stop disabled", effects(step(idle, tapPlay)) === "control play" && !readout(idle).stop.enabled);
   assert("speaking: tap play pauses; the label says so", effects(step(playing, tapPlay)) === "control pause" && readout(playing).play.label === "Pause" && readout(playing).stop.enabled);
   assert("paused: tap play resumes", effects(step(paused, tapPlay)) === "control play" && readout(paused).play.label === "Resume" && readout(paused).status === "Paused · passage 1 of 2");
@@ -125,7 +135,7 @@ console.log("step: listening");
   assert("flow audio reads as playing, at the passage (unit 1 is still passage 1)", readout(playing).status === "Playing · passage 1 of 2");
   assert("flow waiting reads as synthesizing ahead, never as a stall", readout(waiting).status === "Synthesizing ahead… · passage 1 of 2");
   const failedView: SchedulerView = { ...viewOf({ kind: "idle" }), holdings: [{ kind: "absent" }, { kind: "absent" }, { kind: "failed", reason: { kind: "frame-cap", frames: 500 }, frames: "none" }] };
-  assert("a failed unit is named with its reason", readout({ kind: "listening", view: failedView }).status === "Ready · passage 2 of 2 could not be synthesized: the model looped for 500 frames without finishing");
+  assert("a failed unit is named with its reason", readout(listeningOf(failedView)).status === "Ready · passage 2 of 2 could not be synthesized: the model looped for 500 frames without finishing");
   assert("the scheduler's own messages change nothing here", step(playing, worker({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) })).state === playing);
   assert("passages are utterances, not units", passages(units).length === 2);
 }
@@ -138,6 +148,7 @@ console.log("step: violations throw");
   throws("script outside scripting", () => step({ kind: "idle" }, worker({ kind: "script", id: SCRIPT_ID, units })));
   throws("a view before there is a scheduler", () => step({ kind: "idle" }, { kind: "view", view: viewOf({ kind: "idle" }) }));
   throws("refused, anywhere", () => step({ kind: "warming" }, worker({ kind: "refused", request: { kind: "load" }, phase: "loading" })));
+  throws("disposed, anywhere: the port ends the worker on it first", () => step({ kind: "warming" }, worker({ kind: "disposed" })));
 }
 
 // ── the driver ────────────────────────────────────────────────────────────────────────
@@ -164,13 +175,22 @@ console.log("createListenPanel: the driver over the real scheduler and player");
 
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
+  const errorListeners = new Set<(message: string) => void>();
   let spawned = 0;
   let terminated = 0;
+  let disposed = 0;
   const port: SynthesisPort = {
     send: (message) => sent.push(message),
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    errors: (listener) => {
+      errorListeners.add(listener);
+      return () => errorListeners.delete(listener);
+    },
+    dispose: () => {
+      disposed += 1;
     },
     terminate: () => {
       terminated += 1;
@@ -178,6 +198,9 @@ console.log("createListenPanel: the driver over the real scheduler and player");
   };
   const emit = (message: FromWorker): void => {
     for (const listener of listeners) listener(message);
+  };
+  const fail = (message: string): void => {
+    for (const listener of errorListeners) listener(message);
   };
   const said = (): string => sent.map((m) => (m.kind === "synthesize" ? `synthesize ${m.unitId}` : m.kind === "cancel" ? `cancel ${m.unitId}` : m.kind)).join();
 
@@ -264,8 +287,16 @@ console.log("createListenPanel: the driver over the real scheduler and player");
   play.click();
   assert("Play again does not re-download: it plays the scheduler already built", spawned === 1 && sent.filter((m) => m.kind === "load").length === 1 && panel.state().kind === "listening" && play.textContent === "Pause");
 
+  fail("the worker bundle failed to load");
+  assert("the worker dies mid-listen: crashed, the device closed, the dead worker terminated, the cursor cleared", panel.state().kind === "crashed" && device.calls.at(-1) === "close" && terminated === 1 && positions.at(-1) === null && pending.length === 0);
+  assert("the failure is on the status line and Play reads Retry", play.textContent === "Retry" && !play.disabled && stop.disabled && status.textContent === "The neural voice worker failed: the worker bundle failed to load");
+  assert("the dead worker is no longer heard", listeners.size === 0 && errorListeners.size === 0);
+  play.click();
+  assert("Retry: a fresh worker is spawned and probed", spawned === 2 && panel.state().kind === "probing" && status.textContent === "Checking this device…");
+
   panel.dispose();
-  assert("dispose: the worker is told to dispose and terminated, the port no longer heard, the cursor cleared", sent.at(-1)?.kind === "dispose" && terminated === 1 && listeners.size === 0 && positions.at(-1) === null && panel.state().kind === "idle");
+  assert("dispose: the port is disposed (not terminated outright), no longer heard, the panel idle", disposed === 1 && terminated === 1 && listeners.size === 0 && errorListeners.size === 0 && panel.state().kind === "idle");
+  assert("dispose: the controls show the idle readout, not the last live state", play.textContent === "Listen" && !play.disabled && stop.disabled && bar.hidden && status.textContent === readout({ kind: "idle" }).status);
 }
 
 console.log(process.exitCode === 1 ? "listen-panel-check: FAILED" : "listen-panel-check: ok");

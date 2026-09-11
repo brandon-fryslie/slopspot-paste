@@ -26,6 +26,13 @@
 // loaded; a download in flight cannot be cancelled (the protocol has no message for it),
 // so Stop is disabled until there is a player to stop.
 //
+// THE WORKER'S OWN DEATH. A bundle that fails to load, an exception outside the protocol:
+// these arrive on the port's error channel, not as a message, and the panel answers with
+// `crashed` — the worker and the scheduler are discarded, the status names the failure,
+// and Play reads Retry, which spawns a fresh worker. A panel that hangs in "Checking this
+// device…" forever is the silent failure the state union exists to make unrepresentable
+// [LAW:no-silent-failure].
+//
 // WHAT THE PANEL MIRRORS. `listening` carries the scheduler's view — player position,
 // manifest, holdings — as delivered by its onChange; the panel never computes a second
 // opinion of any of them [LAW:one-source-of-truth]. The read-along cursor is derived from
@@ -43,7 +50,7 @@ import { MODEL_ASSETS, allModelAssets } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import { createScheduler, type Scheduler, type SchedulerView } from "./scheduler";
 import type { Utterance } from "./speech";
-import { cursorAt, type Rejection, type WordSpan } from "./speechManifest";
+import { cursorAt, type RecordRejection, type WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnitFailure, UnsupportedReason } from "./synthesisProtocol";
@@ -61,13 +68,17 @@ export type PanelState =
   | { readonly kind: "warming" }
   | { readonly kind: "load-failed"; readonly failure: LoadFailure }
   | { readonly kind: "scripting" }
-  | { readonly kind: "listening"; readonly view: SchedulerView };
+  // `passages` is computed once on entry, from the script the view carries: the script is
+  // fixed for the scheduler's life, and the cursor reads it on every animation frame.
+  | { readonly kind: "listening"; readonly view: SchedulerView; readonly passages: ReadonlyArray<Utterance> }
+  | { readonly kind: "crashed"; readonly message: string };
 
 export type Tap = "play" | "stop";
 
 export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
   | { readonly kind: "worker"; readonly message: FromWorker }
+  | { readonly kind: "worker-error"; readonly message: string }
   | { readonly kind: "view"; readonly view: SchedulerView };
 
 export type Effect =
@@ -75,7 +86,10 @@ export type Effect =
   | { readonly kind: "load" }
   | { readonly kind: "script" }
   | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit> }
-  | { readonly kind: "control"; readonly control: "play" | "pause" | "stop" };
+  | { readonly kind: "control"; readonly control: "play" | "pause" | "stop" }
+  // Releases a dead worker and the scheduler built on it: nothing is sent to a worker that
+  // has already failed; the device is closed through the scheduler's own dispose.
+  | { readonly kind: "discard" };
 
 export interface Step {
   readonly state: PanelState;
@@ -97,6 +111,7 @@ const tap = (state: PanelState, control: Tap): Step => {
   if (control === "stop") return state.kind === "listening" ? { state, effects: [{ kind: "control", control: "stop" }] } : stay(state);
   switch (state.kind) {
     case "idle":
+    case "crashed":
       return { state: { kind: "probing" }, effects: [{ kind: "spawn" }] };
     case "load-failed":
       return { state: { kind: "preparing" }, effects: [{ kind: "load" }] };
@@ -137,6 +152,10 @@ const fromWorker = (state: PanelState, message: FromWorker): Step => {
       return { state, effects: [{ kind: "build", units: message.units }, { kind: "control", control: "play" }] };
     case "refused":
       throw new Error(`listen panel: the worker refused ${message.request.kind} in phase ${message.phase}`);
+    case "disposed":
+      // Only `dispose` is answered so, and the port terminates the worker on it before the
+      // panel could hear it.
+      throw violation(state, "disposed");
     case "audio":
     case "done":
     case "cancelled":
@@ -152,9 +171,20 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       return tap(state, event.control);
     case "worker":
       return fromWorker(state, event.message);
+    case "worker-error":
+      return { state: { kind: "crashed", message: event.message }, effects: [{ kind: "discard" }] };
     case "view":
-      if (state.kind !== "scripting" && state.kind !== "listening") throw violation(state, "a scheduler view");
-      return stay({ kind: "listening", view: event.view });
+      switch (state.kind) {
+        case "scripting":
+          return stay({ kind: "listening", view: event.view, passages: passages(event.view.manifest.script) });
+        case "listening":
+          return stay({ kind: "listening", view: event.view, passages: state.passages });
+        case "crashed":
+          // The discarded scheduler's last view, raised by its own dispose: not ours any more.
+          return stay(state);
+        default:
+          throw violation(state, "a scheduler view");
+      }
   }
 };
 
@@ -199,7 +229,7 @@ const loadFailureText = (failure: LoadFailure): string => {
   }
 };
 
-const unitFailureText = (reason: UnitFailure | Rejection): string => {
+const unitFailureText = (reason: UnitFailure | RecordRejection): string => {
   switch (reason.kind) {
     case "duplicate-unit":
       return "requested twice";
@@ -208,7 +238,6 @@ const unitFailureText = (reason: UnitFailure | Rejection): string => {
     case "runtime":
       return reason.message;
     case "unknown-unit":
-    case "duplicate":
     case "bad-duration":
     case "word-count":
     case "times-out-of-order":
@@ -227,8 +256,7 @@ const unitAt = (view: SchedulerView, unitIndex: number): SynthesisUnit => {
   return unit;
 };
 
-const listeningStatus = (view: SchedulerView): string => {
-  const all = passages(view.manifest.script);
+const listeningStatus = (view: SchedulerView, all: ReadonlyArray<Utterance>): string => {
   const where = (unitIndex: number): string => `passage ${all.indexOf(unitAt(view, unitIndex).utterance) + 1} of ${all.length}`;
   const skipped = view.holdings.flatMap((holding, i) =>
     holding.kind === "failed" ? [`${where(i)} could not be synthesized: ${unitFailureText(holding.reason)}`] : [],
@@ -261,7 +289,7 @@ export const readout = (state: PanelState): Readout => {
       return {
         play: { label: "Listen", enabled: false },
         stop: off,
-        status: `This device can't run the neural voice: ${unsupportedText(state.reason)}. The browser voice below still works.`,
+        status: `This device can't run the neural voice: ${unsupportedText(state.reason)}.`,
         progress: null,
       };
     case "preparing":
@@ -289,10 +317,17 @@ export const readout = (state: PanelState): Readout => {
       return {
         play: { label: player.kind === "speaking" ? "Pause" : player.kind === "paused" ? "Resume" : "Listen", enabled: true },
         stop: { enabled: player.kind !== "idle" },
-        status: listeningStatus(state.view),
+        status: listeningStatus(state.view, state.passages),
         progress: null,
       };
     }
+    case "crashed":
+      return {
+        play: { label: "Retry", enabled: true },
+        stop: off,
+        status: `The neural voice worker failed${state.message === "" ? "" : `: ${state.message}`}`,
+        progress: null,
+      };
   }
 };
 
@@ -301,13 +336,13 @@ export const readout = (state: PanelState): Readout => {
 // Where the read-along is, from a view: nothing while idle; otherwise the unit under the
 // player and the span to paint — the manifest's cursor when the unit has a record, the
 // unit's whole span while it is still being synthesized.
-export const readAlongAt = (view: SchedulerView): ReadAlongAt | null => {
+export const readAlongAt = (view: SchedulerView, passages: ReadonlyArray<Utterance>): ReadAlongAt | null => {
   const { player } = view;
   if (player.kind === "idle") return null;
   const unit = unitAt(view, player.at.unitIndex);
   const record = view.manifest.units[player.at.unitIndex];
   const span: WordSpan = record === undefined ? { charStart: unit.start, charEnd: unit.end } : cursorAt(record, player.at.offsetMs);
-  const turn = passages(view.manifest.script).filter((utterance) => utterance.anchor === unit.utterance.anchor);
+  const turn = passages.filter((utterance) => utterance.anchor === unit.utterance.anchor);
   return { utterance: unit.utterance, turn, span };
 };
 
@@ -341,7 +376,8 @@ export interface ListenPanelConfig {
 export interface ListenPanel {
   readonly send: (control: Tap) => void;
   readonly state: () => PanelState;
-  // Ends the listen and the worker; the page is left as the renderer made it.
+  // Ends the listen and the worker (gracefully: the model is released before the worker
+  // ends); the page is left as the renderer made it, the controls show the idle readout.
   readonly dispose: () => void;
 }
 
@@ -373,8 +409,10 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   let draining = false;
   // The two handles effects create; an effect that needs one before it exists is a bug in
   // `step`, and says so.
+  const unheard = (): void => undefined;
   let port: SynthesisPort | null = null;
-  let unsubscribe: () => void = () => undefined;
+  let unsubscribe: () => void = unheard;
+  let unsubscribeErrors: () => void = unheard;
   let scheduler: Scheduler | null = null;
   const portOf = (): SynthesisPort => {
     if (port === null) throw new Error("listen panel: no worker to send to");
@@ -390,7 +428,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // Read from the scheduler, not the `listening` snapshot: within a unit the clock moves
   // with no event, and `view()` derives the position from the clock on every call.
   const emitPosition = (): void => {
-    const at = state.kind === "listening" ? readAlongAt(schedulerOf().view()) : null;
+    const at = state.kind === "listening" ? readAlongAt(schedulerOf().view(), state.passages) : null;
     if (samePlace(at, shown)) return;
     shown = at;
     config.onPosition(at);
@@ -417,6 +455,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "spawn":
         port = config.spawn();
         unsubscribe = port.subscribe((message) => dispatch({ kind: "worker", message }));
+        unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
         return;
       case "load":
         portOf().send({ kind: "load" });
@@ -438,6 +477,18 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       }
       case "control":
         schedulerOf().send({ kind: effect.control });
+        return;
+      case "discard":
+        // A worker can die before the scheduler exists (the bundle failed to load) or after;
+        // either way what exists is released, and its last view arrives in `crashed`.
+        scheduler?.dispose();
+        scheduler = null;
+        unsubscribe();
+        unsubscribeErrors();
+        unsubscribe = unheard;
+        unsubscribeErrors = unheard;
+        port?.terminate();
+        port = null;
         return;
     }
   };
@@ -472,13 +523,16 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       frame = null;
       scheduler?.dispose();
       unsubscribe();
-      port?.send({ kind: "dispose" });
-      port?.terminate();
+      unsubscribeErrors();
+      port?.dispose();
       scheduler = null;
       port = null;
       state = IDLE;
       shown = null;
       config.onPosition(null);
+      // The page may come back from the back-forward cache: the controls say what the
+      // state says, here as after every event.
+      render(controls, state);
     },
   };
 };

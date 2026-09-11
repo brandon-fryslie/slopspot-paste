@@ -123,6 +123,17 @@ console.log("createPainter");
   painter.paint({ utterance: elsewhere, turn: [elsewhere], span: wordOf(elsewhere, 0) });
   assert("an utterance whose card is not in the document paints nothing and does not throw", wrapped() === 0);
   painter.clear();
+
+  // A narrator utterance whose wording shares a word with the prose: it is not in the
+  // spoken pool, so the prose word stays with the prose utterance that says it.
+  const decoy = say(3, "narrator", "Then a code block.");
+  const decoyed = [first, decoy, second];
+  painter.paint({ utterance: decoy, turn: decoyed, span: { charStart: 0, charEnd: decoy.text.length } });
+  assert("a narrator utterance sharing a word with the prose paints nothing", lit().length === 0);
+  painter.paint({ utterance: second, turn: decoyed, span: { charStart: 0, charEnd: second.text.length } });
+  assert("and the prose utterance keeps its every word", lit().join(" ") === "Then it works. Ship it.");
+  painter.clear();
+  assert("unwrapped exactly as rendered", card.innerHTML === original);
 }
 
 console.log(process.exitCode === 1 ? "read-along-check: FAILED" : "read-along-check: ok");

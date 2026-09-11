@@ -784,10 +784,15 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         },
       });
 
-      // [LAW:parse-dont-validate] The same capability answer the player uses, asked once
-      // here so the dock item is revealed only when there is genuinely something behind it.
-      // A browser without a synthesizer leaves `speech-ready` off and shows no Listen at all.
-      if (speechSupport(window) !== null) {
+      // [LAW:parse-dont-validate] The tool is revealed when either voice MAY work: a
+      // synthesizer for the browser voice, or WebGPU for the neural one — whose real answer
+      // (adapter, 16-bit floats, a device) is the worker's probe, and comes only after the
+      // tap that spawns it. The browser row is hidden when there is no synthesizer behind
+      // it; a page with neither shows no Listen at all.
+      const speech = speechSupport(window);
+      document.body.classList.toggle("speech-ready", speech !== null || navigator.gpu !== undefined);
+      browser.toggleAttribute("hidden", speech === null);
+      if (speech !== null) {
         const play = control<HTMLButtonElement>(browser, ".speech-play");
         const stop = control<HTMLButtonElement>(browser, ".speech-stop");
         const now = control<HTMLParagraphElement>(browser, ".speech-now");
@@ -820,8 +825,6 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // paste that keeps talking after the reader has left is the one bug every Web Speech
         // integration ships with. The teardown is owned here, explicitly.
         window.addEventListener("pagehide", () => player.send({ kind: "stop" }));
-
-        document.body.classList.add("speech-ready");
       }
 
       // The worker holds the model on the GPU; the page that spawned it releases it.

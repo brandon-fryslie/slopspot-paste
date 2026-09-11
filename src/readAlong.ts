@@ -140,7 +140,13 @@ const wrapCard = (doc: Document, anchor: string, turn: ReadonlyArray<Utterance>)
   // words to paint: an empty map, not an error — the turn highlight still follows.
   if (card === null) return { anchor, card, byUtterance };
 
-  const spoken = turn.flatMap((utterance) => wordSpans(utterance.text, 0).map((word) => ({ utterance, word })));
+  // Narrator utterances — announcements, folded-detail counts, the usage aside — are
+  // exactly the text `pageWords` leaves out, so they are not in the spoken pool: a word
+  // they share with the prose ("code", "then") must not pull that prose word to them
+  // [LAW:one-source-of-truth]. Each keeps its (empty) entry in the map and paints nothing.
+  const spoken = turn
+    .filter((utterance) => utterance.voice !== "narrator")
+    .flatMap((utterance) => wordSpans(utterance.text, 0).map((word) => ({ utterance, word })));
   const page = pageWords(card);
   const matched = alignWords(
     spoken.map(({ utterance, word }) => utterance.text.slice(word.charStart, word.charEnd)),
