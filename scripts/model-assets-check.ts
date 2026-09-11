@@ -6,21 +6,31 @@
 //     change when, and only when, the bytes do.
 //  2. src/modelAssetLoader.ts — the browser edge. A network download reports byte-level
 //     progress, verifies the hash, and persists; a second load fetches ZERO parts; a
-//     wrong byte, a short read or an HTTP error is a typed failure with no bytes; a
-//     store that cannot write is reported, not hidden; stale entries are pruned.
-//  3. public/_headers — the published cache and CORS rule keyed on the same prefix.
+//     wrong byte, a short read, an HTTP error or a transport error is a typed failure
+//     with no bytes; a store that cannot write is reported, not hidden; stale entries
+//     are pruned.
+//  3. scripts/modelAssetMirror.ts — the deploy-time mirror against a temp directory: a
+//     correct mirror fetches nothing; a missing or wrong-sized part refetches; a wrong
+//     hash or a fetch that throws aborts by asset name; parts no plan names are removed.
+//  4. public/_headers — the published cache and CORS rule keyed on the same prefix.
 //
 // ─── loadAsset ACCEPT TABLE ──────────────────────────────────────────────────
 //   store has key at the right size   -> ok, origin store, persisted hit, 0 fetches
 //   store empty, parts correct         -> ok, origin network, persisted written, stored
 //   store empty, a byte flipped        -> integrity failure, nothing stored
 //   store empty, a part truncated      -> integrity failure (short read), nothing stored
-//   a part 404s                        -> http failure naming the url, nothing stored
+//   a part 404s                        -> http failure naming the url, nothing stored,
+//                                         the other parts aborted
+//   a part's fetch rejects             -> network failure naming the url, nothing stored
+//   a part's body errors mid-stream    -> network failure naming the url, nothing stored
 //   store.write throws                 -> ok with persisted failed{message}; bytes returned
+//   store.read throws                  -> a miss: downloaded, persisted failed{message}
 //   store has key at the WRONG size    -> treated as absent: re-downloaded, origin network
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   MODEL_ASSETS,
   MODEL_ASSET_PREFIX,
@@ -35,6 +45,7 @@ import {
   type ModelAsset,
 } from "../src/modelAssets";
 import { loadAsset, loadAssets, pruneStaleAssets, type AssetStore } from "../src/modelAssetLoader";
+import { mirror, mirrorIsCorrect, pruneStaleParts } from "./modelAssetMirror";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -92,12 +103,14 @@ const synth: ModelAsset = {
 
 class MemoryStore implements AssetStore {
   readonly files = new Map<string, Uint8Array<ArrayBuffer>>();
-  writeError: string | null = null;
+  // A store that cannot be opened (private mode) throws on read and write alike.
+  fault: string | null = null;
   async read(name: string) {
+    if (this.fault !== null) throw new Error(this.fault);
     return this.files.get(name) ?? null;
   }
   async write(name: string, data: Uint8Array<ArrayBuffer>) {
-    if (this.writeError !== null) throw new Error(this.writeError);
+    if (this.fault !== null) throw new Error(this.fault);
     this.files.set(name, data);
   }
   async list() {
@@ -118,13 +131,22 @@ const chunked = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
     },
   });
 
+// A body that never ends on its own: it errors when the load aborts it, as a real
+// transport does, and otherwise stays open — so a test that returns is one that aborted.
+const openUntilAborted = (signal: AbortSignal): ReadableStream<Uint8Array> =>
+  new ReadableStream({
+    start(controller) {
+      signal.addEventListener("abort", () => controller.error(new Error("aborted")));
+    },
+  });
+
 // A part server over `bytes`, with an optional per-url override to simulate faults.
-const serve = (bytes: Uint8Array, fault: (url: string) => Response | null = () => null) => {
+const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => Response | null = () => null) => {
   const calls: string[] = [];
   const plan = shardPlan(synth);
-  const fetchLike = async (url: string): Promise<Response> => {
+  const fetchLike = async (url: string, init: { readonly signal: AbortSignal }): Promise<Response> => {
     calls.push(url);
-    const faulted = fault(url);
+    const faulted = fault(url, init.signal);
     if (faulted !== null) return faulted;
     const shard = plan.find((s) => s.url === url);
     if (shard === undefined) return new Response(null, { status: 404 });
@@ -177,19 +199,49 @@ const serve = (bytes: Uint8Array, fault: (url: string) => Response | null = () =
 {
   const store = new MemoryStore();
   const plan = shardPlan(synth);
-  const { fetchLike } = serve(synthData, (url) => (url === plan[2]!.url ? new Response(null, { status: 404 }) : null));
+  // Part 0 stays open until aborted; part 2 404s. The load can only return by aborting part 0.
+  const { fetchLike } = serve(synthData, (url, signal) =>
+    url === plan[0]!.url ? new Response(openUntilAborted(signal)) : url === plan[2]!.url ? new Response(null, { status: 404 }) : null,
+  );
   const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
   assert("a 404 part is an http failure naming the url", !outcome.ok && outcome.failure.kind === "http" && outcome.failure.status === 404 && outcome.failure.url === plan[2]!.url);
+  assert("and the parts still in flight are aborted, the 404 reported as the cause", !outcome.ok && outcome.failure.kind === "http");
   assert("nothing is stored after an http failure", store.files.size === 0);
 }
 
 {
   const store = new MemoryStore();
-  store.writeError = "QuotaExceededError";
-  const { fetchLike } = serve(synthData);
+  const plan = shardPlan(synth);
+  const rejecting = async (url: string, init: { readonly signal: AbortSignal }) =>
+    url === plan[1]!.url ? Promise.reject(new TypeError("Failed to fetch")) : serve(synthData).fetchLike(url, init);
+  const outcome = await loadAsset(synth, { fetch: rejecting, store }, () => {});
+  assert("a part whose fetch rejects is a network failure naming the url", !outcome.ok && outcome.failure.kind === "network" && outcome.failure.url === plan[1]!.url && outcome.failure.message === "Failed to fetch");
+  assert("nothing is stored after a network failure", store.files.size === 0);
+}
+
+{
+  const store = new MemoryStore();
+  const plan = shardPlan(synth);
+  const errorsMidStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(synthData.slice(plan[1]!.start, plan[1]!.start + CHUNK));
+      controller.error(new Error("connection reset"));
+    },
+  });
+  const { fetchLike } = serve(synthData, (url) => (url === plan[1]!.url ? new Response(errorsMidStream) : null));
   const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
-  assert("a store that cannot write still returns the bytes", outcome.ok && outcome.loaded.data.byteLength === SYNTH_BYTES);
-  assert("and reports persisted failed with the message", outcome.ok && outcome.loaded.persisted.kind === "failed" && outcome.loaded.persisted.message === "QuotaExceededError");
+  assert("a body that errors mid-stream is a network failure naming the url", !outcome.ok && outcome.failure.kind === "network" && outcome.failure.url === plan[1]!.url && outcome.failure.message === "connection reset");
+  assert("nothing is stored after a mid-stream error", store.files.size === 0);
+}
+
+{
+  const store = new MemoryStore();
+  store.fault = "QuotaExceededError";
+  store.files.set(assetKey(synth), synthData.slice() as Uint8Array<ArrayBuffer>);
+  const { fetchLike, calls } = serve(synthData);
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
+  assert("a store that cannot be read is a miss: the bytes are downloaded", outcome.ok && outcome.loaded.origin === "network" && calls.length === 3 && outcome.loaded.data.byteLength === SYNTH_BYTES);
+  assert("and the store's fault is reported as persisted failed with the message", outcome.ok && outcome.loaded.persisted.kind === "failed" && outcome.loaded.persisted.message === "QuotaExceededError");
 }
 
 {
@@ -206,7 +258,7 @@ const serve = (bytes: Uint8Array, fault: (url: string) => Response | null = () =
   const { fetchLike } = serve(synthData);
   const small: ModelAsset = { ...synth, name: "small", bytes: 4096, sha256: createHash("sha256").update(synthData.subarray(0, 4096)).digest("hex") };
   const plan = shardPlan(small);
-  const fetchBoth = async (url: string) => (url === plan[0]!.url ? new Response(synthData.slice(0, 4096)) : fetchLike(url));
+  const fetchBoth = async (url: string, init: { readonly signal: AbortSignal }) => (url === plan[0]!.url ? new Response(synthData.slice(0, 4096)) : fetchLike(url, init));
   const progress: number[] = [];
   const outcome = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => progress.push(p.loadedBytes));
   assert("loadAssets loads a set in order", outcome.ok && outcome.loaded.map((l) => l.asset.name).join(",") === "small,synthetic");
@@ -218,7 +270,48 @@ const serve = (bytes: Uint8Array, fault: (url: string) => Response | null = () =
   assert("prune removes only stale entries under the prefix", removed.join() === `${MODEL_ASSET_PREFIX}weights-000000000000` && store.files.has("unrelated") && store.files.has(assetKey(synth)));
 }
 
-// ── 3. published headers ──────────────────────────────────────────────────────
+// ── 3. mirror ─────────────────────────────────────────────────────────────────
+console.log("mirror:");
+{
+  const dir = mkdtempSync(join(tmpdir(), "model-mirror-"));
+  const served: string[] = [];
+  const source = (bytes: Uint8Array) => async (url: string) => {
+    served.push(url);
+    return new Response(bytes.slice());
+  };
+  const listed = () => readdirSync(join(dir, MODEL_ASSET_PREFIX)).sort().join(",");
+  const expected = shardPlan(synth).map((s) => s.url.slice(MODEL_ASSET_PREFIX.length)).sort().join(",");
+
+  assert("an empty directory is not a correct mirror", !mirrorIsCorrect(dir, synth));
+  const first = await mirror(dir, source(synthData), synth);
+  assert("a missing asset is fetched once and cut into its parts", first.action === "fetched" && served.length === 1 && listed() === expected);
+  assert("the parts have their planned sizes", shardPlan(synth).every((s) => statSync(join(dir, s.url)).size === s.end - s.start));
+  assert("a correct mirror is verified without a fetch", (await mirror(dir, source(synthData), synth)).action === "verified" && served.length === 1);
+
+  writeFileSync(join(dir, shardPlan(synth)[1]!.url), synthData.subarray(0, 10));
+  assert("a wrong-sized part makes the mirror incorrect", !mirrorIsCorrect(dir, synth));
+  assert("and is refetched", (await mirror(dir, source(synthData), synth)).action === "fetched" && served.length === 2 && mirrorIsCorrect(dir, synth));
+
+  const flipped = synthData.slice();
+  flipped.fill(0xaa, SHARD_BYTES + 3, SHARD_BYTES + 4);
+  writeFileSync(join(dir, shardPlan(synth)[1]!.url), flipped.subarray(SHARD_BYTES, 2 * SHARD_BYTES));
+  assert("a right-sized part with wrong bytes makes the mirror incorrect", !mirrorIsCorrect(dir, synth));
+  const mismatch = await mirror(dir, source(flipped), synth).catch((e: Error) => e.message);
+  assert("a source whose bytes do not hash to the manifest aborts by asset name", typeof mismatch === "string" && mismatch.startsWith("synthetic: SHA-256 mismatch"));
+  const refused = await mirror(dir, async () => { throw new TypeError("fetch failed"); }, synth).catch((e: Error) => e.message);
+  assert("a source that cannot be fetched aborts by asset name", refused === `synthetic: ${synth.source} — fetch failed`);
+  const short = await mirror(dir, source(synthData.subarray(0, 100)), synth).catch((e: Error) => e.message);
+  assert("a source of the wrong size aborts by asset name", typeof short === "string" && short.startsWith("synthetic: expected"));
+  assert("a failed refetch writes nothing: the incorrect part is still the old one", !mirrorIsCorrect(dir, synth));
+
+  await mirror(dir, source(synthData), synth);
+  writeFileSync(join(dir, `${MODEL_ASSET_PREFIX}weights-000000000000.part0`), new Uint8Array(3));
+  const removed = pruneStaleParts(dir, [synth]);
+  assert("prune removes only parts no current plan names", removed.join() === `${MODEL_ASSET_PREFIX}weights-000000000000.part0` && listed() === expected);
+  rmSync(dir, { recursive: true });
+}
+
+// ── 4. published headers ──────────────────────────────────────────────────────
 console.log("public/_headers:");
 const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
 const rule = headers.split(/\n(?=\S)/).find((block) => block.startsWith(`${MODEL_ASSET_PREFIX}*`)) ?? "";

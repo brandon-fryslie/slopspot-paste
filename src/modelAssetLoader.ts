@@ -7,14 +7,17 @@
 // The store is the one the chosen runtime already uses: @jax-js/loaders' OPFS instance,
 // keyed by string. Our keys are the manifest's asset keys, so a cache entry can only mean
 // the bytes published at that path; there is no second cache beside it
-// [LAW:one-source-of-truth]. Eviction is tolerated by construction: a missing or wrong-sized
-// entry is re-downloaded with progress and reported as `origin: "network"`, never hidden.
+// [LAW:one-source-of-truth]. The hash is checked once, at the write [LAW:single-enforcer];
+// a read trusts the key and checks only the size. Eviction is tolerated by construction: a
+// missing or wrong-sized entry is re-downloaded with progress and reported as
+// `origin: "network"`, never hidden.
 //
 // [LAW:no-silent-failure] Nothing here defaults past a problem. A part that fails to
 // fetch, a short read, or a hash that does not match the manifest is a typed failure with
 // no bytes attached — the runtime cannot be handed unverified weights. A store that cannot
-// keep the bytes (quota, private mode) is NOT a failure of the download: the bytes are
-// returned and `persisted` says the next visit will download again, so the UI can say so.
+// keep the bytes (quota, private mode) is NOT a failure of the download: a read that
+// throws is a miss, the bytes are downloaded and returned, and `persisted` carries the
+// store's message so the UI can say the next visit will download again.
 
 import { opfs } from "@jax-js/loaders";
 import { type ModelAsset, MODEL_ASSET_PREFIX, assetKey, shardPlan } from "./modelAssets";
@@ -28,7 +31,7 @@ export interface AssetStore {
   remove(name: string): Promise<unknown>;
 }
 
-export type FetchLike = (url: string) => Promise<Response>;
+export type FetchLike = (url: string, init: { readonly signal: AbortSignal }) => Promise<Response>;
 
 export interface AssetIo {
   readonly fetch: FetchLike;
@@ -37,7 +40,7 @@ export interface AssetIo {
 
 // The real edge, composed once: the page's fetch and the runtime's own OPFS store. The
 // synthesis worker passes this; the check passes stubs of the same type.
-export const browserAssetIo = (): AssetIo => ({ fetch: (url) => fetch(url), store: opfs });
+export const browserAssetIo = (): AssetIo => ({ fetch: (url, init) => fetch(url, init), store: opfs });
 
 export interface AssetProgress {
   readonly loadedBytes: number;
@@ -74,33 +77,34 @@ const sha256Hex = async (bytes: Uint8Array<ArrayBuffer>): Promise<string> => {
 
 // One part, streamed straight into its slice of the asset's buffer — no per-part copy and
 // no concatenation afterwards. `count` reports each chunk's size so the caller can sum
-// progress across parts that download concurrently.
+// progress across parts that download concurrently. Anything the transport throws —
+// before the response or mid-stream — is the `network` failure.
 const readPartInto = async (
   fetchLike: FetchLike,
   url: string,
+  signal: AbortSignal,
   target: Uint8Array<ArrayBuffer>,
   count: (bytes: number) => void,
 ): Promise<{ ok: true; written: number } | { ok: false; failure: AssetFailure }> => {
-  let response: Response;
   try {
-    response = await fetchLike(url);
+    const response = await fetchLike(url, { signal });
+    if (!response.ok || response.body === null) {
+      return { ok: false, failure: { kind: "http", url, status: response.status } };
+    }
+    const reader = response.body.getReader();
+    let written = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return { ok: true, written };
+      // A server sending more than the planned range would overrun the slice; a short
+      // read shows up as `written` under the range. Both land in the integrity check.
+      const fit = Math.min(value.byteLength, target.byteLength - written);
+      target.set(value.subarray(0, fit), written);
+      written += fit;
+      count(fit);
+    }
   } catch (e) {
     return { ok: false, failure: { kind: "network", url, message: e instanceof Error ? e.message : String(e) } };
-  }
-  if (!response.ok || response.body === null) {
-    return { ok: false, failure: { kind: "http", url, status: response.status } };
-  }
-  const reader = response.body.getReader();
-  let written = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return { ok: true, written };
-    // A server sending more than the planned range would overrun the slice; a short
-    // read shows up as `written` under the range. Both land in the integrity check.
-    const fit = Math.min(value.byteLength, target.byteLength - written);
-    target.set(value.subarray(0, fit), written);
-    written += fit;
-    count(fit);
   }
 };
 
@@ -113,7 +117,7 @@ export const loadAsset = async (
   const key = assetKey(asset);
   const totalBytes = asset.bytes;
 
-  const cached = await io.store.read(key);
+  const cached = await io.store.read(key).catch(() => null);
   if (cached !== null && cached.byteLength === totalBytes) {
     onProgress({ loadedBytes: totalBytes, totalBytes });
     return { ok: true, loaded: { asset, data: cached, origin: "store", persisted: { kind: "hit" } } };
@@ -122,15 +126,24 @@ export const loadAsset = async (
   const data = new Uint8Array(new ArrayBuffer(totalBytes));
   let loadedBytes = 0;
   onProgress({ loadedBytes, totalBytes });
-  const parts = await Promise.all(
-    shardPlan(asset).map((shard) =>
-      readPartInto(io.fetch, shard.url, data.subarray(shard.start, shard.end), (n) => {
+  // The first part to fail is the cause; aborting the rest stops up to 200 MB of parts
+  // that can no longer make a whole. Their own failures are consequences and are not reported.
+  const abort = new AbortController();
+  const failures: AssetFailure[] = [];
+  await Promise.all(
+    shardPlan(asset).map(async (shard) => {
+      const part = await readPartInto(io.fetch, shard.url, abort.signal, data.subarray(shard.start, shard.end), (n) => {
         loadedBytes += n;
         onProgress({ loadedBytes, totalBytes });
-      }),
-    ),
+      });
+      if (!part.ok) {
+        failures.push(part.failure);
+        abort.abort();
+      }
+    }),
   );
-  for (const part of parts) if (!part.ok) return part;
+  const cause = failures[0];
+  if (cause !== undefined) return { ok: false, failure: cause };
 
   const actual = loadedBytes === totalBytes ? await sha256Hex(data) : `short read: ${loadedBytes} of ${totalBytes} bytes`;
   if (actual !== asset.sha256) {
