@@ -293,6 +293,9 @@ console.log("player: seek");
   const resumes = device.calls.filter((c) => c === "resume").length;
   player.send({ kind: "seek", to: { unitIndex: 2, offsetMs: 0 } });
   assert("seek while paused moves the held position and starts nothing", describe(player.state()) === "paused@2:0.000" && device.live().length === 0 && device.calls.filter((c) => c === "resume").length === resumes);
+  const held = main.states.length;
+  player.send({ kind: "seek", to: { unitIndex: 2, offsetMs: 0 } });
+  assert("seek while paused to the held position reports nothing", describe(player.state()) === "paused@2:0.000" && main.states.length === held);
 
   throws("seek to a unit past the script", () => player.send({ kind: "seek", to: { unitIndex: 4, offsetMs: 0 } }));
   throws("seek to a negative offset", () => player.send({ kind: "seek", to: { unitIndex: 0, offsetMs: -1 } }));

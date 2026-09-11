@@ -240,6 +240,8 @@ export interface UnitPlayer {
 type Speaking = { readonly kind: "speaking"; schedule: Schedule; readonly sources: Set<PcmSource> };
 type Live = { readonly kind: "idle" } | { readonly kind: "paused"; readonly at: Sample } | Speaking;
 
+const sameSample = (a: Sample, b: Sample): boolean => a.unit === b.unit && a.sample === b.sample;
+
 interface MutableUnitAudio {
   readonly frames: Float32Array<ArrayBuffer>[];
   complete: boolean;
@@ -390,7 +392,8 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
         // start. Otherwise it plays from there, from buffered samples when they exist and
         // otherwise waiting at that sample, which is the request the scheduler answers.
         const at = toSample(event.to);
-        if (live.kind === "paused") live = { kind: "paused", at };
+        // The hold is the same hold when the sample is the same: nothing to report.
+        if (live.kind === "paused") live = sameSample(live.at, at) ? live : { kind: "paused", at };
         else run(at);
         return;
       }
