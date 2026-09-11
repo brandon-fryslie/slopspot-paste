@@ -1,0 +1,11 @@
+# Static-asset response headers (Workers Static Assets reads this file; it does not
+# apply to responses the Worker code generates).
+#
+# /models/* holds the Pocket TTS weights, tokenizer and voice embeddings mirrored by
+# scripts/fetch-model-assets.ts. Every path under it carries a prefix of its own SHA-256
+# (src/modelAssets.ts), so the bytes at a URL never change: a year-long immutable
+# lifetime is exact, not optimistic. The open CORS header lets the synthesis worker on
+# any origin — a local dev page against production assets included — read them.
+/models/*
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *

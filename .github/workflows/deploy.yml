@@ -80,6 +80,17 @@ jobs:
 
       - run: npm ci
 
+      # The Pocket TTS model mirror (public/models/, ~228 MB) is derived from the pinned
+      # sources in src/modelAssets.ts by the build's own pre-step, which verifies it by
+      # hash and refetches only what is missing or wrong. Keeping it between runs, keyed on
+      # the manifest, means a deploy asks HuggingFace for the bytes only when the manifest
+      # names new ones — not on every push and every morning's cron. A cache miss is not a
+      # failure mode: the pre-step then does the full fetch, as it does on a laptop.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: public/models
+          key: model-assets-${{ hashFiles('src/modelAssets.ts') }}
+
       # [LAW:single-enforcer] The quality gate is not re-declared here. `npm run deploy`
       # is the one deploy command the repo has — `npm run test && astro build && wrangler
       # deploy` — so CI and a laptop run the identical chain and cannot disagree about what
