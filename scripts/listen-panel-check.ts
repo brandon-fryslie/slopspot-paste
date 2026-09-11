@@ -93,7 +93,9 @@ const effects = (s: ReturnType<typeof step>): string =>
         ? `${e.on} ${e.event.kind}${e.event.kind === "seek" ? ` ${e.event.to}` : ""}`
         : e.kind === "release"
           ? `release ${e.worker}`
-          : e.kind,
+          : e.kind === "handover"
+            ? `handover ${e.from}>${e.to}`
+            : e.kind,
     )
     .join();
 const shown = (state: PanelState): string => {
@@ -131,11 +133,11 @@ console.log("step, no stand-in: the way to audio");
   const scripting = step(warming.state, worker({ kind: "ready", backend: "webgpu", modelVersion: "v" }));
   assert("ready: the script is sent", effects(scripting) === "script" && shown(scripting.state) === "Listen(off) | stop(off) | Preparing the script…");
   const built = step(scripting.state, worker({ kind: "script", id: SCRIPT_ID, units }));
-  assert("the units back, no stand-in: build and play, the tap was the consent", built.state === scripting.state && effects(built) === "build,neural play");
+  assert("the units back, no stand-in: the performer is built, the phase unchanged until its first view", built.state === scripting.state && effects(built) === "build");
   throws("a script reply with another id is not ours", () => step(scripting.state, worker({ kind: "script", id: 7, units })));
 
   const listening = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("the performer's first view puts the neural voice on stage", listening.state.kind === "neural" && shown(listening.state) === "Listen | stop(off) | Ready");
+  assert("the performer's first view puts the neural voice on stage and plays it: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "neural play" && shown(listening.state) === "Listen | stop(off) | Ready");
   const crashed = step(downloading.state, { kind: "worker-error", message: "the worker bundle failed to load" });
   assert("a worker error while downloading: crashed, the worker terminated, Play reads Retry", effects(crashed) === "release terminate" && shown(crashed.state) === "Retry | stop(off) | The neural voice failed: the worker bundle failed to load");
   assert("an error with no message still names the failure", shown(step(warming.state, { kind: "worker-error", message: "" }).state).endsWith("The neural voice failed"));
@@ -173,20 +175,17 @@ console.log("step, with a stand-in: the browser voice speaks while the neural vo
   assert("tap play on an unsupported device only drives the stand-in", effects(step(step(unsupported.state, synthAt({ kind: "idle" })).state, tapPlay)) === "synth play");
 
   const scripting = step(step(downloading.state, progress(239_000_000, 239_000_000)).state, worker({ kind: "ready", backend: "webgpu", modelVersion: "v" }));
-  const handover = step(step(scripting.state, synthAt(speakingAt(1))).state, worker({ kind: "script", id: SCRIPT_ID, units }));
-  assert("the units back while the stand-in speaks passage 2: silence it, build, seek the neural voice to passage 2", effects(handover) === "synth stop,build,neural seek 1");
-  const handoverPaused = step(step(scripting.state, synthAt(pausedAt(1))).state, worker({ kind: "script", id: SCRIPT_ID, units }));
-  assert("paused at passage 2: the neural voice takes the place, paused", effects(handoverPaused) === "synth stop,build,neural seek 1,neural pause");
-  const handoverIdle = step(step(scripting.state, synthAt({ kind: "idle" })).state, worker({ kind: "script", id: SCRIPT_ID, units }));
-  assert("the reader had stopped the stand-in: the neural voice is built and stays silent", effects(handoverIdle) === "synth stop,build");
+  const spokenOn = step(scripting.state, synthAt(speakingAt(1))).state;
+  const built = step(spokenOn, worker({ kind: "script", id: SCRIPT_ID, units }));
+  assert("the units back while the stand-in speaks passage 2: the performer is built, the stand-in speaks on", effects(built) === "build" && built.state === spokenOn);
 
-  const onStage = step(handover.state, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "waiting" }) });
+  const onStage = step(built.state, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "waiting" }) });
+  assert("the first view: the stage passes from the stand-in to the neural voice, then the stand-in is silenced", effects(onStage) === "handover synth>neural,synth stop");
   assert("on stage: the neural readout, passage 2", onStage.state.kind === "neural" && shown(onStage.state) === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
-  throws("a stand-in report while the neural voice is on stage is a violation", () => step(onStage.state, synthAt(speakingAt(0))));
+  assert("the stand-in's idle on being silenced is heard and changes nothing", step(onStage.state, synthAt({ kind: "idle" })).state === onStage.state);
+  throws("a stand-in speaking while the neural voice is on stage is a violation", () => step(onStage.state, synthAt(speakingAt(0))));
   const fell = step(onStage.state, { kind: "worker-error", message: "boom" });
-  assert("a crash on stage: released, and the stand-in is sent where the neural voice stood", effects(fell) === "release terminate,synth seek 1" && fell.state.kind === "provisioning" && fell.state.neural.kind === "crashed");
-  const fellPaused = step(step(onStage.state, { kind: "view", view: viewOf({ kind: "paused", at: { unitIndex: 1, offsetMs: 0 } }) }).state, { kind: "worker-error", message: "boom" });
-  assert("a crash while paused: the stand-in holds the same passage", effects(fellPaused) === "release terminate,synth seek 0,synth pause");
+  assert("a crash on stage: the stage passes back to the stand-in, then the worker is released", effects(fell) === "handover neural>synth,release terminate" && fell.state.kind === "provisioning" && fell.state.neural.kind === "crashed");
   const back = step(fell.state, synthAt(speakingAt(1)));
   assert("the stand-in's report after the fall: standing in again, the failure named", shown(back.state) === "Pause | stop | Browser voice standing in · passage 2 of 2 · the neural voice failed: boom");
   assert("tap play from paused after a crash retries: the stand-in resumes and a worker is spawned", effects(step(step(fell.state, synthAt(pausedAt(1))).state, tapPlay)) === "synth play,spawn");
@@ -380,11 +379,12 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
   assert("ready: the script goes to the worker, the stand-in still speaking", r.sent.at(-1)?.kind === "script" && line() === "Pause | stop | Browser voice standing in · passage 2 of 2 · preparing the script…");
 
   const cancelsBefore = synth.cancels;
+  const emittedBefore = r.positions.length;
   r.emit({ kind: "script", id: SCRIPT_ID, units });
   const device = StubDevice.instances.at(-1);
   if (device === undefined) throw new Error("the panel did not build a player");
   assert("units back: the stand-in is silenced and the neural voice takes up passage 2, from its start", synth.cancels === cancelsBefore + 1 && panel.state().kind === "neural" && r.said().endsWith("synthesize 2") && line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
-  assert("the cursor stays on passage 2 across the handover", r.where() === "t2 0-8 of 1" && r.frames.pending === 1);
+  assert("the cursor stays on passage 2 across the handover: not one position emitted, none lost", r.positions.length === emittedBefore && r.where() === "t2 0-8 of 1" && r.frames.pending === 1);
 
   r.emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });
   r.emit({ kind: "done", unitId: 2, report: report(FRAME_S * 1000), elapsedMs: 5 });
@@ -395,9 +395,10 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
   r.play.click();
   assert("Play again plays the neural voice from the top, no new download, no stand-in", r.said().endsWith("synthesize 0") && synth.spoken.length === 2 && line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
 
+  const beforeCrash = r.positions.length;
   r.fail("boom");
   assert("the worker dies on stage: the device closed, the worker terminated, the stand-in takes passage 1 back", device.calls.at(-1) === "close" && r.counts.terminated === 1 && synth.spoken.at(-1)?.text === one.text && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · the neural voice failed: boom");
-  assert("the cursor is the stand-in's now", r.where() === "t1 0-42 of 1" && r.counts.listeners() === 0);
+  assert("the cursor is the stand-in's now, never cleared on the way", r.where() === "t1 0-42 of 1" && !r.positions.slice(beforeCrash).includes(null) && r.counts.listeners() === 0);
   r.play.click();
   assert("Pause pauses the stand-in and spawns nothing", line() === "Resume | stop | Browser voice standing in · paused at passage 1 of 2 · the neural voice failed: boom" && r.counts.spawned === 1 && r.frames.pending === 0);
   r.play.click();
@@ -407,6 +408,38 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
 
   panel.dispose();
   assert("dispose: the port is disposed (not terminated outright), no longer heard, the panel at the start", r.counts.disposed === 1 && r.counts.terminated === 1 && r.counts.listeners() === 0 && panel.state().kind === "provisioning" && line() === `Listen | stop(off) | Browser voice standing in · the neural voice downloads a ${MB} model once, then runs on this device`);
+}
+
+console.log("createListenPanel: a bug in the machine tears the panel down, loudly");
+{
+  const r = rig();
+  const synth = standIn(r.window);
+  const panel = createListenPanel({
+    controls: { play: r.play, stop: r.stop, status: r.status, progress: r.bar },
+    utterances,
+    voices: DEFAULT_VOICES,
+    spawn: () => r.port,
+    Device: StubDevice,
+    frames: r.frames,
+    standIn: (onState) => {
+      const player = createPlayer({ window: r.window, utterances, onState });
+      if (player === null) throw new Error("fixture: the stub synthesizer did not yield a player");
+      return player;
+    },
+    onPosition: (at) => r.positions.push(at),
+  });
+  const line = (): string => `${r.play.textContent}${r.play.disabled ? "(off)" : ""} | stop${r.stop.disabled ? "(off)" : ""} | ${r.status.textContent}`;
+  r.play.click();
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
+  r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
+  const cancelsBefore = synth.cancels;
+  const foreign = [unit({ ...one, text: "Another page entirely." }, 0, 22), unit({ ...two }, 0, 8)];
+  throws("a script that is not this page's is refused out of the dispatch", () => r.emit({ kind: "script", id: SCRIPT_ID, units: foreign }));
+  const after = panel.state();
+  assert("after the throw: the worker released, the stand-in silenced, the cursor cleared, the panel at its start", r.counts.disposed === 1 && r.counts.listeners() === 0 && synth.cancels === cancelsBefore + 1 && r.positions.at(-1) === null && r.frames.pending === 0 && after.kind === "provisioning" && after.neural.kind === "idle" && line() === `Listen | stop(off) | Browser voice standing in · the neural voice downloads a ${MB} model once, then runs on this device`);
+  r.play.click();
+  assert("Play after the teardown starts over: the stand-in speaks and a worker is spawned", synth.spoken.at(-1)?.text === one.text && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · checking this device for the neural voice…");
 }
 
 console.log("createListenPanel: no stand-in, the transport waits for the neural voice");
