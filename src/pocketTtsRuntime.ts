@@ -69,6 +69,9 @@ export const probeWebGpu = async (): Promise<Support> => {
   if (gpu === undefined) return unsupported({ kind: "no-webgpu" });
   const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" });
   if (adapter === null) return unsupported({ kind: "no-adapter" });
+  // [LAW:parse-dont-validate] The adapter's own feature set is the f16 fact; it is read here,
+  // not inferred from whichever error a later op happens to throw.
+  if (!adapter.features.has("shader-f16")) return unsupported({ kind: "no-f16" });
   let devices: ReadonlyArray<string>;
   try {
     devices = await init("webgpu");
@@ -79,10 +82,12 @@ export const probeWebGpu = async (): Promise<Support> => {
     return unsupported({ kind: "no-device", message: "jax-js could not create a WebGPU device" });
   }
   defaultDevice("webgpu");
+  // A device that advertises f16 but cannot run one f16 op is a device that failed, and the
+  // reason it gives is kept [LAW:no-silent-failure].
   try {
     await np.ones([1], { dtype: np.float16 }).mul(2).data();
-  } catch {
-    return unsupported({ kind: "no-f16" });
+  } catch (e) {
+    return unsupported({ kind: "no-device", message: `a float16 op failed: ${e instanceof Error ? e.message : String(e)}` });
   }
   return { kind: "supported", backend: "webgpu" };
 };
