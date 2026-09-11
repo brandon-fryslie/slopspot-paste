@@ -3,7 +3,7 @@
 // over it (slopspot-read-along-q35.4). Run: `tsx scripts/speech-manifest-check.ts`.
 //
 // FIXTURE. The units are the real speech script of test/fixtures/chatgpt-share.md under
-// the same word-ish tokenizer speech-script-check uses. The worker REPORTS are constructed
+// the checks' shared word-ish tokenizer (speechFixtures.ts). The worker REPORTS are constructed
 // by a stated rule, because no worker exists yet to capture from (q35.q3l): a unit's audio
 // is one 80 ms frame per 1.2 source characters; unit i reports `words` (times on frame
 // boundaries, one frame-share per word), `unit`, or `estimated` (the module's own
@@ -40,7 +40,8 @@ import {
   type WordTime,
   type WordTiming,
 } from "../src/speechManifest";
-import { deriveSpeechScript, type SynthesisUnit, type TokenCount } from "../src/speechScript";
+import { deriveSpeechScript, type SynthesisUnit } from "../src/speechScript";
+import { wordish } from "./speechFixtures";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -51,7 +52,6 @@ const assert = (label: string, cond: boolean): void => {
   }
 };
 
-const wordish: TokenCount = (text) => (text.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) ?? []).length;
 const utter = (text: string, index = 0): Utterance => ({ index, anchor: `t${index}`, voice: "assistant", text });
 const scriptOf = (...texts: string[]): ReadonlyArray<SynthesisUnit> =>
   deriveSpeechScript(
