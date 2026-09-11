@@ -2,8 +2,8 @@
 // unit was said. One sentence, no "and": this module turns a per-frame attention row over
 // the unit's text tokens into a start and end time for every word the manifest knows. It
 // runs no model (pocketTtsRuntime hands it one logits row and one PCM frame at a time), it
-// cuts no text (the words are `wordsOf(unit)`, the manifest's own rule) and it paints
-// nothing. Every function here is pure over plain numbers, which is what lets the check
+// cuts no text (the words are the manifest's own `wordSpans` over the unit's source) and it
+// paints nothing. Every function here is pure over plain numbers, which is what lets the check
 // replay streams captured from the reference implementation with no model at all
 // [LAW:effects-at-boundaries] [LAW:verifiable-goals].
 //
@@ -36,9 +36,9 @@
 // positions are facts about that string, so units and the token map are computed in its
 // coordinates. The speech script's character-map theorem — the fed text is the utterance
 // slice character for character, plus at most one appended character — is what makes a
-// lexical word at [a, b) of the fed text the same word at [start + a, start + b) of the
-// utterance, and what makes the appended punctuation `synthetic` in the reference's
-// sense: punctuation the model was given that the source never had.
+// lexical word at [a, b) of the fed text the same word at [a, b) of the source, and what
+// makes the appended punctuation `synthetic` in the reference's sense: punctuation the
+// model was given that the source never had.
 //
 // A WORD THE MODEL SKIPPED. The reference emits no timestamp for a word its state
 // machine never opened (the tiny model does skip words, rarely). The manifest wants one
@@ -48,8 +48,8 @@
 // the cursor — which paints the last word STARTED by a time — never lands on it
 // [LAW:no-silent-failure].
 
-import { wordsOf, type WordTiming } from "./speechManifest";
-import type { SynthesisUnit } from "./speechScript";
+import { wordSpans, type WordTiming } from "./speechManifest";
+import type { UnitText } from "./speechScript";
 
 // [LAW:parse-dont-validate] The element at `i` of a sequence whose length was established
 // by construction (a word index into the plan's own word list, a token row of the map).
@@ -241,13 +241,13 @@ export interface AlignmentPlan {
 
 // [LAW:parse-dont-validate] A lexical word that lies in no manifest word contradicts the
 // theorem in the header — thrown, so the manifest never receives a count it cannot stamp.
-export const planAlignment = (unit: SynthesisUnit, pieces: ReadonlyArray<string>): AlignmentPlan => {
-  const units = textUnits(unit.text, unit.end - unit.start);
-  const words = wordsOf(unit);
+export const planAlignment = (unit: UnitText, pieces: ReadonlyArray<string>): AlignmentPlan => {
+  const units = textUnits(unit.text, unit.source.length);
+  const words = wordSpans(unit.source, 0);
   const wordOf = units
     .filter((u): u is Extract<TextUnit, { kind: "word" }> => u.kind === "word")
     .map((lexical) => {
-      const at = words.findIndex((word) => word.charStart <= unit.start + lexical.begin && unit.start + lexical.end <= word.charEnd);
+      const at = words.findIndex((word) => word.charStart <= lexical.begin && lexical.end <= word.charEnd);
       if (at === -1) throw new Error(`lexical word at ${lexical.begin}..${lexical.end} of ${JSON.stringify(unit.text)} lies in no manifest word`);
       return at;
     });

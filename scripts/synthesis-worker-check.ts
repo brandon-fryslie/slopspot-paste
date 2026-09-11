@@ -29,7 +29,7 @@ import { FRAME_MS, MODEL_ASSETS, MODEL_VERSION, type VoiceId } from "../src/mode
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance } from "../src/speech";
 import { wordish } from "./speechFixtures";
-import { deriveSpeechScript, type SynthesisUnit } from "../src/speechScript";
+import { deriveSpeechScript, type UnitText } from "../src/speechScript";
 import {
   createSynthesisHandler,
   type GenerationEnd,
@@ -52,13 +52,8 @@ const assert = (label: string, cond: boolean): void => {
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-// A unit standing alone: its text is the whole of a one-utterance script.
-const unitOf = (text: string): SynthesisUnit => ({
-  utterance: { index: 0, anchor: "t0", voice: "assistant", text },
-  start: 0,
-  end: text.length,
-  text,
-});
+// A unit's text standing alone: fed exactly as its source reads.
+const unitOf = (text: string): UnitText => ({ text, source: text });
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await tick();
 };
@@ -123,7 +118,7 @@ const stubModel = (config: StubModelConfig) => {
   const model: LoadedModel = {
     backend: "webgpu",
     countTokens: wordish,
-    async *generate(unit: SynthesisUnit, voice: VoiceId) {
+    async *generate(unit: UnitText, voice: VoiceId) {
       log.started.push(`${voice}:${unit.text}`);
       try {
         for (let i = 0; i < config.frames; i++) {
@@ -232,7 +227,7 @@ console.log("load:");
   const rt = stubRuntime(SUPPORTED, [{ ok: true, model: stub.model }]);
   const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   await box.waitFor("capability");
-  handler.receive({ kind: "synthesize", unitId: 1, unit: unitOf("Too early."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 1, text: unitOf("Too early."), voice: "alba" });
   handler.receive({ kind: "script", id: 1, utterances: [] });
   handler.receive({ kind: "cancel", unitId: 1 });
   await settle();
@@ -277,7 +272,7 @@ console.log("synthesize:");
 {
   const stub = stubModel({ frames: 4, end: EOS });
   const { box, handler } = await readyHandler(stub.model);
-  handler.receive({ kind: "synthesize", unitId: 7, unit: unitOf("Hello there."), voice: "marius" });
+  handler.receive({ kind: "synthesize", unitId: 7, text: unitOf("Hello there."), voice: "marius" });
   const done = await box.waitFor("done");
   const audio = box.of("audio");
   assert("four frames arrive for the unit, frameIndex 0..3", audio.length === 4 && audio.every((a, i) => a.unitId === 7 && a.frameIndex === i));
@@ -294,16 +289,16 @@ console.log("synthesize:");
   assert("the generator was finalised once", stub.log.finalised === 1);
 
   // The same id may be reused once its terminal message is out.
-  handler.receive({ kind: "synthesize", unitId: 7, unit: unitOf("Again."), voice: "marius" });
+  handler.receive({ kind: "synthesize", unitId: 7, text: unitOf("Again."), voice: "marius" });
   await box.waitFor("done", (d) => d.unitId === 7 && box.of("done").length === 2);
   assert("a finished id can be reused", box.of("done").length === 2 && box.of("failed").length === 0);
 }
 {
   const stub = stubModel({ frames: 3, end: EOS });
   const { box, handler } = await readyHandler(stub.model);
-  handler.receive({ kind: "synthesize", unitId: 1, unit: unitOf("First."), voice: "alba" });
-  handler.receive({ kind: "synthesize", unitId: 2, unit: unitOf("Second."), voice: "javert" });
-  handler.receive({ kind: "synthesize", unitId: 1, unit: unitOf("First again, too soon."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 1, text: unitOf("First."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 2, text: unitOf("Second."), voice: "javert" });
+  handler.receive({ kind: "synthesize", unitId: 1, text: unitOf("First again, too soon."), voice: "alba" });
   await box.waitFor("done", (d) => d.unitId === 2);
   const order = box.posted.map((p) => p.message).filter((m) => m.kind === "audio" || m.kind === "done").map((m) => (m.kind === "audio" ? `a${m.unitId}` : `d${m.unitId}`));
   assert("one at a time, FIFO: every frame of 1 and its done precede any frame of 2", order.join(",") === "a1,a1,a1,d1,a2,a2,a2,d2");
@@ -313,7 +308,7 @@ console.log("synthesize:");
 {
   const stub = stubModel({ frames: 5, end: { kind: "frame-cap" } });
   const { box, handler } = await readyHandler(stub.model);
-  handler.receive({ kind: "synthesize", unitId: 3, unit: unitOf("Looping forever."), voice: "fantine" });
+  handler.receive({ kind: "synthesize", unitId: 3, text: unitOf("Looping forever."), voice: "fantine" });
   const failed = await box.waitFor("failed");
   assert("a generation that hits the frame cap is failed{frame-cap} naming the frames streamed", failed.reason.kind === "frame-cap" && failed.reason.frames === 5 && box.of("audio").length === 5);
   assert("no done for it", box.of("done").length === 0);
@@ -321,8 +316,8 @@ console.log("synthesize:");
 {
   const stub = stubModel({ frames: 6, end: EOS, throwAt: 2 });
   const { box, handler } = await readyHandler(stub.model);
-  handler.receive({ kind: "synthesize", unitId: 4, unit: unitOf("Boom."), voice: "eponine" });
-  handler.receive({ kind: "synthesize", unitId: 5, unit: unitOf("Still fine."), voice: "eponine" });
+  handler.receive({ kind: "synthesize", unitId: 4, text: unitOf("Boom."), voice: "eponine" });
+  handler.receive({ kind: "synthesize", unitId: 5, text: unitOf("Still fine."), voice: "eponine" });
   const failed = await box.waitFor("failed");
   assert("a runtime that throws mid-unit is failed{runtime} with the message, after the frames it did produce", failed.unitId === 4 && failed.reason.kind === "runtime" && failed.reason.message.includes("frame 2") && box.of("audio").filter((a) => a.unitId === 4).length === 2);
   // The stub throws at frame 2 of every unit, so the next unit fails the same way — what is
@@ -336,8 +331,8 @@ console.log("cancel:");
 {
   const stub = stubModel({ frames: 6, end: EOS });
   const { box, handler } = await readyHandler(stub.model);
-  handler.receive({ kind: "synthesize", unitId: 10, unit: unitOf("Running."), voice: "alba" });
-  handler.receive({ kind: "synthesize", unitId: 11, unit: unitOf("Waiting."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 10, text: unitOf("Running."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 11, text: unitOf("Waiting."), voice: "alba" });
   handler.receive({ kind: "cancel", unitId: 11 });
   const queuedCancel = box.of("cancelled");
   assert("cancelling a queued unit answers cancelled synchronously, before any of its frames", queuedCancel.length === 1 && queuedCancel[0]?.unitId === 11);
@@ -355,7 +350,7 @@ console.log("cancel:");
   handler.receive({ kind: "cancel", unitId: 99 });
   await settle();
   assert("cancel of a finished or unknown unit produces nothing", box.posted.length === before);
-  handler.receive({ kind: "synthesize", unitId: 12, unit: unitOf("After."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 12, text: unitOf("After."), voice: "alba" });
   await box.waitFor("done", (d) => d.unitId === 12);
   assert("the worker keeps working after cancels", handler.phase() === "ready");
 }
@@ -387,9 +382,9 @@ console.log("dispose:");
 {
   const stub = stubModel({ frames: 6, end: EOS });
   const { box, handler } = await readyHandler(stub.model);
-  handler.receive({ kind: "synthesize", unitId: 20, unit: unitOf("Running."), voice: "alba" });
-  handler.receive({ kind: "synthesize", unitId: 21, unit: unitOf("Queued."), voice: "alba" });
-  handler.receive({ kind: "synthesize", unitId: 22, unit: unitOf("Queued too."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 20, text: unitOf("Running."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 21, text: unitOf("Queued."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 22, text: unitOf("Queued too."), voice: "alba" });
   await box.waitFor("audio", (a) => a.frameIndex === 1);
   handler.receive({ kind: "dispose" });
   assert("dispose is immediate for the phase", handler.phase() === "disposed");
@@ -404,7 +399,7 @@ console.log("dispose:");
     "and disposed is posted once, after the running unit's terminal",
     box.of("disposed").length === 1 && box.posted.findIndex((p) => p.message.kind === "disposed") > box.posted.findIndex((p) => p.message.kind === "cancelled" && p.message.unitId === 20),
   );
-  handler.receive({ kind: "synthesize", unitId: 23, unit: unitOf("Too late."), voice: "alba" });
+  handler.receive({ kind: "synthesize", unitId: 23, text: unitOf("Too late."), voice: "alba" });
   handler.receive({ kind: "load" });
   await settle();
   assert("after dispose, synthesize and load are refused with phase disposed", box.of("refused").map((r) => `${r.request.kind}@${r.phase}`).join(",") === "synthesize@disposed,load@disposed");

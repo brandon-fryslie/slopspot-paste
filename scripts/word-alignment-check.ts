@@ -26,7 +26,7 @@
 import { readFileSync } from "node:fs";
 import { FRAME_MS, MODEL_ASSETS } from "../src/modelAssets";
 import { recordUnit, wordsOf } from "../src/speechManifest";
-import type { SynthesisUnit } from "../src/speechScript";
+import { unitText, type SynthesisUnit } from "../src/speechScript";
 import {
   createWordAligner,
   isVoiced,
@@ -123,7 +123,7 @@ assert(`the fixture was captured from ${fixture.model} with the ${fixture.voice}
 for (const capture of fixture.captures) {
   console.log(`\nreplay: ${JSON.stringify(capture.source)}`);
   const unit = unitOf(capture);
-  const plan = planAlignment(unit, capture.pieces);
+  const plan = planAlignment(unitText(unit), capture.pieces);
 
   const sameUnits =
     plan.units.length === capture.units.length &&
@@ -220,7 +220,7 @@ console.log("\nunit scores");
   const map = tokenToUnit(spans, units);
   assert("a token inside one unit gives it all its share", map[0]?.join() === "1,0,0" && map[3]?.join() === "0,0,1");
   assert("a token split over two units shares by overlap", map[1]?.join() === "0,1,0" && map[2]?.join() === "0,1,0");
-  const plan = planAlignment({ utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, text }, ["▁Hello", "▁wor", "ld", "."]);
+  const plan = planAlignment({ text, source: text }, ["▁Hello", "▁wor", "ld", "."]);
   const uniform = unitScores(plan, [0, 0, 0, 0]);
   assert("uniform logits spread attention by token count: 1/4, 2/4, 1/4", near(uniform[0] ?? NaN, 0.25) && near(uniform[1] ?? NaN, 0.5) && near(uniform[2] ?? NaN, 0.25));
   const peaked = unitScores(plan, [100, 0, 0, 0]);
@@ -235,7 +235,7 @@ console.log("\nskipped words");
 {
   const text = "One two three.";
   const unit: SynthesisUnit = { utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, text };
-  const plan = planAlignment(unit, ["▁One", "▁two", "▁three", "."]);
+  const plan = planAlignment(unitText(unit), ["▁One", "▁two", "▁three", "."]);
   const aligner = createWordAligner(plan);
   const score = (...xs: number[]): Float64Array => Float64Array.from(xs);
   const opened = aligner.frame(score(0.9, 0.05, 0.03, 0.02), true, 0);

@@ -54,6 +54,18 @@ export interface SynthesisUnit {
   readonly text: string;
 }
 
+// What the worker reads of a unit: the text the model is fed and the utterance slice it
+// covers. The utterance itself stays on the page.
+export interface UnitText {
+  readonly text: string;
+  readonly source: string;
+}
+
+export const unitText = ({ utterance, start, end, text }: SynthesisUnit): UnitText => ({
+  text,
+  source: utterance.text.slice(start, end),
+});
+
 // Which model voice speaks each role. A VALUE the reader picks; changing it re-derives
 // every rendition rather than re-deploying an asset.
 export type VoiceMap = Readonly<Record<Voice, VoiceId>>;

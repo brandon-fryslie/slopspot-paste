@@ -30,7 +30,7 @@
 import type { AssetProgress } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_VERSION, type VoiceId } from "./modelAssets";
 import type { ReportedAlignment } from "./speechManifest";
-import { deriveSpeechScript, type SynthesisUnit, type TokenCount } from "./speechScript";
+import { deriveSpeechScript, type TokenCount, type UnitText } from "./speechScript";
 import type {
   Backend,
   FromWorker,
@@ -59,7 +59,7 @@ export type GenerationEnd =
 export interface LoadedModel {
   readonly backend: Backend;
   readonly countTokens: TokenCount;
-  generate(unit: SynthesisUnit, voice: VoiceId): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd>;
+  generate(unit: UnitText, voice: VoiceId): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd>;
   dispose(): void;
 }
 
@@ -95,7 +95,7 @@ export interface SynthesisHandler {
 
 interface Job {
   readonly unitId: number;
-  readonly unit: SynthesisUnit;
+  readonly text: UnitText;
   readonly voice: VoiceId;
   cancelled: boolean;
 }
@@ -175,7 +175,7 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
   const run = async (model: LoadedModel, job: Job): Promise<FromWorker> => {
     const { unitId } = job;
     const started = now();
-    const generation = model.generate(job.unit, job.voice);
+    const generation = model.generate(job.text, job.voice);
     let frames = 0;
     try {
       for (;;) {
@@ -236,7 +236,7 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       post({ kind: "failed", unitId: request.unitId, reason: { kind: "duplicate-unit" } }, []);
       return;
     }
-    const job: Job = { unitId: request.unitId, unit: request.unit, voice: request.voice, cancelled: false };
+    const job: Job = { unitId: request.unitId, text: request.text, voice: request.voice, cancelled: false };
     ready.queue.push(job);
     if (ready.running === null) {
       // Claimed synchronously so a second request in the same tick queues behind this one

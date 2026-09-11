@@ -41,7 +41,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { ModelProtoSchema } from "sentencepiece-buf/model";
 import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
-import type { SynthesisUnit } from "./speechScript";
+import type { UnitText } from "./speechScript";
 import type { GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
 import type { Support } from "./synthesisProtocol";
 import {
@@ -194,7 +194,7 @@ interface PendingFrame {
 
 async function* generate(
   { model, tokenizer, pieces, voices }: Hydrated,
-  unit: SynthesisUnit,
+  unit: UnitText,
   voice: VoiceId,
 ): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd> {
   const ids = tokenizer.encode(unit.text);
