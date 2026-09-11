@@ -30,7 +30,7 @@
 // presets) and never server state [LAW:one-way-deps].
 
 import { contentHash } from "./contentHash";
-import { MAX_UNIT_TOKENS, MODEL_VERSION, type VoiceId } from "./modelAssets";
+import { MAX_UNIT_TOKENS, MODEL_ASSETS, VOICE_IDS, assetVersion, type ModelAssetManifest, type VoiceId } from "./modelAssets";
 import type { Utterance, Voice } from "./speech";
 
 // Bump when any rule in this file changes what text a unit is fed or where units are cut:
@@ -106,7 +106,7 @@ const endOfCore = (text: string): number => {
 const withTerminalPunctuation = (text: string): string => {
   const core = endOfCore(text);
   const last = text.charAt(core - 1);
-  if (core === 0 || TERMINAL.has(last)) return text;
+  if (TERMINAL.has(last)) return text;
   if (WEAK.has(last)) return text.slice(0, core - 1) + "." + text.slice(core);
   return text + ".";
 };
@@ -258,19 +258,29 @@ export const deriveSpeechScript = (
 
 // ── identity ────────────────────────────────────────────────────────────────────────
 
+// The versions a rendition depends on, split the way units depend on them: `model` is
+// what every unit shares (weights and tokenizer); `voices` is each voice's own asset, so
+// a unit can carry the version of the one voice it is spoken in.
 export interface RenditionVersions {
   readonly pipeline: string;
   readonly model: string;
+  readonly voices: Readonly<Record<VoiceId, string>>;
 }
 
-export const RENDITION_VERSIONS: RenditionVersions = { pipeline: PIPELINE_VERSION, model: MODEL_VERSION };
+export const renditionVersions = (manifest: ModelAssetManifest): RenditionVersions => ({
+  pipeline: PIPELINE_VERSION,
+  model: [manifest.weights, manifest.tokenizer].map(assetVersion).join(","),
+  voices: Object.fromEntries(VOICE_IDS.map((id) => [id, assetVersion(manifest.voices[id])])) as Record<VoiceId, string>,
+});
+
+export const RENDITION_VERSIONS: RenditionVersions = renditionVersions(MODEL_ASSETS);
 
 // [LAW:one-source-of-truth] The ONE identity of a rendition: which model, under which
-// rules, said exactly which text in which voice, unit by unit. It hashes the voice each
-// unit is actually spoken in rather than the whole voice map, so changing the voice of a
-// role that never speaks in this paste does not orphan a listener's resume position.
-// Client-side only — resume position, presets, an optional per-device cache — never a
-// server key.
+// rules, said exactly which text in which voice, unit by unit. It hashes the version of
+// the voice each unit is actually spoken in rather than the whole voice map or the whole
+// manifest, so changing — or re-recording — a voice no unit of this paste uses does not
+// orphan a listener's resume position. Client-side only — resume position, presets, an
+// optional per-device cache — never a server key.
 export const renditionHash = (
   units: ReadonlyArray<SynthesisUnit>,
   voiceMap: VoiceMap,
@@ -279,5 +289,5 @@ export const renditionHash = (
   contentHash({
     pipeline: versions.pipeline,
     model: versions.model,
-    units: units.map((u) => [u.utterance.index, voiceMap[u.utterance.voice], u.text]),
+    units: units.map((u) => [u.utterance.index, versions.voices[voiceMap[u.utterance.voice]], u.text]),
   });
