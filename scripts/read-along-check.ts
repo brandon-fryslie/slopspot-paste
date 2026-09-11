@@ -53,6 +53,7 @@ const CARD = `
     <pre><code>const x = 1;\nreturn x;</code></pre>
     <p>Then it works. Ship it.</p></div>
     <details class="condensed"><summary>2 tool calls</summary><div>Bash ls -la</div></details>
+    <aside class="bubble-turn-summary">Then it summarized.</aside>
     <aside class="bubble-usage">1,024 tokens</aside>
   </article>
   <article class="bubble bubble-user" id="t4" data-index="4"><p>Thanks!</p></article>`;
@@ -66,7 +67,7 @@ console.log("pageWords");
 {
   const words = pageWords(card).map((w) => w.node.data.slice(w.start, w.end));
   assert(
-    "prose and inline code are words; fenced code, folds and the usage aside are not",
+    "prose and inline code are words; fenced code, folds, the turn summary and the usage aside are not",
     // The comma and colon sit in their own text nodes beside the inline elements, so they
     // are punctuation runs, not words — exactly the manifest's rule.
     words.join(" ") === "Here is the fix in parser.ts Then it works. Ship it.",

@@ -75,10 +75,13 @@ export interface PageWord {
   readonly end: number;
 }
 
-// What speech.ts announces rather than reads: fenced code (<pre>), every native fold
-// (<details>, which is both the detail blocks and a collapsed turn), the usage aside, and
-// anything hidden. Their text is never spoken, so it is never a match target.
-const UNSPOKEN = "pre, details, aside.bubble-usage, [hidden], [aria-hidden='true']";
+// What the narrator's voice covers on the page: fenced code (<pre>), every native fold
+// (<details>, which is both the detail blocks and a collapsed turn), the usage aside, the
+// turn-summary aside, and anything hidden. None of it is in the spoken pool below, so none
+// of it is a match target. The turn-summary is the one block here the narrator does read,
+// verbatim; it is left unpainted until an utterance says whether its text is the page's own
+// (slopspot-read-along-a35.wqz) rather than matched by a voice that also names what is not.
+const UNSPOKEN = "pre, details, aside.bubble-usage, aside.bubble-turn-summary, [hidden], [aria-hidden='true']";
 const SHOW_TEXT = 4;
 
 export const pageWords = (card: Element): ReadonlyArray<PageWord> => {
@@ -140,10 +143,11 @@ const wrapCard = (doc: Document, anchor: string, turn: ReadonlyArray<Utterance>)
   // words to paint: an empty map, not an error — the turn highlight still follows.
   if (card === null) return { anchor, card, byUtterance };
 
-  // Narrator utterances — announcements, folded-detail counts, the usage aside — are
-  // exactly the text `pageWords` leaves out, so they are not in the spoken pool: a word
-  // they share with the prose ("code", "then") must not pull that prose word to them
-  // [LAW:one-source-of-truth]. Each keeps its (empty) entry in the map and paints nothing.
+  // Narrator utterances — announcements, folded-detail counts, the turn summary — are
+  // exactly the text `pageWords` leaves out (UNSPOKEN, above), so they are not in the
+  // spoken pool: a word they share with the prose ("code", "then") must not pull that prose
+  // word to them [LAW:one-source-of-truth]. Each keeps its (empty) entry in the map and
+  // paints nothing.
   const spoken = turn
     .filter((utterance) => utterance.voice !== "narrator")
     .flatMap((utterance) => wordSpans(utterance.text, 0).map((word) => ({ utterance, word })));

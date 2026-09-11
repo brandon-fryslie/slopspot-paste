@@ -72,7 +72,8 @@ const viewOf = (player: SchedulerView["player"]): SchedulerView => ({
   holdings: units.map(() => ({ kind: "absent" })),
 });
 
-const effects = (s: ReturnType<typeof step>): string => s.effects.map((e) => (e.kind === "control" ? `control ${e.control}` : e.kind)).join();
+const effects = (s: ReturnType<typeof step>): string =>
+  s.effects.map((e) => (e.kind === "control" ? `control ${e.control}` : e.kind === "release" ? `release ${e.worker}` : e.kind)).join();
 
 // ── the pure machine ──────────────────────────────────────────────────────────────────
 
@@ -112,9 +113,11 @@ console.log("step: the way to audio");
   assert("a later view keeps the passages already read", listening.state.kind === "listening" && again.state.kind === "listening" && again.state.passages === listening.state.passages);
 
   const crashed = step(downloading.state, { kind: "worker-error", message: "the worker bundle failed to load" });
-  assert("a worker error: crashed, the worker discarded, the failure named, Play reads Retry", crashed.state.kind === "crashed" && effects(crashed) === "discard" && readout(crashed.state).play.label === "Retry" && readout(crashed.state).play.enabled && !readout(crashed.state).stop.enabled && readout(crashed.state).status === "The neural voice worker failed: the worker bundle failed to load");
+  assert("a worker error: crashed, the worker terminated, the failure named, Play reads Retry", crashed.state.kind === "crashed" && effects(crashed) === "release terminate" && readout(crashed.state).play.label === "Retry" && readout(crashed.state).play.enabled && !readout(crashed.state).stop.enabled && readout(crashed.state).status === "The neural voice worker failed: the worker bundle failed to load");
   assert("an error with no message still names the failure", readout(step(listening.state, { kind: "worker-error", message: "" }).state).status === "The neural voice worker failed");
-  assert("the discarded scheduler's last view is not ours: crashed stays", step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }).state === crashed.state);
+  throws("a view in crashed is a violation: the released scheduler's last view never reaches step", () => step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }));
+  const disposedMid = step(listening.state, { kind: "dispose" });
+  assert("dispose, anywhere: idle, the live worker asked to dispose", disposedMid.state.kind === "idle" && effects(disposedMid) === "release dispose");
   const respawned = step(crashed.state, tapPlay);
   assert("Retry spawns a fresh worker and probes", respawned.state.kind === "probing" && effects(respawned) === "spawn");
 }

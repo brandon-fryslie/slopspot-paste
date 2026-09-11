@@ -79,7 +79,9 @@ export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
   | { readonly kind: "worker"; readonly message: FromWorker }
   | { readonly kind: "worker-error"; readonly message: string }
-  | { readonly kind: "view"; readonly view: SchedulerView };
+  | { readonly kind: "view"; readonly view: SchedulerView }
+  // The page is done with the panel: everything it built is released.
+  | { readonly kind: "dispose" };
 
 export type Effect =
   | { readonly kind: "spawn" }
@@ -87,9 +89,10 @@ export type Effect =
   | { readonly kind: "script" }
   | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit> }
   | { readonly kind: "control"; readonly control: "play" | "pause" | "stop" }
-  // Releases a dead worker and the scheduler built on it: nothing is sent to a worker that
-  // has already failed; the device is closed through the scheduler's own dispose.
-  | { readonly kind: "discard" };
+  // Releases the scheduler and the worker; how the worker ends is the value: a dead worker
+  // is terminated, since nothing can be sent to it, a live one is asked to dispose so the
+  // model is released first. The device is closed through the scheduler's own dispose.
+  | { readonly kind: "release"; readonly worker: "terminate" | "dispose" };
 
 export interface Step {
   readonly state: PanelState;
@@ -172,16 +175,15 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
     case "worker":
       return fromWorker(state, event.message);
     case "worker-error":
-      return { state: { kind: "crashed", message: event.message }, effects: [{ kind: "discard" }] };
+      return { state: { kind: "crashed", message: event.message }, effects: [{ kind: "release", worker: "terminate" }] };
+    case "dispose":
+      return { state: IDLE, effects: [{ kind: "release", worker: "dispose" }] };
     case "view":
       switch (state.kind) {
         case "scripting":
           return stay({ kind: "listening", view: event.view, passages: passages(event.view.manifest.script) });
         case "listening":
           return stay({ kind: "listening", view: event.view, passages: state.passages });
-        case "crashed":
-          // The discarded scheduler's last view, raised by its own dispose: not ours any more.
-          return stay(state);
         default:
           throw violation(state, "a scheduler view");
       }
@@ -403,7 +405,7 @@ const samePlace = (a: ReadAlongAt | null, b: ReadAlongAt | null): boolean =>
 
 export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const { controls, frames } = config;
-  // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch` and `perform`.
+  // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch`, from `step`.
   let state: PanelState = IDLE;
   const queue: PanelEvent[] = [];
   let draining = false;
@@ -464,12 +466,16 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         portOf().send({ kind: "script", id: SCRIPT_ID, utterances: config.utterances });
         return;
       case "build": {
+        // [LAW:no-ambient-temporal-coupling] A view is the live scheduler's or nobody's: the
+        // last view a released scheduler raises from its own dispose never reaches `step`.
         const built = createScheduler({
           port: portOf(),
           script: effect.units,
           voices: config.voices,
           player: (playerConfig) => createUnitPlayer({ ...playerConfig, Device: config.Device }),
-          onChange: (view) => dispatch({ kind: "view", view }),
+          onChange: (view) => {
+            if (scheduler === built) dispatch({ kind: "view", view });
+          },
         });
         scheduler = built;
         dispatch({ kind: "view", view: built.view() });
@@ -478,18 +484,20 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "control":
         schedulerOf().send({ kind: effect.control });
         return;
-      case "discard":
+      case "release": {
         // A worker can die before the scheduler exists (the bundle failed to load) or after;
-        // either way what exists is released, and its last view arrives in `crashed`.
-        scheduler?.dispose();
+        // either way what exists is released. The scheduler is unhooked before it is disposed.
+        const releasing = scheduler;
         scheduler = null;
+        releasing?.dispose();
         unsubscribe();
         unsubscribeErrors();
         unsubscribe = unheard;
         unsubscribeErrors = unheard;
-        port?.terminate();
+        port?.[effect.worker]();
         port = null;
         return;
+      }
     }
   };
 
@@ -518,21 +526,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   return {
     send: (control) => dispatch({ kind: "tap", control }),
     state: () => state,
-    dispose: () => {
-      if (frame !== null) frames.cancel(frame);
-      frame = null;
-      scheduler?.dispose();
-      unsubscribe();
-      unsubscribeErrors();
-      port?.dispose();
-      scheduler = null;
-      port = null;
-      state = IDLE;
-      shown = null;
-      config.onPosition(null);
-      // The page may come back from the back-forward cache: the controls say what the
-      // state says, here as after every event.
-      render(controls, state);
-    },
+    // One more event through the same machine: idle disarms the frame loop, clears the
+    // position, and the controls say what the state says, so a page back from the
+    // back-forward cache finds them right.
+    dispose: () => dispatch({ kind: "dispose" }),
   };
 };
