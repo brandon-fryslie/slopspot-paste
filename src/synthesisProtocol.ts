@@ -42,7 +42,7 @@ import type { AssetFailure, AssetProgress } from "./modelAssetLoader";
 import type { VoiceId } from "./modelAssets";
 import type { Utterance } from "./speech";
 import type { UnitReport } from "./speechManifest";
-import type { SynthesisUnit } from "./speechScript";
+import type { SynthesisUnit, UnitText } from "./speechScript";
 
 // The one backend the q35.1 spike shipped: jax-js's WebGPU path. Its single-threaded Wasm
 // path ran at 1.03x real time on an M2 Max, so it is not offered and there is no order to
@@ -81,7 +81,8 @@ export type Phase = "probing" | "unsupported" | "idle" | "loading" | "ready" | "
 export type ToWorker =
   | { readonly kind: "load" }
   | { readonly kind: "script"; readonly id: number; readonly utterances: ReadonlyArray<Utterance> }
-  | { readonly kind: "synthesize"; readonly unitId: number; readonly text: string; readonly voice: VoiceId }
+  // The fed text and its source slice: what the model says and the words it is timed against.
+  | { readonly kind: "synthesize"; readonly unitId: number; readonly text: UnitText; readonly voice: VoiceId }
   | { readonly kind: "cancel"; readonly unitId: number }
   | { readonly kind: "dispose" };
 

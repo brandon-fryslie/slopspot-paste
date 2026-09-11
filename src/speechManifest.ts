@@ -33,7 +33,7 @@
 // disposable projection of the stored original's rendition [LAW:one-way-deps].
 
 import { SAMPLE_RATE } from "./modelAssets";
-import { RENDITION_VERSIONS, type RenditionVersions, type SynthesisUnit } from "./speechScript";
+import { RENDITION_VERSIONS, unitText, type RenditionVersions, type SynthesisUnit } from "./speechScript";
 
 // ── words ───────────────────────────────────────────────────────────────────────────
 
@@ -60,8 +60,7 @@ export const wordSpans = (text: string, offset: number): ReadonlyArray<WordSpan>
     .filter((run) => LEXICAL.test(run[0]))
     .map((run) => ({ charStart: offset + run.index, charEnd: offset + run.index + run[0].length }));
 
-export const wordsOf = (unit: SynthesisUnit): ReadonlyArray<WordSpan> =>
-  wordSpans(unit.utterance.text.slice(unit.start, unit.end), unit.start);
+export const wordsOf = (unit: SynthesisUnit): ReadonlyArray<WordSpan> => wordSpans(unitText(unit).source, unit.start);
 
 export interface WordTiming {
   readonly startMs: number;

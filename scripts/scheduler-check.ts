@@ -42,7 +42,7 @@ import type { Command, Event, Holding, SchedulerState, SchedulerView } from "../
 import { wordsOf } from "../src/speechManifest";
 import type { UnitReport } from "../src/speechManifest";
 import type { Utterance } from "../src/speech";
-import type { SynthesisUnit, VoiceMap } from "../src/speechScript";
+import { unitText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, createUnitPlayer } from "../src/unitPlayer";
@@ -140,7 +140,7 @@ console.log("step: from idle to the first audio");
   const message = step(VOICES, fresh, reported(speaking(0)), speaking(0)).commands[0];
   assert(
     "the request carries the unit's text and the voice for its role",
-    message?.kind === "worker" && message.message.kind === "synthesize" && message.message.text === "Unit 0 says hello." && message.message.voice === "marius",
+    message?.kind === "worker" && message.message.kind === "synthesize" && message.message.text.text === "Unit 0 says hello." && message.message.voice === "marius",
   );
 
   const again = step(VOICES, played.state, reported(speaking(0)), speaking(0));
@@ -266,7 +266,7 @@ console.log("step: failure is skipped, not waited on");
   assert("failed when not the frontier: frames dropped at once, the gap requested", failedBehindGap.commands.join() === "drop 2,synthesize 1");
 
   throws("failed{duplicate-unit} is a scheduler bug", () => step(VOICES, going.state, worker({ kind: "failed", unitId: 2, reason: { kind: "duplicate-unit" } }), speaking(0)));
-  throws("a refused synthesize is a scheduler bug", () => step(VOICES, going.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: 2, text: "", voice: "alba" }, phase: "idle" }), speaking(0)));
+  throws("a refused synthesize is a scheduler bug", () => step(VOICES, going.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: 2, text: unitText(unitOf(2, "")), voice: "alba" }, phase: "idle" }), speaking(0)));
   throws("a refused cancel is a scheduler bug", () => step(VOICES, going.state, worker({ kind: "refused", request: { kind: "cancel", unitId: 2 }, phase: "idle" }), speaking(0)));
   const others = run(going.state, speaking(0), worker({ kind: "refused", request: { kind: "load" }, phase: "ready" }), worker({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 2 } }), worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } }));
   assert("the panel's messages pass by untouched", others.commands.length === 0 && others.state === going.state);

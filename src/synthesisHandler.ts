@@ -30,7 +30,7 @@
 import type { AssetProgress } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_VERSION, type VoiceId } from "./modelAssets";
 import type { ReportedAlignment } from "./speechManifest";
-import { deriveSpeechScript, type TokenCount } from "./speechScript";
+import { deriveSpeechScript, type TokenCount, type UnitText } from "./speechScript";
 import type {
   Backend,
   FromWorker,
@@ -44,8 +44,8 @@ import type {
 // ── the runtime seam ────────────────────────────────────────────────────────────────
 
 // How one unit's generation ended. `eos` is the model's own end-of-speech signal and
-// carries whatever alignment the runtime measured (`unit` until the attention read-out of
-// q35.v70 lands); `frame-cap` is the loop's bound, reached without EOS.
+// carries the alignment the runtime measured — `words` from the attention read-out, one
+// time per `wordsOf(unit)`; `frame-cap` is the loop's bound, reached without EOS.
 export type GenerationEnd =
   | { readonly kind: "eos"; readonly alignment: ReportedAlignment }
   | { readonly kind: "frame-cap" }
@@ -59,7 +59,7 @@ export type GenerationEnd =
 export interface LoadedModel {
   readonly backend: Backend;
   readonly countTokens: TokenCount;
-  generate(text: string, voice: VoiceId): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd>;
+  generate(unit: UnitText, voice: VoiceId): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd>;
   dispose(): void;
 }
 
@@ -95,7 +95,7 @@ export interface SynthesisHandler {
 
 interface Job {
   readonly unitId: number;
-  readonly text: string;
+  readonly text: UnitText;
   readonly voice: VoiceId;
   cancelled: boolean;
 }

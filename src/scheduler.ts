@@ -68,7 +68,7 @@
 
 import { emptyManifest, recordUnit } from "./speechManifest";
 import type { Manifest, ManifestUnit, Position, RecordRejection } from "./speechManifest";
-import type { SynthesisUnit, VoiceMap } from "./speechScript";
+import { unitText, type SynthesisUnit, type VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
 import type { PlayerEvent, PlayerState, UnitPlayer, UnitPlayerConfig } from "./unitPlayer";
@@ -331,7 +331,7 @@ const plan = (voices: VoiceMap, state: SchedulerState, player: PlayerState): Pla
   if (inFlight !== -1) evict(inFlight);
   const unit = state.manifest.script[next];
   if (unit === undefined) throw new RangeError(`scheduler: no script unit ${next}`);
-  commands.push(toWorker({ kind: "synthesize", unitId: next, text: unit.text, voice: voices[unit.utterance.voice] }));
+  commands.push(toWorker({ kind: "synthesize", unitId: next, text: unitText(unit), voice: voices[unit.utterance.voice] }));
   set(next, REQUESTED);
   return finish();
 };
