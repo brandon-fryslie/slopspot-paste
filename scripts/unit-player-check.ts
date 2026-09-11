@@ -25,6 +25,7 @@
 //   complete  once                   -> unit closed; the next unit begins at its last sample end
 //   complete  twice                  -> RangeError
 //   drop      the unit being played  -> RangeError
+//   dispose   any                    -> idle; sources stopped; close()
 //   drop      any other              -> forgotten; a later seek there waits for it
 //   clock passes the schedule        -> flow waiting at the next needed sample, reported once
 //   delivery while waiting           -> re-anchored at that sample, flow audio
@@ -131,6 +132,10 @@ class StubDevice implements PlaybackDevice {
     this.calls.push("suspend");
     return Promise.resolve();
   }
+  close(): Promise<void> {
+    this.calls.push("close");
+    return Promise.resolve();
+  }
   // Move the clock, then dispatch `ended` for every source that has finished or been
   // stopped, in end order — what a real context does asynchronously. The clock moves even
   // while "suspended", which is harsher than reality: a held position must not follow it.
@@ -158,8 +163,11 @@ const describe = (state: PlayerState): string =>
     ? "idle"
     : `${state.kind}${state.kind === "speaking" ? `/${state.flow}` : ""}@${state.at.unitIndex}:${state.at.offsetMs.toFixed(3)}`;
 
+// The cursor is accumulated as (frameSamples - skip) / sampleRate and the stub's end time
+// as length / sampleRate - offset: the same quantity by two float formulas, compared to
+// well under a sample.
 const contiguous = (sources: ReadonlyArray<StubSource>): boolean =>
-  sources.every((s, i) => i === 0 || s.started?.when === sources[i - 1]?.endTime());
+  sources.every((s, i) => i === 0 || near(s.started?.when ?? NaN, sources[i - 1]?.endTime() ?? NaN));
 
 // ── the pure schedule ─────────────────────────────────────────────────────────────────
 
@@ -224,7 +232,7 @@ const main = harness(4);
   player.send({ kind: "complete", unit: 0 });
   player.send({ kind: "frame", unit: 1, frameIndex: 0, pcm: frame(1, 0) });
   const boundary = device.sources[3];
-  assert("the next unit's first frame starts exactly where the last sample of the previous ends", boundary?.started?.when === first[2]?.endTime());
+  assert("the next unit's first frame starts exactly where the last sample of the previous ends", near(boundary?.started?.when ?? NaN, first[2]?.endTime() ?? NaN));
   device.advance(0.15);
   const crossed = player.state();
   assert("past the boundary the position counts in the new unit", crossed.kind === "speaking" && crossed.at.unitIndex === 1 && near(crossed.at.offsetMs, 10));
@@ -382,5 +390,15 @@ assert(
 const wholeSample = (state: PlayerState): boolean =>
   state.kind === "idle" || near((state.at.offsetMs * SR) / 1000, Math.round((state.at.offsetMs * SR) / 1000));
 assert("every reported position lies on a whole sample", main.states.every(wholeSample));
+
+console.log("player: dispose");
+{
+  const { player, device, states } = harness(1);
+  player.send({ kind: "frame", unit: 0, frameIndex: 0, pcm: frame(0, 0) });
+  player.send({ kind: "play" });
+  const count = states.length;
+  player.dispose();
+  assert("dispose while speaking: stopped and reported, the source silenced, the device suspended then closed", player.state().kind === "idle" && states.length === count + 1 && device.live().length === 0 && device.calls.slice(-2).join() === "suspend,close");
+}
 
 console.log(process.exitCode === 1 ? "unit-player-check: FAILED" : "unit-player-check: ok");

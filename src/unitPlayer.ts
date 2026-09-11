@@ -89,6 +89,7 @@ export interface PlaybackDevice {
   createBufferSource(): PcmSource;
   resume(): Promise<void>;
   suspend(): Promise<void>;
+  close(): Promise<void>;
 }
 
 // `AudioContext` in the page. The player constructs the device itself, at the PCM's rate,
@@ -230,6 +231,10 @@ export interface UnitPlayerConfig {
 export interface UnitPlayer {
   readonly send: (event: PlayerEvent) => void;
   readonly state: () => PlayerState;
+  // Stops, then closes the device: a suspended context is still one of the few a browser
+  // allows. The player's last call; a send after it is the caller's bug and the closed
+  // device rejects it.
+  readonly dispose: () => void;
 }
 
 type Speaking = { readonly kind: "speaking"; schedule: Schedule; readonly sources: Set<PcmSource> };
@@ -341,13 +346,13 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
 
   // ── admission: the delivery contract, enforced at the door [LAW:parse-dont-validate] ──
 
+  // The unit's entry, held or fresh; the caller stores it once the delivery is accepted,
+  // so a refused delivery leaves nothing behind.
   const unitOf = (event: Extract<PlayerEvent, { unit: number }>): MutableUnitAudio => {
     if (!Number.isInteger(event.unit) || event.unit < 0 || event.unit >= unitCount) {
       throw new RangeError(`unit player: ${event.kind} names unit ${event.unit} of ${unitCount}`);
     }
-    const audio = store.get(event.unit) ?? { frames: [], complete: false };
-    store.set(event.unit, audio);
-    return audio;
+    return store.get(event.unit) ?? { frames: [], complete: false };
   };
 
   const toSample = (to: Position): Sample => {
@@ -398,6 +403,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
           throw new RangeError(`unit player: frame ${event.frameIndex} of unit ${event.unit} arrived after ${audio.frames.length} frames`);
         }
         audio.frames.push(event.pcm);
+        store.set(event.unit, audio);
         arrived();
         return;
       }
@@ -405,6 +411,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
         const audio = unitOf(event);
         if (audio.complete) throw new RangeError(`unit player: unit ${event.unit} completed twice`);
         audio.complete = true;
+        store.set(event.unit, audio);
         arrived();
         return;
       }
@@ -430,5 +437,13 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
     if (live !== before || flowAfter !== flowBefore) onState(state());
   };
 
-  return { send: (event) => transition(() => apply(event)), state };
+  const send = (event: PlayerEvent): void => transition(() => apply(event));
+  return {
+    send,
+    state,
+    dispose: () => {
+      send({ kind: "stop" });
+      void device.close();
+    },
+  };
 };
