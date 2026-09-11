@@ -24,6 +24,7 @@ import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance, type Voice } from "../src/speech";
 import {
   CLOSERS,
+  TERMINAL,
   deriveSpeechScript,
   prepareText,
   renditionHash,
@@ -47,8 +48,10 @@ const assert = (label: string, cond: boolean): void => {
 // invariants below hold whatever the tokenizer says, which is the point of injecting it.
 const wordish: TokenCount = (text) => (text.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) ?? []).length;
 const perCharacter: TokenCount = (text) => text.length;
-// The closers the cutter honours, as the regex class the sentence-end rules below use.
-const CLOSER_RUN = `[${[...CLOSERS].map((c) => c.replace(/[\]\\^-]/g, "\\$&")).join("")}]*`;
+// The cutter's own mark sets, as the regex classes the sentence-end rules below use.
+const charClass = (set: ReadonlySet<string>): string => `[${[...set].map((c) => c.replace(/[\]\\^-]/g, "\\$&")).join("")}]`;
+const TERMINAL_MARK = charClass(TERMINAL);
+const CLOSER_RUN = `${charClass(CLOSERS)}*`;
 const wellFormed = (s: string): boolean => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
 
 const utter = (text: string, voice: Voice = "assistant", index = 0): Utterance => ({
@@ -59,7 +62,7 @@ const utter = (text: string, voice: Voice = "assistant", index = 0): Utterance =
 });
 const texts = (units: ReadonlyArray<SynthesisUnit>): ReadonlyArray<string> => units.map((u) => u.text);
 const sourceOf = (u: SynthesisUnit): string => u.utterance.text.slice(u.start, u.end);
-const endsSentence = (s: string): boolean => new RegExp(`[.!?…]${CLOSER_RUN}$`, "u").test(s);
+const endsSentence = (s: string): boolean => new RegExp(`${TERMINAL_MARK}${CLOSER_RUN}$`, "u").test(s);
 
 const assertInvariants = (label: string, utterances: ReadonlyArray<Utterance>, count: TokenCount): void => {
   const units = deriveSpeechScript(utterances, count);
@@ -129,7 +132,7 @@ console.log("\nSpeech script — invariants over the fixture paste (slopspot-rea
     const sentenceAround = (u: SynthesisUnit): string => {
       const text = u.utterance.text;
       let from = 0;
-      for (const m of text.matchAll(new RegExp(`[.!?…]${CLOSER_RUN}(\\s+|$)`, "gu"))) {
+      for (const m of text.matchAll(new RegExp(`${TERMINAL_MARK}${CLOSER_RUN}(\\s+|$)`, "gu"))) {
         const to = m.index + m[0].length;
         if (to >= u.end) return text.slice(from, to);
         from = to;
@@ -184,7 +187,7 @@ console.log("\nCutting rules:");
 
   // A tokenizer that weighs every sentence end at 30 tokens forces one sentence per unit,
   // which makes the sentence cutter itself observable through the units.
-  const heavy: TokenCount = (t) => (t.match(new RegExp(`[.!?…](?=${CLOSER_RUN}(\\s|$))`, "gu")) ?? []).length * 30;
+  const heavy: TokenCount = (t) => (t.match(new RegExp(`${TERMINAL_MARK}(?=${CLOSER_RUN}(\\s|$))`, "gu")) ?? []).length * 30;
   assert(
     "a decimal point is not a sentence end",
     texts(deriveSpeechScript([utter("It took 3.5 seconds. Then 4.")], heavy)).join("|") === "It took 3.5 seconds.|Then 4.",

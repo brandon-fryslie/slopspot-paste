@@ -67,7 +67,7 @@ export type VoiceMap = Readonly<Record<Voice, VoiceId>>;
 // punctuation — is the last character, past the mapped range. Upstream's reason for it,
 // verbatim: "Without one, the last word is often mispronounced or repeated."
 
-const TERMINAL = new Set(".!?…");
+export const TERMINAL: ReadonlySet<string> = new Set(".!?…");
 // A trailing comma, colon or dash is replaced by a period (upstream's rule); a hyphen is
 // in the set because upstream's is, and it can only ever be the LAST character here.
 const WEAK = new Set(",;:-–—");
