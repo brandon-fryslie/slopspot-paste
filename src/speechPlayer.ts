@@ -19,8 +19,10 @@
 //     utterance, so a voice list that arrives late simply takes effect on the next sentence
 //     rather than leaving the whole session stuck on the default voice.
 
+import type { Performer, PerformerEvent, PerformerState, Spot } from "./performer";
 import type { Utterance, Voice } from "./speech";
 import { VOICES } from "./speech";
+import { wordSpans, type WordSpan } from "./speechManifest";
 
 // The window the player lives in, carried rather than reached for as a global — the same
 // shape toolDockView uses, and for the same reason: the check drives this module against a
@@ -40,17 +42,12 @@ export type PlayerState =
 // [LAW:types-are-the-program] Everything that can move the player, as data. The set is
 // closed, so `advance` below can be a total function over it and the compiler forces any
 // new event to be given a meaning at every state rather than defaulting to "no change".
-export type PlayerEvent =
-  | { readonly kind: "play" }
-  | { readonly kind: "pause" }
-  | { readonly kind: "stop" }
-  | { readonly kind: "finished" }
-  | { readonly kind: "jump"; readonly to: number };
+export type PlayerEvent = PerformerEvent | { readonly kind: "finished" };
 
 // [LAW:dataflow-not-control-flow] The whole state machine as one pure total function:
 // (state, event, length) → state. It performs nothing — no speaking, no highlighting — so
 // the check can assert every transition directly, including the ones that are awkward to
-// reach through a real synthesizer (finishing the last utterance, jumping while paused).
+// reach through a real synthesizer (finishing the last utterance, seeking while paused).
 //
 // `length` is passed rather than closed over because it is the one fact that decides
 // whether "advance past here" means a next utterance or the end of the conversation.
@@ -66,7 +63,7 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
   switch (event.kind) {
     case "play":
       // Already speaking is a true no-op, matching every other arm's pattern (pause,
-      // stop, finished, jump's identical-position guard): `send()`'s no-op short-circuit
+      // stop, finished, seek's identical-position guard): `send()`'s no-op short-circuit
       // is a reference check, and a redundant `play` that allocated a fresh object would
       // fall into the general branch and cancel-then-restart the sentence already in
       // progress, discarding whatever the listener had already heard of it.
@@ -92,21 +89,21 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
       const next = state.at + 1;
       return next >= length ? { kind: "idle" } : { kind: "speaking", at: next };
     }
-    case "jump": {
-      // A jump out of range is not a silent clamp: an out-of-range target is a caller bug,
+    case "seek": {
+      // A seek out of range is not a silent clamp: an out-of-range target is a caller bug,
       // and clamping it would play a turn the caller did not ask for while reporting success
       // [LAW:no-silent-failure].
       if (!Number.isInteger(event.to) || event.to < 0 || event.to >= length) {
-        throw new RangeError(`speech player: cannot jump to ${event.to} of ${length} utterances`);
+        throw new RangeError(`speech player: cannot seek to ${event.to} of ${length} utterances`);
       }
-      // A jump to the SAME index the player is already at (paused or speaking) is a true
+      // A seek to the SAME index the player is already at (paused or speaking) is a true
       // no-op, not merely an equivalent-looking state: `send()` decides whether to cancel
-      // and re-speak by reference-comparing before/after, and a paused player jumped to its
+      // and re-speak by reference-comparing before/after, and a paused player seeked to its
       // own position has nothing to resume from if this allocates a fresh object — the
       // general branch would cancel the held utterance and the next Play would restart it
       // from the beginning instead of resuming where the listener paused.
       if (state.kind !== "idle" && state.at === event.to) return state;
-      // Jumping while paused keeps you paused at the new place — the listener asked to move,
+      // Seeking while paused keeps you paused at the new place — the listener asked to move,
       // not to start playing.
       return state.kind === "paused" ? { kind: "paused", at: event.to } : { kind: "speaking", at: event.to };
     }
@@ -155,30 +152,33 @@ export const assignVoices = (available: ReadonlyArray<SpeechSynthesisVoice>): {
   return chosen;
 };
 
+
 // ── the player ───────────────────────────────────────────────────────────────────────
 
-// What the page hands the player: where to speak, what to say, and the two ways the player
-// reports back. Both callbacks are REQUIRED rather than optional — an optional callback
+// What the page hands the player: where to speak, what to say, and the one way the player
+// reports back. The callback is REQUIRED rather than optional — an optional callback
 // invites a caller to build a player nobody can see the state of, and every real caller
-// wants both [LAW:no-defensive-null-guards].
+// wants it [LAW:no-defensive-null-guards].
 export interface PlayerConfig {
   readonly window: SpeechWindow;
   readonly utterances: ReadonlyArray<Utterance>;
-  // Called with the utterance now being spoken, and with null when nothing is.
-  readonly onUtterance: (utterance: Utterance | null) => void;
-  readonly onState: (state: PlayerState) => void;
+  // Called on every discontinuity: play, pause, stop, seek, and each utterance the
+  // synthesizer moves on to. The span within an utterance moves with no report; it is
+  // read live through `state()`.
+  readonly onState: (state: PerformerState) => void;
 }
 
-export interface Player {
+// The synthesizer as a performer: the seam's verbs, plus `finished`, which the
+// synthesizer's own `end` sends.
+export interface Player extends Performer {
   readonly send: (event: PlayerEvent) => void;
-  readonly state: () => PlayerState;
 }
 
 // [LAW:parse-dont-validate] The capability check, as a parser: it returns the synthesizer
 // (a type that could not exist if the browser lacked one) or null, so `createPlayer` below
 // takes a proven synthesizer and never re-asks. The page uses the same answer to decide
-// whether the Listen tool exists at all — a browser with no speech shows no button, rather
-// than a button that does nothing [LAW:no-silent-failure].
+// whether the browser voice stands in at all — a browser with no speech has no stand-in,
+// rather than one that does nothing [LAW:no-silent-failure].
 export const speechSupport = (
   w: SpeechWindow,
 ): { readonly synth: SpeechSynthesis; readonly Utter: typeof SpeechSynthesisUtterance } | null => {
@@ -188,11 +188,20 @@ export const speechSupport = (
   return { synth: synth as SpeechSynthesis, Utter: Utter as typeof SpeechSynthesisUtterance };
 };
 
+// The span a word boundary names, by the manifest's own word rule so a painted word is
+// exactly a timed word would be [LAW:one-source-of-truth]: the word containing the
+// boundary's character, or the last word begun before it when the browser reports a
+// boundary on punctuation. A boundary before any word keeps the whole text.
+export const boundarySpan = (text: string, charIndex: number): WordSpan => {
+  const whole: WordSpan = { charStart: 0, charEnd: text.length };
+  return wordSpans(text, 0).findLast((word) => word.charStart <= charIndex) ?? whole;
+};
+
 export const createPlayer = (config: PlayerConfig): Player | null => {
   const support = speechSupport(config.window);
   if (support === null) return null;
   const { synth, Utter } = support;
-  const { utterances, onUtterance, onState } = config;
+  const { utterances, onState } = config;
 
   let state: PlayerState = { kind: "idle" };
   // The utterance object currently handed to the synthesizer, and which position it is
@@ -200,18 +209,32 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
   // browser fires `end` on cancel, and without this the player would advance a turn
   // nobody heard); `liveAt` additionally answers "does the synthesizer actually hold
   // the utterance for THIS index" — the fact the resume shortcut below needs, since a
-  // paused player whose index changed via `jump` has a live-utterance slot that no
+  // paused player whose index changed via `seek` has a live-utterance slot that no
   // longer agrees with `state.at` at all.
   let live: SpeechSynthesisUtterance | null = null;
   let liveAt: number | null = null;
+  // The span under the voice within the live utterance: the whole text until the
+  // browser fires a word boundary, then the word each boundary names. Browsers that fire
+  // no boundaries (Safari) keep the whole utterance, which is honest: no word is claimed
+  // that was not measured [LAW:no-silent-failure].
+  let span: WordSpan = { charStart: 0, charEnd: 0 };
+
+  const utteranceAt = (at: number): Utterance => {
+    const utterance = utterances[at];
+    if (utterance === undefined) throw new RangeError(`speech player: no utterance at ${at} of ${utterances.length}`);
+    return utterance;
+  };
+  const whole = (at: number): WordSpan => ({ charStart: 0, charEnd: utteranceAt(at).text.length });
+
+  const spot = (at: number): Spot => ({ utterance: at, span });
+  const performerState = (): PerformerState =>
+    state.kind === "idle" ? { kind: "idle" } : { kind: state.kind, at: spot(state.at) };
 
   const speak = (at: number): void => {
-    const utterance = utterances[at];
-    if (utterance === undefined) {
-      throw new RangeError(`speech player: no utterance at ${at} of ${utterances.length}`);
-    }
+    const utterance = utteranceAt(at);
+    const { text } = utterance;
     const voices = assignVoices(synth.getVoices());
-    const spoken = new Utter(utterance.text);
+    const spoken = new Utter(text);
     const delivery = DELIVERY[utterance.voice];
     spoken.rate = delivery.rate;
     spoken.pitch = delivery.pitch;
@@ -223,9 +246,14 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
       if (spoken !== live) return;
       send({ kind: "finished" });
     };
+    // A boundary from a sentence already abandoned names a word nobody is hearing.
+    spoken.onboundary = (event): void => {
+      if (spoken !== live || event.name !== "word") return;
+      span = boundarySpan(text, event.charIndex);
+    };
     live = spoken;
     liveAt = at;
-    onUtterance(utterance);
+    span = whole(at);
     synth.speak(spoken);
   };
 
@@ -246,18 +274,18 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
     // Pause/resume are the synthesizer's own — they hold the sentence mid-word, which is
     // what a listener expects, and are the one case where re-speaking would be wrong.
     // The resume shortcut fires ONLY when the synthesizer still genuinely holds the
-    // utterance for `after.at` (`liveAt`, not merely `before.at === after.at`): a `jump`
+    // utterance for `after.at` (`liveAt`, not merely `before.at === after.at`): a `seek`
     // taken while paused moves the position without ever calling speak() again — the
-    // general branch below cancels whatever was live and reports nothing playing — so a
-    // subsequent Play at that same index has nothing to resume and must speak() fresh.
+    // general branch below cancels whatever was live — so a subsequent Play at that same
+    // index has nothing to resume and must speak() fresh.
     if (before.kind === "speaking" && after.kind === "paused") {
       synth.pause();
-      onState(after);
+      onState(performerState());
       return;
     }
     if (before.kind === "paused" && after.kind === "speaking" && liveAt === after.at) {
       synth.resume();
-      onState(after);
+      onState(performerState());
       return;
     }
 
@@ -270,17 +298,13 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
     if (after.kind === "speaking") {
       speak(after.at);
     } else if (after.kind === "paused") {
-      // A jump taken while paused (paused@1 → jump{to:2} → paused@2) has a position worth
-      // showing even though nothing is vocalizing — the SAME reasoning the pause shortcut
-      // above already applies when pausing from speaking. Reporting null here would clear
-      // the "now playing" highlight for a player that is still meaningfully paused
-      // somewhere, and desync the page from state.at even though Stop stays enabled.
-      onUtterance(utterances[after.at] ?? null);
-    } else {
-      onUtterance(null);
+      // A seek taken while paused (paused@1 → seek{to:2} → paused@2) has a position worth
+      // showing even though nothing is vocalizing — the whole utterance, since no word of
+      // it has been said.
+      span = whole(after.at);
     }
-    onState(after);
+    onState(performerState());
   };
 
-  return { send, state: () => state };
+  return { send, state: performerState, dispose: () => send({ kind: "stop" }) };
 };

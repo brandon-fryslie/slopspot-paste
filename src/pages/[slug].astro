@@ -484,7 +484,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         The Listen controls. The transport is inert markup plus a hidden payload — the SAME
         shape the code and continuation controls use [LAW:one-type-per-behavior] — and the
         client script reveals it (`speech-ready`) when either voice may work: a synthesizer
-        for the browser row, which is hidden without one, or WebGPU for the neural row.
+        for the stand-in, or WebGPU for the neural voice.
 
         [LAW:one-source-of-truth] The payload is the server's derived Utterance[], not the
         page text re-scraped from the DOM. Deriving speech from rendered markup would make
@@ -496,22 +496,17 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.listen.id)} data-tool={TOOL.listen.id}
           data-requires={requiresAttr(TOOL.listen.availability)} aria-label={TOOL.listen.hint}>
           <h2 class="tool-panel-title">{TOOL.listen.label}<span class="tool-panel-note">{utterances.length} {utterances.length === 1 ? "passage" : "passages"}</span></h2>
-          <p class="tool-panel-lede">Read aloud, a different voice per speaker. The neural voice is synthesized on your device and highlights what it is saying as it goes; the browser's own voice is a stand-in. Code blocks are announced rather than spelled out.</p>
+          <p class="tool-panel-lede">Read aloud, a different voice per speaker. The neural voice is synthesized on your device and highlights what it is saying as it goes; while it loads, the browser's own voice stands in. Code blocks are announced rather than spelled out.</p>
           {/*
-            Two performers, two rows of the same shape. The neural row's text is written by
+            One transport, two performers behind it. The status line is written by
             listenPanel.ts on every state change (the markup carries no sentence of its own,
-            so there is no second copy to drift); the browser row is speechPlayer.ts's.
+            so there is no second copy to drift).
           */}
-          <div class="speech-controls speech-neural">
-            <button class="mono-pill neural-play" type="button">Listen</button>
-            <button class="mono-pill neural-stop" type="button" disabled>Stop</button>
-            <progress class="neural-progress" hidden></progress>
-            <p class="speech-now neural-now" aria-live="polite"></p>
-          </div>
-          <div class="speech-controls speech-browser">
-            <button class="mono-pill speech-play" type="button">Play</button>
+          <div class="speech-controls">
+            <button class="mono-pill speech-play" type="button">Listen</button>
             <button class="mono-pill speech-stop" type="button" disabled>Stop</button>
-            <p class="speech-now" aria-live="polite">Browser voice · Not playing</p>
+            <progress class="speech-progress" hidden></progress>
+            <p class="speech-now" aria-live="polite"></p>
           </div>
           <pre class="speech-payload" hidden aria-hidden="true">{JSON.stringify(utterances)}</pre>
         </section>
@@ -708,37 +703,38 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
 
   <script>
     // The Listen tool's page half. Everything with judgement in it — what is said, in whose
-    // voice, where we are in the conversation, which words are being said — lives in
-    // ../speech, ../speechPlayer, ../listenPanel and ../readAlong, each driven by its own
-    // scripts/*-check.ts under jsdom [LAW:verifiable-goals]. What remains here is the seam:
-    // this page's markup, this page's turn cards, the real worker, the real AudioContext,
-    // the real animation frame, and the capability gate.
-    import { createPlayer, speechSupport, type Player, type PlayerState } from "../speechPlayer";
+    // voice, where we are in the conversation, which words are being said, who is speaking
+    // — lives in ../speech, ../speechPlayer, ../neuralPerformer, ../listenPanel and
+    // ../readAlong, each driven by its own scripts/*-check.ts under jsdom
+    // [LAW:verifiable-goals]. What remains here is the seam: this page's markup, this
+    // page's turn cards, the real synthesizer, the real worker, the real AudioContext, the
+    // real animation frame, and the capability gate.
+    import { createPlayer, speechSupport } from "../speechPlayer";
     import { createListenPanel, DEFAULT_VOICES } from "../listenPanel";
     import { createPainter } from "../readAlong";
     import { spawnSynthesisWorker } from "../synthesisClient";
     import type { Utterance } from "../speech";
 
-    const neural = document.querySelector(".speech-neural");
-    const browser = document.querySelector(".speech-browser");
+    const controls = document.querySelector(".speech-controls");
     const payloadEl = document.querySelector(".speech-payload");
 
-    // A page with no speakable prose renders none of these, so their joint absence is the
-    // normal empty case. Some present without the others is a broken template invariant,
-    // and the players below would otherwise wire a button to nothing [LAW:no-silent-failure].
-    if (neural && browser && payloadEl) {
-      const control = <T extends Element>(root: Element, selector: string): T => {
-        const el = root.querySelector<T>(selector);
+    // A page with no speakable prose renders neither of these, so their joint absence is
+    // the normal empty case. One without the other is a broken template invariant, and the
+    // panel below would otherwise wire a button to nothing [LAW:no-silent-failure].
+    if (controls && payloadEl) {
+      const control = <T extends Element>(selector: string): T => {
+        const el = controls.querySelector<T>(selector);
         if (!el) throw new Error(`listen: the speech panel is missing ${selector}`);
         return el;
       };
       const utterances = JSON.parse(payloadEl.textContent ?? "[]") as Utterance[];
 
       // The turn the audio is currently on, marked in the page so the reader can follow
-      // along — the ONE highlight both performers drive [LAW:single-enforcer]. Exactly one
-      // card carries the class at a time: it is removed from whatever held it before it is
-      // granted, so there is no ambient "clear everything" sweep. Moving to the card already
-      // lit changes nothing, so the neural voice's per-sentence cursor does not re-scroll.
+      // along — the ONE highlight the panel drives, whichever performer is on stage
+      // [LAW:single-enforcer]. Exactly one card carries the class at a time: it is removed
+      // from whatever held it before it is granted, so there is no ambient "clear
+      // everything" sweep. Moving to the card already lit changes nothing, so the
+      // per-word cursor does not re-scroll.
       let lit: Element | null = null;
       const follow = (utterance: Utterance | null): void => {
         const next = utterance === null ? null : document.getElementById(utterance.anchor);
@@ -755,26 +751,21 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         lit?.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
       };
 
-      // Two performers, one page: whichever takes the highlight silences the other FIRST,
-      // in the same callback, so the loser's clearing stop lands before the winner's mark
-      // rather than wiping it a tick later [LAW:no-ambient-temporal-coupling]. A stop sent
-      // to a performer that is already silent is a true no-op in both.
-      let browserPlayer: Player | null = null;
+      // [LAW:parse-dont-validate] The browser voice stands in when there is a synthesizer;
+      // the tool is revealed when either voice MAY work — a synthesizer, or WebGPU for the
+      // neural one, whose real answer (adapter, 16-bit floats, a device) is the worker's
+      // probe, and comes only after the tap that spawns it. A page with neither shows no
+      // Listen at all.
+      const speech = speechSupport(window);
+      document.body.classList.toggle("speech-ready", speech !== null || navigator.gpu !== undefined);
+
       const painter = createPainter(document);
-      // The neural voice takes the stage on the tap, not on its first position — a probe
-      // and, on a first listen, a download away. Registered BEFORE the panel's own listener
-      // on the same button (listeners fire in registration order): the browser's stop
-      // clears its highlight, and must land before the tap is acted on, never after the
-      // neural voice has lit a card. A stop on an idle browser player is a true no-op, so
-      // a Pause tap while the neural voice speaks touches nothing.
-      const neuralPlay = control<HTMLButtonElement>(neural, ".neural-play");
-      neuralPlay.addEventListener("click", () => browserPlayer?.send({ kind: "stop" }));
-      const neuralPanel = createListenPanel({
+      const panel = createListenPanel({
         controls: {
-          play: neuralPlay,
-          stop: control<HTMLButtonElement>(neural, ".neural-stop"),
-          status: control<HTMLElement>(neural, ".neural-now"),
-          progress: control<HTMLProgressElement>(neural, ".neural-progress"),
+          play: control<HTMLButtonElement>(".speech-play"),
+          stop: control<HTMLButtonElement>(".speech-stop"),
+          status: control<HTMLElement>(".speech-now"),
+          progress: control<HTMLProgressElement>(".speech-progress"),
         },
         utterances,
         voices: DEFAULT_VOICES,
@@ -784,61 +775,28 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           request: (callback) => window.requestAnimationFrame(callback),
           cancel: (handle) => window.cancelAnimationFrame(handle),
         },
+        standIn:
+          speech === null
+            ? null
+            : (onState) => {
+                const player = createPlayer({ window, utterances, onState });
+                // speechSupport already proved a synthesizer exists, so this is the impossible arm.
+                if (!player) throw new Error("listen: speech support vanished between the check and the player");
+                return player;
+              },
         onPosition: (at) => {
-          // The tap above already silenced the browser voice; this covers a browser Play
-          // tapped while the neural voice was still provisioning.
-          if (at !== null) browserPlayer?.send({ kind: "stop" });
           follow(at === null ? null : at.utterance);
           if (at === null) painter.clear();
           else painter.paint(at);
         },
       });
 
-      // [LAW:parse-dont-validate] The tool is revealed when either voice MAY work: a
-      // synthesizer for the browser voice, or WebGPU for the neural one — whose real answer
-      // (adapter, 16-bit floats, a device) is the worker's probe, and comes only after the
-      // tap that spawns it. The browser row is hidden when there is no synthesizer behind
-      // it; a page with neither shows no Listen at all.
-      const speech = speechSupport(window);
-      document.body.classList.toggle("speech-ready", speech !== null || navigator.gpu !== undefined);
-      browser.toggleAttribute("hidden", speech === null);
-      if (speech !== null) {
-        const play = control<HTMLButtonElement>(browser, ".speech-play");
-        const stop = control<HTMLButtonElement>(browser, ".speech-stop");
-        const now = control<HTMLParagraphElement>(browser, ".speech-now");
-
-        const player = createPlayer({
-          window,
-          utterances,
-          onUtterance: (utterance) => {
-            if (utterance !== null) neuralPanel.send("stop");
-            follow(utterance);
-            now.textContent =
-              utterance === null
-                ? "Browser voice · Not playing"
-                : `Browser voice · Passage ${utterances.indexOf(utterance) + 1} of ${utterances.length}`;
-          },
-          onState: (state: PlayerState) => {
-            play.textContent = state.kind === "speaking" ? "Pause" : state.kind === "paused" ? "Resume" : "Play";
-            stop.disabled = state.kind === "idle";
-          },
-        });
-        // speechSupport already proved a synthesizer exists, so this is the impossible arm.
-        if (!player) throw new Error("listen: speech support vanished between the check and the player");
-        browserPlayer = player;
-
-        play.addEventListener("click", () => player.send({ kind: player.state().kind === "speaking" ? "pause" : "play" }));
-        stop.addEventListener("click", () => player.send({ kind: "stop" }));
-
-        // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
-        // the synthesizer on its own — speech outlives the document that started it, and a
-        // paste that keeps talking after the reader has left is the one bug every Web Speech
-        // integration ships with. The teardown is owned here, explicitly.
-        window.addEventListener("pagehide", () => player.send({ kind: "stop" }));
-      }
-
-      // The worker holds the model on the GPU; the page that spawned it releases it.
-      window.addEventListener("pagehide", () => neuralPanel.dispose());
+      // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
+      // the synthesizer on its own — speech outlives the document that started it, and a
+      // paste that keeps talking after the reader has left is the one bug every Web Speech
+      // integration ships with — and the worker holds the model on the GPU. The teardown
+      // is owned here, explicitly: the page that started both releases both.
+      window.addEventListener("pagehide", () => panel.dispose());
     }
   </script>
 
