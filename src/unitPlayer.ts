@@ -37,9 +37,9 @@
 //
 // THE DELIVERY CONTRACT, stated here so the scheduler reads the same sentence: a unit's
 // frames arrive in order from frameIndex 0, each exactly `frameSamples` long; `complete`
-// closes the unit once; re-synthesizing a unit requires `drop` first; and the unit the
-// schedule is about to play cannot be dropped. Every violation is a RangeError at the
-// delivery, not a silent skip [LAW:no-silent-failure].
+// closes a unit that has at least one frame, once; re-synthesizing a unit requires `drop`
+// first; and the unit the schedule is about to play cannot be dropped. Every violation is
+// a RangeError at the delivery, not a silent skip [LAW:no-silent-failure].
 //
 // Not here, deliberately: the word cursor (the panel samples `state().at` on its paint
 // clock and asks the manifest — a boundary timer in this module would be a second clock),
@@ -232,8 +232,8 @@ export interface UnitPlayer {
   readonly send: (event: PlayerEvent) => void;
   readonly state: () => PlayerState;
   // Stops, then closes the device: a suspended context is still one of the few a browser
-  // allows. The player's last call; a send after it is the caller's bug and the closed
-  // device rejects it.
+  // allows. The player's last call, made once by its one owner; a send after it, or a
+  // second dispose, is the caller's bug and the closed device rejects it.
   readonly dispose: () => void;
 }
 
@@ -413,6 +413,9 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
       case "complete": {
         const audio = unitOf(event);
         if (audio.complete) throw new RangeError(`unit player: unit ${event.unit} completed twice`);
+        // A unit with no audio would be skipped in silence; the worker never ends one
+        // without a frame, so a frameless complete is a broken delivery.
+        if (audio.frames.length === 0) throw new RangeError(`unit player: unit ${event.unit} completed before any frame`);
         audio.complete = true;
         store.set(event.unit, audio);
         arrived();

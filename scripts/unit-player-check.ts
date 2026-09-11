@@ -22,7 +22,8 @@
 //   seek      out of range           -> RangeError
 //   frame     in order, full length  -> stored; scheduled at the cursor if speaking
 //   frame     wrong length | order | after complete | unknown unit -> RangeError
-//   complete  once                   -> unit closed; the next unit begins at its last sample end
+//   complete  once, after a frame    -> unit closed; the next unit begins at its last sample end
+//   complete  with no frames         -> RangeError
 //   complete  twice                  -> RangeError
 //   drop      the unit being played  -> RangeError
 //   dispose   any                    -> idle; sources stopped; close()
@@ -303,6 +304,7 @@ console.log("player: drop and the delivery contract");
   const { player, device } = main;
   player.send({ kind: "play" });
   assert("resuming at an undelivered unit waits there", describe(player.state()) === "speaking/waiting@2:0.000");
+  throws("complete of a unit with no frames", () => player.send({ kind: "complete", unit: 2 }));
   throws("drop of the unit being played", () => player.send({ kind: "drop", unit: 2 }));
   player.send({ kind: "drop", unit: 0 });
   player.send({ kind: "seek", to: { unitIndex: 0, offsetMs: 0 } });
