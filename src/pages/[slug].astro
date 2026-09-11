@@ -483,8 +483,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       {/*
         The Listen controls. The transport is inert markup plus a hidden payload — the SAME
         shape the code and continuation controls use [LAW:one-type-per-behavior] — and the
-        client script wires it only after confirming a synthesizer exists, which is what adds
-        `speech-ready` and reveals the dock item.
+        client script reveals it (`speech-ready`) when either voice may work: a synthesizer
+        for the browser row, which is hidden without one, or WebGPU for the neural row.
 
         [LAW:one-source-of-truth] The payload is the server's derived Utterance[], not the
         page text re-scraped from the DOM. Deriving speech from rendered markup would make
@@ -761,9 +761,17 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       // to a performer that is already silent is a true no-op in both.
       let browserPlayer: Player | null = null;
       const painter = createPainter(document);
+      // The neural voice takes the stage on the tap, not on its first position — a probe
+      // and, on a first listen, a download away. Registered BEFORE the panel's own listener
+      // on the same button (listeners fire in registration order): the browser's stop
+      // clears its highlight, and must land before the tap is acted on, never after the
+      // neural voice has lit a card. A stop on an idle browser player is a true no-op, so
+      // a Pause tap while the neural voice speaks touches nothing.
+      const neuralPlay = control<HTMLButtonElement>(neural, ".neural-play");
+      neuralPlay.addEventListener("click", () => browserPlayer?.send({ kind: "stop" }));
       const neuralPanel = createListenPanel({
         controls: {
-          play: control<HTMLButtonElement>(neural, ".neural-play"),
+          play: neuralPlay,
           stop: control<HTMLButtonElement>(neural, ".neural-stop"),
           status: control<HTMLElement>(neural, ".neural-now"),
           progress: control<HTMLProgressElement>(neural, ".neural-progress"),
@@ -777,6 +785,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           cancel: (handle) => window.cancelAnimationFrame(handle),
         },
         onPosition: (at) => {
+          // The tap above already silenced the browser voice; this covers a browser Play
+          // tapped while the neural voice was still provisioning.
           if (at !== null) browserPlayer?.send({ kind: "stop" });
           follow(at === null ? null : at.utterance);
           if (at === null) painter.clear();
