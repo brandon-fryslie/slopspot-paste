@@ -19,13 +19,14 @@
 
 import { readFileSync } from "node:fs";
 import { deriveDialogue, plainView } from "../src/dialogue";
-import { MAX_UNIT_TOKENS } from "../src/modelAssets";
+import { MAX_UNIT_TOKENS, MODEL_ASSETS, type ModelAsset } from "../src/modelAssets";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance, type Voice } from "../src/speech";
 import {
   deriveSpeechScript,
   prepareText,
   renditionHash,
+  renditionVersions,
   RENDITION_VERSIONS,
   type SynthesisUnit,
   type TokenCount,
@@ -157,7 +158,7 @@ console.log("\nText preparation (mirrors upstream prepare_text_prompt, length-pr
   assert("existing terminal punctuation is left alone", prepareText("Done!") === "Done!" && prepareText("wait…") === "Wait…");
   assert("terminal punctuation followed by a closer is left alone", prepareText('she asked "why?"') === 'She asked "why?"');
   assert("a first letter whose upper case changes length is left alone", prepareText("ßtraße") === "ßtraße.");
-  assert("nothing to say prepares to nothing", prepareText("") === "");
+  assert("a piece that is only closers still ends in a period", prepareText(")") === ")." && prepareText('")') === '").');
 }
 
 console.log("\nCutting rules:");
@@ -228,20 +229,25 @@ console.log("\nRendition hash:");
 {
   const voices: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
   const units = deriveSpeechScript([utter("Hi there.", "user", 0), utter("Hello.", "assistant", 1)], wordish);
-  const [same, again, assistantChanged, unusedChanged, pipelineChanged, modelChanged, textChanged] = await Promise.all([
+  const rehashed = (asset: ModelAsset): ModelAsset => ({ ...asset, sha256: "f".repeat(64) });
+  const [same, again, assistantChanged, unusedChanged, pipelineChanged, modelChanged, usedVoiceRehashed, unusedVoiceRehashed, textChanged] = await Promise.all([
     renditionHash(units, voices),
     renditionHash(units, voices),
     renditionHash(units, { ...voices, assistant: "eponine" }),
     renditionHash(units, { ...voices, narrator: "azelma" }),
     renditionHash(units, voices, { ...RENDITION_VERSIONS, pipeline: `${RENDITION_VERSIONS.pipeline}-next` }),
-    renditionHash(units, voices, { ...RENDITION_VERSIONS, model: "weights@000000000000" }),
+    renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, weights: rehashed(MODEL_ASSETS.weights) })),
+    renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, alba: rehashed(MODEL_ASSETS.voices.alba) } })),
+    renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, fantine: rehashed(MODEL_ASSETS.voices.fantine) } })),
     renditionHash(deriveSpeechScript([utter("Hi there.", "user", 0), utter("Hello!", "assistant", 1)], wordish), voices),
   ]);
   assert("the same script under the same voices hashes the same", same === again);
   assert("changing the voice of a role that speaks changes the hash", same !== assistantChanged);
   assert("changing the voice of a role that never speaks keeps the hash", same === unusedChanged);
   assert("changing the pipeline version changes the hash", same !== pipelineChanged);
-  assert("changing the model version changes the hash", same !== modelChanged);
+  assert("new weight bytes change the hash", same !== modelChanged);
+  assert("new bytes for a voice that speaks change the hash", same !== usedVoiceRehashed);
+  assert("new bytes for a voice that never speaks keep the hash", same === unusedVoiceRehashed);
   assert("changing what is said changes the hash", same !== textChanged);
   assert("the hash is a SHA-256 hex digest", /^[0-9a-f]{64}$/.test(same));
 }

@@ -184,13 +184,12 @@ export const shardPlan = (asset: ModelAsset): readonly Shard[] => {
   }));
 };
 
-// [FRAMING:representation] The model's identity for the rendition hash, redrawn by the
-// machine from the hashes rather than remembered by a human: it changes exactly when any
-// published byte does, and only then.
-export const modelVersion = (manifest: ModelAssetManifest): string =>
-  allModelAssets(manifest)
-    .map((a) => `${a.name}@${a.sha256.slice(0, SHA_PREFIX_CHARS)}`)
-    .join(",");
+// [FRAMING:representation] An asset's identity, redrawn by the machine from its hash
+// rather than remembered by a human: it changes exactly when a published byte does.
+export const assetVersion = (asset: ModelAsset): string => `${asset.name}@${asset.sha256.slice(0, SHA_PREFIX_CHARS)}`;
+
+// The whole model's identity — what the synthesis worker reports it has loaded.
+export const modelVersion = (manifest: ModelAssetManifest): string => allModelAssets(manifest).map(assetVersion).join(",");
 
 export const MODEL_VERSION = modelVersion(MODEL_ASSETS);
 
