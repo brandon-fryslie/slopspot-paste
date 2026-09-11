@@ -12,7 +12,8 @@
 //  3. scripts/modelAssetMirror.ts — the deploy-time mirror against a temp directory: a
 //     correct mirror fetches nothing; a missing or wrong-sized part refetches; a wrong
 //     hash or a fetch that throws aborts by asset name; parts no plan names are removed.
-//  4. public/_headers — the published cache and CORS rule keyed on the same prefix.
+//  4. public/_headers — the published cache and CORS rule — and .gitignore's mirror
+//     directory, both keyed on the same prefix.
 //
 // ─── loadAsset ACCEPT TABLE ──────────────────────────────────────────────────
 //   store has key at the right size   -> ok, origin store, persisted hit, 0 fetches
@@ -300,6 +301,10 @@ console.log("mirror:");
   assert("a source whose bytes do not hash to the manifest aborts by asset name", typeof mismatch === "string" && mismatch.startsWith("synthetic: SHA-256 mismatch"));
   const refused = await mirror(dir, async () => { throw new TypeError("fetch failed"); }, synth).catch((e: Error) => e.message);
   assert("a source that cannot be fetched aborts by asset name", refused === `synthetic: ${synth.source} — fetch failed`);
+  const cut = await mirror(dir, async () => new Response(new ReadableStream({ start: (c) => c.error(new TypeError("terminated")) })), synth).catch((e: Error) => e.message);
+  assert("a source whose body fails mid-read aborts by asset name", cut === `synthetic: ${synth.source} — terminated`);
+  const denied = await mirror(dir, async () => new Response(null, { status: 403 }), synth).catch((e: Error) => e.message);
+  assert("a source that refuses aborts by asset name with the status", denied === `synthetic: ${synth.source} — responded 403`);
   const short = await mirror(dir, source(synthData.subarray(0, 100)), synth).catch((e: Error) => e.message);
   assert("a source of the wrong size aborts by asset name", typeof short === "string" && short.startsWith("synthetic: expected"));
   assert("a failed refetch writes nothing: the incorrect part is still the old one", !mirrorIsCorrect(dir, synth));
@@ -311,8 +316,10 @@ console.log("mirror:");
   rmSync(dir, { recursive: true });
 }
 
-// ── 4. published headers ──────────────────────────────────────────────────────
+// ── 4. published headers and the ignore rule ──────────────────────────────────
 console.log("public/_headers:");
+const ignored = readFileSync(new URL("../.gitignore", import.meta.url), "utf8").split("\n");
+assert("the mirror directory is gitignored under the asset prefix", ignored.includes(`public${MODEL_ASSET_PREFIX}`));
 const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
 const rule = headers.split(/\n(?=\S)/).find((block) => block.startsWith(`${MODEL_ASSET_PREFIX}*`)) ?? "";
 assert("has a rule for the asset prefix", rule.length > 0);

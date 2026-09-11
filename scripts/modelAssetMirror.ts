@@ -40,11 +40,14 @@ export type MirrorResult = { readonly asset: ModelAsset; readonly action: "verif
 
 export const mirror = async (publicDir: string, fetchSource: SourceFetch, asset: ModelAsset): Promise<MirrorResult> => {
   if (mirrorIsCorrect(publicDir, asset)) return { asset, action: "verified" };
-  const response = await fetchSource(asset.source).catch((e: unknown) => {
+  let data: Uint8Array;
+  try {
+    const response = await fetchSource(asset.source);
+    if (!response.ok) throw new Error(`responded ${response.status}`);
+    data = new Uint8Array(await response.arrayBuffer());
+  } catch (e) {
     throw new Error(`${asset.name}: ${asset.source} — ${e instanceof Error ? e.message : String(e)}`);
-  });
-  if (!response.ok) throw new Error(`${asset.name}: ${asset.source} responded ${response.status}`);
-  const data = new Uint8Array(await response.arrayBuffer());
+  }
   if (data.byteLength !== asset.bytes) {
     throw new Error(`${asset.name}: expected ${asset.bytes} bytes, received ${data.byteLength}`);
   }
