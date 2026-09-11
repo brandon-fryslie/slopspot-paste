@@ -299,6 +299,8 @@ console.log("step: paused, and re-synthesis");
   assert("back at 1: 4 cancelled, 1 requested again", backAgain.commands.join() === "cancel 4,drop 4,synthesize 1");
   const redone = run(backAgain.state, speaking(1), done(1, 760));
   assert("the second rendition replaces the record", redone.state.manifest.units[1]?.durationMs === 760 && redone.commands.includes("complete 1"));
+  const refailed = run(backAgain.state, speaking(1), worker({ kind: "failed", unitId: 1, reason: { kind: "runtime", message: "x" } }));
+  assert("a re-synthesis that fails voids the first rendition's record", refailed.state.holdings[1]?.kind === "failed" && refailed.state.manifest.units[1] === undefined);
 }
 
 // ── the driver, over the real player ──────────────────────────────────────────────────

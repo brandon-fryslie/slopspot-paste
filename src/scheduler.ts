@@ -24,8 +24,9 @@
 // behind the cursor so a three-hour paste never accumulates a gigabyte of floats, while the
 // manifest keeps every record it has ever admitted so the global timeline stays defined
 // over the listened prefix. A re-synthesis of a dropped unit replaces its record — the
-// model samples, so the second rendition may not be the first's length — and the record is
-// therefore always of the audio the player holds whenever it holds any.
+// model samples, so the second rendition may not be the first's length — and one that fails
+// voids it, so the record is always of the audio the player holds whenever it holds any,
+// and never of audio a failed unit no longer has.
 //
 // ONE REQUEST IN FLIGHT, ALWAYS THE MOST WANTED. The worker generates one unit at a time on
 // one device, so queueing several buys nothing and costs the order: a seek would leave the
@@ -87,6 +88,11 @@ export const KEEP_BEHIND = 1;
 // Where a failed unit's void frames are: still in the player's store, or dropped.
 export type VoidFrames = "player" | "none";
 
+// [LAW:types-are-the-program] Why a unit is failed: the worker's reasons less the one that
+// is a scheduler bug and throws (`duplicate-unit`), the manifest's less the one the holding
+// lookup already rules out (`unknown-unit`: holdings and script are the same length).
+export type FailureReason = Exclude<UnitFailure, { kind: "duplicate-unit" }> | Exclude<RecordRejection, { kind: "unknown-unit" }>;
+
 // [LAW:types-are-the-program] What the scheduler knows about one unit, and by the mirror
 // above, what the player holds of it.
 export type Holding =
@@ -94,7 +100,7 @@ export type Holding =
   | { readonly kind: "requested" }
   | { readonly kind: "cancelling" }
   | { readonly kind: "held"; readonly record: ManifestUnit }
-  | { readonly kind: "failed"; readonly reason: UnitFailure | RecordRejection; readonly frames: VoidFrames };
+  | { readonly kind: "failed"; readonly reason: FailureReason; readonly frames: VoidFrames };
 
 export interface SchedulerState {
   readonly holdings: ReadonlyArray<Holding>;
@@ -141,6 +147,13 @@ const withHolding = (state: SchedulerState, unit: number, holding: Holding): Sch
   holdings: state.holdings.with(unit, holding),
 });
 
+// [LAW:one-source-of-truth] A failed unit has no audio, so it has no record: an earlier
+// rendition's measurement is voided with the holding, never left for the timeline to count.
+const failed = (state: SchedulerState, unit: number, reason: FailureReason, frames: VoidFrames): SchedulerState => ({
+  holdings: state.holdings.with(unit, { kind: "failed", reason, frames }),
+  manifest: { ...state.manifest, units: state.manifest.units.with(unit, undefined) },
+});
+
 const unexpected = (message: FromWorker, holding: Holding): Error =>
   new Error(`scheduler: ${message.kind} for a unit that is ${holding.kind}`);
 
@@ -165,9 +178,8 @@ const apply = (state: SchedulerState, message: FromWorker): Plan => {
       switch (holding.kind) {
         case "requested": {
           const recorded = recordUnit(state.manifest.script, message.unitId, message.report);
-          if (recorded.kind !== "record") {
-            return { state: withHolding(state, message.unitId, { kind: "failed", reason: recorded, frames: "player" }), commands: [] };
-          }
+          if (recorded.kind === "unknown-unit") throw new RangeError(`scheduler: holdings name unit ${message.unitId} the script lacks`);
+          if (recorded.kind !== "record") return { state: failed(state, message.unitId, recorded, "player"), commands: [] };
           return {
             state: {
               holdings: state.holdings.with(message.unitId, { kind: "held", record: recorded.record }),
@@ -194,7 +206,7 @@ const apply = (state: SchedulerState, message: FromWorker): Plan => {
       const holding = holdingOf(state, message.unitId);
       switch (holding.kind) {
         case "requested":
-          return { state: withHolding(state, message.unitId, { kind: "failed", reason: message.reason, frames: "player" }), commands: [] };
+          return { state: failed(state, message.unitId, message.reason, "player"), commands: [] };
         case "cancelling":
           return { state: withHolding(state, message.unitId, ABSENT), commands: [] };
         default:
