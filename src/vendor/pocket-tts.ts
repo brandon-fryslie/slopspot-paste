@@ -105,6 +105,19 @@ export type Readout = {
   textEnd: number;
 };
 
+// The read-out: the newest query row of `readout.layer` and `readout.head` — the BOS at
+// the end of the prefill, the one latent of a decode step — against that layer's cached
+// keys at the text positions, post-rope in both cases (`k` at prefill, the updated cache
+// at decode). [n, D] · [D] → [n] as float32, scaled as dotProductAttention scales that
+// head before its softmax. Consumes `queries`; borrows the cache.
+export function readoutLogits(queries: np.Array[], kvCaches: KVCache[], readout: Readout): np.Array {
+  const query = at(queries, readout.layer);
+  tree.dispose(queries.filter((_, layer) => layer !== readout.layer));
+  const [T, , headDim] = dims3(query.shape);
+  const textKeys = at(kvCaches, readout.layer).key.ref.slice([readout.textStart, readout.textEnd], readout.head);
+  return np.matmul(textKeys, query.slice(T - 1, readout.head)).astype(np.float32).div(Math.sqrt(headDim));
+}
+
 export function runFlowLMStep(
   {
     bosEmb,
@@ -172,19 +185,7 @@ export function runFlowLMStep(
   const T = at(input.shape, 0);
   kvCacheLen += T;
 
-  // The read-out. The last query row is the newest position — the BOS at the end of the
-  // prefill, the one latent of a decode step — and the cache's keys are post-rope in both
-  // cases (`k` at prefill, the updated cache at decode). [n, D] · [D] → [n] in the model's
-  // dtype, exactly what dotProductAttention computes for that head before its softmax.
-  const readoutQuery = at(queries, readout.layer);
-  queries.splice(readout.layer, 1);
-  tree.dispose(queries);
-  const [, , headDim] = dims3(readoutQuery.shape);
-  const textKeys = at(kvCaches, readout.layer).key.ref.slice([readout.textStart, readout.textEnd], readout.head);
-  const logits = np
-    .matmul(textKeys, readoutQuery.slice(T - 1, readout.head))
-    .astype(np.float32)
-    .div(Math.sqrt(headDim));
+  const logits = readoutLogits(queries, kvCaches, readout);
 
   let transformerOut = runLayerNorm(outNorm, input);
 
