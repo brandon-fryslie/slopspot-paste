@@ -109,13 +109,12 @@ export type Readout = {
 // the end of the prefill, the one latent of a decode step — against that layer's cached
 // keys at the text positions, post-rope in both cases (`k` at prefill, the updated cache
 // at decode). [n, D] · [D] → [n] as float32, scaled as dotProductAttention scales that
-// head before its softmax. Consumes `queries`; borrows the cache.
+// head before its softmax. Borrows `queries` and the cache.
 export function readoutLogits(queries: np.Array[], kvCaches: KVCache[], readout: Readout): np.Array {
   const query = at(queries, readout.layer);
-  tree.dispose(queries.filter((_, layer) => layer !== readout.layer));
   const [T, , headDim] = dims3(query.shape);
   const textKeys = at(kvCaches, readout.layer).key.ref.slice([readout.textStart, readout.textEnd], readout.head);
-  return np.matmul(textKeys, query.slice(T - 1, readout.head)).astype(np.float32).div(Math.sqrt(headDim));
+  return np.matmul(textKeys, query.ref.slice(T - 1, readout.head)).astype(np.float32).div(Math.sqrt(headDim));
 }
 
 export function runFlowLMStep(
@@ -157,35 +156,42 @@ export function runFlowLMStep(
   // Concatenate text/voice embeddings with input
   if (embeds !== null) input = np.concatenate([embeds, input], 0);
 
+  // [LAW:no-ambient-temporal-coupling] The per-layer queries have one owner on every exit:
+  // readoutLogits borrows the one it reads, and `finally` releases them all, so a layer
+  // that throws leaves nothing unowned.
   const queries: np.Array[] = []; // one [T, H, D] per layer, post-rope
-  for (let i = 0; i < transformer.length; i++) {
-    const cache = at(kvCaches, i);
-    // If kv cache is not large enough, expand it to next multiple of 64.
-    if (kvCacheLen > 0 && at(cache.key.shape, 0) === kvCacheLen) {
-      const newCapacity = Math.ceil((kvCacheLen + 1) / 64) * 64;
-      cache.key = np.pad(cache.key, {
-        0: [0, newCapacity - kvCacheLen],
-      });
-      cache.value = np.pad(cache.value, {
-        0: [0, newCapacity - kvCacheLen],
-      });
+  let logits: np.Array;
+  try {
+    for (let i = 0; i < transformer.length; i++) {
+      const cache = at(kvCaches, i);
+      // If kv cache is not large enough, expand it to next multiple of 64.
+      if (kvCacheLen > 0 && at(cache.key.shape, 0) === kvCacheLen) {
+        const newCapacity = Math.ceil((kvCacheLen + 1) / 64) * 64;
+        cache.key = np.pad(cache.key, {
+          0: [0, newCapacity - kvCacheLen],
+        });
+        cache.value = np.pad(cache.value, {
+          0: [0, newCapacity - kvCacheLen],
+        });
+      }
+      const layer = at(transformer, i);
+      let q: np.Array;
+      [input, kvCaches[i], q] = runStreamingTransformerLayer(
+        layer,
+        cache,
+        input,
+        offset,
+        kvCacheLen,
+        { numHeads: 16 },
+      );
+      queries.push(q);
     }
-    const layer = at(transformer, i);
-    let q: np.Array;
-    [input, kvCaches[i], q] = runStreamingTransformerLayer(
-      layer,
-      cache,
-      input,
-      offset,
-      kvCacheLen,
-      { numHeads: 16 },
-    );
-    queries.push(q);
+    logits = readoutLogits(queries, kvCaches, readout);
+  } finally {
+    tree.dispose(queries);
   }
   const T = at(input.shape, 0);
   kvCacheLen += T;
-
-  const logits = readoutLogits(queries, kvCaches, readout);
 
   let transformerOut = runLayerNorm(outNorm, input);
 

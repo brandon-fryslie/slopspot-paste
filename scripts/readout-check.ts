@@ -65,9 +65,10 @@ defaultDevice("wasm");
 
 const check = async (label: string, readout: Readout): Promise<ReadonlyArray<number>> => {
   const kvCaches = caches();
-  const logits = readoutLogits(queries(), kvCaches, readout);
+  const layerQueries = queries();
+  const logits = readoutLogits(layerQueries, kvCaches, readout);
   const raw = await logits.data();
-  tree.dispose(kvCaches);
+  tree.dispose([layerQueries, kvCaches]);
   const values = Array.from(raw);
   const want = expected(readout);
   assert(`${label}: one float32 logit per text position`, raw instanceof Float32Array && logits.shape.join() === String(textCount(readout)));
