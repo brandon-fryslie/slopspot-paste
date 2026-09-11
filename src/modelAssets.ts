@@ -67,6 +67,12 @@ export interface ModelAssetManifest {
   readonly weights: ModelAsset;
   readonly tokenizer: ModelAsset;
   readonly voices: Readonly<Record<VoiceId, ModelAsset>>;
+  // [LAW:types-are-the-program] The most text tokens one generation may be asked to say —
+  // a property of the checkpoint, so it travels with the bytes it describes and cannot be
+  // remembered separately from them. The model is trained on single sentences; upstream's
+  // MAX_TOKEN_PER_CHUNK is 50 for this build and its own TODO notes that english_2026-04
+  // "supports bigger chunks". Over the budget the model skips words.
+  readonly maxUnitTokens: number;
 }
 
 // Pocket TTS build b6369a24 (Kyutai's english_2026-01 checkpoint) converted to fp16 for
@@ -74,6 +80,7 @@ export interface ModelAssetManifest {
 // were read from HuggingFace's LFS metadata on 2026-09-10 and re-verified against the
 // downloaded bytes.
 export const MODEL_ASSETS: ModelAssetManifest = {
+  maxUnitTokens: 50,
   weights: {
     name: "weights",
     bytes: 235738516,
@@ -186,6 +193,9 @@ export const modelVersion = (manifest: ModelAssetManifest): string =>
     .join(",");
 
 export const MODEL_VERSION = modelVersion(MODEL_ASSETS);
+
+// The speech script's unit budget: the same fact as the manifest field, read from it.
+export const MAX_UNIT_TOKENS = MODEL_ASSETS.maxUnitTokens;
 
 // A 236 MB download must not start on a metered connection without a tap. This is the
 // pure fact the UI reads to decide whether Play may download implicitly; the Network
