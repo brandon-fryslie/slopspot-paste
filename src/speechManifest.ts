@@ -24,10 +24,10 @@
 //
 // WHY GLOBAL TIME RUNS OVER THE KNOWN PREFIX. Units finish out of order — the scheduler
 // synthesizes ahead of the cursor and a seek starts it mid-paste — so a global timeline is
-// only defined as far as every unit before a point is known. `totalDurationMs` and the
-// global<->position conversions run over the longest synthesized prefix and return a typed
-// absence beyond it, rather than summing whatever happens to exist and calling that a
-// position [LAW:no-silent-failure].
+// only defined as far as every unit before a point is known. `totalDurationMs` sums the
+// longest synthesized prefix, and the global<->position conversions return a typed absence
+// beyond it, rather than summing whatever happens to exist and calling that a position
+// [LAW:no-silent-failure].
 //
 // Nothing here is persisted and no audio is ever stored: the manifest is a client-side,
 // disposable projection of the stored original's rendition [LAW:one-way-deps].
