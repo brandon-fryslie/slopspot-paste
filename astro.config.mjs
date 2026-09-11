@@ -16,5 +16,11 @@ export default defineConfig({
   // deployed Worker carries its own provenance rather than anyone remembering what was
   // shipped. Vite substitutes the literal wherever the identifier appears; src/buildVersion.ts
   // is the only module allowed to name it, so the substitution has exactly one seam.
-  vite: { define: { __BUILD_VERSION__: JSON.stringify(gitBuildVersion()) } },
+  vite: {
+    define: { __BUILD_VERSION__: JSON.stringify(gitBuildVersion()) },
+    // [LAW:single-enforcer] The synthesis worker (src/synthesisWorker.ts) is a module worker
+    // whose runtime splits its own chunks; Vite's default IIFE worker format refuses a
+    // code-splitting build, so the format is fixed here, the one place the build is shaped.
+    worker: { format: "es" },
+  },
 });
