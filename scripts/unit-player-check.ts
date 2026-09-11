@@ -28,12 +28,14 @@
 //   drop      the unit being played  -> RangeError
 //   dispose   any                    -> idle; sources stopped; close()
 //   drop      any other              -> forgotten; a later seek there waits for it
+//   clock crosses a unit boundary    -> reported once, at the new unit (the scheduler's tick)
 //   clock passes the schedule        -> flow waiting at the next needed sample, reported once
 //   delivery while waiting           -> re-anchored at that sample, flow audio
 //   last unit ends                   -> idle; suspend()
 
 import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, extend, openSchedule, positionAt } from "../src/unitPlayer";
-import type { DeviceFactory, PcmBuffer, PcmSource, PlaybackDevice, PlayerState, UnitAudio } from "../src/unitPlayer";
+import type { DeviceFactory, PlayerState, UnitAudio } from "../src/unitPlayer";
+import { FRAME_S, FS, SR, StubBuffer, StubDevice, StubSource, describe, frame } from "./playbackStub";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -60,109 +62,6 @@ const near = (a: number, b: number, eps = 1e-6): boolean => Math.abs(a - b) <= e
 type RealDeviceFits = typeof AudioContext extends DeviceFactory ? true : never;
 const realDeviceFits: RealDeviceFits = true;
 assert("typeof AudioContext satisfies DeviceFactory", realDeviceFits);
-
-// ── stub device ───────────────────────────────────────────────────────────────────────
-
-const { sampleRate: SR, frameSamples: FS } = MODEL_PCM;
-const FRAME_S = FS / SR;
-
-class StubBuffer implements PcmBuffer {
-  readonly data: Float32Array;
-  constructor(
-    readonly length: number,
-    readonly sampleRate: number,
-  ) {
-    this.data = new Float32Array(length);
-  }
-  copyToChannel(source: Float32Array<ArrayBuffer>, channel: number): void {
-    if (channel !== 0) throw new Error(`stub buffer: channel ${channel}`);
-    this.data.set(source);
-  }
-}
-
-class StubSource implements PcmSource {
-  buffer: PcmBuffer | null = null;
-  onended: ((event: Event) => unknown) | null = null;
-  connected: unknown = null;
-  started: { readonly when: number; readonly offset: number } | null = null;
-  stopped = false;
-  ended = false;
-  connect(destination: unknown): unknown {
-    this.connected = destination;
-    return destination;
-  }
-  start(when: number, offset: number): void {
-    if (this.started !== null) throw new Error("stub source: started twice");
-    this.started = { when, offset };
-  }
-  stop(): void {
-    this.stopped = true;
-  }
-  // The context time this source's last sample ends.
-  endTime(): number {
-    if (this.started === null || !(this.buffer instanceof StubBuffer)) throw new Error("stub source: not started");
-    return this.started.when + (this.buffer.length / this.buffer.sampleRate - this.started.offset);
-  }
-}
-
-class StubDevice implements PlaybackDevice {
-  static instances: StubDevice[] = [];
-  currentTime = 0;
-  readonly destination = { node: "destination" };
-  readonly sampleRate: number;
-  readonly calls: string[] = [];
-  readonly sources: StubSource[] = [];
-  constructor(options: { readonly sampleRate: number }) {
-    this.sampleRate = options.sampleRate;
-    StubDevice.instances.push(this);
-  }
-  createBuffer(channels: number, length: number, sampleRate: number): PcmBuffer {
-    if (channels !== 1) throw new Error(`stub device: ${channels} channels`);
-    return new StubBuffer(length, sampleRate);
-  }
-  createBufferSource(): PcmSource {
-    const source = new StubSource();
-    this.sources.push(source);
-    return source;
-  }
-  resume(): Promise<void> {
-    this.calls.push("resume");
-    return Promise.resolve();
-  }
-  suspend(): Promise<void> {
-    this.calls.push("suspend");
-    return Promise.resolve();
-  }
-  close(): Promise<void> {
-    this.calls.push("close");
-    return Promise.resolve();
-  }
-  // Move the clock, then dispatch `ended` for every source that has finished or been
-  // stopped, in end order — what a real context does asynchronously. The clock moves even
-  // while "suspended", which is harsher than reality: a held position must not follow it.
-  advance(seconds: number): void {
-    this.currentTime += seconds;
-    const due = this.sources
-      .filter((s) => s.started !== null && !s.ended && (s.stopped || s.endTime() <= this.currentTime))
-      .sort((a, b) => a.endTime() - b.endTime());
-    for (const source of due) {
-      source.ended = true;
-      source.onended?.call(source, new Event("ended"));
-    }
-  }
-  // Sources the context is still holding: started, not stopped, not ended.
-  live(): StubSource[] {
-    return this.sources.filter((s) => s.started !== null && !s.stopped && !s.ended);
-  }
-}
-
-const frame = (unit: number, index: number): Float32Array<ArrayBuffer> =>
-  new Float32Array(new ArrayBuffer(FS * 4)).fill(unit * 100 + index + 1);
-
-const describe = (state: PlayerState): string =>
-  state.kind === "idle"
-    ? "idle"
-    : `${state.kind}${state.kind === "speaking" ? `/${state.flow}` : ""}@${state.at.unitIndex}:${state.at.offsetMs.toFixed(3)}`;
 
 // The cursor is accumulated as (frameSamples - skip) / sampleRate and the stub's end time
 // as length / sampleRate - offset: the same quantity by two float formulas, compared to
@@ -237,15 +136,16 @@ const main = harness(4);
   device.advance(0.15);
   const crossed = player.state();
   assert("past the boundary the position counts in the new unit", crossed.kind === "speaking" && crossed.at.unitIndex === 1 && near(crossed.at.offsetMs, 10));
+  assert("crossing the boundary is reported once, at the new unit", states.length === 3 && describe(states[2] ?? { kind: "idle" }) === "speaking/audio@1:10.000");
 
   device.advance(0.2);
   assert("the clock passing the schedule: every source ended, flow waiting at the next needed sample (1, 80 ms)", device.live().length === 0 && describe(player.state()) === "speaking/waiting@1:80.000");
-  assert("starvation reported exactly once", states.length === 3 && describe(states[2] ?? { kind: "idle" }) === "speaking/waiting@1:80.000");
+  assert("starvation reported exactly once", states.length === 4 && describe(states[3] ?? { kind: "idle" }) === "speaking/waiting@1:80.000");
 
   player.send({ kind: "frame", unit: 1, frameIndex: 1, pcm: frame(1, 1) });
   const relief = device.sources[4];
   assert("relief re-anchors at the clock plus the lead and plays the needed frame whole", near(relief?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S) && relief?.started?.offset === 0 && relief?.buffer instanceof StubBuffer && relief.buffer.data[0] === 102);
-  assert("flow audio at (1, 80 ms), reported", describe(player.state()) === "speaking/audio@1:80.000" && states.length === 4);
+  assert("flow audio at (1, 80 ms), reported", describe(player.state()) === "speaking/audio@1:80.000" && states.length === 5);
   device.advance(0.06);
   const continued = player.state();
   assert("position continues from the relieved sample", continued.kind === "speaking" && near(continued.at.offsetMs, 90));
@@ -258,16 +158,16 @@ console.log("player: pause holds a sample, resume is sample-accurate");
   player.send({ kind: "pause" });
   assert("pause: paused at the clock's sample, the live source stopped, suspend() called", describe(player.state()) === "paused@1:90.000" && device.live().length === 0 && device.calls.at(-1) === "suspend" && device.calls.length === calls + 1);
   device.advance(1);
-  assert("the held position does not follow the clock; the stopped source's late ended reports nothing", describe(player.state()) === "paused@1:90.000" && states.length === 5);
+  assert("the held position does not follow the clock; the stopped source's late ended reports nothing", describe(player.state()) === "paused@1:90.000" && states.length === 6);
   player.send({ kind: "pause" });
-  assert("pause while paused: no-op", states.length === 5);
+  assert("pause while paused: no-op", states.length === 6);
 
   player.send({ kind: "play" });
   const resumed = device.sources.at(-1);
   assert("resume plays the frame holding sample 2160 with a 240-sample offset at the lead", near(resumed?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S) && near(resumed?.started?.offset ?? NaN, 240 / SR) && resumed?.buffer instanceof StubBuffer && resumed.buffer.data[0] === 102);
   assert("speaking again at (1, 90 ms), resume() called", describe(player.state()) === "speaking/audio@1:90.000" && device.calls.at(-1) === "resume");
   player.send({ kind: "play" });
-  assert("play while speaking: no-op", states.length === 6 && device.sources.length === 6);
+  assert("play while speaking: no-op", states.length === 7 && device.sources.length === 6);
 }
 
 console.log("player: seek");
@@ -278,7 +178,7 @@ console.log("player: seek");
   const fresh = device.sources.slice(before);
   assert("seek into buffered audio schedules at once: the holding frame with its skip, the rest back to back into the next unit", fresh.length === 4 && near(fresh[0]?.started?.offset ?? NaN, 480 / SR) && contiguous(fresh) && fresh[2]?.buffer instanceof StubBuffer && fresh[2].buffer.data[0] === 101);
   assert("the previous schedule's source was stopped; position reads the target", device.live().length === 4 && describe(player.state()) === "speaking/audio@0:100.000");
-  assert("a seek is a discontinuity: reported", states.length === 7);
+  assert("a seek is a discontinuity: reported", states.length === 8);
   device.advance(0.1);
   const moved = player.state();
   assert("position runs on from the target", moved.kind === "speaking" && near(moved.at.offsetMs, 150));
@@ -369,7 +269,7 @@ console.log("player: stop, and the end of the script");
   assert("position never regresses while flowing", positions.every((p, i) => i === 0 || p >= (positions[i - 1] ?? NaN)));
   device.advance(1);
   assert("after the last frame ends: idle, suspend() called", player.state().kind === "idle" && device.calls.at(-1) === "suspend");
-  assert("the whole run reported audio then idle", reported().join(" ") === "speaking/audio@0:0.000 idle");
+  assert("the whole run reported audio, the boundary, then idle", reported().join(" ") === "speaking/audio@0:0.000 speaking/audio@1:10.000 idle");
   player.send({ kind: "seek", to: { unitIndex: 1, offsetMs: 5000 } });
   assert("seek past the end of the last unit finishes at once: idle, context suspended", player.state().kind === "idle" && device.calls.at(-1) === "suspend");
 }
@@ -381,11 +281,12 @@ console.log("player: stop, and the end of the script");
 
 console.log("player: the reported sequence");
 assert(
-  "every discontinuity was reported, in order, and nothing else",
+  "every discontinuity and boundary was reported, in order, and nothing else",
   main.reported().join(" ") ===
     [
       "speaking/waiting@0:0.000",
       "speaking/audio@0:0.000",
+      "speaking/audio@1:10.000",
       "speaking/waiting@1:80.000",
       "speaking/audio@1:80.000",
       "paused@1:90.000",
