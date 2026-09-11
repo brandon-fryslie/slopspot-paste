@@ -126,8 +126,8 @@ const hydrate = (bytesOf: (asset: ModelAsset) => Uint8Array<ArrayBuffer>): Hydra
 
 const readback = async (audio: np.Array): Promise<Float32Array<ArrayBuffer>> => {
   const pcm = await np.clip(audio.slice(0), -1, 1).astype(np.float32).data();
-  if (!(pcm instanceof Float32Array) || pcm.length !== MODEL_ASSETS.frameSamples) {
-    throw new Error(`expected ${MODEL_ASSETS.frameSamples} float32 samples per frame, got ${pcm.length}`);
+  if (!(pcm instanceof Float32Array) || pcm.length !== MODEL_ASSETS.weights.frameSamples) {
+    throw new Error(`expected ${MODEL_ASSETS.weights.frameSamples} float32 samples per frame, got ${pcm.length}`);
   }
   return pcm;
 };
@@ -192,9 +192,11 @@ async function* generate(
     return { kind: "frame-cap" };
   } finally {
     // A cancel lands with a frame's readback in flight; it settles before the device
-    // memory it reads from is released, and its rejection is the generation's own.
+    // memory it reads from is released, and its rejection is the generation's own. The
+    // carried-forward key is the one array the loop leaves unconsumed on every exit.
     if (pending !== null) await pending;
     lastLatent.dispose();
+    key.dispose();
     tree.dispose([modelRef, embeds, flowLMState, mimiState]);
   }
 }

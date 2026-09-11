@@ -28,7 +28,8 @@ import type { AssetProgress } from "../src/modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, MODEL_VERSION, type VoiceId } from "../src/modelAssets";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance } from "../src/speech";
-import { deriveSpeechScript, type TokenCount } from "../src/speechScript";
+import { wordish } from "./speechFixtures";
+import { deriveSpeechScript } from "../src/speechScript";
 import {
   createSynthesisHandler,
   type GenerationEnd,
@@ -100,8 +101,6 @@ const mailbox = () => {
   return { posted, post, waitFor, of };
 };
 
-const wordish: TokenCount = (text) => (text.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) ?? []).length;
-
 // A stub model: `n` frames per unit, each a fresh Float32Array of one frame's samples
 // filled with frameIndex + 1; ends as configured; can throw at a frame. Every frame is
 // preceded by a real await so a cancel sent while a unit runs lands between frames.
@@ -122,7 +121,7 @@ const stubModel = (config: StubModelConfig) => {
         for (let i = 0; i < config.frames; i++) {
           await tick();
           if (config.throwAt === i) throw new Error(`stub runtime blew up at frame ${i}`);
-          yield new Float32Array(new ArrayBuffer(MODEL_ASSETS.frameSamples * 4)).fill(i + 1);
+          yield new Float32Array(new ArrayBuffer(MODEL_ASSETS.weights.frameSamples * 4)).fill(i + 1);
         }
         return config.end;
       } finally {
@@ -274,7 +273,7 @@ console.log("synthesize:");
   const done = await box.waitFor("done");
   const audio = box.of("audio");
   assert("four frames arrive for the unit, frameIndex 0..3", audio.length === 4 && audio.every((a, i) => a.unitId === 7 && a.frameIndex === i));
-  assert("each frame is one FRAME of samples", audio.every((a) => a.pcm.length === MODEL_ASSETS.frameSamples && a.pcm[0] === a.frameIndex + 1));
+  assert("each frame is one FRAME of samples", audio.every((a) => a.pcm.length === MODEL_ASSETS.weights.frameSamples && a.pcm[0] === a.frameIndex + 1));
   assert(
     "each frame's buffer is in the transfer list, and nothing else is transferred",
     box.posted.every((p) => (p.message.kind === "audio" ? p.transfer.length === 1 && p.transfer[0] === p.message.pcm.buffer : p.transfer.length === 0)),
