@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { deriveDialogue, plainView } from "../src/dialogue";
-import { FRAME_MS, SAMPLE_RATE } from "../src/modelAssets";
+import { FRAME_MS } from "../src/modelAssets";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance } from "../src/speech";
 import {
@@ -40,7 +40,7 @@ import {
   type WordTime,
   type WordTiming,
 } from "../src/speechManifest";
-import { deriveSpeechScript, type SynthesisUnit } from "../src/speechScript";
+import { deriveSpeechScript, RENDITION_VERSIONS, type SynthesisUnit } from "../src/speechScript";
 import { wordish } from "./speechFixtures";
 
 const assert = (label: string, cond: boolean): void => {
@@ -97,17 +97,18 @@ interface Built {
   readonly rejections: ReadonlyArray<Rejection>;
 }
 
-const build = (script: ReadonlyArray<SynthesisUnit>, order: ReadonlyArray<number>): Built =>
+// A fold of admissions over the seed; the seed's script is the one every index names.
+const build = (seed: Manifest, order: ReadonlyArray<number>): Built =>
   order.reduce<Built>(
     ({ manifest, rejections }, index) => {
-      const unit = script[index];
+      const unit = seed.script[index];
       if (unit === undefined) throw new Error(`fixture order names unit ${index} outside the script`);
       const admission = addUnit(manifest, index, report(unit, index));
       return admission.kind === "added"
         ? { manifest: admission.manifest, rejections }
         : { manifest, rejections: [...rejections, admission] };
     },
-    { manifest: emptyManifest(script), rejections: [] },
+    { manifest: seed, rejections: [] },
   );
 
 const records = (manifest: Manifest): ReadonlyArray<ManifestUnit> =>
@@ -128,14 +129,16 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
   if (gpt !== null) {
     const utterances = deriveUtterances(plainView(deriveDialogue(gpt)));
     const script = deriveSpeechScript(utterances, wordish);
-    const { manifest, rejections } = build(script, strideOrder(script.length));
+    // A rate the codec does not default to, so surviving the fold is what the assertion proves.
+    const seededRate = 48000;
+    const { manifest, rejections } = build(emptyManifest(script, RENDITION_VERSIONS, seededRate), strideOrder(script.length));
     const all = records(manifest);
     console.log(`  (${utterances.length} utterances, ${script.length} units, ${all.length} records)`);
 
     assert("every report is admitted, in stride order, none rejected", rejections.length === 0 && all.length === script.length);
     assert(
-      "the manifest carries the versions and the codec's sample rate",
-      manifest.sampleRate === SAMPLE_RATE && manifest.versions.pipeline.length > 0 && manifest.versions.model.length > 0,
+      "the manifest carries the seed's sample rate and versions through every admission",
+      manifest.sampleRate === seededRate && manifest.versions === RENDITION_VERSIONS,
     );
     assert(
       "records sit at their script index and hold the script's unit by reference",
