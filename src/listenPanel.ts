@@ -640,10 +640,16 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       // events queued behind it would drain against a state the performed effects have
       // left behind, and the readout would keep describing a stage nobody is on; so the
       // panel is torn down to its start — worker released, stand-in silenced — and the
-      // error goes out as it is.
+      // error goes out as it is. A teardown that fails too goes out WITH it: neither
+      // failure hides the other.
       queue.length = 0;
-      run({ kind: "dispose" });
-      queue.length = 0;
+      try {
+        run({ kind: "dispose" });
+      } catch (teardown) {
+        throw new AggregateError([error, teardown], "listen panel: a bug in the machine, and its teardown failed");
+      } finally {
+        queue.length = 0;
+      }
       throw error;
     } finally {
       draining = false;

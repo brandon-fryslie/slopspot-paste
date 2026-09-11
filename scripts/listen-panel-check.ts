@@ -25,7 +25,7 @@ import {
   type PanelState,
 } from "../src/listenPanel";
 import { utteranceTable, type NeuralView } from "../src/neuralPerformer";
-import type { PerformerState } from "../src/performer";
+import { carry, type PerformerState } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
@@ -191,6 +191,14 @@ console.log("step, with a stand-in: the browser voice speaks while the neural vo
   assert("tap play from paused after a crash retries: the stand-in resumes and a worker is spawned", effects(step(step(fell.state, synthAt(pausedAt(1))).state, tapPlay)) === "synth play,spawn");
   const disposed = step(onStage.state, { kind: "dispose" });
   assert("dispose on stage: the worker disposed, the stand-in silenced, back to the start", effects(disposed) === "release dispose,synth stop" && shown(disposed.state) === shown(idle));
+}
+
+console.log("carry: what one performer tells the next");
+{
+  const carried = (state: PerformerState): string => carry(state).map((e) => `${e.kind}${e.kind === "seek" ? ` ${e.to}` : ""}`).join();
+  assert("idle carries nothing", carried({ kind: "idle" }) === "");
+  assert("speaking carries a seek to the same utterance", carried(speakingAt(1)) === "seek 1");
+  assert("paused carries a seek to the same utterance, then a pause", carried(pausedAt(1)) === "seek 1,pause");
 }
 
 console.log("step: violations throw");
@@ -374,17 +382,21 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
   assert("downloading: the bar shows beside the stand-in's line", !r.bar.hidden && r.bar.value === 50_000_000 && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · downloading the neural voice · 50 MB of 200 MB");
   synth.spoken[0]?.onend?.();
   assert("the stand-in moves on to passage 2 while the download runs", synth.spoken[1]?.text === two.text && line().includes("passage 2 of 2") && r.where() === "t2 0-8 of 1");
+  r.play.click();
+  assert("Pause mid-download pauses the stand-in; the download goes on, the loop is off", line() === "Resume | stop | Browser voice standing in · paused at passage 2 of 2 · downloading the neural voice · 50 MB of 200 MB" && r.frames.pending === 0);
   r.emit({ kind: "progress", progress: { loadedBytes: 200_000_000, totalBytes: 200_000_000 } });
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
-  assert("ready: the script goes to the worker, the stand-in still speaking", r.sent.at(-1)?.kind === "script" && line() === "Pause | stop | Browser voice standing in · passage 2 of 2 · preparing the script…");
+  assert("ready: the script goes to the worker, the stand-in still paused", r.sent.at(-1)?.kind === "script" && line() === "Resume | stop | Browser voice standing in · paused at passage 2 of 2 · preparing the script…");
 
   const cancelsBefore = synth.cancels;
   const emittedBefore = r.positions.length;
   r.emit({ kind: "script", id: SCRIPT_ID, units });
   const device = StubDevice.instances.at(-1);
   if (device === undefined) throw new Error("the panel did not build a player");
-  assert("units back: the stand-in is silenced and the neural voice takes up passage 2, from its start", synth.cancels === cancelsBefore + 1 && panel.state().kind === "neural" && r.said().endsWith("synthesize 2") && line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
-  assert("the cursor stays on passage 2 across the handover: not one position emitted, none lost", r.positions.length === emittedBefore && r.where() === "t2 0-8 of 1" && r.frames.pending === 1);
+  assert("units back: the stand-in is silenced and the neural voice takes its place PAUSED at passage 2", synth.cancels === cancelsBefore + 1 && panel.state().kind === "neural" && line() === "Resume | stop | Paused · passage 2 of 2" && r.frames.pending === 0);
+  assert("the cursor stays on passage 2 across the handover: not one position emitted, none lost", r.positions.length === emittedBefore && r.where() === "t2 0-8 of 1");
+  r.play.click();
+  assert("Resume plays the neural voice from passage 2 and asks for its unit", r.said().endsWith("synthesize 2") && line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2" && r.frames.pending === 1);
 
   r.emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });
   r.emit({ kind: "done", unitId: 2, report: report(FRAME_S * 1000), elapsedMs: 5 });
