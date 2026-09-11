@@ -125,6 +125,8 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
   let state: State = { kind: "probing" };
 
   const refuse = (request: ToWorker): void => post({ kind: "refused", request, phase: state.kind }, []);
+  // Posted exactly once per handler, by whichever completion finds the model released.
+  const released = (): void => post({ kind: "disposed" }, []);
 
   // ── probe ──
   const probe = async (): Promise<void> => {
@@ -153,6 +155,7 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       // Disposed mid-download: the abort ends the download as a failure, and a model that
       // arrived anyway is released, not kept alive by a worker nobody is listening to.
       if (result.ok) result.model.dispose();
+      released();
       return;
     }
     if (result.ok) {
@@ -221,7 +224,10 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       post(terminal, []);
       if (state.kind === "disposed") break;
     }
-    if (state.kind === "disposed") ready.model.dispose();
+    if (state.kind === "disposed") {
+      ready.model.dispose();
+      released();
+    }
   };
 
   const synthesize = (ready: Ready, request: Extract<ToWorker, { kind: "synthesize" }>): void => {
@@ -262,6 +268,7 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
         for (const job of before.queue.splice(0)) post({ kind: "cancelled", unitId: job.unitId }, []);
         if (before.running === null) {
           before.model.dispose();
+          released();
         } else {
           // The pump releases the model once the running generation has stopped.
           before.running.cancelled = true;
@@ -270,6 +277,8 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       case "probing":
       case "unsupported":
       case "idle":
+        released();
+        return;
       case "disposed":
         return;
     }

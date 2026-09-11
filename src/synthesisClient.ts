@@ -19,19 +19,36 @@ export interface SynthesisPort {
   readonly send: (message: ToWorker) => void;
   // Subscribes; returns the unsubscribe.
   readonly subscribe: (listener: (message: FromWorker) => void) => () => void;
-  // Ends the worker outright. Send `dispose` first when GPU memory should be released
-  // gracefully; terminate alone is what a page teardown does.
+  // The worker's own failures — a bundle that did not load, an exception outside the
+  // protocol — arrive on no protocol message; this is their channel. Returns the unsubscribe.
+  readonly errors: (listener: (message: string) => void) => () => void;
+  // Releases the model and ends the worker: `dispose` is sent, and the worker is terminated
+  // on its `disposed` reply, when nothing is left on the device.
+  readonly dispose: () => void;
+  // Ends the worker outright, releasing nothing: for a worker that has already failed.
   readonly terminate: () => void;
 }
 
 export const spawnSynthesisWorker = (): SynthesisPort => {
   const worker = new Worker(new URL("./synthesisWorker.ts", import.meta.url), { type: "module" });
+  const send = (message: ToWorker): void => worker.postMessage(message);
   return {
-    send: (message) => worker.postMessage(message),
+    send,
     subscribe: (listener) => {
       const onMessage = (event: MessageEvent<FromWorker>): void => listener(event.data);
       worker.addEventListener("message", onMessage);
       return () => worker.removeEventListener("message", onMessage);
+    },
+    errors: (listener) => {
+      const onError = (event: ErrorEvent): void => listener(event.message);
+      worker.addEventListener("error", onError);
+      return () => worker.removeEventListener("error", onError);
+    },
+    dispose: () => {
+      worker.addEventListener("message", (event: MessageEvent<FromWorker>) => {
+        if (event.data.kind === "disposed") worker.terminate();
+      });
+      send({ kind: "dispose" });
     },
     terminate: () => worker.terminate(),
   };

@@ -33,6 +33,10 @@
 //  - A message legal only in a phase the worker is not in is answered with `refused`, which
 //    names the phase, so a sequencing bug at the page surfaces as data rather than as a
 //    worker that went quiet [LAW:no-silent-failure].
+//  - `dispose` is answered with one `disposed`, posted once the worker holds no model —
+//    after the running unit's terminal message and the model's release, at once when there
+//    is nothing to release — so the page terminates the worker on a fact, not a guess. A
+//    second `dispose` produces nothing.
 
 import type { AssetFailure, AssetProgress } from "./modelAssetLoader";
 import type { VoiceId } from "./modelAssets";
@@ -94,4 +98,6 @@ export type FromWorker =
   | { readonly kind: "done"; readonly unitId: number; readonly report: UnitReport; readonly elapsedMs: number }
   | { readonly kind: "cancelled"; readonly unitId: number }
   | { readonly kind: "failed"; readonly unitId: number; readonly reason: UnitFailure }
-  | { readonly kind: "refused"; readonly request: ToWorker; readonly phase: Phase };
+  | { readonly kind: "refused"; readonly request: ToWorker; readonly phase: Phase }
+  // The worker's last word: nothing of the model remains on the device.
+  | { readonly kind: "disposed" };

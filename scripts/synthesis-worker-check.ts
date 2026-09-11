@@ -17,9 +17,9 @@
 //   cancel    queued                  -> cancelled at once, zero frames
 //   cancel    running                 -> cancelled between frames, generator finalised
 //   cancel    finished/unknown        -> nothing
-//   dispose   in ready                -> queued cancelled, running cancelled, model disposed once
-//   dispose   while loading           -> the load's signal is aborted; a late model is disposed, no ready
-//   dispose   while probing           -> the late result is discarded
+//   dispose   in ready                -> queued cancelled, running cancelled, model disposed once, then disposed
+//   dispose   while loading           -> the load's signal is aborted; a late model is disposed, no ready, then disposed
+//   dispose   while probing           -> the late result is discarded; disposed at once
 //   anything  after dispose           -> refused{disposed}; a second dispose is silent
 
 import { readFileSync } from "node:fs";
@@ -377,6 +377,10 @@ console.log("dispose:");
   await settle();
   assert("the running unit is cancelled between frames", box.of("audio").length < 6 && stub.log.finalised === 1);
   assert("then the model is disposed exactly once", stub.log.disposed === 1);
+  assert(
+    "and disposed is posted once, after the running unit's terminal",
+    box.of("disposed").length === 1 && box.posted.findIndex((p) => p.message.kind === "disposed") > box.posted.findIndex((p) => p.message.kind === "cancelled" && p.message.unitId === 20),
+  );
   handler.receive({ kind: "synthesize", unitId: 23, text: "Too late.", voice: "alba" });
   handler.receive({ kind: "load" });
   await settle();
@@ -391,7 +395,7 @@ console.log("dispose:");
   const { box, handler } = await readyHandler(stub.model);
   handler.receive({ kind: "dispose" });
   assert("dispose with nothing running disposes the model at once", stub.log.disposed === 1 && handler.phase() === "disposed");
-  assert("and posts nothing", box.of("cancelled").length === 0);
+  assert("and posts disposed alone", box.of("cancelled").length === 0 && box.posted.at(-1)?.message.kind === "disposed" && box.of("disposed").length === 1);
 }
 {
   const box = mailbox();
@@ -404,6 +408,7 @@ console.log("dispose:");
   assert("dispose mid-load aborts the load's signal at once", rt.log.signals[0]?.aborted === true);
   await settle();
   assert("a model that finishes loading into a disposed worker is disposed and never announced", stub.log.disposed === 1 && box.of("ready").length === 0 && handler.phase() === "disposed");
+  assert("disposed is posted once the late model is released, after the last progress", box.of("disposed").length === 1 && box.posted.at(-1)?.message.kind === "disposed");
 }
 {
   const box = mailbox();
@@ -411,12 +416,12 @@ console.log("dispose:");
   const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
   handler.receive({ kind: "dispose" });
   await settle();
-  assert("dispose during the probe: no capability is posted, phase disposed", box.posted.length === 0 && handler.phase() === "disposed");
+  assert("dispose during the probe: no capability is posted, disposed at once, phase disposed", box.posted.map((p) => p.message.kind).join() === "disposed" && handler.phase() === "disposed");
 }
 
 // The protocol's closed set, so a new message kind cannot land without a row here.
 const toKinds: ReadonlyArray<ToWorker["kind"]> = ["load", "script", "synthesize", "cancel", "dispose"];
-const fromKinds: ReadonlyArray<FromWorker["kind"]> = ["capability", "progress", "ready", "load-failed", "script", "audio", "done", "cancelled", "failed", "refused"];
-assert("every protocol message kind was exercised above", toKinds.length === 5 && fromKinds.length === 10);
+const fromKinds: ReadonlyArray<FromWorker["kind"]> = ["capability", "progress", "ready", "load-failed", "script", "audio", "done", "cancelled", "failed", "refused", "disposed"];
+assert("every protocol message kind was exercised above", toKinds.length === 5 && fromKinds.length === 11);
 
 console.log(process.exitCode ? "\nsynthesis-worker-check: FAILED" : "\nsynthesis-worker-check: all assertions passed");
