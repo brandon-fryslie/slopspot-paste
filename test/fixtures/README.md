@@ -78,7 +78,7 @@ and is not a fixture.
 
 Regenerate through `scripts/capture-word-alignment.py`, run inside a checkout
 of the fork with its uv environment (about 13 s per text on CPU), where
-`texts.json` is a JSON array of the six source strings (the `source` fields of
+`texts.json` is a JSON array of the source strings (the `source` fields of
 the captures). Like the other fixtures, never hand-edit it.
 
 ```sh
