@@ -121,7 +121,7 @@ const voicePrompt = (id: VoiceId, bytes: Uint8Array<ArrayBuffer>): np.Array => {
 };
 
 // [LAW:parse-dont-validate] How many cache positions a voice prompt occupies: the leading
-// dimension of its [frames, dim] tensor, which `voicePrompt` proved rank 2 by shape.
+// dimension of its [frames, dim] tensor.
 const promptFrames = (id: VoiceId, prompt: np.Array): number => {
   const [frames, dim] = prompt.shape;
   if (prompt.shape.length !== 2 || frames === undefined || dim === undefined) {
@@ -130,28 +130,35 @@ const promptFrames = (id: VoiceId, prompt: np.Array): number => {
   return frames;
 };
 
-interface Hydrated {
-  readonly model: PocketTTS;
+// [LAW:one-source-of-truth] The tokenizer and the piece string of every token id, from ONE
+// parse of the model file: jax-js builds its tokenizer from the proto and exposes ids only,
+// and an id is an index into that proto's pieces — what `tokenSpans` walks over the text.
+export interface Tokenizer {
   readonly tokenizer: tokenizers.SentencePiece;
-  // The piece string of every token id, as the tokenizer's model file spells it: what
-  // `tokenSpans` walks over the text to find where each token came from. jax-js's
-  // tokenizer exposes ids only, so the pieces are read from the same bytes it parsed.
   readonly pieces: ReadonlyArray<string>;
+}
+
+export const parseTokenizer = (bytes: Uint8Array): Tokenizer => {
+  const proto = fromBinary(ModelProtoSchema, bytes);
+  return { tokenizer: new tokenizers.SentencePiece(proto), pieces: proto.pieces.map((piece) => piece.piece) };
+};
+
+interface Hydrated extends Tokenizer {
+  readonly model: PocketTTS;
   readonly voices: Readonly<Record<VoiceId, np.Array>>;
 }
 
 const hydrate = (bytesOf: (asset: ModelAsset) => Uint8Array<ArrayBuffer>): Hydrated => ({
+  ...parseTokenizer(bytesOf(MODEL_ASSETS.tokenizer)),
   model: fromSafetensors(safetensors.parse(bytesOf(MODEL_ASSETS.weights)), WEIGHT_DTYPE),
-  tokenizer: tokenizers.SentencePiece.fromBinary(bytesOf(MODEL_ASSETS.tokenizer)),
-  pieces: fromBinary(ModelProtoSchema, bytesOf(MODEL_ASSETS.tokenizer)).pieces.map((piece) => piece.piece),
   voices: Object.fromEntries(
     VOICE_IDS.map((id) => [id, voicePrompt(id, bytesOf(MODEL_ASSETS.voices[id]))]),
   ) as Record<VoiceId, np.Array>,
 });
 
-// [LAW:parse-dont-validate] An id the tokenizer produced names a piece of its own model;
-// a miss is a tokenizer that does not match its model file, thrown.
-const pieceOf = (pieces: ReadonlyArray<string>, id: number): string => {
+// [LAW:parse-dont-validate] An id `encode` produced is an index into its own pieces; a miss
+// is thrown, never a skipped token.
+export const pieceOf = (pieces: ReadonlyArray<string>, id: number): string => {
   const piece = pieces[id];
   if (piece === undefined) throw new Error(`token id ${id} is not among the tokenizer's ${pieces.length} pieces`);
   return piece;
