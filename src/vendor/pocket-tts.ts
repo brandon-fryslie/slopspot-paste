@@ -1,15 +1,21 @@
 // Kyutai Pocket TTS on jax-js: weight layout and forward pass. Forked from
 // https://github.com/ekzhang/jax-js/blob/21103acbccce0f6b21b7c42ff2755384e82e94cf/website/src/routes/tts/pocket-tts.ts
 // (MIT, Eric Zhang), vendored so Vite builds it into the synthesis worker and so the
-// q35.v70 word-alignment read-out can be added beside `dotProductAttention` below, where
-// the query and the KV cache are plain locals — the reason the q35.1 spike chose this port.
+// word-alignment read-out (wordAlignment.ts) could be added beside `dotProductAttention`
+// below, where the query and the KV cache are plain locals — the reason the q35.1 spike
+// chose this port.
 //
-// WHAT DIFFERS FROM UPSTREAM, and only this: the site compiles under
-// `noUncheckedIndexedAccess`, so every `xs[i]` and every `const [a, b] = shape` upstream
-// wrote is routed through `at` and `dims2`/`dims3` — parsers that fail loudly on a rank or
-// length the model's own structure forbids, instead of a `!` that would silence the
-// compiler and hide a real mismatch [LAW:parse-dont-validate]. Nothing numeric changed;
-// each tensor op is upstream's, in upstream's order.
+// WHAT DIFFERS FROM UPSTREAM. (1) The site compiles under `noUncheckedIndexedAccess`, so
+// every `xs[i]` and every `const [a, b] = shape` upstream wrote is routed through `at` and
+// `dims2`/`dims3` — parsers that fail loudly on a rank or length the model's own structure
+// forbids, instead of a `!` that would silence the compiler and hide a real mismatch
+// [LAW:parse-dont-validate]. (2) The attention read-out: the multihead attention and the
+// transformer layer hand back the post-rope query beside their outputs, and
+// `runFlowLMStep` takes a `readout` naming one layer, one head and the text positions of
+// the cache, and returns that head's attention logits for the newest query over the
+// cached text keys — the dot products `dotProductAttention` computes internally, read out
+// for one head before the softmax. No numeric op the audio depends on changed; each tensor
+// op is upstream's, in upstream's order.
 //
 // Reference-counting discipline (jax-js): `x.ref` hands out a counted reference; passing
 // an array without `.ref` consumes it. Upstream's placement of `.ref` and `dispose()` is
@@ -88,6 +94,17 @@ export function createFlowLMState(model: FlowLMModel): FlowLMState {
   };
 }
 
+// The attention read-out: which layer's cache and which head, and where the text tokens
+// sit in the cache — [textStart, textEnd), after the voice prefix. The step's logits are
+// that head's newest query against the cached text keys, scaled as the attention scales
+// them, one per text token, as float32.
+export type Readout = {
+  layer: number;
+  head: number;
+  textStart: number;
+  textEnd: number;
+};
+
 export function runFlowLMStep(
   {
     bosEmb,
@@ -106,11 +123,12 @@ export function runFlowLMStep(
   sequence: np.Array, // [S, ldim] - latent sequence, NaN for BOS
   embeds: np.Array | null, // [T, dim] - conditioning, text and voice
   offset: number, // position offset
+  readout: Readout,
   lsdDecodeSteps: number = 1,
   temperature: number = 0.7,
   noiseClamp: number | null = null,
   eosThreshold: number = -4.0,
-): { latent: np.Array; isEos: np.Array; state: FlowLMState } {
+): { latent: np.Array; isEos: np.Array; logits: np.Array; state: FlowLMState } {
   // unused fields
   bosEmb.dispose();
   conditionerEmbed.dispose();
@@ -126,6 +144,7 @@ export function runFlowLMStep(
   // Concatenate text/voice embeddings with input
   if (embeds !== null) input = np.concatenate([embeds, input], 0);
 
+  const queries: np.Array[] = []; // one [T, H, D] per layer, post-rope
   for (let i = 0; i < transformer.length; i++) {
     const cache = at(kvCaches, i);
     // If kv cache is not large enough, expand it to next multiple of 64.
@@ -139,7 +158,8 @@ export function runFlowLMStep(
       });
     }
     const layer = at(transformer, i);
-    [input, kvCaches[i]] = runStreamingTransformerLayer(
+    let q: np.Array;
+    [input, kvCaches[i], q] = runStreamingTransformerLayer(
       layer,
       cache,
       input,
@@ -147,8 +167,24 @@ export function runFlowLMStep(
       kvCacheLen,
       { numHeads: 16 },
     );
+    queries.push(q);
   }
-  kvCacheLen += at(input.shape, 0);
+  const T = at(input.shape, 0);
+  kvCacheLen += T;
+
+  // The read-out. The last query row is the newest position — the BOS at the end of the
+  // prefill, the one latent of a decode step — and the cache's keys are post-rope in both
+  // cases (`k` at prefill, the updated cache at decode). [n, D] · [D] → [n] in the model's
+  // dtype, exactly what dotProductAttention computes for that head before its softmax.
+  const readoutQuery = at(queries, readout.layer);
+  queries.splice(readout.layer, 1);
+  tree.dispose(queries);
+  const [, , headDim] = dims3(readoutQuery.shape);
+  const textKeys = at(kvCaches, readout.layer).key.ref.slice([readout.textStart, readout.textEnd], readout.head);
+  const logits = np
+    .matmul(textKeys, readoutQuery.slice(T - 1, readout.head))
+    .astype(np.float32)
+    .div(Math.sqrt(headDim));
 
   let transformerOut = runLayerNorm(outNorm, input);
 
@@ -173,7 +209,7 @@ export function runFlowLMStep(
   const latent = lsdDecode(conditionedFlow, noise, lsdDecodeSteps);
   tree.dispose([flowNet, transformerOut]);
 
-  return { latent, isEos, state: { kvCaches, kvCacheLen } };
+  return { latent, isEos, logits, state: { kvCaches, kvCacheLen } };
 }
 
 export type SimpleMLPAdaLN = {
@@ -286,7 +322,7 @@ export function runMimiStreamingMultiheadAttention(
   context: number,
   numHeads: number,
   maxPeriod: number = 10000,
-): [np.Array, KVCache] {
+): [np.Array, KVCache, np.Array] {
   const [T, embedDim] = dims2(query.shape);
   const headDim = embedDim / numHeads;
 
@@ -299,7 +335,7 @@ export function runMimiStreamingMultiheadAttention(
   let x: np.Array;
   if (isPrefill) {
     tree.dispose([kvCache, kvCacheLen]);
-    x = nn.dotProductAttention(q, k.ref, v.ref, {
+    x = nn.dotProductAttention(q.ref, k.ref, v.ref, {
       isCausal: true,
       localWindowSize: context ? [context - 1, 0] : undefined,
     });
@@ -330,11 +366,11 @@ export function runMimiStreamingMultiheadAttention(
     const mask = context
       ? maskDelta.ref.lessEqual(0).mul(maskDelta.greater(-context))
       : maskDelta.lessEqual(0);
-    x = nn.dotProductAttention(q, kvCache.key.ref, kvCache.value.ref, { mask });
+    x = nn.dotProductAttention(q.ref, kvCache.key.ref, kvCache.value.ref, { mask });
   }
   x = x.reshape([T, embedDim]);
   x = runLinear(outProj, x);
-  return [x, kvCache];
+  return [x, kvCache, q];
 }
 
 export type StreamingTransformerLayer = {
@@ -367,12 +403,13 @@ export const runStreamingTransformerLayer = jit(
       numHeads,
       maxPeriod = 10000,
     }: { context?: number; numHeads: number; maxPeriod?: number },
-  ): [np.Array, KVCache] {
+  ): [np.Array, KVCache, np.Array] {
     // Self-attention block with pre-norm
     const xOrig = x.ref;
     x = runLayerNorm(norm1, x);
     let update: np.Array;
-    [update, kvCache] = runMimiStreamingMultiheadAttention(
+    let q: np.Array; // [T, H, D], post-rope: the read-out's query
+    [update, kvCache, q] = runMimiStreamingMultiheadAttention(
       selfAttn,
       kvCache,
       x,
@@ -398,7 +435,7 @@ export const runStreamingTransformerLayer = jit(
     }
     x = xOrig2.add(ffnOut);
 
-    return [x, kvCache];
+    return [x, kvCache, q];
   },
   { staticArgnums: [5, 6, 7] },
 );
@@ -628,7 +665,8 @@ export function runMimiEncode(
   const offset = np.array(0, { dtype: np.int32, device: x.device });
   for (const layer of encoderTransformer) {
     let kvCache = emptyKVCache(x.dtype);
-    [x, kvCache] = runStreamingTransformerLayer(
+    let q: np.Array;
+    [x, kvCache, q] = runStreamingTransformerLayer(
       layer,
       kvCache,
       x,
@@ -636,7 +674,7 @@ export function runMimiEncode(
       0,
       { context: 250, numHeads: 8 },
     );
-    tree.dispose(kvCache);
+    tree.dispose([kvCache, q]);
   }
   offset.dispose();
   x = x.transpose([1, 0]); // back to [C, T]
@@ -715,7 +753,8 @@ export function runMimiDecode(
   x = x.transpose([1, 0]); // [C, 16*T] -> [16*T, C]
   for (let i = 0; i < decoderTransformer.length; i++) {
     const layer = at(decoderTransformer, i);
-    [x, kvCaches[i]] = runStreamingTransformerLayer(
+    let q: np.Array;
+    [x, kvCaches[i], q] = runStreamingTransformerLayer(
       layer,
       at(kvCaches, i),
       x,
@@ -723,6 +762,7 @@ export function runMimiDecode(
       kvCacheLen,
       { context: 250, numHeads: 8 },
     );
+    q.dispose();
   }
   x = x.transpose([1, 0]); // [C, 16*T]
 

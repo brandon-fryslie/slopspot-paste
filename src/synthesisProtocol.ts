@@ -81,7 +81,10 @@ export type Phase = "probing" | "unsupported" | "idle" | "loading" | "ready" | "
 export type ToWorker =
   | { readonly kind: "load" }
   | { readonly kind: "script"; readonly id: number; readonly utterances: ReadonlyArray<Utterance> }
-  | { readonly kind: "synthesize"; readonly unitId: number; readonly text: string; readonly voice: VoiceId }
+  // The unit itself, not its text: the worker times `wordsOf(unit)` — the manifest's own
+  // words over the utterance slice — against the model's attention, so it needs the unit's
+  // coordinates. The utterance travels with it by structured clone, a few KB per request.
+  | { readonly kind: "synthesize"; readonly unitId: number; readonly unit: SynthesisUnit; readonly voice: VoiceId }
   | { readonly kind: "cancel"; readonly unitId: number }
   | { readonly kind: "dispose" };
 

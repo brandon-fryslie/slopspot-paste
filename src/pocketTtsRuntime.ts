@@ -26,11 +26,22 @@
 //
 // The seed is fixed, so a unit's audio is a deterministic function of its text and voice:
 // the rendition a listener resumes is the one they paused [LAW:one-source-of-truth].
+//
+// WHY THE WORD TIMES ARE READ ONE STEP LATE. The attention read-out for step n (the logits
+// of the checkpoint's `readout` head over the unit's text tokens) is a fact about frame n,
+// and the alignment machine (wordAlignment.ts) wants it together with whether frame n's
+// PCM is voiced. That PCM is read back a step later, in `pending`, so the step's unit
+// scores travel with the readback and the machine sees the pair the moment the frame is
+// yielded [LAW:no-ambient-temporal-coupling]. One readback per step carries both the EOS
+// bit and the logits, so the read-out adds no round trip to the device.
 
 import { defaultDevice, init, numpy as np, random, tree } from "@jax-js/jax";
 import { safetensors, tokenizers } from "@jax-js/loaders";
+import { fromBinary } from "@bufbuild/protobuf";
+import { ModelProtoSchema } from "sentencepiece-buf/model";
 import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
-import { MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
+import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
+import type { SynthesisUnit } from "./speechScript";
 import type { GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
 import type { Support } from "./synthesisProtocol";
 import {
@@ -41,6 +52,7 @@ import {
   runMimiDecode,
   type PocketTTS,
 } from "./vendor/pocket-tts";
+import { createWordAligner, isVoiced, planAlignment, unitScores } from "./wordAlignment";
 
 // The bound on one unit's generation loop. A unit holds at most MAX_UNIT_TOKENS (50) text
 // tokens — a dozen seconds of speech, about 150 frames — so a loop still running at 500
@@ -108,19 +120,42 @@ const voicePrompt = (id: VoiceId, bytes: Uint8Array<ArrayBuffer>): np.Array => {
     .astype(WEIGHT_DTYPE);
 };
 
+// [LAW:parse-dont-validate] How many cache positions a voice prompt occupies: the leading
+// dimension of its [frames, dim] tensor, which `voicePrompt` proved rank 2 by shape.
+const promptFrames = (id: VoiceId, prompt: np.Array): number => {
+  const [frames, dim] = prompt.shape;
+  if (prompt.shape.length !== 2 || frames === undefined || dim === undefined) {
+    throw new Error(`voice ${id}: expected a [frames, dim] prompt, got shape [${prompt.shape.join(", ")}]`);
+  }
+  return frames;
+};
+
 interface Hydrated {
   readonly model: PocketTTS;
   readonly tokenizer: tokenizers.SentencePiece;
+  // The piece string of every token id, as the tokenizer's model file spells it: what
+  // `tokenSpans` walks over the text to find where each token came from. jax-js's
+  // tokenizer exposes ids only, so the pieces are read from the same bytes it parsed.
+  readonly pieces: ReadonlyArray<string>;
   readonly voices: Readonly<Record<VoiceId, np.Array>>;
 }
 
 const hydrate = (bytesOf: (asset: ModelAsset) => Uint8Array<ArrayBuffer>): Hydrated => ({
   model: fromSafetensors(safetensors.parse(bytesOf(MODEL_ASSETS.weights)), WEIGHT_DTYPE),
   tokenizer: tokenizers.SentencePiece.fromBinary(bytesOf(MODEL_ASSETS.tokenizer)),
+  pieces: fromBinary(ModelProtoSchema, bytesOf(MODEL_ASSETS.tokenizer)).pieces.map((piece) => piece.piece),
   voices: Object.fromEntries(
     VOICE_IDS.map((id) => [id, voicePrompt(id, bytesOf(MODEL_ASSETS.voices[id]))]),
   ) as Record<VoiceId, np.Array>,
 });
+
+// [LAW:parse-dont-validate] An id the tokenizer produced names a piece of its own model;
+// a miss is a tokenizer that does not match its model file, thrown.
+const pieceOf = (pieces: ReadonlyArray<string>, id: number): string => {
+  const piece = pieces[id];
+  if (piece === undefined) throw new Error(`token id ${id} is not among the tokenizer's ${pieces.length} pieces`);
+  return piece;
+};
 
 // ── generation ──────────────────────────────────────────────────────────────────────
 
@@ -132,22 +167,63 @@ const readback = async (audio: np.Array): Promise<Float32Array<ArrayBuffer>> => 
   return pcm;
 };
 
+// What one step says, read back from the device as one row: the EOS bit first, then the
+// read-out's logit for each of the unit's `tokenCount` text tokens.
+interface StepReading {
+  readonly eos: boolean;
+  readonly logits: Float32Array;
+}
+
+// [LAW:parse-dont-validate] The row is proven to be one bit plus one logit per token
+// before either is read; a different length is a read-out over the wrong positions.
+const readStep = async (isEos: np.Array, logits: np.Array, tokenCount: number): Promise<StepReading> => {
+  const row = await np.concatenate([isEos.astype(np.float32).reshape([1]), logits]).data();
+  const eos = row.at(0);
+  if (!(row instanceof Float32Array) || row.length !== tokenCount + 1 || eos === undefined) {
+    throw new Error(`expected an EOS bit and ${tokenCount} attention logits, got ${row.length} values`);
+  }
+  return { eos: eos !== 0, logits: row.subarray(1) };
+};
+
+// A decoded frame on its way back from the device, with the unit scores of the step that
+// produced it: the pair the alignment machine consumes.
+interface PendingFrame {
+  readonly pcm: Promise<Float32Array<ArrayBuffer>>;
+  readonly scores: Float64Array;
+}
+
 async function* generate(
-  { model, tokenizer, voices }: Hydrated,
-  text: string,
+  { model, tokenizer, pieces, voices }: Hydrated,
+  unit: SynthesisUnit,
   voice: VoiceId,
 ): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd> {
+  const ids = tokenizer.encode(unit.text);
+  const plan = planAlignment(unit, ids.map((id) => pieceOf(pieces, id)));
+  const aligner = createWordAligner(plan);
   const modelRef = tree.ref(model);
-  const tokens = np.array(tokenizer.encode(text), { dtype: np.uint32 });
+  const tokens = np.array(ids, { dtype: np.uint32 });
   const embeds = np.concatenate([voices[voice].ref, model.flowLM.conditionerEmbed.ref.slice(tokens)]);
-  const afterEos = framesAfterEos(text);
+  const afterEos = framesAfterEos(unit.text);
+  // The cache positions of the text tokens: right after the voice prompt's frames.
+  const textStart = promptFrames(voice, voices[voice]);
+  const readout = { ...MODEL_ASSETS.weights.readout, textStart, textEnd: textStart + ids.length };
 
   let lastLatent = model.flowLM.bosEmb.ref.reshape([1, -1]); // [1, 32]
   let key = random.key(SEED);
   let flowLMState = createFlowLMState(model.flowLM);
   let mimiState = createMimiDecodeState(model.mimi);
-  let pending: Promise<Float32Array<ArrayBuffer>> | null = null;
+  let pending: PendingFrame | null = null;
+  let frames = 0;
   let eosStep: number | null = null;
+
+  // The frame in flight, once its PCM has landed: the alignment machine sees it exactly
+  // when it is handed on, so a cancel between frames leaves no frame half-processed.
+  const settle = async (frame: PendingFrame): Promise<Float32Array<ArrayBuffer>> => {
+    const pcm = await frame.pcm;
+    aligner.frame(frame.scores, isVoiced(pcm), frames * FRAME_MS);
+    frames++;
+    return pcm;
+  };
 
   try {
     for (let step = 0; step < MAX_UNIT_FRAMES; step++) {
@@ -155,25 +231,26 @@ async function* generate(
       const keys = random.split(key);
       key = keys.ref.slice(0);
       const stepKey = keys.slice(1);
-      const { latent, isEos, state } = runFlowLMStep(
+      const { latent, isEos, logits, state } = runFlowLMStep(
         tree.ref(modelRef.flowLM),
         flowLMState,
         stepKey,
         lastLatent.ref,
         step === 0 ? embeds.ref : null,
         flowLMState.kvCacheLen,
+        readout,
         LSD_DECODE_STEPS,
         TEMPERATURE,
         null,
       );
       flowLMState = state;
 
-      const eos = await isEos.data();
-      if (eos[0] && eosStep === null) eosStep = step;
+      const reading = await readStep(isEos, logits, ids.length);
+      if (reading.eos && eosStep === null) eosStep = step;
       if (eosStep !== null && step >= eosStep + afterEos) {
         latent.dispose();
-        if (pending !== null) yield await pending;
-        return { kind: "eos", alignment: { kind: "unit" } };
+        if (pending !== null) yield await settle(pending);
+        return { kind: "eos", alignment: { kind: "words", times: aligner.finish(frames * FRAME_MS) } };
       }
 
       const prevLatent = lastLatent;
@@ -185,16 +262,16 @@ async function* generate(
       mimiState = nextMimiState;
 
       const previous = pending;
-      pending = readback(audio);
-      if (previous !== null) yield await previous;
+      pending = { pcm: readback(audio), scores: unitScores(plan, reading.logits) };
+      if (previous !== null) yield await settle(previous);
     }
-    if (pending !== null) yield await pending;
+    if (pending !== null) yield await settle(pending);
     return { kind: "frame-cap" };
   } finally {
     // A cancel lands with a frame's readback in flight; it settles before the device
     // memory it reads from is released, and its rejection is the generation's own. The
     // carried-forward key is the one array the loop leaves unconsumed on every exit.
-    if (pending !== null) await pending;
+    if (pending !== null) await pending.pcm;
     lastLatent.dispose();
     key.dispose();
     tree.dispose([modelRef, embeds, flowLMState, mimiState]);
@@ -225,7 +302,7 @@ export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
     const model: LoadedModel = {
       backend: "webgpu",
       countTokens: (text) => hydrated.tokenizer.encode(text).length,
-      generate: (text, voice) => generate(hydrated, text, voice),
+      generate: (unit, voice) => generate(hydrated, unit, voice),
       dispose: () => tree.dispose([hydrated.model, hydrated.voices]),
     };
     return { ok: true, model };

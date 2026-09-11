@@ -71,11 +71,20 @@ const voice = (
 // that english_2026-04 "supports bigger chunks"; over the budget the model skips words.
 // `sampleRate` and `frameSamples` are the Mimi codec this checkpoint decodes through: PCM
 // rate and the samples one generation step yields; the manifest's `sampleRate` and every
-// frame-time reading derive from here.
+// frame-time reading derive from here. `readout` is the FlowLM attention head whose per-
+// frame attention over the text tokens tracks the word being said (wordAlignment.ts): a
+// fact about the trained weights, so a hosted checkpoint must declare it — there is no
+// "no head known" arm in the runtime, and a checkpoint without one cannot be hosted.
+export interface Readout {
+  readonly layer: number;
+  readonly head: number;
+}
+
 export interface Checkpoint extends ModelAsset {
   readonly maxUnitTokens: number;
   readonly sampleRate: number;
   readonly frameSamples: number;
+  readonly readout: Readout;
 }
 
 export interface ModelAssetManifest {
@@ -94,6 +103,10 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     maxUnitTokens: 50,
     sampleRate: 24000,
     frameSamples: 1920,
+    // dpm63/pocket-tts-timestamped configs: timestamp_heads is layer 3 head 8 for both
+    // english checkpoints (english_2026-01, which these weights are, and english_2026-04,
+    // which its accuracy was measured on); the 24-layer build would be layer 14 head 10.
+    readout: { layer: 3, head: 8 },
     bytes: 235738516,
     sha256: "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
     source:

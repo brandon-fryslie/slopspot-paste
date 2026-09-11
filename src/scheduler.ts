@@ -331,7 +331,7 @@ const plan = (voices: VoiceMap, state: SchedulerState, player: PlayerState): Pla
   if (inFlight !== -1) evict(inFlight);
   const unit = state.manifest.script[next];
   if (unit === undefined) throw new RangeError(`scheduler: no script unit ${next}`);
-  commands.push(toWorker({ kind: "synthesize", unitId: next, text: unit.text, voice: voices[unit.utterance.voice] }));
+  commands.push(toWorker({ kind: "synthesize", unitId: next, unit, voice: voices[unit.utterance.voice] }));
   set(next, REQUESTED);
   return finish();
 };
