@@ -170,27 +170,18 @@ const BYTE_PIECE = /^<0x[0-9A-Fa-f]{2}>$/;
 const utf8Length = (char: string): number => new TextEncoder().encode(char).length;
 
 // [LAW:parse-dont-validate] Where each token came from in the fed text, recovered by
-// walking the pieces over the tokenizer's normalised form of it — whitespace runs
-// collapsed to one boundary, a boundary prepended — and mapping every normalised
-// character back to the source character it came from. The byte pieces of one character
-// all get that character's span, as in the reference. A piece that does not match the
-// text at its position is a tokenizer whose pieces do not spell its input, and is thrown,
-// never skipped [LAW:no-silent-failure].
+// walking the pieces over the text as the model's tokenizer normalises it — a boundary
+// prepended, every space a boundary, nothing collapsed or trimmed (parseTokenizer holds the
+// model file to that) — and mapping each normalised character back to its source span. The
+// byte pieces of one character all get that character's span, as in the reference. A piece
+// that does not match the text at its position is a tokenizer whose pieces do not spell its
+// input, and is thrown, never skipped [LAW:no-silent-failure].
 export const tokenSpans = (text: string, pieces: ReadonlyArray<string>): ReadonlyArray<Span> => {
-  // The normalised text as (character, source span) pairs; the dummy prefix has an empty
-  // span, and a collapsed whitespace run stands for its first character.
-  const normalised: Array<{ readonly char: string; readonly span: Span }> = [{ char: BOUNDARY, span: { begin: 0, end: 0 } }];
-  let pendingSpace: Span | undefined;
-  for (const point of codePoints(text.trim())) {
-    const at = point.at + (text.length - text.trimStart().length);
-    if (/\s/u.test(point.char)) {
-      pendingSpace ??= { begin: at, end: at + point.char.length };
-      continue;
-    }
-    if (pendingSpace !== undefined) normalised.push({ char: BOUNDARY, span: pendingSpace });
-    pendingSpace = undefined;
-    normalised.push({ char: point.char, span: { begin: at, end: at + point.char.length } });
-  }
+  // The normalised text as (character, source span) pairs; the dummy prefix has an empty span.
+  const normalised = [
+    { char: BOUNDARY, span: { begin: 0, end: 0 } },
+    ...codePoints(text).map((point) => ({ char: point.char === " " ? BOUNDARY : point.char, span: { begin: point.at, end: point.at + point.char.length } })),
+  ];
   const spans: Span[] = [];
   let pos = 0;
   let bytesLeft = 0;

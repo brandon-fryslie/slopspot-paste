@@ -42,7 +42,7 @@ What the pair proves — the design evidence for refetch freshness
 
 ## The word-alignment capture (`word-alignment.json`)
 
-The reference implementation's own record, for six texts, of everything the
+The reference implementation's own record, for seven texts, of everything the
 TypeScript port in `src/wordAlignment.ts` must reproduce. The reference is
 dpm63/pocket-tts-timestamped, a fork of Kyutai's pocket-tts that reads word
 timing off one attention head (layer 3, head 8). Captured with english_2026-04
@@ -59,13 +59,16 @@ model: given the reference's per-frame inputs, it proves the port builds the
 same units and token map and emits the same events at the same times, so the
 reference's measured accuracy is inherited by equality rather than re-measured.
 
-Two things to know when comparing `source` to `fed`. The fork re-chunks text
+Three things to know when comparing `source` to `fed`. The fork re-chunks text
 with its own chunker, so for "foo.bar" it fed "foo. bar", and the check builds
 the unit over the FED text. And when the source lacks terminal punctuation the
 fork appends a "." marked `synthetic: true` on its last unit ("No terminal
 punctuation here" became "No terminal punctuation here."); that is the speech
 script's own rule too, so the check's utterance is the fed text minus that
-synthetic punctuation.
+synthetic punctuation. And every `begin`/`end` is a Python string index — a code
+point — where the port's spans are UTF-16 units; the check converts at the
+fixture's edge, and the seventh text carries an emoji so the conversion is
+exercised.
 
 The runtime this repo ships uses the english_2026-01 checkpoint; the fixture is
 from english_2026-04. The head is the same for both, and the fixture proves the

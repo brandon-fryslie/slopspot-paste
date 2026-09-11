@@ -134,13 +134,64 @@ const promptFrames = (id: VoiceId, prompt: np.Array): number => {
 // parse of the model file: jax-js builds its tokenizer from the proto and exposes ids only,
 // and an id is an index into that proto's pieces — what `tokenSpans` walks over the text.
 export interface Tokenizer {
-  readonly tokenizer: tokenizers.SentencePiece;
+  readonly encode: (text: string) => number[];
   readonly pieces: ReadonlyArray<string>;
 }
 
+// TEMPORARY, until jax-js walks text by code point. Its Unigram encoder indexes the string
+// by UTF-16 unit, so each half of a surrogate pair reaches the byte fallback as a lone
+// surrogate and comes out as U+FFFD's bytes, where SentencePiece emits the character's own.
+// So `encode` hands jax-js one U+FFFD per astral character — a character no piece contains,
+// so the lattice is cut around it exactly as around the real one — and writes the real
+// character's byte pieces where the stand-in's come out; a U+FFFD the text itself holds
+// comes out as itself. scripts/tokenizer-check.ts proves the ids against the reference's.
+const STAND_IN = "\uFFFD";
+const STAND_IN_OR_ASTRAL = /\uFFFD|[\u{10000}-\u{10FFFF}]/gu;
+
 export const parseTokenizer = (bytes: Uint8Array): Tokenizer => {
   const proto = fromBinary(ModelProtoSchema, bytes);
-  return { tokenizer: new tokenizers.SentencePiece(proto), pieces: proto.pieces.map((piece) => piece.piece) };
+  // [LAW:single-enforcer] `tokenSpans` walks text the way this model's tokenizer normalises
+  // it — a boundary prepended, every space a boundary, nothing else — and that assumption is
+  // checked here, once, against the model file.
+  const spec = proto.normalizerSpec;
+  if (spec?.name !== "identity" || spec.addDummyPrefix !== true || spec.removeExtraWhitespaces !== false) {
+    throw new Error(`the tokenizer normalises text (${spec?.name}, dummy prefix ${spec?.addDummyPrefix}, extra whitespace removed ${spec?.removeExtraWhitespaces}) in a way tokenSpans does not walk`);
+  }
+  const pieces = proto.pieces.map((piece) => piece.piece);
+  if (pieces.some((piece) => piece.match(STAND_IN_OR_ASTRAL) !== null)) {
+    throw new Error("the tokenizer has a piece containing U+FFFD or an astral character; the stand-in would not be exact");
+  }
+  const jax = new tokenizers.SentencePiece(proto);
+  const byteIds = new Map(pieces.flatMap((piece, id): [number, number][] => {
+    const hex = /^<0x([0-9A-F]{2})>$/.exec(piece);
+    return hex === null ? [] : [[parseInt(hex[1] ?? "", 16), id]];
+  }));
+  // [LAW:parse-dont-validate] A character's byte pieces; a byte without one is a model
+  // without byte fallback, thrown.
+  const bytesOf = (char: string): number[] =>
+    Array.from(new TextEncoder().encode(char), (byte) => {
+      const id = byteIds.get(byte);
+      if (id === undefined) throw new Error(`the tokenizer has no piece for byte 0x${byte.toString(16)}`);
+      return id;
+    });
+  const standIn = bytesOf(STAND_IN);
+  const encode = (text: string): number[] => {
+    const chars = Array.from(text.matchAll(STAND_IN_OR_ASTRAL), (match) => match[0]);
+    const ids: number[] = [];
+    let next = 0;
+    for (const id of jax.encode(text.replace(STAND_IN_OR_ASTRAL, STAND_IN))) {
+      ids.push(id);
+      const tail = ids.length - standIn.length;
+      if (tail >= 0 && standIn.every((byte, j) => ids[tail + j] === byte)) {
+        const char = chars[next++];
+        if (char === undefined) throw new Error(`stand-in bytes at token ${tail} of ${JSON.stringify(text)} match no character`);
+        ids.splice(tail, standIn.length, ...bytesOf(char));
+      }
+    }
+    if (next !== chars.length) throw new Error(`${chars.length - next} of the characters of ${JSON.stringify(text)} were not tokenized`);
+    return ids;
+  };
+  return { encode, pieces };
 };
 
 interface Hydrated extends Tokenizer {
@@ -200,11 +251,11 @@ interface PendingFrame {
 }
 
 async function* generate(
-  { model, tokenizer, pieces, voices }: Hydrated,
+  { model, encode, pieces, voices }: Hydrated,
   unit: UnitText,
   voice: VoiceId,
 ): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd> {
-  const ids = tokenizer.encode(unit.text);
+  const ids = encode(unit.text);
   const plan = planAlignment(unit, ids.map((id) => pieceOf(pieces, id)));
   const aligner = createWordAligner(plan);
   const modelRef = tree.ref(model);
@@ -308,7 +359,7 @@ export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
     const hydrated = hydrate(bytesOf);
     const model: LoadedModel = {
       backend: "webgpu",
-      countTokens: (text) => hydrated.tokenizer.encode(text).length,
+      countTokens: (text) => hydrated.encode(text).length,
       generate: (unit, voice) => generate(hydrated, unit, voice),
       dispose: () => tree.dispose([hydrated.model, hydrated.voices]),
     };
