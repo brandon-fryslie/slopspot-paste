@@ -42,7 +42,7 @@ What the pair proves — the design evidence for refetch freshness
 
 ## The word-alignment capture (`word-alignment.json`)
 
-The reference implementation's own record, for seven texts, of everything the
+The reference implementation's own record, for the texts whose `source` fields it holds, of everything the
 TypeScript port in `src/wordAlignment.ts` must reproduce. The reference is
 dpm63/pocket-tts-timestamped, a fork of Kyutai's pocket-tts that reads word
 timing off one attention head (layer 3, head 8). Captured with english_2026-04
@@ -67,7 +67,7 @@ punctuation here" became "No terminal punctuation here."); that is the speech
 script's own rule too, so the check's utterance is the fed text minus that
 synthetic punctuation. And every `begin`/`end` is a Python string index — a code
 point — where the port's spans are UTF-16 units; the check converts at the
-fixture's edge, and the seventh text carries an emoji so the conversion is
+fixture's edge, and one text carries an emoji so the conversion is
 exercised.
 
 The runtime this repo ships uses the english_2026-01 checkpoint; the fixture is

@@ -3,7 +3,7 @@
 // itself (slopspot-read-along-q35.v70). Run: `tsx scripts/word-alignment-check.ts`.
 //
 // FIXTURE. test/fixtures/word-alignment.json is the reference implementation's own record
-// of seven texts under english_2026-04 and the alba voice: the units it built over the text
+// of a set of texts under english_2026-04 and the alba voice: the units it built over the text
 // it fed the model, its token ids and piece strings, its token-to-unit matrix, and — for
 // every generated frame — the unit scores its attention capture produced, whether the
 // frame was voiced, and the events its state machine emitted; then the final words. It was
@@ -19,7 +19,7 @@
 // which is the speech script's own rule too, so the utterance the unit points into is the
 // fed text minus that synthetic punctuation; and it indexes Python strings by code point,
 // where the port's spans are UTF-16 units, so its offsets are converted before any
-// comparison — the seventh text carries an emoji so that conversion is exercised.
+// comparison — one text carries an emoji so that conversion is exercised.
 //
 // [LAW:behavior-not-structure] Every assertion is about an observable: the units and map a
 // text yields, the events a stream yields, the times the manifest admits. A different
