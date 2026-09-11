@@ -60,10 +60,26 @@ interface Posted {
   readonly transfer: ReadonlyArray<Transferable>;
 }
 
+// Every kind the scenarios below send and every kind the handler posts, tallied so the
+// closing assertion can say the whole protocol was exercised, not merely enumerated.
+const exercised = { to: new Set<ToWorker["kind"]>(), from: new Set<FromWorker["kind"]>() };
+
+const handlerOf = (config: Parameters<typeof createSynthesisHandler>[0]): ReturnType<typeof createSynthesisHandler> => {
+  const handler = createSynthesisHandler(config);
+  return {
+    ...handler,
+    receive: (message) => {
+      exercised.to.add(message.kind);
+      handler.receive(message);
+    },
+  };
+};
+
 const mailbox = () => {
   const posted: Posted[] = [];
   const waiters: Array<{ pred: (m: FromWorker) => boolean; resolve: (m: FromWorker) => void }> = [];
   const post = (message: FromWorker, transfer: ReadonlyArray<Transferable>): void => {
+    exercised.from.add(message.kind);
     posted.push({ message, transfer });
     for (const w of waiters.splice(0)) {
       if (w.pred(message)) w.resolve(message);
@@ -158,7 +174,7 @@ const EOS: GenerationEnd = { kind: "eos", alignment: { kind: "unit" } };
 const readyHandler = async (model: LoadedModel) => {
   const box = mailbox();
   const rt = stubRuntime(SUPPORTED, [{ ok: true, model }]);
-  const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   await box.waitFor("capability");
   handler.receive({ kind: "load" });
   await box.waitFor("ready");
@@ -170,7 +186,7 @@ console.log("probe:");
 {
   const box = mailbox();
   const rt = stubRuntime(SUPPORTED, []);
-  const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   assert("a fresh handler is probing", handler.phase() === "probing");
   const cap = await box.waitFor("capability");
   assert("the first message is capability{supported}", box.posted[0]?.message === cap && cap.support.kind === "supported");
@@ -180,7 +196,7 @@ console.log("probe:");
 {
   const box = mailbox();
   const rt = stubRuntime({ kind: "unsupported", reason: { kind: "no-webgpu" } }, []);
-  const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   const cap = await box.waitFor("capability");
   assert("an unsupported device reports its reason", cap.support.kind === "unsupported" && cap.support.reason.kind === "no-webgpu");
   assert("and the handler is unsupported", handler.phase() === "unsupported");
@@ -193,7 +209,7 @@ console.log("probe:");
 {
   const box = mailbox();
   const rt = stubRuntime(new Error("adapter exploded"), []);
-  createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   const cap = await box.waitFor("capability");
   assert(
     "a probe that throws is unsupported{no-device} carrying the message",
@@ -207,7 +223,7 @@ console.log("load:");
   const box = mailbox();
   const stub = stubModel({ frames: 2, end: EOS });
   const rt = stubRuntime(SUPPORTED, [{ ok: true, model: stub.model }]);
-  const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   await box.waitFor("capability");
   handler.receive({ kind: "synthesize", unitId: 1, text: "Too early.", voice: "alba" });
   handler.receive({ kind: "script", id: 1, utterances: [] });
@@ -235,7 +251,7 @@ console.log("load:");
     new Error("safetensors header is garbage"),
     { ok: true, model: stub.model },
   ]);
-  const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   await box.waitFor("capability");
   handler.receive({ kind: "load" });
   const failed = await box.waitFor("load-failed");
@@ -401,7 +417,7 @@ console.log("dispose:");
   const box = mailbox();
   const stub = stubModel({ frames: 1, end: EOS });
   const rt = stubRuntime(SUPPORTED, [{ ok: true, model: stub.model }]);
-  const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   await box.waitFor("capability");
   handler.receive({ kind: "load" });
   handler.receive({ kind: "dispose" });
@@ -413,15 +429,21 @@ console.log("dispose:");
 {
   const box = mailbox();
   const rt = stubRuntime(SUPPORTED, []);
-  const handler = createSynthesisHandler({ runtime: rt.runtime, post: box.post, now: clock() });
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
   handler.receive({ kind: "dispose" });
   await settle();
   assert("dispose during the probe: no capability is posted, disposed at once, phase disposed", box.posted.map((p) => p.message.kind).join() === "disposed" && handler.phase() === "disposed");
 }
 
-// The protocol's closed set, so a new message kind cannot land without a row here.
-const toKinds: ReadonlyArray<ToWorker["kind"]> = ["load", "script", "synthesize", "cancel", "dispose"];
-const fromKinds: ReadonlyArray<FromWorker["kind"]> = ["capability", "progress", "ready", "load-failed", "script", "audio", "done", "cancelled", "failed", "refused", "disposed"];
-assert("every protocol message kind was exercised above", toKinds.length === 5 && fromKinds.length === 11);
+// The protocol's closed set: a `Record` over the union is refused by the compiler when a
+// kind has no row, so a new message kind cannot land without one — and the tally says
+// whether the scenarios above actually exercised it.
+const TO_KINDS: Record<ToWorker["kind"], true> = { load: true, script: true, synthesize: true, cancel: true, dispose: true };
+const FROM_KINDS: Record<FromWorker["kind"], true> = { capability: true, progress: true, ready: true, "load-failed": true, script: true, audio: true, done: true, cancelled: true, failed: true, refused: true, disposed: true };
+const unexercised = [
+  ...Object.keys(TO_KINDS).filter((kind) => !exercised.to.has(kind as ToWorker["kind"])),
+  ...Object.keys(FROM_KINDS).filter((kind) => !exercised.from.has(kind as FromWorker["kind"])),
+];
+assert(`every protocol message kind was exercised above${unexercised.length === 0 ? "" : ` (not: ${unexercised.join(", ")})`}`, unexercised.length === 0);
 
 console.log(process.exitCode ? "\nsynthesis-worker-check: FAILED" : "\nsynthesis-worker-check: all assertions passed");

@@ -32,6 +32,11 @@ export interface SynthesisPort {
 export const spawnSynthesisWorker = (): SynthesisPort => {
   const worker = new Worker(new URL("./synthesisWorker.ts", import.meta.url), { type: "module" });
   const send = (message: ToWorker): void => worker.postMessage(message);
+  // `disposed` is only ever the answer to `dispose`, and the worker holds nothing once it
+  // is posted: the worker ends on it, whichever call asked.
+  worker.addEventListener("message", (event: MessageEvent<FromWorker>) => {
+    if (event.data.kind === "disposed") worker.terminate();
+  });
   return {
     send,
     subscribe: (listener) => {
@@ -44,12 +49,7 @@ export const spawnSynthesisWorker = (): SynthesisPort => {
       worker.addEventListener("error", onError);
       return () => worker.removeEventListener("error", onError);
     },
-    dispose: () => {
-      worker.addEventListener("message", (event: MessageEvent<FromWorker>) => {
-        if (event.data.kind === "disposed") worker.terminate();
-      });
-      send({ kind: "dispose" });
-    },
+    dispose: () => send({ kind: "dispose" }),
     terminate: () => worker.terminate(),
   };
 };
