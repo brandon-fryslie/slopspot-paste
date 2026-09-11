@@ -22,6 +22,7 @@ import { deriveDialogue, plainView } from "../src/dialogue";
 import { MAX_UNIT_TOKENS, MODEL_ASSETS, type ModelAsset } from "../src/modelAssets";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance, type Voice } from "../src/speech";
+import { wordish } from "./speechFixtures";
 import {
   CLOSERS,
   TERMINAL,
@@ -44,9 +45,6 @@ const assert = (label: string, cond: boolean): void => {
   }
 };
 
-// Fixture tokenizers. The real SentencePiece model lives in the synthesis worker; the
-// invariants below hold whatever the tokenizer says, which is the point of injecting it.
-const wordish: TokenCount = (text) => (text.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) ?? []).length;
 const perCharacter: TokenCount = (text) => text.length;
 // The cutter's own mark sets, as the regex classes the sentence-end rules below use.
 const charClass = (set: ReadonlySet<string>): string => `[${[...set].map((c) => c.replace(/[\]\\^-]/g, "\\$&")).join("")}]`;
