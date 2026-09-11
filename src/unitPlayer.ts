@@ -58,7 +58,7 @@ export interface PcmFormat {
 
 // [LAW:one-source-of-truth] The model's format, read from the asset manifest that every
 // frame-time reading already derives from.
-export const MODEL_PCM: PcmFormat = { sampleRate: MODEL_ASSETS.sampleRate, frameSamples: MODEL_ASSETS.frameSamples };
+export const MODEL_PCM: PcmFormat = { sampleRate: MODEL_ASSETS.weights.sampleRate, frameSamples: MODEL_ASSETS.weights.frameSamples };
 
 // How far ahead of the clock a fresh schedule starts. It must outlast the gap between
 // reading `currentTime` on the main thread and the render thread picking up the first
