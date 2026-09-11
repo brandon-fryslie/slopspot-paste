@@ -63,14 +63,19 @@ const voice = (
   attribution,
 });
 
-// [LAW:types-are-the-program] The checkpoint is the weights asset plus the most text tokens
-// one generation may be asked to say — a property of those bytes, so it lives on them: a
-// swapped checkpoint literal must restate its budget, and cannot inherit the old one. The
-// model is trained on single sentences; upstream's MAX_TOKEN_PER_CHUNK is 50 for this build
-// and its own TODO notes that english_2026-04 "supports bigger chunks". Over the budget the
-// model skips words.
+// [LAW:types-are-the-program] The checkpoint is the weights asset plus the facts about those
+// bytes that the rest of the pipeline reads, so they live on them: a swapped checkpoint
+// literal must restate each, and cannot inherit the old one. `maxUnitTokens` is the most
+// text tokens one generation may be asked to say — the model is trained on single
+// sentences; upstream's MAX_TOKEN_PER_CHUNK is 50 for this build and its own TODO notes
+// that english_2026-04 "supports bigger chunks"; over the budget the model skips words.
+// `sampleRate` and `frameSamples` are the Mimi codec this checkpoint decodes through: PCM
+// rate and the samples one generation step yields; the manifest's `sampleRate` and every
+// frame-time reading derive from here.
 export interface Checkpoint extends ModelAsset {
   readonly maxUnitTokens: number;
+  readonly sampleRate: number;
+  readonly frameSamples: number;
 }
 
 export interface ModelAssetManifest {
@@ -87,6 +92,8 @@ export const MODEL_ASSETS: ModelAssetManifest = {
   weights: {
     name: "weights",
     maxUnitTokens: 50,
+    sampleRate: 24000,
+    frameSamples: 1920,
     bytes: 235738516,
     sha256: "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
     source:
@@ -199,6 +206,12 @@ export const MODEL_VERSION = modelVersion(MODEL_ASSETS);
 
 // The speech script's unit budget: the same fact as the checkpoint's field, read from it.
 export const MAX_UNIT_TOKENS = MODEL_ASSETS.weights.maxUnitTokens;
+
+export const SAMPLE_RATE = MODEL_ASSETS.weights.sampleRate;
+
+// One generation step of audio in milliseconds (80 for this codec): the grain every
+// measured word time lands on.
+export const FRAME_MS = (MODEL_ASSETS.weights.frameSamples / MODEL_ASSETS.weights.sampleRate) * 1000;
 
 // A 236 MB download must not start on a metered connection without a tap. This is the
 // pure fact the UI reads to decide whether Play may download implicitly; the Network
