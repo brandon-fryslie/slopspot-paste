@@ -41,6 +41,12 @@
 // first; and the unit the schedule is about to play cannot be dropped. Every violation is
 // a RangeError at the delivery, not a silent skip [LAW:no-silent-failure].
 //
+// UNIT BOUNDARIES ARE REPORTED. Every frame is its own source and the last frame of a unit
+// ends exactly at the boundary, so its `ended` event is the context's own notice that the
+// cursor has crossed into the next unit; `onState` fires there. This is not a second clock
+// — no timer is set — it is the one clock's event, and it is the tick the scheduler needs
+// to slide its window without polling [LAW:no-ambient-temporal-coupling].
+//
 // Not here, deliberately: the word cursor (the panel samples `state().at` on its paint
 // clock and asks the manifest — a boundary timer in this module would be a second clock),
 // the lookahead window and memory bound (the scheduler decides what to `drop`), and a fade
@@ -222,8 +228,10 @@ export type PlayerEvent =
 export interface UnitPlayerConfig {
   readonly Device: DeviceFactory;
   readonly unitCount: number;
-  // Called after every discontinuity: play, pause, stop, seek, starvation and its relief,
-  // and the end of the last unit. Continuous motion is read with `state()`.
+  // Called after every discontinuity — play, pause, stop, seek, starvation and its relief,
+  // the end of the last unit — and after every unit boundary the clock crosses, which is
+  // the scheduler's cue to synthesize further ahead. Continuous motion within a unit is
+  // read with `state()`.
   readonly onState: (state: PlayerState) => void;
   readonly format?: PcmFormat;
 }
@@ -435,15 +443,22 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   };
 
   // [LAW:single-enforcer] Every change runs through here: the state is reported exactly
-  // when the player moved to a different schedule, hold or idle, or its flow changed — the
-  // discontinuities — and never for a redundant event or a delivery that merely extended
-  // the schedule.
+  // when the player moved to a different schedule, hold or idle, or its discrete reading —
+  // the flow, the unit under the cursor — differs from the last report; never for a
+  // redundant event, a delivery that merely extended the schedule, or a source ending
+  // mid-unit. The reading is compared against the last REPORT rather than the moment before
+  // the change because the source whose `ended` carries the player across a unit boundary
+  // fires after the clock has already crossed it [LAW:one-source-of-truth].
+  let reported: PlayerState = { kind: "idle" };
+  const discrete = (s: PlayerState): string => (s.kind === "speaking" ? `${s.kind} ${s.flow} ${s.at.unitIndex}` : s.kind);
   const transition = (change: () => void): void => {
     const before = live;
-    const flowBefore = live.kind === "speaking" ? flowOf(live) : null;
     change();
-    const flowAfter = live.kind === "speaking" ? flowOf(live) : null;
-    if (live !== before || flowAfter !== flowBefore) onState(state());
+    const now = state();
+    if (live !== before || discrete(now) !== discrete(reported)) {
+      reported = now;
+      onState(now);
+    }
   };
 
   const send = (event: PlayerEvent): void => transition(() => apply(event));

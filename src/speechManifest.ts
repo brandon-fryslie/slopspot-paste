@@ -159,20 +159,31 @@ const stamp = (index: number, unit: SynthesisUnit, durationMs: number, reported:
     ? { kind: "stamped", alignment: reported }
     : stampTimes(index, unit, durationMs, reported.kind, reported.times);
 
-// [LAW:parse-dont-validate] The one checkpoint between the worker and the manifest. Out
-// of order is legal — the scheduler finishes ahead of the cursor — so admission is by
-// index, not by sequence.
-export const addUnit = (manifest: Manifest, index: number, report: UnitReport): Admission => {
-  const unit = manifest.script[index];
+// [LAW:parse-dont-validate] The one checkpoint between the worker and a record: a report
+// becomes a ManifestUnit here or is rejected with the reason. Whether a unit may be
+// recorded twice is not this function's rule — the scheduler replaces a record when it
+// re-synthesizes a unit whose audio it had dropped, `addUnit` refuses — so the duplicate
+// arm lives with the manifest, below, and this stays the one stamping.
+export type Recording = { readonly kind: "record"; readonly record: ManifestUnit } | Rejection;
+
+export const recordUnit = (script: ReadonlyArray<SynthesisUnit>, index: number, report: UnitReport): Recording => {
+  const unit = script[index];
   if (unit === undefined) return { kind: "unknown-unit", index };
-  if (manifest.units[index] !== undefined) return { kind: "duplicate", index };
   if (!(Number.isFinite(report.durationMs) && report.durationMs >= 0)) {
     return { kind: "bad-duration", index, durationMs: report.durationMs };
   }
   const stamped = stamp(index, unit, report.durationMs, report.alignment);
   if (stamped.kind !== "stamped") return stamped;
-  const record: ManifestUnit = { unit, durationMs: report.durationMs, alignment: stamped.alignment };
-  return { kind: "added", manifest: { ...manifest, units: manifest.units.with(index, record) } };
+  return { kind: "record", record: { unit, durationMs: report.durationMs, alignment: stamped.alignment } };
+};
+
+// Out of order is legal — the scheduler finishes ahead of the cursor — so admission is by
+// index, not by sequence; a second report for a recorded unit is refused.
+export const addUnit = (manifest: Manifest, index: number, report: UnitReport): Admission => {
+  if (manifest.units[index] !== undefined) return { kind: "duplicate", index };
+  const recorded = recordUnit(manifest.script, index, report);
+  if (recorded.kind !== "record") return recorded;
+  return { kind: "added", manifest: { ...manifest, units: manifest.units.with(index, recorded.record) } };
 };
 
 // ── position math ───────────────────────────────────────────────────────────────────
