@@ -12,3 +12,6 @@ worker-configuration.d.ts
 # Local MCP configuration (machine-specific, not project source)
 .mcp.json
 mcpi.toml
+# Model assets mirrored at build time by scripts/fetch-model-assets.ts from the pinned
+# sources in src/modelAssets.ts; 240 MB of derived bytes, not source.
+public/models/
