@@ -3257,6 +3257,24 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
+/* Two performers, two rows: the neural voice first (the point of the tool), the browser
+   voice below it, named a stand-in by its own status line. */
+.speech-neural + .speech-browser {
+  margin-top: 8px;
+}
+.neural-progress {
+  width: 140px;
+  height: 6px;
+  accent-color: var(--accent);
+}
+/* The read-along cursor: the words the neural voice is saying, inside the turn card.
+   `.ra-word` (the span readAlong.ts wraps each matched word in) is deliberately unstyled —
+   the wrap must not move a glyph — so only the span under the cursor shows. */
+.ra-on {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 3px;
+}
 /* A disabled Stop is dimmed rather than hidden: the control's absence would move
    the row's layout on every play/stop, and a reader tracking the audio should not
    have the buttons shifting under the pointer. */

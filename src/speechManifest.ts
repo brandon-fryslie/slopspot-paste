@@ -51,10 +51,17 @@ export interface WordSpan {
 // cursor. Punctuation attached to a word travels with it ("world.", "(ok)").
 const RUN = /\S+/gu;
 const LEXICAL = /[\p{L}\p{N}]/u;
-export const wordsOf = (unit: SynthesisUnit): ReadonlyArray<WordSpan> =>
-  Array.from(unit.utterance.text.slice(unit.start, unit.end).matchAll(RUN))
+
+// The rule over any text, with `offset` placing the spans in a larger string's
+// coordinates. The read-along painter (readAlong.ts) segments the page's own text nodes
+// with THIS function, so what it paints as a word is what the manifest times as one.
+export const wordSpans = (text: string, offset: number): ReadonlyArray<WordSpan> =>
+  Array.from(text.matchAll(RUN))
     .filter((run) => LEXICAL.test(run[0]))
-    .map((run) => ({ charStart: unit.start + run.index, charEnd: unit.start + run.index + run[0].length }));
+    .map((run) => ({ charStart: offset + run.index, charEnd: offset + run.index + run[0].length }));
+
+export const wordsOf = (unit: SynthesisUnit): ReadonlyArray<WordSpan> =>
+  wordSpans(unit.utterance.text.slice(unit.start, unit.end), unit.start);
 
 export interface WordTiming {
   readonly startMs: number;
