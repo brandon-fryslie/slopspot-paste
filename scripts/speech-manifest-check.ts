@@ -318,7 +318,9 @@ console.log("\nSpeech manifest — admission and rejection:");
   );
   assert("a global time past the prefix lands at the end of the prefix, not in the unknown", toPosition(m2, dur(0) + 1000)?.unitIndex === 0);
   assert("an empty manifest has no timeline: total 0, no position", totalDurationMs(empty) === 0 && toPosition(empty, 0) === undefined);
-  const second = addUnit(m2, 1, { durationMs: dur(1), alignment: { kind: "estimated", times: estimateTimes(script[1] as SynthesisUnit, dur(1)) } });
+  const unit1 = script[1];
+  if (unit1 === undefined) throw new Error("fixture: the script has no unit 1 to fill the gap with");
+  const second = addUnit(m2, 1, { durationMs: dur(1), alignment: { kind: "estimated", times: estimateTimes(unit1, dur(1)) } });
   const m3 = second.kind === "added" ? second.manifest : m2;
   assert(
     "filling the gap extends the timeline over all three units",
