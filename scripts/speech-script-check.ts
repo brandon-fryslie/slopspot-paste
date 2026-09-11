@@ -241,7 +241,7 @@ console.log("\nRendition hash:");
 {
   const voices: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
   const units = deriveSpeechScript([utter("Hi there.", "user", 0), utter("Hello.", "assistant", 1)], wordish);
-  const rehashed = (asset: ModelAsset): ModelAsset => ({ ...asset, sha256: "f".repeat(64) });
+  const rehashed = <A extends ModelAsset>(asset: A): A => ({ ...asset, sha256: "f".repeat(64) });
   const [same, again, assistantChanged, unusedChanged, pipelineChanged, modelChanged, usedVoiceRehashed, unusedVoiceRehashed, textChanged] = await Promise.all([
     renditionHash(units, voices),
     renditionHash(units, voices),

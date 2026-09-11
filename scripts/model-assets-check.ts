@@ -43,6 +43,7 @@ import {
   downloadNeedsTap,
   modelVersion,
   shardPlan,
+  type Checkpoint,
   type ModelAsset,
 } from "../src/modelAssets";
 import { loadAsset, loadAssets, pruneStaleAssets, type AssetStore } from "../src/modelAssetLoader";
@@ -74,7 +75,7 @@ for (const asset of assets) {
 }
 assert("weights need more than one part; tokenizer needs exactly one", shardPlan(MODEL_ASSETS.weights).length > 1 && shardPlan(MODEL_ASSETS.tokenizer).length === 1);
 
-const rehashed: ModelAsset = { ...MODEL_ASSETS.weights, sha256: "f".repeat(64) };
+const rehashed: Checkpoint = { ...MODEL_ASSETS.weights, sha256: "f".repeat(64) };
 assert("new bytes are a new url", assetKey(rehashed) !== assetKey(MODEL_ASSETS.weights));
 assert("new bytes change MODEL_VERSION", modelVersion({ ...MODEL_ASSETS, weights: rehashed }) !== MODEL_VERSION);
 assert("same bytes keep MODEL_VERSION", modelVersion({ ...MODEL_ASSETS }) === MODEL_VERSION);
