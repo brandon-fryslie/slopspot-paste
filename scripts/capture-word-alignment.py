@@ -7,8 +7,10 @@ from pocket_tts_timestamped import TTSModel, AudioChunk, WordStart, WordEnd
 from pocket_tts_timestamped.timestamps import alignment as al
 
 texts = json.load(open(sys.argv[1]))
-model = TTSModel.load_model(language="english_2026-04")
-voice = model.get_state_for_audio_prompt("alba")
+LANGUAGE = "english_2026-04"
+VOICE = "alba"
+model = TTSModel.load_model(language=LANGUAGE)
+voice = model.get_state_for_audio_prompt(VOICE)
 tok = model.flow_lm.conditioner.tokenizer
 
 out = []
@@ -58,4 +60,4 @@ for text in texts:
         "samples": int(res.audio.shape[-1]),
     })
     print(text, "->", len(frames), "frames", len(res.words), "words", file=sys.stderr)
-json.dump({"model": "english_2026-04", "voice": "alba", "captures": out}, open(sys.argv[2], "w"), ensure_ascii=False, indent=1)
+json.dump({"model": LANGUAGE, "voice": VOICE, "captures": out}, open(sys.argv[2], "w"), ensure_ascii=False, indent=1)

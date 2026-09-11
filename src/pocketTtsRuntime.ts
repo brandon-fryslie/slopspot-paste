@@ -38,7 +38,7 @@
 import { defaultDevice, init, numpy as np, random, tree } from "@jax-js/jax";
 import { safetensors, tokenizers } from "@jax-js/loaders";
 import { fromBinary } from "@bufbuild/protobuf";
-import { ModelProtoSchema } from "sentencepiece-buf/model";
+import { ModelProtoSchema, ModelProto_SentencePiece_Type } from "sentencepiece-buf/model";
 import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { UnitText } from "./speechScript";
@@ -162,16 +162,20 @@ export const parseTokenizer = (bytes: Uint8Array): Tokenizer => {
     throw new Error("the tokenizer has a piece containing U+FFFD or an astral character; the stand-in would not be exact");
   }
   const jax = new tokenizers.SentencePiece(proto);
-  const byteIds = new Map(pieces.flatMap((piece, id): [number, number][] => {
-    const hex = /^<0x([0-9A-F]{2})>$/.exec(piece);
-    return hex === null ? [] : [[parseInt(hex[1] ?? "", 16), id]];
-  }));
-  // [LAW:parse-dont-validate] A character's byte pieces; a byte without one is a model
-  // without byte fallback, thrown.
+  // [LAW:parse-dont-validate] The id of each byte's fallback piece, keyed by the value its
+  // "<0xNN>" spelling names; the model file types the byte pieces, so their spelling is read,
+  // not matched. A model without one piece per byte cannot spell every character, thrown.
+  const byteIds = new Map(
+    proto.pieces.flatMap((piece, id): [number, number][] =>
+      piece.type === ModelProto_SentencePiece_Type.BYTE ? [[parseInt(piece.piece.slice(3, 5), 16), id]] : []),
+  );
+  if (byteIds.size !== 256 || [...byteIds.keys()].some((byte) => !(byte >= 0 && byte < 256))) {
+    throw new Error(`the tokenizer has ${byteIds.size} byte pieces where one per byte 0..255 is needed`);
+  }
   const bytesOf = (char: string): number[] =>
     Array.from(new TextEncoder().encode(char), (byte) => {
       const id = byteIds.get(byte);
-      if (id === undefined) throw new Error(`the tokenizer has no piece for byte 0x${byte.toString(16)}`);
+      if (id === undefined) throw new RangeError(`byte ${byte} outside the 256 proven above`);
       return id;
     });
   const standIn = bytesOf(STAND_IN);
