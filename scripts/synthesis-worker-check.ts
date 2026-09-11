@@ -18,7 +18,8 @@
 //   cancel    running                 -> cancelled between frames, generator finalised
 //   cancel    finished/unknown        -> nothing
 //   dispose   in ready                -> queued cancelled, running cancelled, model disposed once
-//   dispose   while loading/probing   -> the late result is discarded (model disposed, no ready)
+//   dispose   while loading           -> the load's signal is aborted; a late model is disposed, no ready
+//   dispose   while probing           -> the late result is discarded
 //   anything  after dispose           -> refused{disposed}; a second dispose is silent
 
 import { readFileSync } from "node:fs";
@@ -122,15 +123,16 @@ const stubModel = (config: StubModelConfig) => {
 // A stub runtime: a scripted probe answer and a scripted sequence of load results, each
 // emitting three progress steps first. `loads` counts calls so "nothing fetched" is checkable.
 const stubRuntime = (support: Support | Error, results: Array<LoadResult | Error>) => {
-  const log = { loads: 0 };
+  const log = { loads: 0, signals: [] as AbortSignal[] };
   const runtime: SynthesisRuntime = {
     probe: async () => {
       await tick();
       if (support instanceof Error) throw support;
       return support;
     },
-    load: async (onProgress: (p: AssetProgress) => void) => {
+    load: async (onProgress: (p: AssetProgress) => void, signal: AbortSignal) => {
       log.loads++;
+      log.signals.push(signal);
       const result = results.shift();
       if (result === undefined) throw new Error("stub runtime: no scripted load result left");
       for (const loadedBytes of [0, 100, 300]) {
@@ -237,7 +239,7 @@ console.log("load:");
   await box.waitFor("capability");
   handler.receive({ kind: "load" });
   const failed = await box.waitFor("load-failed");
-  assert("an asset failure is reported as the loader typed it", failed.failure.kind === "http" && failed.failure.kind === "http" && failed.failure.status === 404);
+  assert("an asset failure is reported as the loader typed it", failed.failure.kind === "http" && failed.failure.url === "/models/weights-x.part3" && failed.failure.status === 404);
   assert("and the handler is idle again", handler.phase() === "idle");
   handler.receive({ kind: "load" });
   const thrown = await box.waitFor("load-failed", (f) => f.failure.kind === "runtime");
@@ -399,6 +401,7 @@ console.log("dispose:");
   await box.waitFor("capability");
   handler.receive({ kind: "load" });
   handler.receive({ kind: "dispose" });
+  assert("dispose mid-load aborts the load's signal at once", rt.log.signals[0]?.aborted === true);
   await settle();
   assert("a model that finishes loading into a disposed worker is disposed and never announced", stub.log.disposed === 1 && box.of("ready").length === 0 && handler.phase() === "disposed");
 }

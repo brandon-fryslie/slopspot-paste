@@ -10,10 +10,11 @@
 // few lines from where the query and KV cache are locals). Its single-threaded Wasm path
 // ran at 1.03x and is not offered [LAW:no-mode-explosion].
 //
-// WHY THE PROBE FETCHES NOTHING. A reader whose browser lacks WebGPU — or whose adapter lacks
-// shader-f16, which the fp16 weights need — must be told so before a 236 MB download begins,
-// not after. `probe` asks the platform and jax-js for a device and reports the first thing
-// missing as a typed reason [LAW:no-silent-failure].
+// WHY THE PROBE FETCHES NOTHING. A reader whose browser lacks WebGPU — or whose device cannot
+// run an f16 shader, which the fp16 weights need — must be told so before a 236 MB download
+// begins, not after. `probe` asks the platform and jax-js for a device, then runs one f16 op
+// on the device jax-js actually created (its shader compiler throws without shader-f16), and
+// reports the first thing missing as a typed reason [LAW:no-silent-failure] [LAW:single-enforcer].
 //
 // WHY EVERY UNIT STARTS FROM THE VOICE. Kyutai's own generation gives each chunk a fresh copy
 // of the voice state with no audio or attention state carried across; the loop below is
@@ -28,7 +29,7 @@
 
 import { defaultDevice, init, numpy as np, random, tree } from "@jax-js/jax";
 import { safetensors, tokenizers } from "@jax-js/loaders";
-import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress } from "./modelAssetLoader";
+import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
 import { MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
 import type { Support } from "./synthesisProtocol";
@@ -68,7 +69,6 @@ export const probeWebGpu = async (): Promise<Support> => {
   if (gpu === undefined) return unsupported({ kind: "no-webgpu" });
   const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" });
   if (adapter === null) return unsupported({ kind: "no-adapter" });
-  if (!adapter.features.has("shader-f16")) return unsupported({ kind: "no-f16" });
   let devices: ReadonlyArray<string>;
   try {
     devices = await init("webgpu");
@@ -79,6 +79,11 @@ export const probeWebGpu = async (): Promise<Support> => {
     return unsupported({ kind: "no-device", message: "jax-js could not create a WebGPU device" });
   }
   defaultDevice("webgpu");
+  try {
+    await np.ones([1], { dtype: np.float16 }).mul(2).data();
+  } catch {
+    return unsupported({ kind: "no-f16" });
+  }
   return { kind: "supported", backend: "webgpu" };
 };
 
@@ -181,6 +186,9 @@ async function* generate(
     if (pending !== null) yield await pending;
     return { kind: "frame-cap" };
   } finally {
+    // A cancel lands with a frame's readback in flight; it settles before the device
+    // memory it reads from is released, and its rejection is the generation's own.
+    if (pending !== null) await pending;
     lastLatent.dispose();
     tree.dispose([modelRef, embeds, flowLMState, mimiState]);
   }
@@ -190,12 +198,14 @@ async function* generate(
 
 export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
   probe: probeWebGpu,
-  load: async (onProgress: (progress: AssetProgress) => void): Promise<LoadResult> => {
+  load: async (onProgress: (progress: AssetProgress) => void, signal: AbortSignal): Promise<LoadResult> => {
     const assets = allModelAssets(MODEL_ASSETS);
     // Stale copies of an earlier model build go first, so their quota is free before the
     // new bytes land.
     await pruneStaleAssets(io.store, assets);
-    const outcome = await loadAssets(assets, io, onProgress);
+    // The handler's abort joins the loader's own per-asset abort on every part's fetch.
+    const fetch: FetchLike = (url, init) => io.fetch(url, { signal: AbortSignal.any([init.signal, signal]) });
+    const outcome = await loadAssets(assets, { ...io, fetch }, onProgress);
     if (!outcome.ok) return { ok: false, failure: outcome.failure };
     // [LAW:parse-dont-validate] loadAssets returns one LoadedAsset per asset it was given,
     // as the same asset objects; a miss here is a broken loader, not a case to skip.

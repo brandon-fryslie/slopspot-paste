@@ -26,8 +26,10 @@
 //  - `cancel` is idempotent: a cancel for a unit that already has its terminal message is
 //    the ordinary race of asynchronous messaging (the page cancels as `done` is in flight)
 //    and produces nothing.
-//  - `unitId` is the page's to choose; two requests with the same id in flight at once is a
-//    page bug and the second is refused as `failed{duplicate-unit}`.
+//  - `unitId` is the page's to choose; a unit is in flight from its `synthesize` until it is
+//    cancelled or has its terminal message. Two requests for one id in flight at once is a
+//    page bug and the second is refused as `failed{duplicate-unit}`; a request after a cancel
+//    for the same id queues behind the cancelled job, whose terminal is posted first.
 //  - A message legal only in a phase the worker is not in is answered with `refused`, which
 //    names the phase, so a sequencing bug at the page surfaces as data rather than as a
 //    worker that went quiet [LAW:no-silent-failure].

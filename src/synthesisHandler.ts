@@ -69,10 +69,11 @@ export type LoadResult =
 
 // [LAW:types-are-the-program] The exact surface of "the runtime the spike chose" that the
 // protocol needs: whether this device can run it, decided without fetching a byte, and a
-// load that reports progress and ends in a model or a typed failure.
+// load that reports progress and ends in a model or a typed failure. `signal` is the
+// handler's dispose reaching the download: an aborted load ends in a failure, not a model.
 export interface SynthesisRuntime {
   probe(): Promise<Support>;
-  load(onProgress: (progress: AssetProgress) => void): Promise<LoadResult>;
+  load(onProgress: (progress: AssetProgress) => void, signal: AbortSignal): Promise<LoadResult>;
 }
 
 // The worker's outbound edge. `transfer` names buffers to move rather than copy — every
@@ -110,7 +111,7 @@ type State =
   | { readonly kind: "probing" }
   | { readonly kind: "unsupported"; readonly reason: UnsupportedReason }
   | { readonly kind: "idle" }
-  | { readonly kind: "loading" }
+  | { readonly kind: "loading"; readonly abort: AbortController }
   | Ready
   | { readonly kind: "disposed" };
 
@@ -140,16 +141,17 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
 
   // ── load ──
   const load = async (): Promise<void> => {
-    state = { kind: "loading" };
+    const abort = new AbortController();
+    state = { kind: "loading", abort };
     let result: LoadResult;
     try {
-      result = await runtime.load((progress) => post({ kind: "progress", progress }, []));
+      result = await runtime.load((progress) => post({ kind: "progress", progress }, []), abort.signal);
     } catch (e) {
       result = { ok: false, failure: { kind: "runtime", message: message(e) } };
     }
     if (state.kind !== "loading") {
-      // Disposed mid-download: a model that arrived anyway is released, not kept alive by
-      // a worker nobody is listening to.
+      // Disposed mid-download: the abort ends the download as a failure, and a model that
+      // arrived anyway is released, not kept alive by a worker nobody is listening to.
       if (result.ok) result.model.dispose();
       return;
     }
@@ -252,13 +254,24 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
   const dispose = (): void => {
     const before = state;
     state = { kind: "disposed" };
-    if (before.kind !== "ready") return;
-    for (const job of before.queue.splice(0)) post({ kind: "cancelled", unitId: job.unitId }, []);
-    if (before.running === null) {
-      before.model.dispose();
-    } else {
-      // The pump releases the model once the running generation has stopped.
-      before.running.cancelled = true;
+    switch (before.kind) {
+      case "loading":
+        before.abort.abort();
+        return;
+      case "ready":
+        for (const job of before.queue.splice(0)) post({ kind: "cancelled", unitId: job.unitId }, []);
+        if (before.running === null) {
+          before.model.dispose();
+        } else {
+          // The pump releases the model once the running generation has stopped.
+          before.running.cancelled = true;
+        }
+        return;
+      case "probing":
+      case "unsupported":
+      case "idle":
+      case "disposed":
+        return;
     }
   };
 
