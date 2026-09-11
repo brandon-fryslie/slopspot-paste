@@ -5,7 +5,6 @@ import json, sys
 import torch
 from pocket_tts_timestamped import TTSModel, AudioChunk, WordStart, WordEnd
 from pocket_tts_timestamped.timestamps import alignment as al
-from pocket_tts_timestamped.timestamps.text import build_timestamp_text_chunks
 
 texts = json.load(open(sys.argv[1]))
 model = TTSModel.load_model(language="english_2026-04")
@@ -32,14 +31,19 @@ for text in texts:
         finished["audioEnd"] = float(audio_end); finished["events"] = [ev_json(e) for e in ev]
         return ev
     al.WordAlignment.finish = fin
+    # the chunk generation actually fed, recorded off the generator that consumes it
+    fed = []
+    orig_short = TTSModel._generate_audio_with_timestamps_short_text
+    def short(self, **kw):
+        fed.append(kw["timestamp_chunk"])
+        return (yield from orig_short(self, **kw))
+    TTSModel._generate_audio_with_timestamps_short_text = short
     res = model.generate_audio_with_timestamps(voice, text)
+    TTSModel._generate_audio_with_timestamps_short_text = orig_short
     al.WordAlignment.process_frame = orig_pf
     al.WordAlignment.finish = orig_fin
-    # the chunk the model actually fed (the fork prepares + chunks; we assert one chunk)
-    from pocket_tts_timestamped.models.tts_model import split_into_best_sentences
-    chunks = split_into_best_sentences(tok, text, 50, model.pad_with_spaces_for_short_inputs, remove_semicolons=model.remove_semicolons, append_terminal_punctuation=model.append_terminal_punctuation)
-    assert len(chunks) == 1, chunks
-    tc = build_timestamp_text_chunks(text, chunks, tok.sp)[0]
+    assert len(fed) == 1, [c.text for c in fed]
+    tc = fed[0]
     out.append({
         "source": text,
         "fed": tc.text,
