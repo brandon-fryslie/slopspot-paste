@@ -63,8 +63,18 @@ const voice = (
   attribution,
 });
 
+// [LAW:types-are-the-program] The checkpoint is the weights asset plus the most text tokens
+// one generation may be asked to say — a property of those bytes, so it lives on them: a
+// swapped checkpoint literal must restate its budget, and cannot inherit the old one. The
+// model is trained on single sentences; upstream's MAX_TOKEN_PER_CHUNK is 50 for this build
+// and its own TODO notes that english_2026-04 "supports bigger chunks". Over the budget the
+// model skips words.
+export interface Checkpoint extends ModelAsset {
+  readonly maxUnitTokens: number;
+}
+
 export interface ModelAssetManifest {
-  readonly weights: ModelAsset;
+  readonly weights: Checkpoint;
   readonly tokenizer: ModelAsset;
   readonly voices: Readonly<Record<VoiceId, ModelAsset>>;
 }
@@ -76,6 +86,7 @@ export interface ModelAssetManifest {
 export const MODEL_ASSETS: ModelAssetManifest = {
   weights: {
     name: "weights",
+    maxUnitTokens: 50,
     bytes: 235738516,
     sha256: "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
     source:
@@ -177,15 +188,17 @@ export const shardPlan = (asset: ModelAsset): readonly Shard[] => {
   }));
 };
 
-// [FRAMING:representation] The model's identity for the rendition hash, redrawn by the
-// machine from the hashes rather than remembered by a human: it changes exactly when any
-// published byte does, and only then.
-export const modelVersion = (manifest: ModelAssetManifest): string =>
-  allModelAssets(manifest)
-    .map((a) => `${a.name}@${a.sha256.slice(0, SHA_PREFIX_CHARS)}`)
-    .join(",");
+// [FRAMING:representation] An asset's identity, redrawn by the machine from its hash
+// rather than remembered by a human: it changes exactly when a published byte does.
+export const assetVersion = (asset: ModelAsset): string => `${asset.name}@${asset.sha256.slice(0, SHA_PREFIX_CHARS)}`;
+
+// The whole model's identity — what the synthesis worker reports it has loaded.
+export const modelVersion = (manifest: ModelAssetManifest): string => allModelAssets(manifest).map(assetVersion).join(",");
 
 export const MODEL_VERSION = modelVersion(MODEL_ASSETS);
+
+// The speech script's unit budget: the same fact as the checkpoint's field, read from it.
+export const MAX_UNIT_TOKENS = MODEL_ASSETS.weights.maxUnitTokens;
 
 // A 236 MB download must not start on a metered connection without a tap. This is the
 // pure fact the UI reads to decide whether Play may download implicitly; the Network
