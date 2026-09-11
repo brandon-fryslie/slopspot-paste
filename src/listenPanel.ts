@@ -48,12 +48,12 @@
 
 import { MODEL_ASSETS, allModelAssets } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
-import { createScheduler, type Scheduler, type SchedulerView } from "./scheduler";
+import { createScheduler, type FailureReason, type Scheduler, type SchedulerView } from "./scheduler";
 import type { Utterance } from "./speech";
-import { cursorAt, type RecordRejection, type WordSpan } from "./speechManifest";
+import { cursorAt, type WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
-import type { FromWorker, LoadFailure, UnitFailure, UnsupportedReason } from "./synthesisProtocol";
+import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
 import { createUnitPlayer, type DeviceFactory } from "./unitPlayer";
 import type { ReadAlongAt } from "./readAlong";
 
@@ -231,15 +231,12 @@ const loadFailureText = (failure: LoadFailure): string => {
   }
 };
 
-const unitFailureText = (reason: UnitFailure | RecordRejection): string => {
+const unitFailureText = (reason: FailureReason): string => {
   switch (reason.kind) {
-    case "duplicate-unit":
-      return "requested twice";
     case "frame-cap":
       return `the model looped for ${reason.frames} frames without finishing`;
     case "runtime":
       return reason.message;
-    case "unknown-unit":
     case "bad-duration":
     case "word-count":
     case "times-out-of-order":
