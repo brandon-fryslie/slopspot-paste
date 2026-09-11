@@ -122,7 +122,7 @@ const voicePrompt = (id: VoiceId, bytes: Uint8Array<ArrayBuffer>): np.Array => {
 
 // [LAW:parse-dont-validate] How many cache positions a voice prompt occupies: the leading
 // dimension of its [frames, dim] tensor.
-const promptFrames = (id: VoiceId, prompt: np.Array): number => {
+export const promptFrames = (id: VoiceId, prompt: np.Array): number => {
   const [frames, dim] = prompt.shape;
   if (prompt.shape.length !== 2 || frames === undefined || dim === undefined) {
     throw new Error(`voice ${id}: expected a [frames, dim] prompt, got shape [${prompt.shape.join(", ")}]`);
@@ -238,7 +238,7 @@ interface StepReading {
 
 // [LAW:parse-dont-validate] The row is proven to be one bit plus one logit per token
 // before either is read; a different length is a read-out over the wrong positions.
-const readStep = async (isEos: np.Array, logits: np.Array, tokenCount: number): Promise<StepReading> => {
+export const readStep = async (isEos: np.Array, logits: np.Array, tokenCount: number): Promise<StepReading> => {
   const row = await np.concatenate([isEos.astype(np.float32).reshape([1]), logits]).data();
   const eos = row.at(0);
   if (!(row instanceof Float32Array) || row.length !== tokenCount + 1 || eos === undefined) {
@@ -306,20 +306,19 @@ async function* generate(
         null,
       );
       flowLMState = state;
+      // The step's latent is owned by `lastLatent` before anything can throw, so `finally`
+      // releases it on every exit.
+      lastLatent.dispose();
+      lastLatent = latent;
 
       const reading = await readStep(isEos, logits, ids.length);
       if (reading.eos && eosStep === null) eosStep = step;
       if (eosStep !== null && step >= eosStep + afterEos) {
-        latent.dispose();
         if (pending !== null) yield await settle(pending);
         return { kind: "eos", alignment: { kind: "words", times: aligner.finish(frames * FRAME_MS) } };
       }
 
-      const prevLatent = lastLatent;
-      lastLatent = latent;
-      prevLatent.dispose();
-
-      const mimiInput = latent.ref.mul(modelRef.flowLM.embStd.ref).add(modelRef.flowLM.embMean.ref);
+      const mimiInput = lastLatent.ref.mul(modelRef.flowLM.embStd.ref).add(modelRef.flowLM.embMean.ref);
       const [audio, nextMimiState] = runMimiDecode(tree.ref(modelRef.mimi), mimiState, mimiInput);
       mimiState = nextMimiState;
 
