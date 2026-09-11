@@ -64,7 +64,7 @@
 // disposable projection of the stored original's rendition [LAW:one-way-deps].
 
 import { emptyManifest, recordUnit } from "./speechManifest";
-import type { Manifest, ManifestUnit, Rejection } from "./speechManifest";
+import type { Manifest, ManifestUnit, Position, RecordRejection } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
@@ -92,7 +92,7 @@ export type Holding =
   | { readonly kind: "requested" }
   | { readonly kind: "cancelling" }
   | { readonly kind: "held"; readonly record: ManifestUnit }
-  | { readonly kind: "failed"; readonly reason: UnitFailure | Rejection; readonly frames: VoidFrames };
+  | { readonly kind: "failed"; readonly reason: UnitFailure | RecordRejection; readonly frames: VoidFrames };
 
 export interface SchedulerState {
   readonly holdings: ReadonlyArray<Holding>;
@@ -226,7 +226,7 @@ interface Reach {
 
 const EMPTY: Reach = { lo: 0, hi: -1, keepHi: -1, frontier: -1 };
 
-const reach = (holdings: ReadonlyArray<Holding>, at: { readonly unitIndex: number; readonly offsetMs: number }): Reach => {
+const reach = (holdings: ReadonlyArray<Holding>, at: Position): Reach => {
   const count = holdings.length;
   const cursor = holdings[at.unitIndex];
   const lo = Math.max(0, at.unitIndex - KEEP_BEHIND);
@@ -403,9 +403,11 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
     send: (control) => player.send(control),
     view,
     dispose: () => {
-      // Stopping empties the window, which is what cancels and drops everything.
+      // Stopping empties the window, which is what cancels and drops everything; the
+      // player then closes its device.
       player.send({ kind: "stop" });
       unsubscribe();
+      player.dispose();
     },
   };
 };

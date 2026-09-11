@@ -35,7 +35,7 @@
 //   paused                        -> same window as speaking
 //   re-synthesis after a drop     -> the manifest record is replaced
 //   driver: reports raised by its own commands are handled after them, in order
-//   driver: dispose stops, cancels, drops, and stops listening
+//   driver: dispose stops, cancels, drops, stops listening, and closes the device
 
 import { KEEP_BEHIND, LOOKAHEAD, createScheduler, initialState, step } from "../src/scheduler";
 import type { Command, Event, Holding, SchedulerState, SchedulerView } from "../src/scheduler";
@@ -313,6 +313,8 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    errors: () => () => undefined,
+    dispose: () => undefined,
     terminate: () => undefined,
   };
   const emit = (message: FromWorker): void => {
@@ -369,7 +371,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
 
   const before = sent.length;
   scheduler.dispose();
-  assert("dispose: the player is idle, the in-flight unit cancelled, and the port no longer heard", scheduler.view().player.kind === "idle" && sent.slice(before).some((m) => m.kind === "cancel" && m.unitId === 0) && listeners.size === 0);
+  assert("dispose: the player is idle, the in-flight unit cancelled, the port no longer heard, the device closed", scheduler.view().player.kind === "idle" && sent.slice(before).some((m) => m.kind === "cancel" && m.unitId === 0) && listeners.size === 0 && device?.calls.at(-1) === "close");
   emit({ kind: "audio", unitId: 0, frameIndex: 1, pcm: frame(0, 1) });
   assert("a message after dispose changes nothing", scheduler.view().player.kind === "idle");
 }

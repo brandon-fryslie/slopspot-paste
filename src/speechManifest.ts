@@ -137,7 +137,7 @@ const stampTimes = (
   durationMs: number,
   kind: "words" | "estimated",
   times: ReadonlyArray<WordTiming>,
-): Stamped | Rejection => {
+): Stamped | RecordRejection => {
   const spans = wordsOf(unit);
   const wordCount: Rejection = { kind: "word-count", index, expected: spans.length, got: times.length };
   const words: WordTime[] = [];
@@ -154,7 +154,7 @@ const stampTimes = (
   return times.length > spans.length ? wordCount : { kind: "stamped", alignment: { kind, words } };
 };
 
-const stamp = (index: number, unit: SynthesisUnit, durationMs: number, reported: ReportedAlignment): Stamped | Rejection =>
+const stamp = (index: number, unit: SynthesisUnit, durationMs: number, reported: ReportedAlignment): Stamped | RecordRejection =>
   reported.kind === "unit"
     ? { kind: "stamped", alignment: reported }
     : stampTimes(index, unit, durationMs, reported.kind, reported.times);
@@ -164,7 +164,8 @@ const stamp = (index: number, unit: SynthesisUnit, durationMs: number, reported:
 // recorded twice is not this function's rule — the scheduler replaces a record when it
 // re-synthesizes a unit whose audio it had dropped, `addUnit` refuses — so the duplicate
 // arm lives with the manifest, below, and this stays the one stamping.
-export type Recording = { readonly kind: "record"; readonly record: ManifestUnit } | Rejection;
+export type RecordRejection = Exclude<Rejection, { kind: "duplicate" }>;
+export type Recording = { readonly kind: "record"; readonly record: ManifestUnit } | RecordRejection;
 
 export const recordUnit = (script: ReadonlyArray<SynthesisUnit>, index: number, report: UnitReport): Recording => {
   const unit = script[index];
