@@ -317,7 +317,18 @@ console.log("player: drop and the delivery contract");
   throws("a frame after complete", () => player.send({ kind: "frame", unit: 1, frameIndex: 2, pcm: frame(1, 2) }));
   throws("complete twice", () => player.send({ kind: "complete", unit: 1 }));
   throws("complete for a unit past the script", () => player.send({ kind: "complete", unit: 4 }));
+  throws("drop of a unit past the script", () => player.send({ kind: "drop", unit: 4 }));
   assert("a refused delivery leaves the player where it was", describe(player.state()) === "speaking/audio@0:0.000");
+
+  // The unit the player is paused on may be dropped: resuming waits there for the
+  // scheduler to deliver it again, never resumes audio the player no longer holds.
+  player.send({ kind: "pause" });
+  assert("paused on unit 0", describe(player.state()) === "paused@0:0.000");
+  player.send({ kind: "drop", unit: 0 });
+  player.send({ kind: "play" });
+  assert("resuming on a dropped unit waits at the held position", describe(player.state()) === "speaking/waiting@0:0.000" && device.live().length === 0);
+  player.send({ kind: "frame", unit: 0, frameIndex: 0, pcm: frame(0, 0) });
+  assert("its redelivery resumes the audio there", describe(player.state()) === "speaking/audio@0:0.000");
 }
 
 console.log("player: stop, and the end of the script");
@@ -380,6 +391,9 @@ assert(
       "paused@1:0.000",
       "paused@2:0.000",
       "speaking/waiting@2:0.000",
+      "speaking/waiting@0:0.000",
+      "speaking/audio@0:0.000",
+      "paused@0:0.000",
       "speaking/waiting@0:0.000",
       "speaking/audio@0:0.000",
       "idle",

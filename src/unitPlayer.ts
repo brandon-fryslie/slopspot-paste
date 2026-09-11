@@ -346,23 +346,26 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
 
   // ── admission: the delivery contract, enforced at the door [LAW:parse-dont-validate] ──
 
-  // The unit's entry, held or fresh; the caller stores it once the delivery is accepted,
-  // so a refused delivery leaves nothing behind.
-  const unitOf = (event: Extract<PlayerEvent, { unit: number }>): MutableUnitAudio => {
-    if (!Number.isInteger(event.unit) || event.unit < 0 || event.unit >= unitCount) {
-      throw new RangeError(`unit player: ${event.kind} names unit ${event.unit} of ${unitCount}`);
+  // [LAW:single-enforcer] What a unit index is, decided once for deliveries and seeks alike:
+  // an integer within the script. `by` names the event for the error.
+  const unitIndex = (index: number, by: string): number => {
+    if (!Number.isInteger(index) || index < 0 || index >= unitCount) {
+      throw new RangeError(`unit player: ${by} names unit ${index} of ${unitCount}`);
     }
-    return store.get(event.unit) ?? { frames: [], complete: false };
+    return index;
   };
 
+  // The unit's entry, held or fresh; the caller stores it once the delivery is accepted,
+  // so a refused delivery leaves nothing behind.
+  const unitOf = (event: Extract<PlayerEvent, { unit: number }>): MutableUnitAudio =>
+    store.get(unitIndex(event.unit, event.kind)) ?? { frames: [], complete: false };
+
   const toSample = (to: Position): Sample => {
-    if (!Number.isInteger(to.unitIndex) || to.unitIndex < 0 || to.unitIndex >= unitCount) {
-      throw new RangeError(`unit player: cannot seek to unit ${to.unitIndex} of ${unitCount}`);
-    }
+    const unit = unitIndex(to.unitIndex, "seek");
     if (!Number.isFinite(to.offsetMs) || to.offsetMs < 0) {
       throw new RangeError(`unit player: cannot seek to ${to.offsetMs} ms`);
     }
-    return { unit: to.unitIndex, sample: Math.round((to.offsetMs * format.sampleRate) / 1000) };
+    return { unit, sample: Math.round((to.offsetMs * format.sampleRate) / 1000) };
   };
 
   const apply = (event: PlayerEvent): void => {
