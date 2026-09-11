@@ -23,6 +23,7 @@ import { MAX_UNIT_TOKENS, MODEL_ASSETS, type ModelAsset } from "../src/modelAsse
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance, type Voice } from "../src/speech";
 import {
+  CLOSERS,
   deriveSpeechScript,
   prepareText,
   renditionHash,
@@ -46,6 +47,9 @@ const assert = (label: string, cond: boolean): void => {
 // invariants below hold whatever the tokenizer says, which is the point of injecting it.
 const wordish: TokenCount = (text) => (text.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) ?? []).length;
 const perCharacter: TokenCount = (text) => text.length;
+// The closers the cutter honours, as the regex class the sentence-end rules below use.
+const CLOSER_RUN = `[${[...CLOSERS].map((c) => c.replace(/[\]\\^-]/g, "\\$&")).join("")}]*`;
+const wellFormed = (s: string): boolean => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
 
 const utter = (text: string, voice: Voice = "assistant", index = 0): Utterance => ({
   index,
@@ -55,7 +59,7 @@ const utter = (text: string, voice: Voice = "assistant", index = 0): Utterance =
 });
 const texts = (units: ReadonlyArray<SynthesisUnit>): ReadonlyArray<string> => units.map((u) => u.text);
 const sourceOf = (u: SynthesisUnit): string => u.utterance.text.slice(u.start, u.end);
-const endsSentence = (s: string): boolean => /[.!?…]["')\]»”’]*$/u.test(s);
+const endsSentence = (s: string): boolean => new RegExp(`[.!?…]${CLOSER_RUN}$`, "u").test(s);
 
 const assertInvariants = (label: string, utterances: ReadonlyArray<Utterance>, count: TokenCount): void => {
   const units = deriveSpeechScript(utterances, count);
@@ -125,7 +129,7 @@ console.log("\nSpeech script — invariants over the fixture paste (slopspot-rea
     const sentenceAround = (u: SynthesisUnit): string => {
       const text = u.utterance.text;
       let from = 0;
-      for (const m of text.matchAll(/[.!?…]["')\]»”’]*(\s+|$)/gu)) {
+      for (const m of text.matchAll(new RegExp(`[.!?…]${CLOSER_RUN}(\\s+|$)`, "gu"))) {
         const to = m.index + m[0].length;
         if (to >= u.end) return text.slice(from, to);
         from = to;
@@ -180,7 +184,7 @@ console.log("\nCutting rules:");
 
   // A tokenizer that weighs every sentence end at 30 tokens forces one sentence per unit,
   // which makes the sentence cutter itself observable through the units.
-  const heavy: TokenCount = (t) => (t.match(/[.!?…](?=["')\]»]*(\s|$))/gu) ?? []).length * 30;
+  const heavy: TokenCount = (t) => (t.match(new RegExp(`[.!?…](?=${CLOSER_RUN}(\\s|$))`, "gu")) ?? []).length * 30;
   assert(
     "a decimal point is not a sentence end",
     texts(deriveSpeechScript([utter("It took 3.5 seconds. Then 4.")], heavy)).join("|") === "It took 3.5 seconds.|Then 4.",
@@ -212,10 +216,15 @@ console.log("\nCutting rules:");
   assert("an unpunctuated run is cut at whitespace into several units", wordUnits.length > 1);
   assertInvariants("words/per-character", words, perCharacter);
 
-  // A single token longer than the budget: cut into characters, never fed over budget.
+  // A single token longer than the budget: cut into code points, never fed over budget.
   const blob = [utter("x".repeat(120))];
   assert("a single oversized token is cut into budget-sized units", deriveSpeechScript(blob, perCharacter).length === 3);
   assertInvariants("blob/per-character", blob, perCharacter);
+  // An astral run over budget: cut between code points, never inside a surrogate pair.
+  const astral = [utter("🙂".repeat(60))];
+  const astralUnits = deriveSpeechScript(astral, perCharacter);
+  assert("an oversized astral run is cut into budget-sized, well-formed units", astralUnits.length === 3 && astralUnits.every((u) => wellFormed(u.text)));
+  assertInvariants("astral/per-character", astral, perCharacter);
 
   // Units never span utterances, and each carries its own utterance by reference.
   const two = deriveSpeechScript([utter("Hi.", "user", 3), utter("Hello.", "assistant", 4)], wordish);

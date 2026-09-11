@@ -74,7 +74,7 @@ const WEAK = new Set(",;:-–—");
 // Closing quotes and brackets that may legitimately follow a sentence's final period.
 // Curly forms are included because they occur in the raw utterance text, which is what
 // the sentence cutter sees; preparation straightens them afterwards.
-const CLOSERS = new Set("\"')]»”’");
+export const CLOSERS: ReadonlySet<string> = new Set("\"')]»”’");
 
 // The q35.1 spike heard every voice mangle the curly apostrophe in "isn’t" while reading
 // the straight one in "it's" correctly, so curly quotes are straightened along with the
@@ -99,7 +99,7 @@ const isWhitespace = (c: string): boolean => /\s/.test(c);
 // The index just past the "core": the text minus any trailing closers and spaces.
 const endOfCore = (text: string): number => {
   let i = text.length;
-  while (i > 0 && (CLOSERS.has(text.charAt(i - 1)) || text.charAt(i - 1) === " ")) i--;
+  while (i > 0 && (CLOSERS.has(text.charAt(i - 1)) || isWhitespace(text.charAt(i - 1)))) i--;
   return i;
 };
 
@@ -151,13 +151,15 @@ const afterRunOf =
 const atSentenceEnd: CutRule = afterRunOf(TERMINAL);
 const atWeakPunctuation: CutRule = afterRunOf(WEAK);
 const atWhitespace: CutRule = (text, _start, i) => isWhitespace(text.charAt(i));
-const anywhere: CutRule = () => true;
+// Between code points: a low surrogate is the second half of one character, not a position.
+const atCodePoint: CutRule = (text, _start, i) => !isLowSurrogate(text.charCodeAt(i));
+const isLowSurrogate = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff;
 
 // The order oversized text is cut in: upstream sub-splits an oversized sentence at , ; :
 // and then merely WARNS when a piece still exceeds the budget ("generation may skip
 // words"). A skipped word is a silent failure, so the recursion continues to whitespace
-// and finally to single characters, where the budget always holds [LAW:no-silent-failure].
-const REFINEMENTS: readonly CutRule[] = [atWeakPunctuation, atWhitespace, anywhere];
+// and finally to single code points, where the budget always holds [LAW:no-silent-failure].
+const REFINEMENTS: readonly CutRule[] = [atWeakPunctuation, atWhitespace, atCodePoint];
 
 // The span with surrounding whitespace removed, as a list so an all-whitespace span is
 // simply no span rather than a special case [LAW:dataflow-not-control-flow].
@@ -186,8 +188,8 @@ type Fits = (span: Span) => boolean;
 
 // A span that fits is a piece; one that does not is cut by the next rule and each part is
 // refined by the rules after it (a part has no cut points of the rule that produced it).
-// The list of rules IS the recursion's bound: with none left the span is a single
-// character, which fits.
+// The list of rules IS the recursion's bound: with none left the span is a single code
+// point, which fits.
 const refine = (text: string, span: Span, fits: Fits, rules: readonly CutRule[]): readonly Span[] => {
   const [rule, ...rest] = rules;
   return fits(span) || rule === undefined
