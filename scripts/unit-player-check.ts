@@ -63,6 +63,9 @@ type RealDeviceFits = typeof AudioContext extends DeviceFactory ? true : never;
 const realDeviceFits: RealDeviceFits = true;
 assert("typeof AudioContext satisfies DeviceFactory", realDeviceFits);
 
+// The cursor is accumulated as (frameSamples - skip) / sampleRate and the stub's end time
+// as length / sampleRate - offset: the same quantity by two float formulas, compared to
+// well under a sample.
 const contiguous = (sources: ReadonlyArray<StubSource>): boolean =>
   sources.every((s, i) => i === 0 || near(s.started?.when ?? NaN, sources[i - 1]?.endTime() ?? NaN));
 

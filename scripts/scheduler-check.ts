@@ -234,7 +234,7 @@ console.log("step: the frontier and the contiguous run");
   const rewind = run(contiguous.state, speaking(2, 0, "audio"), reported(speaking(2, 0, "audio")));
   assert("a rewind inside held audio keeps the whole contiguous run, past the window", rewind.commands.length === 0 && kinds(rewind.state) === "aahhhhhaaaaa");
   const rewindFar = run(contiguous.state, speaking(0), reported(speaking(0)));
-  assert("a rewind to an absent unit before the run requests it and keeps the run (it is not contiguous from the cursor, but 2 is within the window)", rewindFar.commands.join() === "drop 5,drop 6,synthesize 0" && kinds(rewindFar.state) === "rahhhaaaaaaa");
+  assert("a rewind to an absent unit before the run requests it and keeps only the run's units inside the window: the rest is an island, dropped now", rewindFar.commands.join() === "drop 4,drop 5,drop 6,synthesize 0" && kinds(rewindFar.state) === "rahhaaaaaaaa");
 }
 
 console.log("step: failure is skipped, not waited on");

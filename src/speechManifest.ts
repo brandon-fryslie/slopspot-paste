@@ -139,7 +139,7 @@ const stampTimes = (
   times: ReadonlyArray<WordTiming>,
 ): Stamped | RecordRejection => {
   const spans = wordsOf(unit);
-  const wordCount: Rejection = { kind: "word-count", index, expected: spans.length, got: times.length };
+  const wordCount: RecordRejection = { kind: "word-count", index, expected: spans.length, got: times.length };
   const words: WordTime[] = [];
   let floor = 0;
   for (const [i, span] of spans.entries()) {

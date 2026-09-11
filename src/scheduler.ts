@@ -36,9 +36,11 @@
 // a seek may discard a partly generated unit.
 //
 // THE WINDOW. Behind the cursor KEEP_BEHIND units of audio stay for a short rewind. Ahead,
-// units are wanted until LOOKAHEAD.units are held or LOOKAHEAD.ms of audio is — the
-// ticket's "3 units or 30 s", whichever comes first; a unit is at most MAX_UNIT_TOKENS so
-// the unit bound is the one that binds today. Held audio contiguous from the cursor is
+// the next LOOKAHEAD.units units are wanted (a failed one takes no place: it yields no
+// audio), or fewer once LOOKAHEAD.ms of audio is held — the ticket's "3 units or 30 s",
+// whichever comes first; a unit is at most MAX_UNIT_TOKENS so the unit bound is the one
+// that binds today. The window is a distance from the cursor, so held audio beyond it that
+// the cursor cannot reach without passing absent units is an island, not lookahead. Held audio contiguous from the cursor is
 // never evicted even past the window (a rewind inside audio already made must not throw it
 // away to remake it); islands left behind by seeks are. Memory is therefore bounded by one
 // window plus one contiguous run, whatever the reader does [LAW:no-ambient-temporal-coupling].
@@ -236,11 +238,8 @@ const reach = (holdings: ReadonlyArray<Holding>, at: Position): Reach => {
   while (hi + 1 < count && unitsAhead < LOOKAHEAD.units && msAhead < LOOKAHEAD.ms) {
     hi++;
     const holding = holdings[hi];
-    if (holding?.kind === "held") {
-      unitsAhead++;
-      msAhead += holding.record.durationMs;
-    }
-    if (holding?.kind === "requested") unitsAhead++;
+    if (holding?.kind === "held") msAhead += holding.record.durationMs;
+    if (holding?.kind !== "failed") unitsAhead++;
   }
   let frontier = at.unitIndex;
   while (frontier < count && holdings[frontier]?.kind === "held") frontier++;
