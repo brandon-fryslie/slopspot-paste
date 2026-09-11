@@ -19,6 +19,7 @@
 // the synthesizer, the voice on an utterance, the state after an event. A different
 // implementation of the same contract passes.
 
+import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { plainView, spineNodeLabel, type Dialogue, type SpineNode } from "../src/dialogue";
 import { deriveUtterances, speakableSegments, type Utterance } from "../src/speech";
@@ -74,6 +75,14 @@ console.log("\nMarkdown → speech (slopspot-speech-ins):");
   assert("a link's URL is never read aloud", !heard("see [the docs](https://example.com/x)").includes("example.com"));
   assert("a bare autolink becomes the word 'link'", heard("at <https://example.com/a/b>") === "at link");
   assert("an image is described by its alt text", heard("![a chart](/x.png)") === "image, a chart");
+  // ChatGPT exports carry the full-size image URL as the alt text (slopspot-speech-2xf):
+  // a 200-character URL read out letter by letter is worse than silence.
+  assert("an image whose alt text is a URL is announced as an image alone", heard("![https://images.openai.com/a/b.png?purpose=fullsize](https://images.openai.com/a/b.png)") === "image");
+  assert("an image with no alt text is announced as an image alone", heard("![](/x.png)") === "image");
+  assert("a link whose label is its own URL becomes the word 'link'", heard("see [https://example.com/x](https://example.com/x)") === "see link");
+  assert("a link with no label becomes the word 'link'", heard("see [](https://example.com/x)") === "see link");
+  const chatgptShare = readFileSync("test/fixtures/chatgpt-share.md", "utf8");
+  assert("the chatgpt-share fixture's spoken text contains no images.openai.com URL", !heard(chatgptShare).includes("images.openai.com"));
   assert("bold markers do not reach the synthesizer", heard("that is **very** bad") === "that is very bad");
   assert("italic markers do not either", heard("that is *very* bad") === "that is very bad");
   assert("bold-italic leaves no stray star", heard("that is ***very*** bad") === "that is very bad");

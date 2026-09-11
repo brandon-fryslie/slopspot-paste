@@ -82,6 +82,23 @@ const codeAnnouncement = (language: string, lines: number): string => {
   return lines === 0 ? `${what}, empty` : `${what}, ${plural(lines, "line")}`;
 };
 
+// [LAW:parse-dont-validate] What a label MEANS to the ear, decided once and consumed by
+// both the image rule and the link rule below. A label that is empty, or is itself a URL
+// (ChatGPT exports put the full-size image URL in the alt text), carries nothing a
+// listener can use — a URL read aloud is the one thing worse than silence — so its
+// meaning is the empty string, and each rule falls back to its noun.
+const isUrl = (text: string): boolean => /^(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S+$/i.test(text);
+const labelMeaning = (label: string): string => {
+  const text = label.trim();
+  return isUrl(text) ? "" : text;
+};
+
+// The replacement side of a rule: the matched surface and its capture groups, to what is
+// said. Every rule is a function so the table has one shape [LAW:one-type-per-behavior];
+// the common case — keep the inner text, drop the markers — is named once.
+type Replacer = (match: string, ...groups: string[]) => string;
+const keepInner: Replacer = (_, inner) => inner;
+
 // [LAW:dataflow-not-control-flow] Inline transformations, applied unconditionally in one
 // fixed order to every line of prose. Each is a total rewrite of one markdown surface
 // into what it SOUNDS like; none of them decides whether to run.
@@ -94,21 +111,28 @@ const codeAnnouncement = (language: string, lines: number): string => {
 //
 // Inline code is NOT among these — it is protected below, before this list ever runs, so
 // markdown syntax written literally inside a code span reaches nothing here.
-const INLINE_RULES: ReadonlyArray<readonly [RegExp, string]> = [
+const INLINE_RULES: ReadonlyArray<readonly [RegExp, Replacer]> = [
   // Images announce their alt text — the picture cannot be spoken, but what it was
-  // labelled can, so it is described rather than dropped [LAW:no-silent-failure].
-  [/!\[([^\]]*)\]\([^)]*\)/g, "image, $1"],
-  // Links keep the label, lose the target.
-  [/\[([^\]]+)\]\([^)]*\)/g, "$1"],
-  [/<https?:\/\/[^>]+>/g, "link"],
+  // labelled can, so it is described rather than dropped [LAW:no-silent-failure]. An alt
+  // with no meaning leaves the bare noun: the listener still learns a picture was here.
+  [
+    /!\[([^\]]*)\]\([^)]*\)/g,
+    (_, alt) => {
+      const what = labelMeaning(alt);
+      return what === "" ? "image" : `image, ${what}`;
+    },
+  ],
+  // Links keep the label, lose the target; a label that IS the target becomes "link".
+  [/\[([^\]]*)\]\([^)]*\)/g, (_, label) => labelMeaning(label) || "link"],
+  [/<https?:\/\/[^>]+>/g, () => "link"],
   // Emphasis markers, in the one order that keeps *** from leaving a stray star.
-  [/\*\*\*([^*]+)\*\*\*/g, "$1"],
-  [/\*\*([^*]+)\*\*/g, "$1"],
-  [/\*([^*]+)\*/g, "$1"],
-  [/__([^_]+)__/g, "$1"],
-  [/~~([^~]+)~~/g, "$1"],
+  [/\*\*\*([^*]+)\*\*\*/g, keepInner],
+  [/\*\*([^*]+)\*\*/g, keepInner],
+  [/\*([^*]+)\*/g, keepInner],
+  [/__([^_]+)__/g, keepInner],
+  [/~~([^~]+)~~/g, keepInner],
   // Any HTML that survived into the source text.
-  [/<[^>]+>/g, " "],
+  [/<[^>]+>/g, () => " "],
 ];
 
 // Line-leading markers: structure the eye reads and the ear does not need.
