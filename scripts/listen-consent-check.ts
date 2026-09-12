@@ -2,7 +2,8 @@
 // an in-memory store, and the one decision that reads it with the metered rule.
 // Run: `tsx scripts/listen-consent-check.ts`.
 
-import { PREFERENCE_KEY, readPreference, standingConsent, writePreference, type PreferenceStore } from "../src/listenConsent";
+import { PREFERENCE_KEY, readPreference, standingConsent, writePreference } from "../src/listenConsent";
+import { memoryPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -13,19 +14,9 @@ const assert = (label: string, cond: boolean): void => {
   }
 };
 
-const memory = (): PreferenceStore & { readonly keys: () => string[] } => {
-  const held = new Map<string, string>();
-  return {
-    getItem: (key) => held.get(key) ?? null,
-    setItem: (key, value) => void held.set(key, value),
-    removeItem: (key) => void held.delete(key),
-    keys: () => [...held.keys()],
-  };
-};
-
 console.log("the preference round-trips through the store");
 {
-  const store = memory();
+  const store = memoryPreferences();
   assert("an empty store is not remembered", !readPreference(store));
   writePreference(store, true);
   assert("remembered: one key, read back true", readPreference(store) && store.keys().join() === PREFERENCE_KEY);

@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { readPreference, writePreference, type PreferenceStore } from "../src/listenConsent";
+import { readPreference, writePreference, type StandingConsent } from "../src/listenConsent";
 import {
   createListenPanel,
   DOWNLOAD_BYTES,
@@ -41,6 +41,7 @@ import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S } from "../src/unitPlayer";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
+import { memoryPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -121,7 +122,7 @@ const MOUNT_LINE = "Listen | stop(off) | Checking this device for the voice…";
 const RESIDENT_LINE = "Listen | stop(off) | The voice is on this device";
 const ABSENT_LINE = "Listen | stop(off) | The voice downloads 239 MB once, then runs on this device";
 const ABSENT: Residency = { kind: "absent", bytesToDownload: 239_000_000 };
-const wake = (consent: "none" | "download"): PanelEvent => ({ kind: "wake", consent });
+const wake = (consent: StandingConsent): PanelEvent => ({ kind: "wake", consent });
 const yes: PanelEvent = { kind: "yes" };
 const home = (residency: Residency): PanelEvent => ({ kind: "home", residency });
 const kept = (keeping: Keeping): PanelEvent => ({ kind: "keeping", keeping });
@@ -369,7 +370,7 @@ interface Rig {
   readonly keep: () => Promise<Keeping>;
   // The device's storage, and the connection the metered rule reads: the page's
   // localStorage and navigator.connection, a Map and a field here.
-  readonly store: PreferenceStore & { readonly keys: () => string[] };
+  readonly store: ReturnType<typeof memoryPreferences>;
   readonly connection: { reading: ConnectionReading | undefined };
   // The port's dispose throws while this is set: a teardown that fails.
   readonly refusing: { dispose: boolean };
@@ -453,13 +454,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
       for (const callback of pending.splice(0)) callback();
     },
   };
-  const held = new Map<string, string>();
-  const store = {
-    getItem: (key: string) => held.get(key) ?? null,
-    setItem: (key: string, value: string) => void held.set(key, value),
-    removeItem: (key: string) => void held.delete(key),
-    keys: () => [...held.keys()],
-  };
+  const store = memoryPreferences();
   writePreference(store, setup.remembered === true);
   const positions: (ReadAlongAt | null)[] = [];
   const play = el<HTMLButtonElement>(".speech-play");
@@ -762,8 +757,7 @@ console.log("createListenPanel: the hover pins on a tap, and lets go on a tap ou
   r.mark.button.click();
   assert("a tap on the mark pins the hover open, for the touch reader", pinned() && r.shownMark().startsWith("checking(pinned)"));
   r.mark.button.click();
-  assert("a second tap lets go", unpinned());
-  r.mark.button.click();
+  assert("a second tap keeps it — a tap focuses the button first, and a toggle would close what the focus opened", pinned());
   r.mark.sentence.click();
   assert("a tap inside the hover leaves it pinned", pinned());
   r.doc.body.click();
@@ -773,6 +767,13 @@ console.log("createListenPanel: the hover pins on a tap, and lets go on a tap ou
   assert("Escape lets go", unpinned());
   r.press("Enter");
   assert("other keys do nothing", unpinned());
+  r.mark.button.focus();
+  assert("keyboard focus on the mark pins the hover, and says so to assistive tech", pinned());
+  r.mark.yes.hidden = false;
+  r.mark.yes.focus();
+  assert("focus moving inside the hover keeps it", pinned());
+  r.play.focus();
+  assert("focus leaving the mark lets go", unpinned());
   panel.dispose();
 }
 
@@ -782,8 +783,9 @@ console.log("createListenPanel: a page back from the cache wakes the panel it di
   const panel = mount(r);
   panel.dispose();
   assert("disposed: the worker released, at the start", r.counts.disposed === 1 && r.counts.listeners() === 0 && r.line() === IDLE_LINE);
+  r.mark.button.click();
   panel.wake();
-  assert("wake: a worker is spawned to probe again, the store asked again", r.counts.spawned === 2 && r.counts.listeners() === 2 && r.line() === MOUNT_LINE && r.counts.homeAsked === 2);
+  assert("wake: a worker is spawned to probe again, the store asked again, the hover closed as at mount", r.counts.spawned === 2 && r.counts.listeners() === 2 && r.line() === MOUNT_LINE && r.counts.homeAsked === 2 && r.mark.root.dataset.open === "false");
   panel.dispose();
 }
 

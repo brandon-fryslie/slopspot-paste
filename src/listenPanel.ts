@@ -954,16 +954,19 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   controls.play.addEventListener("click", () => dispatch({ kind: "tap", control: "play" }));
   controls.stop.addEventListener("click", () => dispatch({ kind: "tap", control: "stop" }));
 
-  // The hover: shown by hover and focus in CSS, and pinned by a tap on the mark — the touch
-  // reader's way in — until a tap outside or Escape. Whether it is pinned is a fact of the
-  // markup alone, owned here: the machine has no state for it.
+  // The hover: shown by hover in CSS, the sighted reader's affordance, and pinned here —
+  // for the touch reader's tap and the keyboard reader's focus, and told to assistive
+  // tech as one fact — until a tap outside, focus leaving, or Escape. A tap pins rather
+  // than toggles: most browsers focus the button before the click, so a toggle would close
+  // what the focus just opened. Whether it is pinned is a fact of the markup alone, owned
+  // here: the machine has no state for it [LAW:one-source-of-truth].
   const { mark } = controls;
   const pin = (open: boolean): void => {
     mark.root.dataset.open = String(open);
     mark.button.setAttribute("aria-expanded", String(open));
   };
   pin(false);
-  mark.button.addEventListener("click", () => pin(mark.root.dataset.open !== "true"));
+  mark.button.addEventListener("click", () => pin(true));
   mark.yes.addEventListener("click", () => dispatch({ kind: "yes" }));
   // Checking the box is the yes for this visit too, subject to the same rule as any
   // standing consent; unchecking only stops asking on the reader's behalf.
@@ -976,6 +979,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (event.composedPath().includes(mark.root)) return;
     pin(false);
   });
+  // Every focus on the page sets the pin: inside the mark it is open, anywhere else it is
+  // not [LAW:dataflow-not-control-flow].
+  doc.addEventListener("focusin", (event) => pin(event.composedPath().includes(mark.root)));
   doc.addEventListener("keydown", (event) => {
     if (event.key === "Escape") pin(false);
   });
@@ -984,7 +990,11 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   return {
     send: (control) => dispatch({ kind: "tap", control }),
     seek: (to) => dispatch({ kind: "seek", to }),
-    wake: wakeUp,
+    // The page's door back in: the hover closed as at mount, then the wake.
+    wake: () => {
+      pin(false);
+      wakeUp();
+    },
     state: () => state,
     // One more event through the same machine: the idle state disarms the frame loop,
     // clears the position, and the controls say what the state says, so a page back from

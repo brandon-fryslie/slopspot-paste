@@ -3379,8 +3379,8 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
 @keyframes listen-mark-turn { to { --mark-turn: 1turn; } }
 @keyframes listen-mark-breathe { 50% { opacity: 0.3; } }
 
-/* The hover: a small card above the mark, shown while the mark is hovered or holds focus,
-   or pinned by a tap on the mark (`data-open`, the touch reader's way in). The question,
+/* The hover: a small card above the mark, shown while the mark is hovered, or pinned by
+   listenPanel.ts (`data-open`: a tap, or keyboard focus within the mark). The question,
    the yes and the box are all in the markup always; listenPanel.ts hides the question and
    the yes outside the download-needed state, and the box shows the preference. */
 .listen-mark-hover {
@@ -3399,7 +3399,6 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   color: var(--fg);
 }
 .listen-mark:hover .listen-mark-hover,
-.listen-mark:focus-within .listen-mark-hover,
 .listen-mark[data-open="true"] .listen-mark-hover { display: grid; gap: 8px; }
 .listen-mark-sentence,
 .listen-mark-ask { margin: 0; }

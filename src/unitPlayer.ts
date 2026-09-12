@@ -110,10 +110,11 @@ export interface OpenDevice {
   readonly format: PcmFormat;
 }
 
-// [LAW:no-ambient-temporal-coupling] Called by the device's owner on the reader's gesture:
-// a browser starts audio only from one, and a context opened inside the tap is what lets
-// audio scheduled later — once the model is warm — sound. The owner closes what it opened;
-// the player borrows it.
+// [LAW:no-ambient-temporal-coupling] Called by the device's owner: on the reader's gesture
+// when there is one, since a context opened inside the tap is what lets audio scheduled
+// later — once the model is warm — sound; or outside any gesture for a voice built on a
+// standing consent, which opens suspended and is resumed by the reader's first Play
+// through the player. The owner closes what it opened; the player borrows it.
 export const openDevice = (Device: DeviceFactory, format: PcmFormat = MODEL_PCM): OpenDevice => ({
   device: new Device({ sampleRate: format.sampleRate }),
   format,
