@@ -200,6 +200,7 @@ const apply = (state: SchedulerState, message: FromWorker): Plan => {
           if (recorded.kind !== "record") return { state: failed(state, message.unitId, recorded, "player"), commands: [] };
           return {
             state: {
+              ...state,
               holdings: state.holdings.with(message.unitId, { kind: "held", record: recorded.record }),
               manifest: { ...state.manifest, units: state.manifest.units.with(message.unitId, recorded.record) },
             },

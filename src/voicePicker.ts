@@ -62,6 +62,11 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     made.className = className;
     return made;
   };
+  // appendChild, not append: under the page's build the Workers runtime types shadow the
+  // DOM's Element with HTMLRewriter's, whose `append` takes a string.
+  const attach = (parent: HTMLElement, ...children: ReadonlyArray<HTMLElement>): void => {
+    for (const child of children) parent.appendChild(child);
+  };
   const option = (role: PickedVoice, voice: VoiceId): Option => {
     const label = el("label", "voice-label");
     label.title = voiceCredit(voice);
@@ -74,7 +79,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     });
     const name = el("span", "voice-name");
     name.textContent = voiceName(voice);
-    label.append(radio, name);
+    attach(label, radio, name);
     const preview = el("button", "voice-preview");
     preview.type = "button";
     preview.setAttribute("aria-label", `Hear ${voiceName(voice)}`);
@@ -82,7 +87,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     preview.addEventListener("click", () => on.preview(voice));
     const cell = el("div", "voice-option");
     cell.dataset.voice = voice;
-    cell.append(label, preview);
+    attach(cell, label, preview);
     return { role, voice, cell, radio, preview };
   };
   const options = PICKED_VOICES.flatMap((role) => {
@@ -91,8 +96,8 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     const legend = el("legend", "voice-role");
     legend.textContent = ROLE_LABELS[role];
     const built = VOICE_IDS.map((voice) => option(role, voice));
-    row.append(legend, ...built.map((o) => o.cell));
-    root.append(row);
+    attach(row, legend, ...built.map((o) => o.cell));
+    attach(root, row);
     return built;
   });
   const note = el("p", "voice-note");
@@ -100,7 +105,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
   reset.type = "button";
   reset.textContent = "Reset to defaults";
   reset.addEventListener("click", on.reset);
-  root.append(note, reset);
+  attach(root, note, reset);
   return { options, note, reset };
 };
 

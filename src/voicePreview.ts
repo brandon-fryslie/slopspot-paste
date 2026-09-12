@@ -13,7 +13,9 @@
 // the reader has already replaced is told from the current one by its id alone — nothing
 // is timed, nothing is flagged [LAW:types-are-the-program] [LAW:no-ambient-temporal-coupling].
 // A player lives exactly while its preview sounds: the driver ends every player whose id
-// the state no longer names, after every step.
+// the state no longer names, after every step and BEFORE the step's commands — a player's
+// end suspends the device, and the command that follows a replacement is the new
+// player's play, which resumes it; the other order would suspend the phrase just started.
 //
 // [LAW:effects-at-boundaries] `step` is pure over the state and an event and returns the
 // commands for the two seams; `createPreviewer` performs them. scripts/voice-preview-
@@ -65,7 +67,8 @@ const toPlayer = (unitId: number, event: PlayerEvent): PreviewCommand => ({ kind
 const withdraw = (state: PreviewState): ReadonlyArray<PreviewCommand> =>
   state.sounding === null ? [] : [toWorker({ kind: "cancel", unitId: state.sounding.unitId })];
 
-const silent = (state: PreviewState): PreviewState => ({ ...state, sounding: null });
+// The very same state object when nothing was sounding: nothing changed, and it says so.
+const silent = (state: PreviewState): PreviewState => (state.sounding === null ? state : { ...state, sounding: null });
 const stay = (state: PreviewState): PreviewPlan => ({ state, commands: [] });
 
 // [LAW:dataflow-not-control-flow] The worker's messages for the sounding preview, one row
@@ -179,8 +182,8 @@ export const createPreviewer = (config: PreviewerConfig): Previewer => {
         const before = state.sounding;
         const planned = step(state, next);
         state = planned.state;
-        for (const command of planned.commands) perform(command);
         reap();
+        for (const command of planned.commands) perform(command);
         if (!disposed && state.sounding?.voice !== before?.voice) config.onChange(state.sounding?.voice ?? null);
       }
     } finally {

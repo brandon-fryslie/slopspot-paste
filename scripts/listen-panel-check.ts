@@ -40,6 +40,7 @@ import type { SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S } from "../src/unitPlayer";
+import { DEFAULT_PICK, readPick, writePick } from "../src/voiceChoice";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 import { memoryPreferences } from "./preferenceStub";
 
@@ -108,7 +109,7 @@ const effects = (s: ReturnType<typeof step>): string =>
     .join();
 // A visit that remembered nothing, on a connection nobody metered: what every reader is
 // until the hover says otherwise.
-const ASKING: Visit = { remembered: false, metered: false };
+const ASKING: Visit = { remembered: false, metered: false, pick: DEFAULT_PICK };
 const shown = (state: PanelState, visit: Visit = ASKING): string => {
   const r = readout(state, TOTAL, visit);
   return `${r.play.label}${r.play.enabled ? "" : "(off)"} | stop${r.stop.enabled ? "" : "(off)"} | ${r.status}${r.progress === null ? "" : ` | bar ${r.progress.loadedBytes}/${r.progress.totalBytes}`}`;
@@ -324,11 +325,11 @@ console.log("readout: every form the mark can take, and the question its hover a
   assert("a held consent through the probe: checking to the eye, as the sentence says, nothing to ask", markForm(promised).kind === "checking" && ask(promised) === null && shown(promised) === MOUNT_LINE);
   assert("download needed: the hover asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
   assert("a store that cannot keep the voice: the hover asks for the whole model", ask(forms.unavailable) === `Download speech model? · ${MB}`);
-  assert("remembered on a metered connection: the hover says why it asks anyway", ask(forms.download, { remembered: true, metered: true }) === "Download speech model? · 239 MB · asking because this connection is metered");
-  assert("remembered off a metered connection: no note", ask(forms.download, { remembered: true, metered: false }) === "Download speech model? · 239 MB");
-  assert("not remembered on a metered connection: no note — nothing is being overridden", ask(forms.download, { remembered: false, metered: true }) === "Download speech model? · 239 MB");
+  assert("remembered on a metered connection: the hover says why it asks anyway", ask(forms.download, { ...ASKING, remembered: true, metered: true }) === "Download speech model? · 239 MB · asking because this connection is metered");
+  assert("remembered off a metered connection: no note", ask(forms.download, { ...ASKING, remembered: true, metered: false }) === "Download speech model? · 239 MB");
+  assert("not remembered on a metered connection: no note — nothing is being overridden", ask(forms.download, { ...ASKING, remembered: false, metered: true }) === "Download speech model? · 239 MB");
   assert("nothing to ask when the voice is here, on its way, on stage, or impossible", [forms.ready, forms.checking, forms.downloading, forms.warming, forms.speaking, forms.paused, forms.unsupported, forms.failed].every((state) => ask(state) === null));
-  assert("the preference's box reads the visit", readout(forms.download, TOTAL, { remembered: true, metered: false }).remembered && !readout(forms.download, TOTAL, ASKING).remembered);
+  assert("the preference's box reads the visit", readout(forms.download, TOTAL, { ...ASKING, remembered: true, metered: false }).remembered && !readout(forms.download, TOTAL, ASKING).remembered);
 }
 
 console.log("step: violations throw");
@@ -344,6 +345,36 @@ console.log("step: violations throw");
   throws("disposed, anywhere: the port ends the worker on it first", () => step(idle, worker({ kind: "disposed" })));
 }
 
+console.log("readout: the voice picker, cold, warm and mid-listen");
+{
+  const idle = initialState();
+  const probing = step(idle, wake("none")).state;
+  const onStage = step(step(step(step(step(step(probing, supported).state, yes).state, progress(1, 1)).state, ready).state, scriptBack).state, { kind: "view", view: viewOf({ kind: "idle" }) }).state;
+  const speaking = step(onStage, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 0, offsetMs: 0 }, flow: "audio" }) }).state;
+  const unsupported = step(probing, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } })).state;
+  const voices = (state: PanelState, visit: Visit = ASKING): string => {
+    const v = readout(state, TOTAL, visit).voices;
+    return `${v.picked.user}/${v.picked.assistant} | ${v.preview.kind === "offered" ? "offered" : `withheld: ${v.preview.why}`} | ${v.sounding ?? "silent"} | reset ${v.reset ? "on" : "off"}`;
+  };
+  const COLD = "alba/javert | withheld: Previews play once the voice is ready on this device. | silent | reset off";
+  assert("cold: the defaults, previews withheld with the reason, nothing sounding, nothing to reset", voices(idle) === COLD && voices(probing) === COLD);
+  assert("a device that cannot run the voice: withheld with the honest reason", voices(unsupported) === "alba/javert | withheld: This device can't run the voice, so there is nothing to hear. | silent | reset off");
+  assert("on stage, idle or speaking: previews offered", voices(onStage) === "alba/javert | offered | silent | reset off" && voices(speaking) === "alba/javert | offered | silent | reset off");
+  const chosen: Visit = { ...ASKING, pick: { user: "marius", assistant: "javert" } };
+  assert("the picker reads the device's pick, and a pick off the defaults can be reset", voices(onStage, chosen) === "marius/javert | offered | silent | reset on");
+
+  const tapped = step(speaking, { kind: "preview", voice: "azelma" });
+  assert("a preview tapped on stage: the reading is paused, then the previewer speaks", effects(tapped) === "perform pause,preview" && tapped.state === speaking);
+  assert("a preview tapped before the voice is on stage changes nothing", effects(step(probing, { kind: "preview", voice: "azelma" })) === "" && effects(step(idle, { kind: "preview", voice: "azelma" })) === "");
+  const heard = step(speaking, { kind: "sounding", voice: "azelma" }).state;
+  assert("the previewer's word: the voice sounding shows", voices(heard) === "alba/javert | offered | azelma | reset off");
+  assert("and clears when it is over", voices(step(heard, { kind: "sounding", voice: null }).state) === "alba/javert | offered | silent | reset off");
+  throws("the previewer's word before the voice is on stage is a bug", () => step(probing, { kind: "sounding", voice: "azelma" }));
+  const map = { user: "marius", assistant: "javert", system: "eponine", narrator: "javert" } as const;
+  assert("the pick changes on stage: the performer is told", effects(step(speaking, { kind: "voices", voices: map })) === "revoice");
+  assert("the pick changes before the voice is on stage: nothing to tell, the build reads the pick", effects(step(probing, { kind: "voices", voices: map })) === "" && effects(step(idle, { kind: "voices", voices: map })) === "");
+}
+
 // ── the driver ────────────────────────────────────────────────────────────────────────
 
 // The page's markup for the panel and the mark, inert as the template renders it.
@@ -353,7 +384,9 @@ const MARKUP = `<!DOCTYPE html><body>
     <button class="speech-stop" type="button" disabled></button>
     <progress class="speech-progress" hidden></progress>
     <p class="speech-now"></p>
+    <button class="speech-voices-toggle" type="button" aria-expanded="false">Voices</button>
   </div>
+  <div class="speech-voices" hidden></div>
   <div class="listen-mark" data-state="checking" data-open="false">
     <button class="listen-mark-button" type="button" aria-expanded="false" aria-label="Listen"><span class="listen-mark-glyph"></span></button>
     <div class="listen-mark-hover" role="group" aria-label="Listen">
@@ -379,6 +412,8 @@ interface Rig {
   readonly status: HTMLElement;
   readonly bar: HTMLProgressElement;
   readonly mark: MarkRig;
+  // The voice picker's markup: the toggle in the transport and the block the rows are built into.
+  readonly voices: { readonly toggle: HTMLButtonElement; readonly picker: HTMLElement };
   readonly doc: Document;
   readonly port: SynthesisPort;
   readonly sent: ToWorker[];
@@ -415,6 +450,8 @@ interface Rig {
 // of the connection.
 interface VisitSetup {
   readonly remembered?: boolean;
+  // A store carried over from an earlier rig: the device's storage surviving a reload.
+  readonly store?: ReturnType<typeof memoryPreferences>;
   readonly connection?: ConnectionReading;
 }
 
@@ -477,7 +514,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
       for (const callback of pending.splice(0)) callback();
     },
   };
-  const store = memoryPreferences();
+  const store = setup.store ?? memoryPreferences();
   writePreference(store, setup.remembered === true);
   const positions: (ReadAlongAt | null)[] = [];
   const play = el<HTMLButtonElement>(".speech-play");
@@ -498,6 +535,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     status,
     bar: el(".speech-progress"),
     mark,
+    voices: { toggle: el(".speech-voices-toggle"), picker: el(".speech-voices") },
     now: 0,
     doc,
     port,
@@ -546,9 +584,8 @@ const rig = (setup: VisitSetup = {}): Rig => {
 
 const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
   createListenPanel({
-    controls: { play: r.play, stop: r.stop, status: r.status, progress: r.bar, mark: r.mark },
+    controls: { play: r.play, stop: r.stop, status: r.status, progress: r.bar, mark: r.mark, voices: r.voices },
     utterances,
-    voices: DEFAULT_VOICES,
     spawn: () => {
       r.counts.spawned += 1;
       return r.port;
@@ -556,6 +593,7 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     home: r.home,
     keep: r.keep,
     preference: { read: () => readPreference(r.store), write: (remembered) => writePreference(r.store, remembered) },
+    pick: { read: () => readPick(r.store), write: (pick) => writePick(r.store, pick) },
     connection: () => r.connection.reading,
     Device: StubDevice,
     frames: r.frames,
@@ -933,6 +971,92 @@ console.log("createListenPanel: a teardown that fails too goes out with the bug 
   r.refusing.dispose = false;
   panel.dispose();
   assert("the panel is not left draining: the next event is handled, the worker disposed, the device closed, at the start", panel.state().kind === "provisioning" && r.counts.disposed === 2 && r.devices()[0]?.calls.at(-1) === "close" && r.line() === IDLE_LINE);
+}
+
+console.log("createListenPanel: the voice picker — a pick made cold arrives with the voice, one mid-listen restarts the unit, and both survive a reload");
+{
+  const r = rig();
+  const panel = mount(r);
+  const { picker, toggle } = r.voices;
+  const option = (role: string, voice: string): HTMLElement => {
+    const found = picker.querySelector<HTMLElement>(`.voice-row[data-role="${role}"] .voice-option[data-voice="${voice}"]`);
+    if (found === null) throw new Error(`fixture: no option ${role}/${voice}`);
+    return found;
+  };
+  const part = <T extends Element>(root: ParentNode, selector: string): T => {
+    const found = root.querySelector<T>(selector);
+    if (found === null) throw new Error(`fixture: no ${selector}`);
+    return found;
+  };
+  const radio = (role: string, voice: string): HTMLInputElement => part(option(role, voice), "input");
+  const hear = (voice: string): HTMLButtonElement => part(option("user", voice), ".voice-preview");
+  const note = part<HTMLElement>(picker, ".voice-note");
+  const reset = part<HTMLButtonElement>(picker, ".voice-reset");
+  const checked = (): string => ["user", "assistant"].map((role) => picker.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
+  const previews = (): HTMLButtonElement[] => [...picker.querySelectorAll<HTMLButtonElement>(".voice-preview")];
+  const soundingNow = (): string => previews().filter((b) => b.dataset.sounding === "true").map((b) => b.getAttribute("aria-label")).join();
+
+  assert("mounted: the picker is closed, and the toggle says so", picker.hidden && toggle.getAttribute("aria-expanded") === "false");
+  toggle.click();
+  assert("the toggle opens it", !picker.hidden && toggle.getAttribute("aria-expanded") === "true");
+  assert("two rows, six voices each, the defaults checked", picker.querySelectorAll(".voice-row").length === 2 && picker.querySelectorAll(".voice-option").length === 12 && checked() === "alba/javert");
+  assert("the rows are named You and Claude", [...picker.querySelectorAll(".voice-role")].map((l) => l.textContent).join() === "You,Claude");
+  assert("each name carries its credit for the hover", part<HTMLElement>(option("assistant", "javert"), ".voice-label").title.includes("CC") || part<HTMLElement>(option("assistant", "javert"), ".voice-label").title.length > 0);
+  assert("cold: every preview withheld and the note says why; nothing to reset", previews().every((b) => b.disabled) && !note.hidden && note.textContent === "Previews play once the voice is ready on this device." && reset.disabled);
+  assert("previews are named for assistive tech", hear("azelma").getAttribute("aria-label") === "Hear Azelma");
+
+  radio("assistant", "marius").click();
+  assert("Claude's voice picked while cold: kept on the device, shown checked, reset offered, nothing sent to a worker", readPick(r.store).assistant === "marius" && checked() === "alba/marius" && !reset.disabled && r.sent.length === 0);
+  toggle.click();
+  assert("the toggle closes it again; the pick stands", picker.hidden && checked() === "alba/marius");
+
+  r.play.click();
+  arrive(r);
+  const [stage] = r.devices();
+  assert("the voice arrives with the pick made cold: unit 0, the reader's, in Alba", r.said().endsWith("synthesize 0") && r.sent.at(-1)?.kind === "synthesize" && (r.sent.at(-1) as { voice: string }).voice === "alba" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
+  assert("on stage: previews offered, the note gone", previews().every((b) => !b.disabled) && note.hidden);
+
+  hear("azelma").click();
+  const heard = r.devices()[1];
+  assert("a preview tapped mid-listen: the reading pauses, the phrase is asked under an id below zero in that voice, on a device of its own opened by the tap", r.line() === "Resume | stop | Paused · passage 1 of 2" && r.said().endsWith("synthesize -1") && (r.sent.at(-1) as { voice: string }).voice === "azelma" && r.devices().length === 2 && heard?.calls.join() === "resume");
+  assert("the picker lights the voice sounding, in both rows: it is the voice that sounds, not the row", soundingNow() === "Hear Azelma,Hear Azelma");
+  r.emit({ kind: "audio", unitId: -1, frameIndex: 0, pcm: frame(0, 0) });
+  r.emit({ kind: "done", unitId: -1, report: report(FRAME_S * 1000), elapsedMs: 1 });
+  assert("the phrase plays on the preview's device, not the reading's", heard?.sources.length === 1 && stage?.sources.length === 0 && r.line() === "Resume | stop | Paused · passage 1 of 2");
+  heard?.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
+  assert("the phrase ends: nothing lit", soundingNow() === "");
+
+  r.play.click();
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  r.emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  r.emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
+  r.emit({ kind: "done", unitId: 1, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  assert("resumed: the reader's units arrive and Claude's is asked in the voice picked cold", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.said().endsWith("synthesize 2") && (r.sent.at(-1) as { voice: string }).voice === "marius");
+
+  radio("user", "fantine").click();
+  assert("the reader's voice picked mid-listen: the unit under the cursor restarts in it — Claude's request gives way, unit 0 is asked again in Fantine — and the pick is kept", r.said().endsWith("cancel 2,synthesize 0") && (r.sent.at(-1) as { voice: string }).voice === "fantine" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && readPick(r.store).user === "fantine" && checked() === "fantine/marius");
+  r.emit({ kind: "cancelled", unitId: 2 });
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  assert("the new rendition plays from the unit's start", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.where() === "t1 0-20 of 1");
+  panel.dispose();
+  assert("dispose closes the preview's device with the reading's", heard?.calls.at(-1) === "close" && stage?.calls.at(-1) === "close");
+
+  // The reload: a fresh page over the same device storage.
+  const again = rig({ store: r.store });
+  const reloaded = mount(again);
+  const checkedAgain = (): string => ["user", "assistant"].map((role) => again.voices.picker.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
+  assert("after a reload the pick is still chosen", checkedAgain() === "fantine/marius" && !part<HTMLButtonElement>(again.voices.picker, ".voice-reset").disabled);
+  again.play.click();
+  arrive(again);
+  assert("and the voice arrives with it", (again.sent.at(-1) as { voice: string }).voice === "fantine");
+  part<HTMLButtonElement>(again.voices.picker, ".voice-reset").click();
+  assert("reset: the defaults again, nothing left on the device, the request under the cursor withdrawn", checkedAgain() === "alba/javert" && again.store.keys().includes("listen.voices") === false && again.said().endsWith("cancel 0"));
+  again.emit({ kind: "cancelled", unitId: 0 });
+  assert("the cancel lands: the unit under the cursor is asked again in Alba", again.said().endsWith("cancel 0,synthesize 0") && (again.sent.at(-1) as { voice: string }).voice === "alba");
+  again.stop.click();
+  part<HTMLButtonElement>(again.voices.picker, '.voice-row[data-role="user"] .voice-option[data-voice="alba"] .voice-preview').click();
+  assert("a preview with the voice on stage but idle: nothing to pause, the phrase asked", again.line() === "Listen | stop(off) | Ready" && again.said().endsWith("synthesize -1"));
+  reloaded.dispose();
 }
 
 console.log(process.exitCode === 1 ? "listen-panel-check: FAILED" : "listen-panel-check: ok");
