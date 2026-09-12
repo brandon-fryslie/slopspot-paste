@@ -23,6 +23,7 @@ import {
   type PanelState,
 } from "../src/listenPanel";
 import { utteranceTable, type NeuralView } from "../src/neuralPerformer";
+import type { Keeping, Residency } from "../src/modelResidency";
 import type { Mark } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
@@ -102,14 +103,22 @@ const shown = (state: PanelState): string => {
 // The place a voice on its way starts from, as "utterance:char"; a voice on stage has none.
 const held = (state: PanelState): string => (state.kind === "provisioning" ? `${state.from.utterance}:${state.from.char}` : "on stage");
 const MB = `${Math.round(DOWNLOAD_BYTES / 1e6)} MB`;
-const IDLE_LINE = `Listen | stop(off) | The voice downloads a ${MB} model once, then runs on this device`;
+// The start, before the store has answered: the driver asks it on every entry.
+const IDLE_LINE = "Listen | stop(off) | Looking for the voice on this device…";
+const RESIDENT_LINE = "Listen | stop(off) | The voice is on this device";
+const home = (residency: Residency): PanelEvent => ({ kind: "home", residency });
+const kept = (keeping: Keeping): PanelEvent => ({ kind: "keeping", keeping });
 
 // ── the pure machine ──────────────────────────────────────────────────────────────────
 
 console.log("step: the way to audio");
 {
   const idle = initialState();
-  assert("idle: Play is the only enabled control, it names the download, and the place is the top", shown(idle) === IDLE_LINE && held(idle) === "0:0");
+  assert("idle: Play is the only enabled control, the store is being asked, and the place is the top", shown(idle) === IDLE_LINE && held(idle) === "0:0");
+  assert("the store's word, resident: the voice is on this device, before any tap", shown(step(idle, home({ kind: "resident" })).state) === RESIDENT_LINE);
+  assert("absent: the bytes still to download are named, not the whole model", shown(step(idle, home({ kind: "absent", bytesToDownload: 120_000_000 })).state) === "Listen | stop(off) | The voice downloads 120 MB once, then runs on this device");
+  assert("unavailable: the store's reason, and that each listen downloads the whole model", shown(step(idle, home({ kind: "unavailable", message: "private browsing" })).state) === `Listen | stop(off) | This browser can't keep the voice (private browsing); each listen downloads ${MB}`);
+  assert("the keep request's answer is not asked of an idle voice, but shown if it arrives: denied names the consequence", shown(step(idle, kept({ kind: "denied" })).state) === "Listen | stop(off) | Looking for the voice on this device… · this browser may drop the voice when space is short; the next listen would download it again");
   const probing = step(idle, tapPlay);
   assert("tap play from idle spawns the worker (and with it the device) and probes", effects(probing) === "spawn" && shown(probing.state) === "Listen(off) | stop(off) | Checking this device for the voice…");
   assert("a tap while probing changes nothing", step(probing.state, tapPlay).state === probing.state);
@@ -159,17 +168,26 @@ console.log("step: the way to audio");
   assert("the voice arriving after a tap is sent to the tapped place", effects(arrivedAtPlace) === "perform seek 0:21" && arrivedAtPlace.state.kind === "neural");
 
   const crashed = step(downloading.state, { kind: "worker-error", message: "the worker bundle failed to load" });
-  assert("a worker error while downloading: crashed, everything released, Play reads Retry", effects(crashed) === "release terminate" && shown(crashed.state) === "Retry | stop(off) | The voice failed: the worker bundle failed to load");
+  assert("a worker error while downloading: crashed, everything released, Play reads Retry", effects(crashed) === "release terminate,home" && shown(crashed.state) === "Retry | stop(off) | The voice failed: the worker bundle failed to load");
   assert("an error with no message still names the failure", shown(step(warming.state, { kind: "worker-error", message: "" }).state).endsWith("The voice failed"));
   const crashedOnStage = step(listening.state, { kind: "worker-error", message: "boom" });
-  assert("a crash on stage while idle: released, the place the top", effects(crashedOnStage) === "release terminate" && held(crashedOnStage.state) === "0:0");
+  assert("a crash on stage while idle: released, the place the top", effects(crashedOnStage) === "release terminate,home" && held(crashedOnStage.state) === "0:0");
   const fellPlaying = step(playing.state, { kind: "worker-error", message: "boom" });
   assert("a crash while playing keeps the reported place for the retry", held(fellPlaying.state) === "1:0" && shown(fellPlaying.state) === "Retry | stop(off) | The voice failed: boom");
   throws("a view after the crash is a violation: the released performer's last view never reaches step", () => step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }));
   const respawned = step(fellPlaying.state, tapPlay);
   assert("Retry after a crash spawns a fresh worker and probes, the place still held", effects(respawned) === "spawn" && held(respawned.state) === "1:0" && shown(respawned.state).startsWith("Listen(off)"));
   const disposedMid = step(playing.state, { kind: "dispose" });
-  assert("dispose, anywhere: back to the start, the live worker asked to dispose", shown(disposedMid.state) === IDLE_LINE && held(disposedMid.state) === "0:0" && effects(disposedMid) === "release dispose");
+  assert("dispose, anywhere: back to the start, the live worker asked to dispose", shown(disposedMid.state) === IDLE_LINE && held(disposedMid.state) === "0:0" && effects(disposedMid) === "release dispose,home");
+
+  // The browser's answer to keeping the bytes rides the status line while the voice is on
+  // its way; a late answer to a voice on stage changes nothing.
+  const kept1 = step(preparing.state, kept({ kind: "granted" }));
+  assert("keeping granted while preparing: said beside the phase", shown(kept1.state) === "Listen(off) | stop(off) | Preparing the voice… · this browser will keep the voice");
+  const kept2 = step(step(kept1.state, progress(1, 2)).state, kept({ kind: "failed", message: "no StorageManager" }));
+  assert("a keep request that failed: its message, beside the download", shown(kept2.state) === "Listen(off) | stop(off) | Downloading the voice · 0 MB of 0 MB · this browser could not be asked to keep the voice: no StorageManager | bar 1/2");
+  assert("an answer after the voice took the stage changes nothing", step(listening.state, kept({ kind: "denied" })).state === listening.state && step(listening.state, home({ kind: "resident" })).state === listening.state);
+  assert("a crash returns to the start with the store asked again, the last answer dropped", (() => { const s = step(kept1.state, { kind: "worker-error", message: "x" }).state; return s.kind === "provisioning" && s.home.kind === "reading" && s.keeping === null; })());
 }
 
 console.log("step: violations throw");
@@ -204,7 +222,11 @@ interface Rig {
   readonly sent: ToWorker[];
   readonly emit: (message: FromWorker) => void;
   readonly fail: (message: string) => void;
-  readonly counts: { spawned: number; terminated: number; disposed: number; listeners: () => number };
+  readonly counts: { spawned: number; terminated: number; disposed: number; listeners: () => number; homeAsked: number; keepAsked: number };
+  // The store's and the browser's answers, given by hand so their timing is the check's.
+  readonly answer: { home: (residency: Residency) => void; keep: (keeping: Keeping) => void };
+  readonly home: () => Promise<Residency>;
+  readonly keep: () => Promise<Keeping>;
   // The port's dispose throws while this is set: a teardown that fails.
   readonly refusing: { dispose: boolean };
   readonly said: () => string;
@@ -227,7 +249,22 @@ const rig = (): Rig => {
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
-  const counts = { spawned: 0, terminated: 0, disposed: 0, listeners: () => listeners.size + errorListeners.size };
+  const counts = { spawned: 0, terminated: 0, disposed: 0, listeners: () => listeners.size + errorListeners.size, homeAsked: 0, keepAsked: 0 };
+  // Answers land on the oldest unanswered ask first, so two asks in flight settle in the
+  // order they were made: the earlier one can be answered after a later one was issued.
+  const deferred = <T,>() => {
+    const waiting: ((value: T) => void)[] = [];
+    return {
+      ask: () => new Promise<T>((resolve) => waiting.push(resolve)),
+      answer: (value: T) => {
+        const oldest = waiting.shift();
+        if (oldest === undefined) throw new Error("fixture: an answer with nothing asked");
+        oldest(value);
+      },
+    };
+  };
+  const homes = deferred<Residency>();
+  const keeps = deferred<Keeping>();
   const refusing = { dispose: false };
   const port: SynthesisPort = {
     send: (message) => sent.push(message),
@@ -279,6 +316,15 @@ const rig = (): Rig => {
       for (const listener of errorListeners) listener(message);
     },
     counts,
+    answer: { home: homes.answer, keep: keeps.answer },
+    home: () => {
+      counts.homeAsked += 1;
+      return homes.ask();
+    },
+    keep: () => {
+      counts.keepAsked += 1;
+      return keeps.ask();
+    },
     refusing,
     said: () => sent.map((m) => (m.kind === "synthesize" ? `synthesize ${m.unitId}` : m.kind === "cancel" ? `cancel ${m.unitId}` : m.kind)).join(),
     frames,
@@ -303,6 +349,8 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
       r.counts.spawned += 1;
       return r.port;
     },
+    home: r.home,
+    keep: r.keep,
     Device: StubDevice,
     frames: r.frames,
     onPosition: (at) => r.positions.push(at),
@@ -321,7 +369,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   const r = rig();
   const panel = mount(r);
 
-  assert("mounted idle: the readout is written, nothing spawned, no device", r.line() === IDLE_LINE && r.counts.spawned === 0 && r.devices().length === 0);
+  assert("mounted idle: the readout is written, the store asked, nothing spawned, no device", r.line() === IDLE_LINE && r.counts.homeAsked === 1 && r.counts.keepAsked === 0 && r.counts.spawned === 0 && r.devices().length === 0);
   r.play.click();
   const device = r.devices()[0];
   if (device === undefined) throw new Error("the tap did not open a device");
@@ -393,6 +441,66 @@ console.log("createListenPanel: a tap on a word before the voice is warm is wher
   r.emit({ kind: "done", unitId: 2, report: report(FRAME_S * 1000), elapsedMs: 5 });
   device?.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
   assert("the last unit ends: Ready, the cursor cleared, the loop off", r.line() === "Listen | stop(off) | Ready" && r.positions.at(-1) === null && r.frames.pending === 0);
+  panel.dispose();
+}
+
+console.log("createListenPanel: the store's word before the tap, the browser's answer on the load");
+{
+  const r = rig();
+  const panel = mount(r);
+  r.answer.home({ kind: "resident" });
+  await Promise.resolve();
+  assert("the store answers: the line says the voice is on this device, before any tap", r.line() === RESIDENT_LINE && r.counts.spawned === 0);
+  r.play.click();
+  assert("the tap does not ask the browser to keep anything yet: the load does", r.counts.keepAsked === 0);
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  assert("supported: load is sent and the browser is asked to keep the bytes, in that order", r.sent.map((m) => m.kind).join() === "load" && r.counts.keepAsked === 1);
+  r.answer.keep({ kind: "denied" });
+  await Promise.resolve();
+  assert("denied: the consequence is on the line beside the phase", r.line() === "Listen(off) | stop(off) | Preparing the voice… · this browser may drop the voice when space is short; the next listen would download it again");
+  r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
+  assert("and stays there through warming", r.line() === "Listen(off) | stop(off) | Warming up the voice… · this browser may drop the voice when space is short; the next listen would download it again");
+  r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
+  r.emit({ kind: "script", id: SCRIPT_ID, units });
+  assert("on stage: the scheduler's line, the answer no longer shown", r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
+  panel.dispose();
+  assert("dispose asks the store again, and shows the asking", r.counts.homeAsked === 2 && r.line() === IDLE_LINE);
+  r.answer.home({ kind: "absent", bytesToDownload: 239_000_000 });
+  await Promise.resolve();
+  assert("a store that lost the bytes says so on the next start", r.line() === "Listen | stop(off) | The voice downloads 239 MB once, then runs on this device");
+}
+
+console.log("createListenPanel: a stale answer never lands on a fresher entry");
+{
+  const r = rig();
+  const panel = mount(r);
+  panel.dispose();
+  assert("mount and dispose each asked the store; neither has answered", r.counts.homeAsked === 2 && r.line() === IDLE_LINE);
+  r.answer.home({ kind: "resident" });
+  await Promise.resolve();
+  assert("the mount's answer, arriving after the dispose asked again, is dropped", r.line() === IDLE_LINE);
+  r.answer.home({ kind: "absent", bytesToDownload: 239_000_000 });
+  await Promise.resolve();
+  assert("the dispose's own answer is shown", r.line() === "Listen | stop(off) | The voice downloads 239 MB once, then runs on this device");
+  r.play.click();
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  r.emit({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
+  r.play.click();
+  assert("a failed load and its retry each asked the browser to keep the bytes", r.counts.keepAsked === 2 && r.line() === "Listen(off) | stop(off) | Preparing the voice…");
+  r.answer.keep({ kind: "granted" });
+  await Promise.resolve();
+  assert("the failed load's answer, arriving after the retry asked again, is dropped", r.line() === "Listen(off) | stop(off) | Preparing the voice…");
+  r.answer.keep({ kind: "denied" });
+  await Promise.resolve();
+  assert("the retry's own answer is shown", r.line() === "Listen(off) | stop(off) | Preparing the voice… · this browser may drop the voice when space is short; the next listen would download it again");
+  r.fail("boom");
+  r.play.click();
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  r.fail("boom again");
+  assert("a crash drops the answer to the load it ended", r.counts.keepAsked === 3 && r.line() === "Retry | stop(off) | The voice failed: boom again");
+  r.answer.keep({ kind: "granted" });
+  await Promise.resolve();
+  assert("the crashed load's answer is not shown beside the failure", r.line() === "Retry | stop(off) | The voice failed: boom again");
   panel.dispose();
 }
 

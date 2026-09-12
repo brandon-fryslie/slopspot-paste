@@ -6,17 +6,27 @@
 //
 // The store is the one the chosen runtime already uses: @jax-js/loaders' OPFS instance,
 // keyed by string. Our keys are the manifest's asset keys, so a cache entry can only mean
-// the bytes published at that path; there is no second cache beside it
-// [LAW:one-source-of-truth]. The hash is checked once, at the write [LAW:single-enforcer];
-// a read trusts the key and checks only the size. Eviction is tolerated by construction: a
-// missing or wrong-sized entry is re-downloaded with progress and reported as
-// `origin: "network"`, never hidden.
+// the bytes published at that path; there is no second cache beside it, and the page's
+// residency reading (modelResidency.ts) is the same store's listing under the same keys
+// [LAW:one-source-of-truth].
+//
+// THE BYTES ARE PROVEN AT EVERY LOAD, WHICHEVER WAY THEY CAME. One `prove` — length, then
+// SHA-256 against the manifest — stands between any bytes and the runtime: the network's
+// before they are stored, the store's before they are used [LAW:single-enforcer]. A stored
+// entry is therefore never trusted on its key: a truncated, corrupt or foreign file of the
+// right size is a `corrupt` miss, downloaded again and replaced, and the outcome says so.
+// The cost of proving the resident path is one SHA-256 over 239 MB, hardware-accelerated
+// in every WebCrypto: 0.14 s for the weights in Chrome 152 on an M2 Max (the read from
+// OPFS beside it, 0.19 s), against a model warm-up of seconds — and the read into memory it
+// hashes is one the runtime needed anyway. Eviction is tolerated by construction: an absent
+// entry is a miss like any other, re-downloaded with progress and reported as
+// `origin: network`, never hidden.
 //
 // [LAW:no-silent-failure] Nothing here defaults past a problem. A part that fails to
 // fetch, a short read, or a hash that does not match the manifest is a typed failure with
 // no bytes attached — the runtime cannot be handed unverified weights. A store that cannot
-// keep the bytes (quota, private mode) is NOT a failure of the download: a read that
-// throws is a miss, the bytes are downloaded and returned, and `persisted` carries the
+// be read (quota, private mode) is NOT a failure of the download: the read's throw is the
+// `unreadable` miss, the bytes are downloaded and returned, and `persisted` carries the
 // store's message so the UI can say the next visit will download again.
 
 import { opfs } from "@jax-js/loaders";
@@ -24,10 +34,16 @@ import { type ModelAsset, MODEL_ASSET_PREFIX, assetKey, shardPlan } from "./mode
 
 // [LAW:types-are-the-program] The exact subset of @jax-js/loaders' OPFS the loader needs,
 // stated structurally so the check's in-memory store and the real one are the same type.
+// `list` carries sizes: the residency reading is derived from them without a byte read.
+export interface StoreEntry {
+  readonly name: string;
+  readonly size: number;
+}
+
 export interface AssetStore {
   read(name: string): Promise<Uint8Array<ArrayBuffer> | null>;
   write(name: string, data: Uint8Array<ArrayBuffer>): Promise<void>;
-  list(): Promise<ReadonlyArray<{ readonly name: string }>>;
+  list(): Promise<ReadonlyArray<StoreEntry>>;
   remove(name: string): Promise<unknown>;
 }
 
@@ -52,16 +68,27 @@ export type AssetFailure =
   | { readonly kind: "network"; readonly url: string; readonly message: string }
   | { readonly kind: "integrity"; readonly key: string; readonly expected: string; readonly actual: string };
 
-export type Persisted =
-  | { readonly kind: "hit" }
-  | { readonly kind: "written" }
-  | { readonly kind: "failed"; readonly message: string };
+// Why the store did not serve the asset: the reason a load went to the network, carried
+// with the outcome so a download that replaced a broken copy is never mistaken for a first
+// download. `corrupt` names what the stored bytes turned out to be.
+export type Miss =
+  | { readonly kind: "absent" }
+  | { readonly kind: "unreadable"; readonly message: string }
+  | { readonly kind: "corrupt"; readonly expected: string; readonly actual: string };
+
+export type Persisted = { readonly kind: "written" } | { readonly kind: "failed"; readonly message: string };
+
+// [LAW:types-are-the-program] Where the bytes came from, with exactly the facts that origin
+// has: a store hit has nothing to persist; a network load has why the store missed and
+// whether the store now holds the bytes.
+export type Origin =
+  | { readonly kind: "store" }
+  | { readonly kind: "network"; readonly miss: Miss; readonly persisted: Persisted };
 
 export interface LoadedAsset {
   readonly asset: ModelAsset;
   readonly data: Uint8Array<ArrayBuffer>;
-  readonly origin: "store" | "network";
-  readonly persisted: Persisted;
+  readonly origin: Origin;
 }
 
 export type LoadOutcome =
@@ -73,6 +100,30 @@ const sha256Hex = async (bytes: Uint8Array<ArrayBuffer>): Promise<string> => {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+};
+
+// [LAW:single-enforcer] The one proof that bytes are the manifest's. `actual` is what they
+// were instead: their hash, or their length when even that is wrong (a hash of the wrong
+// number of bytes could only disagree, and would cost a pass to say so).
+type Proof = { readonly ok: true } | { readonly ok: false; readonly actual: string };
+const prove = async (data: Uint8Array<ArrayBuffer>, asset: ModelAsset): Promise<Proof> => {
+  const actual = data.byteLength === asset.bytes ? await sha256Hex(data) : `${data.byteLength} of ${asset.bytes} bytes`;
+  return actual === asset.sha256 ? { ok: true } : { ok: false, actual };
+};
+
+// The store's word on one asset: proven bytes, or the miss that sends the load to the
+// network. A read that throws is the store saying it cannot be read, not an empty store.
+type Held = { readonly kind: "hit"; readonly data: Uint8Array<ArrayBuffer> } | Miss;
+const fromStore = async (store: AssetStore, asset: ModelAsset): Promise<Held> => {
+  let cached: Uint8Array<ArrayBuffer> | null;
+  try {
+    cached = await store.read(assetKey(asset));
+  } catch (e) {
+    return { kind: "unreadable", message: e instanceof Error ? e.message : String(e) };
+  }
+  if (cached === null) return { kind: "absent" };
+  const proof = await prove(cached, asset);
+  return proof.ok ? { kind: "hit", data: cached } : { kind: "corrupt", expected: asset.sha256, actual: proof.actual };
 };
 
 // One part, streamed straight into its slice of the asset's buffer — no per-part copy and
@@ -108,7 +159,7 @@ const readPartInto = async (
   }
 };
 
-// The whole path for one asset: store hit, else network → verify → store.
+// The whole path for one asset: proven store hit, else network → prove → store.
 export const loadAsset = async (
   asset: ModelAsset,
   io: AssetIo,
@@ -117,10 +168,10 @@ export const loadAsset = async (
   const key = assetKey(asset);
   const totalBytes = asset.bytes;
 
-  const cached = await io.store.read(key).catch(() => null);
-  if (cached !== null && cached.byteLength === totalBytes) {
+  const held = await fromStore(io.store, asset);
+  if (held.kind === "hit") {
     onProgress({ loadedBytes: totalBytes, totalBytes });
-    return { ok: true, loaded: { asset, data: cached, origin: "store", persisted: { kind: "hit" } } };
+    return { ok: true, loaded: { asset, data: held.data, origin: { kind: "store" } } };
   }
 
   const data = new Uint8Array(new ArrayBuffer(totalBytes));
@@ -145,9 +196,11 @@ export const loadAsset = async (
   const cause = failures[0];
   if (cause !== undefined) return { ok: false, failure: cause };
 
-  const actual = loadedBytes === totalBytes ? await sha256Hex(data) : `short read: ${loadedBytes} of ${totalBytes} bytes`;
-  if (actual !== asset.sha256) {
-    return { ok: false, failure: { kind: "integrity", key, expected: asset.sha256, actual } };
+  // The buffer is always the asset's length; a short part leaves it under-filled, which
+  // `loadedBytes` sees and the hash would only confirm at the cost of a pass.
+  const proof: Proof = loadedBytes === totalBytes ? await prove(data, asset) : { ok: false, actual: `short read: ${loadedBytes} of ${totalBytes} bytes` };
+  if (!proof.ok) {
+    return { ok: false, failure: { kind: "integrity", key, expected: asset.sha256, actual: proof.actual } };
   }
 
   let persisted: Persisted = { kind: "written" };
@@ -156,7 +209,7 @@ export const loadAsset = async (
   } catch (e) {
     persisted = { kind: "failed", message: e instanceof Error ? e.message : String(e) };
   }
-  return { ok: true, loaded: { asset, data, origin: "network", persisted } };
+  return { ok: true, loaded: { asset, data, origin: { kind: "network", miss: held, persisted } } };
 };
 
 export type LoadAllOutcome =

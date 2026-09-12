@@ -22,6 +22,14 @@
 // [LAW:no-silent-failure]: the download and its progress, an unsupported device and its
 // reason, a failed load and its failure, a crash and its message.
 //
+// WHAT THE PAGE KNOWS BEFORE THE TAP. The store is asked, at mount and on every return to
+// the start, what it holds of the model (modelResidency.ts): the idle status says "on this
+// device" or names the bytes to download before the reader decides anything. The tap that
+// sends `load` is also the moment the browser is asked to KEEP the bytes, and its answer —
+// granted, or denied with the honest consequence — joins the status line
+// [LAW:no-silent-failure]. Both are facts the state carries and the readout projects; the
+// driver performs the two reads and feeds their answers back as events, like the worker's.
+//
 // THE TAP THAT STARTS EVERYTHING. Nothing is spawned, probed, fetched or opened until the
 // reader taps Play — or taps a word on the page, which is Play with a place: a `seek` to a
 // Mark. The worker bundle, the probe and the download all follow that one tap, and the tap
@@ -57,6 +65,7 @@
 
 import { MODEL_ASSETS, allModelAssets } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
+import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
 import { markOf, TOP, type Mark, type PerformerEvent, type PerformerState, type Spot } from "./performer";
 import { turnOf, type ReadAlongAt } from "./readAlong";
@@ -86,10 +95,20 @@ export type NeuralPhase =
   | { readonly kind: "load-failed"; readonly failure: LoadFailure }
   | { readonly kind: "crashed"; readonly message: string };
 
+// What the store has said it holds of the model: asked on every entry to the start, so it is
+// never a value carried across a load that changed it [LAW:one-source-of-truth].
+export type Home = { readonly kind: "reading" } | Residency;
+
 export type PanelState =
   // The voice on its way, and the place it starts from when it arrives: the top until the
-  // reader taps a word.
-  | { readonly kind: "provisioning"; readonly neural: NeuralPhase; readonly from: Mark }
+  // reader taps a word. `keeping` is the browser's answer to keeping the bytes, once asked.
+  | {
+      readonly kind: "provisioning";
+      readonly neural: NeuralPhase;
+      readonly from: Mark;
+      readonly home: Home;
+      readonly keeping: Keeping | null;
+    }
   // The voice on stage; the view is the scheduler's.
   | { readonly kind: "neural"; readonly view: NeuralView };
 
@@ -101,13 +120,19 @@ export type PanelEvent =
   | { readonly kind: "seek"; readonly to: Mark }
   | { readonly kind: "worker"; readonly message: FromWorker }
   | { readonly kind: "worker-error"; readonly message: string }
+  // The store's answer to `home`, and the browser's to the keep request that `load` makes.
+  | { readonly kind: "home"; readonly residency: Residency }
+  | { readonly kind: "keeping"; readonly keeping: Keeping }
   | { readonly kind: "view"; readonly view: NeuralView }
   // The page is done with the panel: everything it built is released.
   | { readonly kind: "dispose" };
 
 export type Effect =
+  // Asks the store what it holds of the model; answered by a `home` event.
+  | { readonly kind: "home" }
   // The worker and the audio device, both on the tap's stack: the gesture that unlocks audio.
   | { readonly kind: "spawn" }
+  // Sends `load`, and asks the browser to keep the bytes; answered by a `keeping` event.
   | { readonly kind: "load" }
   | { readonly kind: "script" }
   | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit> }
@@ -128,7 +153,16 @@ export const SCRIPT_ID = 1;
 const IDLE: PerformerState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
-export const initialState = (): PanelState => ({ kind: "provisioning", neural: NEURAL_IDLE, from: TOP });
+// Every entry to the start: the voice in the given phase, the place kept, and the store
+// asked afresh what it holds.
+const enter = (neural: NeuralPhase, from: Mark): Step => ({
+  state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null },
+  effects: [{ kind: "home" }],
+});
+
+export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP).state;
+// The panel's first step: the state, and the read of the store that fills its `home`.
+export const start = (): Step => enter(NEURAL_IDLE, TOP);
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
 const violation = (state: PanelState, what: string): Error =>
@@ -147,6 +181,13 @@ interface ProvisioningStep {
   readonly effects: ReadonlyArray<Effect>;
 }
 
+// Every load, first or retried: the browser is asked again to keep the bytes, so the
+// answer shown is this load's, never a previous attempt's [LAW:one-source-of-truth].
+const load = (state: Provisioning): ProvisioningStep => ({
+  state: { ...state, neural: { kind: "preparing" }, keeping: null },
+  effects: [{ kind: "load" }],
+});
+
 // What a Play tap or a seek does to the voice on its way: starts it when idle, retries it
 // after a failure, leaves it be otherwise.
 const kick = (state: Provisioning): ProvisioningStep => {
@@ -155,7 +196,7 @@ const kick = (state: Provisioning): ProvisioningStep => {
     case "crashed":
       return { state: { ...state, neural: { kind: "probing" } }, effects: [{ kind: "spawn" }] };
     case "load-failed":
-      return { state: { ...state, neural: { kind: "preparing" } }, effects: [{ kind: "load" }] };
+      return load(state);
     default:
       return { state, effects: [] };
   }
@@ -193,7 +234,7 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
     case "capability":
       if (neural.kind !== "probing") throw violation(state, "capability");
       return message.support.kind === "supported"
-        ? phase({ kind: "preparing" }, [{ kind: "load" }])
+        ? load(state)
         : phase({ kind: "unsupported", reason: message.support.reason }, [{ kind: "release", worker: "terminate" }]);
     case "progress":
       if (!loading(neural)) throw violation(state, "progress");
@@ -256,10 +297,17 @@ const placeOf = (view: NeuralView): Mark => {
 
 // The voice leaves the stage, or never reached it: the phase it fell to, the place kept
 // for the retry, and the release of everything the tap had built.
-const fallback = (state: PanelState, neural: NeuralPhase): Step => ({
-  state: { kind: "provisioning", neural, from: state.kind === "provisioning" ? state.from : placeOf(state.view) },
-  effects: [{ kind: "release", worker: "terminate" }],
-});
+const fallback = (state: PanelState, neural: NeuralPhase): Step => {
+  const entered = enter(neural, state.kind === "provisioning" ? state.from : placeOf(state.view));
+  return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
+};
+
+// The two answers the driver feeds back. A late answer to a voice already on stage — the
+// store answering after a whole load — has nothing to update.
+const home = (state: PanelState, residency: Residency): Step =>
+  state.kind === "provisioning" ? stay({ ...state, home: residency }) : stay(state);
+const keeping = (state: PanelState, answer: Keeping): Step =>
+  state.kind === "provisioning" ? stay({ ...state, keeping: answer }) : stay(state);
 
 export const step = (state: PanelState, event: PanelEvent): Step => {
   switch (event.kind) {
@@ -271,8 +319,14 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       return fromWorker(state, event.message);
     case "worker-error":
       return fallback(state, { kind: "crashed", message: event.message });
-    case "dispose":
-      return { state: initialState(), effects: [{ kind: "release", worker: "dispose" }] };
+    case "home":
+      return home(state, event.residency);
+    case "keeping":
+      return keeping(state, event.keeping);
+    case "dispose": {
+      const started = start();
+      return { state: started.state, effects: [{ kind: "release", worker: "dispose" }, ...started.effects] };
+    }
     case "view": {
       if (state.kind === "neural") return stay({ ...state, view: event.view });
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
@@ -337,12 +391,39 @@ const unitFailureText = (reason: FailureReason): string => {
   }
 };
 
+// Where the voice is before the tap, from the store's word. `absent` names the bytes still
+// to download — the whole model, or the part an eviction or an interrupted listen left out.
+const homeText = (home: Home): string => {
+  switch (home.kind) {
+    case "reading":
+      return "looking for the voice on this device…";
+    case "resident":
+      return "the voice is on this device";
+    case "absent":
+      return `the voice downloads ${megabytes(home.bytesToDownload)} once, then runs on this device`;
+    case "unavailable":
+      return `this browser can't keep the voice (${home.message}); each listen downloads ${megabytes(DOWNLOAD_BYTES)}`;
+  }
+};
+
+// The browser's answer to keeping the bytes, with the consequence of a denial spelled out.
+const keepingText = (keeping: Keeping): string => {
+  switch (keeping.kind) {
+    case "granted":
+      return "this browser will keep the voice";
+    case "denied":
+      return "this browser may drop the voice when space is short; the next listen would download it again";
+    case "failed":
+      return `this browser could not be asked to keep the voice: ${keeping.message}`;
+  }
+};
+
 // The voice's own sentence, as a fragment: one set of words for every phase
 // [LAW:one-source-of-truth].
-const neuralText = (neural: NeuralPhase): string => {
+const neuralText = (neural: NeuralPhase, home: Home): string => {
   switch (neural.kind) {
     case "idle":
-      return `the voice downloads a ${megabytes(DOWNLOAD_BYTES)} model once, then runs on this device`;
+      return homeText(home);
     case "probing":
       return "checking this device for the voice…";
     case "preparing":
@@ -401,10 +482,11 @@ export const readout = (state: PanelState, total: number): Readout => {
   const { neural } = state;
   // On its way: the transport waits for the voice, and Play is the retry.
   const retry = neural.kind === "load-failed" || neural.kind === "crashed";
+  const fragments = [neuralText(neural, state.home), ...(state.keeping === null ? [] : [keepingText(state.keeping)])];
   return {
     play: { label: retry ? "Retry" : "Listen", enabled: retry || neural.kind === "idle" },
     stop: { enabled: false },
-    status: sentence(neuralText(neural)),
+    status: sentence(fragments.join(" · ")),
     progress: neural.kind === "downloading" ? neural.progress : null,
   };
 };
@@ -442,6 +524,10 @@ export interface ListenPanelConfig {
   readonly utterances: ReadonlyArray<Utterance>;
   readonly voices: VoiceMap;
   readonly spawn: () => SynthesisPort;
+  // The store's word on the model, and the browser's on keeping it: modelResidency's two
+  // edges over the real store and navigator.storage.persist in the page, stubs in the check.
+  readonly home: () => Promise<Residency>;
+  readonly keep: () => Promise<Keeping>;
   // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
   // tap, closed by the panel with the worker.
   readonly Device: DeviceFactory;
@@ -477,6 +563,23 @@ const sameSpan = (a: WordSpan | null, b: WordSpan | null): boolean =>
 const samePlace = (a: ReadAlongAt | null, b: ReadAlongAt | null): boolean =>
   a === b || (a !== null && b !== null && a.utterance === b.utterance && sameSpan(a.segment, b.segment) && sameSpan(a.word, b.word));
 
+// The answer to the latest ask only: an ask superseded or dropped before it settles is not
+// delivered.
+const latest = <T,>(deliver: (value: T) => void): { ask: (pending: Promise<T>) => void; drop: () => void } => {
+  let live: Promise<T> | null = null;
+  return {
+    ask: (pending) => {
+      live = pending;
+      void pending.then((value) => {
+        if (live === pending) deliver(value);
+      });
+    },
+    drop: () => {
+      live = null;
+    },
+  };
+};
+
 export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const { controls, frames, utterances } = config;
   // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch`, from `step`.
@@ -503,6 +606,11 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (neural === null) throw new Error("listen panel: no performer to drive");
     return neural;
   };
+  // [LAW:no-ambient-temporal-coupling] One ask of each kind in flight, owned here: a new ask
+  // supersedes the old, and only the current ask's answer is dispatched. The order two
+  // promises settle in cannot put a stale store or browser answer over a fresh entry.
+  const askHome = latest<Residency>((residency) => dispatch({ kind: "home", residency }));
+  const askKeep = latest<Keeping>((keeping) => dispatch({ kind: "keeping", keeping }));
 
   let frame: number | null = null;
   let shown: ReadAlongAt | null = null;
@@ -534,6 +642,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   const performEffect = (effect: Effect): void => {
     switch (effect.kind) {
+      case "home":
+        askHome.ask(config.home());
+        return;
       case "spawn": {
         port = config.spawn();
         unsubscribe = port.subscribe((message) => dispatch({ kind: "worker", message }));
@@ -548,6 +659,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       }
       case "load":
         portOf().send({ kind: "load" });
+        askKeep.ask(config.keep());
         return;
       case "script":
         portOf().send({ kind: "script", id: SCRIPT_ID, utterances });
@@ -583,6 +695,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         port = null;
         void audio?.device.close();
         audio = null;
+        // The keep request belonged to the load the released worker was doing.
+        askKeep.drop();
         return;
       }
     }
@@ -623,6 +737,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     }
   };
 
+  // The first step, performed like every other: the state shown, the store asked.
+  for (const effect of start().effects) performEffect(effect);
   render(controls, readout(state, utterances.length));
   controls.play.addEventListener("click", () => dispatch({ kind: "tap", control: "play" }));
   controls.stop.addEventListener("click", () => dispatch({ kind: "tap", control: "stop" }));
