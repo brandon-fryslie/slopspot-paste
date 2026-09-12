@@ -26,12 +26,7 @@ import {
   cursorAt,
   emptyManifest,
   estimateTimes,
-  knownPrefix,
   offsetAt,
-  toGlobalMs,
-  toPosition,
-  totalDurationMs,
-  unitsForTurn,
   wordAt,
   wordsOf,
   type Manifest,
@@ -177,40 +172,8 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
       ["words", "unit", "estimated"].every((k) => all.some((r) => r.alignment.kind === k)),
     );
 
-    // Global time over the complete manifest.
-    const total = totalDurationMs(manifest);
-    assert(
-      "totalDurationMs is the sum of every unit's duration once all are known",
-      total === all.reduce((s, r) => s + r.durationMs, 0) && knownPrefix(manifest).length === script.length,
-    );
-    const roundTrips = all.every((r, unitIndex) =>
-      [0, r.durationMs / 2, r.durationMs - 1].every((offsetMs) => {
-        const g = toGlobalMs(manifest, { unitIndex, offsetMs });
-        const p = g === undefined ? undefined : toPosition(manifest, g);
-        return p !== undefined && p.unitIndex === unitIndex && p.offsetMs === offsetMs;
-      }),
-    );
-    assert("position -> global -> position round-trips for every unit at its start, middle and last ms", roundTrips);
-    const globalStarts = all.map((_, unitIndex) => toGlobalMs(manifest, { unitIndex, offsetMs: 0 }) ?? -1);
-    assert(
-      "global time of unit starts is strictly increasing and starts at 0",
-      globalStarts[0] === 0 && globalStarts.every((g, i) => i === 0 || g > (globalStarts[i - 1] ?? Infinity)),
-    );
-    const end = toPosition(manifest, total);
-    const past = toPosition(manifest, total + 5000);
-    const before = toPosition(manifest, -5);
-    assert(
-      "a global time at or past the end is the end of the last unit; before the start is the start",
-      end !== undefined &&
-        end.unitIndex === script.length - 1 &&
-        end.offsetMs === all[script.length - 1]?.durationMs &&
-        past !== undefined &&
-        past.unitIndex === end.unitIndex &&
-        past.offsetMs === end.offsetMs &&
-        before !== undefined &&
-        before.unitIndex === 0 &&
-        before.offsetMs === 0,
-    );
+    // The conversation's clock over these same records is timeline.ts's, and is checked
+    // there (scripts/timeline-check.ts) against this fixture's own durations.
 
     // The cursor: the segment is the unit's own span at every offset; a word only from a
     // measured alignment, and then inside the segment.
@@ -241,18 +204,6 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
     });
     assert("offsetAt: a word's first and last character seek to its start; before the unit, and for a `unit` alignment anywhere, zero", offsetsHonest);
 
-    // Turn ranges tile the script in order. Several utterances share a turn (a turn's
-    // prose, its announced code blocks, its images), so the distinct turn indices are
-    // what tile.
-    const turns = [...new Set(utterances.map((u) => u.index))];
-    const ranges = turns.map((t) => unitsForTurn(manifest, t));
-    assert(
-      "unitsForTurn ranges are contiguous, in turn order, tile the script exactly, and hold only that turn's units",
-      turns.length < utterances.length &&
-        ranges.every((r, i) => r.from <= r.to && (i === 0 ? r.from === 0 : r.from === ranges[i - 1]?.to)) &&
-        ranges.at(-1)?.to === script.length &&
-        ranges.every((r, i) => script.slice(r.from, r.to).every((u) => u.utterance.index === turns[i])),
-    );
   }
 }
 
@@ -323,23 +274,19 @@ console.log("\nSpeech manifest — admission and rejection:");
   assert("a word time past the unit's duration is rejected", beyond.kind === "times-out-of-order" && beyond.word === 1);
   assert("a rejected report leaves the manifest as it was", m1.units[1] === undefined);
 
-  // Out of order: the last unit first, then the middle; global time waits for the gap.
+  // Out of order: the last unit first, then the middle. The scheduler synthesizes ahead of
+  // the cursor and a seek starts it mid-paste, so admission is by index and a gap is legal.
   const third = addUnit(m1, 2, { durationMs: dur(2), alignment: { kind: "unit" } });
   const m2 = third.kind === "added" ? third.manifest : m1;
-  assert("a unit far ahead of the prefix is admitted", third.kind === "added" && m2.units[2] !== undefined);
-  assert(
-    "until the gap is filled the timeline stops at the prefix: total is unit 0 alone, unit 2 has no global time",
-    totalDurationMs(m2) === dur(0) && toGlobalMs(m2, { unitIndex: 2, offsetMs: 0 }) === undefined && toGlobalMs(m2, { unitIndex: 1, offsetMs: 0 }) === undefined,
-  );
-  assert("a global time past the prefix lands at the end of the prefix, not in the unknown", toPosition(m2, dur(0) + 1000)?.unitIndex === 0);
-  assert("an empty manifest has no timeline: total 0, no position", totalDurationMs(empty) === 0 && toPosition(empty, 0) === undefined);
+  assert("a unit far ahead of an unfilled gap is admitted", third.kind === "added" && m2.units[2] !== undefined);
+  assert("the gap itself stays unrecorded", m2.units[1] === undefined && empty.units.every((u) => u === undefined));
   const unit1 = script[1];
   if (unit1 === undefined) throw new Error("fixture: the script has no unit 1 to fill the gap with");
   const second = addUnit(m2, 1, { durationMs: dur(1), alignment: { kind: "estimated", times: estimateTimes(unit1, dur(1)) } });
   const m3 = second.kind === "added" ? second.manifest : m2;
   assert(
-    "filling the gap extends the timeline over all three units",
-    second.kind === "added" && totalDurationMs(m3) === dur(0) + dur(1) + dur(2) && toGlobalMs(m3, { unitIndex: 2, offsetMs: 10 }) === dur(0) + dur(1) + 10,
+    "filling the gap records all three units",
+    second.kind === "added" && m3.units.every((u) => u !== undefined) && m3.units[1]?.durationMs === dur(1),
   );
 
   const r1 = m3.units[1];
@@ -375,12 +322,4 @@ console.log("\nSpeech manifest — admission and rejection:");
   const r2 = m3.units[2];
   assert("offsetAt on a `unit` alignment is zero everywhere: nothing finer to seek to", r2 !== undefined && r2.alignment.kind === "unit" && [0, 2, 3].every((ch) => offsetAt(r2, ch) === 0));
 
-  assert(
-    "unitsForTurn: a whitespace-only turn is an empty range at the next spoken unit; a missing one is empty at the end",
-    (() => {
-      const blank = unitsForTurn(m3, 2);
-      const missing = unitsForTurn(m3, 9);
-      return blank.from === 2 && blank.to === 2 && unitsForTurn(m3, 3).from === 2 && missing.from === 3 && missing.to === 3;
-    })(),
-  );
 }

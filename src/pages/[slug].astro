@@ -161,8 +161,8 @@ const present = {
   compare: true,
   // Content-gated: the renderers return "" when there is nothing to export or continue,
   // and the freshness/version surfaces exist only for url-arm pastes that have them.
-  // Content-gated on there being something to say: a paste whose spine is entirely
-  // blank/whitespace turns yields no utterances (a fenced code block still gets an
+  // Listen is content-gated on there being something to say: a paste whose spine is
+  // entirely blank/whitespace yields no utterances (a fenced code block still gets an
   // "announced" utterance, never zero), and offering to read silence aloud would be a
   // promise the button can't keep.
   listen: utterances.length > 0,
@@ -501,12 +501,28 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             One transport. The status line is written by
             listenPanel.ts on every state change (the markup carries no sentence of its own,
             so there is no second copy to drift). Follow is follow.ts's: shown only while the
-            reader has scrolled away from the voice.
+            reader has scrolled away from the voice. The scrubber, the turn skips and the
+            speed control read the conversation's own clock (timeline.ts): a scrubber never
+            names a unit index, and the times move on the voice's own live position.
           */}
           <div class="speech-controls">
             <button class="mono-pill speech-play" type="button">Listen</button>
             <button class="mono-pill speech-stop" type="button" disabled>Stop</button>
+            <button class="mono-pill speech-back" type="button" aria-label="Previous turn" title="Previous turn — [" disabled>&lsaquo;</button>
+            <button class="mono-pill speech-forward" type="button" aria-label="Next turn" title="Next turn — ]" disabled>&rsaquo;</button>
+            <span class="speech-rate">
+              <button class="mono-pill speech-slower" type="button" aria-label="Slower" title="Slower — −" disabled>−</button>
+              <span class="speech-speed">1×</span>
+              <button class="mono-pill speech-faster" type="button" aria-label="Faster" title="Faster — +" disabled>+</button>
+            </span>
             <button class="mono-pill speech-follow" type="button" hidden>Follow</button>
+            <div class="speech-scrubber">
+              <span class="speech-played">0:00</span>
+              <input class="speech-scrub" type="range" min="0" max="1" value="0" step="1"
+                aria-label="Position in the conversation"
+                title="Drag to move through the conversation — the arrow keys move ten seconds" />
+              <span class="speech-left"></span>
+            </div>
             <progress class="speech-progress" hidden></progress>
             <p class="speech-now" aria-live="polite"></p>
             <button class="mono-pill speech-voices-toggle" type="button" aria-expanded="false" aria-controls="speech-voices">Voices</button>
@@ -738,11 +754,13 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // The Listen tool's page half. Everything with judgement in it — what is said, in whose
     // voice, where we are in the conversation, which words are being said, who is speaking,
     // what a tap on the page means, when the page follows the voice — lives in ../speech,
-    // ../neuralPerformer, ../listenPanel, ../readAlong and ../follow, each driven by its
-    // own scripts/*-check.ts under jsdom [LAW:verifiable-goals]. What remains here is the
-    // seam: this page's markup, this page's turn cards, the real worker, the real
-    // AudioContext, the real animation frame, the real viewport, and the capability gate.
-    import { createListenPanel } from "../listenPanel";
+    // ../neuralPerformer, ../listenPanel, ../shortcuts, ../readAlong and ../follow, each
+    // driven by its own scripts/*-check.ts under jsdom [LAW:verifiable-goals]. What remains
+    // here is the seam: this page's markup, this page's turn cards, the real worker, the
+    // real AudioContext, the real animation frame, the real viewport, and the capability
+    // gate.
+    import { createListenPanel, listening } from "../listenPanel";
+    import { shortcut } from "../shortcuts";
     import { readPreference, writePreference } from "../listenConsent";
     import { MODEL_ASSETS, allModelAssets, type ConnectionReading } from "../modelAssets";
     import { askToKeep, readResidency } from "../modelResidency";
@@ -802,6 +820,14 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           controls: {
             play: control<HTMLButtonElement>(".speech-play"),
             stop: control<HTMLButtonElement>(".speech-stop"),
+            back: control<HTMLButtonElement>(".speech-back"),
+            forward: control<HTMLButtonElement>(".speech-forward"),
+            slower: control<HTMLButtonElement>(".speech-slower"),
+            faster: control<HTMLButtonElement>(".speech-faster"),
+            speed: control<HTMLElement>(".speech-speed"),
+            scrub: control<HTMLInputElement>(".speech-scrub"),
+            played: control<HTMLElement>(".speech-played"),
+            remaining: control<HTMLElement>(".speech-left"),
             status: control<HTMLElement>(".speech-now"),
             progress: control<HTMLProgressElement>(".speech-progress"),
             mark: {
@@ -841,6 +867,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             cancel: (handle) => window.cancelAnimationFrame(handle),
           },
           onPosition: (at) => follower.cursor(painter.paint(at)),
+          // A reader who asked to be somewhere is looking where the voice is about to be, so
+          // the page follows again — whether they tapped a word, dragged the scrubber,
+          // nudged or skipped a turn. One rule for every door [LAW:single-enforcer].
+          onSeek: () => follower.send({ kind: "follow" }),
         });
 
         // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not release
@@ -864,9 +894,28 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         document.addEventListener("click", (event) => {
           const mark = tapMark(document, caretAt, utterances, event);
           if (mark === null) return;
-          panel.seek(mark);
-          follower.send({ kind: "follow" });
+          panel.send({ kind: "mark", to: mark });
         });
+
+        // The transport's keys, claimed in the CAPTURE phase. Two things follow from the
+        // phase and neither from the wiring order: the page's own default (space paging,
+        // an arrow in a field) is prevented before it happens, and follow.ts's bubbling
+        // listener — which reads `defaultPrevented` to tell a seek from the reader
+        // scrolling away — is guaranteed to run after this one
+        // [LAW:no-ambient-temporal-coupling]. A key is the transport's only while there is
+        // a voice to pause (`listening`); before the first Listen and after a Stop the page
+        // keeps every one of them, which is why a reading page can have shortcuts at all.
+        window.addEventListener(
+          "keydown",
+          (event) => {
+            if (!listening(panel.state())) return;
+            const gesture = shortcut(event);
+            if (gesture === null) return;
+            event.preventDefault();
+            panel.send(gesture);
+          },
+          { capture: true },
+        );
       }
     }
   </script>

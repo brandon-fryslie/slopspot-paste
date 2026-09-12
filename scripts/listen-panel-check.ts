@@ -32,7 +32,7 @@ import {
 import type { ConnectionReading } from "../src/modelAssets";
 import { utteranceTable, type NeuralView } from "../src/neuralPerformer";
 import type { Keeping, Residency } from "../src/modelResidency";
-import type { Mark } from "../src/performer";
+import type { Mark, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
@@ -111,8 +111,13 @@ const effects = (s: ReturnType<typeof step>): string =>
 // until the hover says otherwise.
 const ASKING: Visit = { remembered: false, metered: false, pick: DEFAULT_PICK };
 const shown = (state: PanelState, visit: Visit = ASKING): string => {
-  const r = readout(state, TOTAL, visit);
+  const r = readout(state, utterances, visit);
   return `${r.play.label}${r.play.enabled ? "" : "(off)"} | stop${r.stop.enabled ? "" : "(off)"} | ${r.status}${r.progress === null ? "" : ` | bar ${r.progress.loadedBytes}/${r.progress.totalBytes}`}`;
+};
+// The turn-skip and speed controls, as `readout` shows them.
+const around = (state: PanelState, visit: Visit = ASKING): string => {
+  const r = readout(state, utterances, visit);
+  return `back${r.skip.back ? "" : "(off)"} | forward${r.skip.forward ? "" : "(off)"} | ${r.speed.label}${r.speed.slower ? "" : " slower(off)"}${r.speed.faster ? "" : " faster(off)"}`;
 };
 // The place a voice on its way starts from, as "utterance:char"; a voice on stage has none.
 const held = (state: PanelState): string => (state.kind === "provisioning" ? `${state.from.utterance}:${state.from.char}` : "on stage");
@@ -179,8 +184,27 @@ console.log("step: the way to audio");
   throws("a script reply with another id is not ours", () => step(scripting.state, worker({ kind: "script", id: 7, units })));
 
   const listening = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("the performer's first view puts the voice on stage and sends it to the top: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "perform seek 0:0" && shown(listening.state) === "Listen | stop(off) | Ready");
+  assert("the performer's first view puts the voice on stage and sends it to the top: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "perform rate,perform seek 0:0" && shown(listening.state) === "Listen | stop(off) | Ready");
   assert("a seek on stage hushes any preview, then seeks the voice", effects(step(listening.state, seekTo(1, 3))) === "hush,perform seek 1:3");
+
+  // Speed is the panel's own value, not a performer's: set before any performer exists,
+  // obeyed by the one that arrives, and outliving a crash and a teardown.
+  const speedTo = (by: -1 | 1): PanelEvent => ({ kind: "speed", by });
+  const slowedBeforeAnyVoice = step(idle, speedTo(-1));
+  assert("a step down while no performer exists yet changes the state alone, nothing to perform", effects(slowedBeforeAnyVoice) === "" && slowedBeforeAnyVoice.state.speed === 0.75);
+  assert("a step off the bottom of the list returns the same speed", step(slowedBeforeAnyVoice.state, speedTo(-1)).state.speed === 0.75);
+  const fasterOnStage = step(listening.state, speedTo(1));
+  assert("a step while the voice is on stage is performed on it at once", fasterOnStage.state.speed === 1.25 && effects(fasterOnStage) === "perform rate");
+  const top = [0, 1, 2, 3, 4, 5].reduce((s) => step(s, speedTo(1)).state, listening.state);
+  assert("stepping past the top of the list stops at its last value", top.speed === 2.5 && step(top, speedTo(1)).state.speed === 2.5 && effects(step(top, speedTo(1))) === "");
+  assert("the neural voice's first view carries the reader's speed, set before it existed", (() => {
+    const raised = step(built.state, speedTo(1));
+    return raised.state.kind === "provisioning" && step(raised.state, { kind: "view", view: viewOf({ kind: "idle" }) }).state.speed === 1.25;
+  })());
+  const crashedFast = step(fasterOnStage.state, { kind: "worker-error", message: "x" });
+  assert("a crash keeps the reader's speed, not the panel's default", crashedFast.state.speed === 1.25);
+  const disposedFast = step(fasterOnStage.state, { kind: "dispose" });
+  assert("a teardown is not the reader changing their mind: the speed survives it", disposedFast.state.speed === 1.25);
   const playing = step(listening.state, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "audio" }) });
   assert("tap play while speaking hushes any preview, then pauses", effects(step(playing.state, tapPlay)) === "hush,perform pause");
   assert("tap stop while speaking hushes any preview, then stops", effects(step(playing.state, tapStop)) === "hush,perform stop");
@@ -197,7 +221,7 @@ console.log("step: the way to audio");
   const arriving = [supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, tappedTwice.state);
   assert("the place is held through the whole way to audio", held(arriving) === "0:21");
   const arrivedAtPlace = step(arriving, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("the voice arriving after a tap is sent to the tapped place", effects(arrivedAtPlace) === "perform seek 0:21" && arrivedAtPlace.state.kind === "neural");
+  assert("the voice arriving after a tap is sent to the tapped place", effects(arrivedAtPlace) === "perform rate,perform seek 0:21" && arrivedAtPlace.state.kind === "neural");
 
   const crashed = step(downloading.state, { kind: "worker-error", message: "the worker bundle failed to load" });
   assert("a worker error while downloading: crashed, everything released, Play reads Retry", effects(crashed) === "release terminate,home" && shown(crashed.state) === "Retry | stop(off) | The voice failed: the worker bundle failed to load");
@@ -207,7 +231,7 @@ console.log("step: the way to audio");
   const fellPlaying = step(playing.state, { kind: "worker-error", message: "boom" });
   assert("a crash while playing keeps the reported place for the retry", held(fellPlaying.state) === "1:0" && shown(fellPlaying.state) === "Retry | stop(off) | The voice failed: boom");
   const fellRewoken = [wake("none"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, fellPlaying.state);
-  assert("a crash while playing, then a wake: the voice comes back standing at the place, not speaking — the tap's yes went with its device", held(fellRewoken) === "1:0" && effects(step(fellRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "");
+  assert("a crash while playing, then a wake: the voice comes back standing at the place, not speaking — the tap's yes went with its device", held(fellRewoken) === "1:0" && effects(step(fellRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate");
   throws("a view after the crash is a violation: the released performer's last view never reaches step", () => step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }));
   const respawned = step(fellPlaying.state, tapPlay);
   assert("Retry after a crash spawns a fresh worker and probes, the place still held", effects(respawned) === "unlock,spawn" && held(respawned.state) === "1:0" && shown(respawned.state).startsWith("Listen(off)"));
@@ -244,9 +268,9 @@ console.log("step: consent is the only door to the weights");
   assert("Play while the download a yes started runs: the gesture spent, the consent raised to speak", effects(raised) === "unlock" && shown(raised.state) === "Listen(off) | stop(off) | Preparing the voice…");
   const arrivedReady = [progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, said.state);
   const standingReady = step(arrivedReady, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("a voice that arrives on a download alone takes the stage and stands ready: no seek, nothing spoken", standingReady.state.kind === "neural" && effects(standingReady) === "" && shown(standingReady.state) === "Listen | stop(off) | Ready");
+  assert("a voice that arrives on a download alone takes the stage and stands ready: no seek, nothing spoken", standingReady.state.kind === "neural" && effects(standingReady) === "perform rate" && shown(standingReady.state) === "Listen | stop(off) | Ready");
   const arrivedSpeaking = [progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, raised.state);
-  assert("a voice that arrives after the consent was raised is sent to its place", effects(step(arrivedSpeaking, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform seek 0:0");
+  assert("a voice that arrives after the consent was raised is sent to its place", effects(step(arrivedSpeaking, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0:0");
 
   const yesFirst = step(idle, yes);
   assert("the hover's yes before the probe: the gesture spent and the worker spawned", effects(yesFirst) === "unlock,spawn" && shown(yesFirst.state) === MOUNT_LINE);
@@ -268,9 +292,9 @@ console.log("step: consent is the only door to the weights");
   assert("a wake with the yes withdrawn — the box unchecked, the connection metered — probes and waits", effects(withdrawn) === "" && shown(withdrawn.state) === IDLE_LINE);
   const idleOnStage = step(standingReady.state, { kind: "worker-error", message: "x" });
   const idleRetried = [tapPlay, supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
-  assert("a crash on stage while idle, then Retry: the tap is the consent, the voice arrives and speaks", effects(step(idleRetried, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform seek 0:0");
+  assert("a crash on stage while idle, then Retry: the tap is the consent, the voice arrives and speaks", effects(step(idleRetried, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0:0");
   const idleRewoken = [wake("download"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
-  assert("a crash on stage while idle, then a wake: the voice comes back standing ready, not speaking", effects(step(idleRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "");
+  assert("a crash on stage while idle, then a wake: the voice comes back standing ready, not speaking", effects(step(idleRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate");
   // A failed load is retried on the consent still held: the standing yes while it stands, the
   // reader's own yes whatever the box says.
   const loadFailed = worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
@@ -320,7 +344,7 @@ console.log("readout: every form the mark can take, and the question its hover a
   assert("a crash is a failure", markForm(step(downloading, { kind: "worker-error", message: "x" }).state).kind === "failed");
   assert("the voice on stage and idle is ready", markForm(onStage).kind === "ready");
 
-  const ask = (state: PanelState, visit: Visit = ASKING): string | null => readout(state, TOTAL, visit).ask;
+  const ask = (state: PanelState, visit: Visit = ASKING): string | null => readout(state, utterances, visit).ask;
   const promised = step(step(idle, wake("download")).state, home(ABSENT)).state;
   assert("a held consent through the probe: checking to the eye, as the sentence says, nothing to ask", markForm(promised).kind === "checking" && ask(promised) === null && shown(promised) === MOUNT_LINE);
   assert("download needed: the hover asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
@@ -329,7 +353,18 @@ console.log("readout: every form the mark can take, and the question its hover a
   assert("remembered off a metered connection: no note", ask(forms.download, { ...ASKING, remembered: true, metered: false }) === "Download speech model? · 239 MB");
   assert("not remembered on a metered connection: no note — nothing is being overridden", ask(forms.download, { ...ASKING, remembered: false, metered: true }) === "Download speech model? · 239 MB");
   assert("nothing to ask when the voice is here, on its way, on stage, or impossible", [forms.ready, forms.checking, forms.downloading, forms.warming, forms.speaking, forms.paused, forms.unsupported, forms.failed].every((state) => ask(state) === null));
-  assert("the preference's box reads the visit", readout(forms.download, TOTAL, { ...ASKING, remembered: true, metered: false }).remembered && !readout(forms.download, TOTAL, ASKING).remembered);
+  assert("the preference's box reads the visit", readout(forms.download, utterances, { ...ASKING, remembered: true, metered: false }).remembered && !readout(forms.download, utterances, ASKING).remembered);
+
+  // The turn skips and the speed control read the conversation, not the voice: they are
+  // there before any performer exists and unaffected by consent or download state.
+  assert("before any voice, standing at the top: no turn before it, one after it", around(idle) === "back(off) | forward | 1×");
+  assert("standing at the second turn: back to the first, nothing after it", around(step(idle, seekTo(1)).state) === "back | forward(off) | 1×");
+  assert("the same landmarks hold once the voice is on stage", around(onStage) === "back(off) | forward | 1×");
+  assert("the speed label follows the state's own speed, and both ends disable their step", (() => {
+    const slowest = step(onStage, { kind: "speed", by: -1 }).state;
+    const fastest = [0, 1, 2, 3, 4, 5].reduce((s) => step(s, { kind: "speed", by: 1 }).state, onStage);
+    return around(slowest) === "back(off) | forward | 0.75× slower(off)" && around(fastest) === "back(off) | forward | 2.5× faster(off)";
+  })());
 }
 
 console.log("step: violations throw");
@@ -384,6 +419,14 @@ const MARKUP = `<!DOCTYPE html><body>
   <div class="speech-controls">
     <button class="speech-play" type="button"></button>
     <button class="speech-stop" type="button" disabled></button>
+    <button class="speech-back" type="button" disabled></button>
+    <button class="speech-forward" type="button" disabled></button>
+    <button class="speech-slower" type="button" disabled></button>
+    <span class="speech-speed"></span>
+    <button class="speech-faster" type="button" disabled></button>
+    <input class="speech-scrub" type="range" min="0" max="1" value="0" />
+    <span class="speech-played"></span>
+    <span class="speech-left"></span>
     <progress class="speech-progress" hidden></progress>
     <p class="speech-now"></p>
     <button class="speech-voices-toggle" type="button" aria-expanded="false">Voices</button>
@@ -411,6 +454,18 @@ interface MarkRig {
 interface Rig {
   readonly play: HTMLButtonElement;
   readonly stop: HTMLButtonElement;
+  readonly back: HTMLButtonElement;
+  readonly forward: HTMLButtonElement;
+  readonly slower: HTMLButtonElement;
+  readonly faster: HTMLButtonElement;
+  readonly speed: HTMLElement;
+  readonly scrub: HTMLInputElement;
+  readonly played: HTMLElement;
+  readonly remaining: HTMLElement;
+  // The panel's `onSeek`, wired in `mount`: call it and read how many times it fired.
+  // Exactly once per gesture that names a place, never for a tap or a speed step.
+  readonly onSeek: () => void;
+  readonly seeks: () => number;
   readonly status: HTMLElement;
   readonly bar: HTMLProgressElement;
   readonly mark: MarkRig;
@@ -439,6 +494,7 @@ interface Rig {
   readonly positions: (ReadAlongAt | null)[];
   readonly where: () => string;
   readonly line: () => string;
+  readonly transport: () => string;
   // What the mark shows: its form, pinned or not, then the hover's question, yes and box.
   readonly shownMark: () => string;
   // The reader's hand on the hover: the box checked or cleared, a key pressed on the page.
@@ -530,6 +586,14 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const positions: (ReadAlongAt | null)[] = [];
   const play = el<HTMLButtonElement>(".speech-play");
   const stop = el<HTMLButtonElement>(".speech-stop");
+  const back = el<HTMLButtonElement>(".speech-back");
+  const forward = el<HTMLButtonElement>(".speech-forward");
+  const slower = el<HTMLButtonElement>(".speech-slower");
+  const faster = el<HTMLButtonElement>(".speech-faster");
+  const speed = el<HTMLElement>(".speech-speed");
+  const scrub = el<HTMLInputElement>(".speech-scrub");
+  const played = el<HTMLElement>(".speech-played");
+  const remaining = el<HTMLElement>(".speech-left");
   const status = el<HTMLElement>(".speech-now");
   const mark: MarkRig = {
     root: el(".listen-mark"),
@@ -540,9 +604,22 @@ const rig = (setup: VisitSetup = {}): Rig => {
     remember: el(".listen-mark-remember input"),
   };
   const opened = StubDevice.instances.length;
+  let seekCount = 0;
   return {
     play,
     stop,
+    back,
+    forward,
+    slower,
+    faster,
+    speed,
+    scrub,
+    played,
+    remaining,
+    onSeek: () => {
+      seekCount += 1;
+    },
+    seeks: () => seekCount,
     status,
     bar: el(".speech-progress"),
     mark,
@@ -580,6 +657,12 @@ const rig = (setup: VisitSetup = {}): Rig => {
         : `${at.utterance.anchor} ${at.segment.charStart}-${at.segment.charEnd}${at.word === null ? "" : `/${at.word.charStart}-${at.word.charEnd}`} of ${at.turn.length}`;
     },
     line: () => `${play.textContent}${play.disabled ? "(off)" : ""} | stop${stop.disabled ? "(off)" : ""} | ${status.textContent}`,
+    // The turn skips, the speed and the scrubber's own reading: what the DOM shows, not the
+    // readout the pure machine computed — this is the driver's whole job to have written.
+    transport: () =>
+      `back${back.disabled ? "(off)" : ""} | forward${forward.disabled ? "(off)" : ""} | ` +
+      `slower${slower.disabled ? "(off)" : ""} ${speed.textContent} faster${faster.disabled ? "(off)" : ""} | ` +
+      `${played.textContent}/${scrub.value} of ${scrub.max} · ${remaining.textContent}`,
     shownMark: () =>
       `${mark.root.dataset.state}${mark.root.dataset.open === "true" ? "(pinned)" : ""} | ${mark.ask.hidden ? "no ask" : mark.ask.textContent} | yes ${mark.yes.hidden ? "hidden" : "shown"} | remember ${mark.remember.checked ? "on" : "off"}`,
     check: (on) => {
@@ -595,7 +678,22 @@ const rig = (setup: VisitSetup = {}): Rig => {
 
 const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
   createListenPanel({
-    controls: { play: r.play, stop: r.stop, status: r.status, progress: r.bar, mark: r.mark, voices: r.voices },
+    controls: {
+      play: r.play,
+      stop: r.stop,
+      back: r.back,
+      forward: r.forward,
+      slower: r.slower,
+      faster: r.faster,
+      speed: r.speed,
+      scrub: r.scrub,
+      played: r.played,
+      remaining: r.remaining,
+      status: r.status,
+      progress: r.bar,
+      mark: r.mark,
+      voices: r.voices,
+    },
     utterances,
     spawn: () => {
       r.counts.spawned += 1;
@@ -610,6 +708,7 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     frames: r.frames,
     clock: () => r.now,
     onPosition: (at) => r.positions.push(at),
+    onSeek: r.onSeek,
   });
 
 // The whole way to audio after a tap, as the worker would answer it.
@@ -683,7 +782,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   assert("Pause: paused, the loop is off, the label says Resume, the mark paused", r.line() === "Resume | stop | Paused · passage 2 of 2" && r.frames.pending === 0 && r.mark.root.dataset.state === "paused");
   r.play.click();
   assert("Resume: speaking again, the loop is back", r.play.textContent === "Pause" && r.frames.pending === 1);
-  panel.seek(mark(0, 25));
+  panel.send({ kind: "mark", to: mark(0, 25) });
   assert("a tap on the first passage's second sentence: the voice seeks there and the cursor follows", r.where() === "t1 21-42 of 1" && r.line() === "Pause | stop | Playing · passage 1 of 2");
   r.stop.click();
   assert("Stop: idle, the cursor cleared, Stop disabled, Play says Listen, the mark ready", r.line() === "Listen | stop(off) | Ready" && r.positions.at(-1) === null && r.frames.pending === 0 && r.shownMark() === "ready | no ask | yes hidden | remember off");
@@ -704,10 +803,10 @@ console.log("createListenPanel: a tap on a word before the voice is warm is wher
 {
   const r = rig();
   const panel = mount(r);
-  panel.seek(mark(0, 21));
+  panel.send({ kind: "mark", to: mark(0, 21) });
   const device = r.devices()[0];
   assert("a tap on a word while the probe runs opens the device, like Play, and holds the place", r.counts.spawned === 1 && device?.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…" && held(panel.state()) === "0:21");
-  panel.seek(mark(1));
+  panel.send({ kind: "mark", to: mark(1) });
   assert("a second tap while the voice is on its way moves the place, nothing else", r.counts.spawned === 1 && r.devices().length === 1 && held(panel.state()) === "1:0");
   arrive(r);
   assert("the voice arrives at the tapped place: it asks for that unit and the cursor is there", r.said().endsWith("synthesize 2") && r.where() === "t2 0-8 of 1" && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
@@ -715,6 +814,36 @@ console.log("createListenPanel: a tap on a word before the voice is warm is wher
   r.emit({ kind: "done", unitId: 2, report: report(FRAME_S * 1000), elapsedMs: 5 });
   device?.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
   assert("the last unit ends: Ready, the cursor cleared, the loop off", r.line() === "Listen | stop(off) | Ready" && r.positions.at(-1) === null && r.frames.pending === 0);
+  panel.dispose();
+}
+
+console.log("createListenPanel: the transport skips turns and steps the speed, and follows every gesture that moves");
+{
+  const r = rig();
+  const panel = mount(r);
+  r.play.click();
+  arrive(r);
+  assert("on stage at the top: no turn behind, the next turn ahead, speed at 1x and neither end disabled", r.where() === "t1 0-20 of 1" && r.back.disabled && !r.forward.disabled && r.speed.textContent === "1×" && !r.slower.disabled && !r.faster.disabled);
+  assert("mounting and arriving named no place: nothing has asked to follow yet", r.seeks() === 0);
+
+  r.forward.click();
+  assert("forward skips to the second turn, and the page is told to follow", r.where() === "t2 0-8 of 1" && r.seeks() === 1);
+  assert("standing at the last turn: forward has nothing left, back does", r.forward.disabled && !r.back.disabled);
+
+  r.back.click();
+  assert("back returns to the first turn, and follows again", r.where() === "t1 0-20 of 1" && r.seeks() === 2);
+
+  r.faster.click();
+  assert("faster steps the speed and is not a seek — the reader did not move", r.speed.textContent === "1.25×" && r.seeks() === 2);
+  r.slower.click();
+  r.slower.click();
+  assert("slower steps back down, to its own floor and no further", r.speed.textContent === "0.75×" && r.slower.disabled);
+
+  r.scrub.value = r.scrub.max;
+  r.scrub.dispatchEvent(new (r.doc.defaultView as unknown as typeof window).Event("input", { bubbles: true }));
+  assert("dragging the scrubber moves the times shown but not the voice, and is not yet a seek", r.where() === "t1 0-20 of 1" && r.seeks() === 2 && r.played.textContent !== "");
+  r.scrub.dispatchEvent(new (r.doc.defaultView as unknown as typeof window).Event("change", { bubbles: true }));
+  assert("letting go seeks to where the thumb landed, at the end of the conversation, and follows", r.where().startsWith("t2") && r.seeks() === 3);
   panel.dispose();
 }
 
@@ -824,7 +953,7 @@ console.log("createListenPanel: a device that cannot run the voice says so at mo
   r.play.click();
   r.mark.yes.click();
   r.check(true);
-  panel.seek(mark(1));
+  panel.send({ kind: "mark", to: mark(1) });
   assert("no tap, yes, box or word spawns anything or opens a device on it", r.counts.spawned === 1 && r.devices().length === 0 && r.sent.length === 0 && r.line().startsWith("Listen(off)"));
   panel.dispose();
 }
