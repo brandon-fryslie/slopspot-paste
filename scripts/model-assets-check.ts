@@ -118,7 +118,7 @@ const synth: ModelAsset = {
 
 class MemoryStore implements AssetStore {
   readonly files = new Map<string, Uint8Array<ArrayBuffer>>();
-  // A store that cannot be opened (private mode) throws on read and write alike.
+  // A store that cannot be opened (private mode) throws on read, write and list alike.
   fault: string | null = null;
   async read(name: string) {
     if (this.fault !== null) throw new Error(this.fault);

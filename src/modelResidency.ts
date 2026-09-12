@@ -24,6 +24,7 @@
 // thin edges below, so scripts/model-assets-check.ts drives every arm with the in-memory
 // store and a stub of the request.
 
+import type { StoreEntry } from "./modelAssetLoader";
 import { type ModelAsset, assetKey } from "./modelAssets";
 
 // [LAW:types-are-the-program] The three things a store can say about the model. `absent`
@@ -35,11 +36,6 @@ export type Residency =
   | { readonly kind: "resident" }
   | { readonly kind: "absent"; readonly bytesToDownload: number }
   | { readonly kind: "unavailable"; readonly message: string };
-
-export interface StoreEntry {
-  readonly name: string;
-  readonly size: number;
-}
 
 // The pure derivation: an asset is held when the listing has its key at its size. Entries
 // the manifest does not name — a stale build's, another tool's — are simply not asked about;

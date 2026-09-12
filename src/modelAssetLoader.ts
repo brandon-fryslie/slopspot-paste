@@ -31,11 +31,15 @@
 
 import { opfs } from "@jax-js/loaders";
 import { type ModelAsset, MODEL_ASSET_PREFIX, assetKey, shardPlan } from "./modelAssets";
-import type { StoreEntry } from "./modelResidency";
 
 // [LAW:types-are-the-program] The exact subset of @jax-js/loaders' OPFS the loader needs,
 // stated structurally so the check's in-memory store and the real one are the same type.
 // `list` carries sizes: the residency reading is derived from them without a byte read.
+export interface StoreEntry {
+  readonly name: string;
+  readonly size: number;
+}
+
 export interface AssetStore {
   read(name: string): Promise<Uint8Array<ArrayBuffer> | null>;
   write(name: string, data: Uint8Array<ArrayBuffer>): Promise<void>;

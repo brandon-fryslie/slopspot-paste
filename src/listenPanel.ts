@@ -181,6 +181,13 @@ interface ProvisioningStep {
   readonly effects: ReadonlyArray<Effect>;
 }
 
+// Every load, first or retried: the browser is asked again to keep the bytes, so the
+// answer shown is this load's, never a previous attempt's [LAW:one-source-of-truth].
+const load = (state: Provisioning): ProvisioningStep => ({
+  state: { ...state, neural: { kind: "preparing" }, keeping: null },
+  effects: [{ kind: "load" }],
+});
+
 // What a Play tap or a seek does to the voice on its way: starts it when idle, retries it
 // after a failure, leaves it be otherwise.
 const kick = (state: Provisioning): ProvisioningStep => {
@@ -189,7 +196,7 @@ const kick = (state: Provisioning): ProvisioningStep => {
     case "crashed":
       return { state: { ...state, neural: { kind: "probing" } }, effects: [{ kind: "spawn" }] };
     case "load-failed":
-      return { state: { ...state, neural: { kind: "preparing" } }, effects: [{ kind: "load" }] };
+      return load(state);
     default:
       return { state, effects: [] };
   }
@@ -227,7 +234,7 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
     case "capability":
       if (neural.kind !== "probing") throw violation(state, "capability");
       return message.support.kind === "supported"
-        ? phase({ kind: "preparing" }, [{ kind: "load" }])
+        ? load(state)
         : phase({ kind: "unsupported", reason: message.support.reason }, [{ kind: "release", worker: "terminate" }]);
     case "progress":
       if (!loading(neural)) throw violation(state, "progress");
@@ -556,6 +563,23 @@ const sameSpan = (a: WordSpan | null, b: WordSpan | null): boolean =>
 const samePlace = (a: ReadAlongAt | null, b: ReadAlongAt | null): boolean =>
   a === b || (a !== null && b !== null && a.utterance === b.utterance && sameSpan(a.segment, b.segment) && sameSpan(a.word, b.word));
 
+// The answer to the latest ask only: an ask superseded or dropped before it settles is not
+// delivered.
+const latest = <T,>(deliver: (value: T) => void): { ask: (pending: Promise<T>) => void; drop: () => void } => {
+  let live: Promise<T> | null = null;
+  return {
+    ask: (pending) => {
+      live = pending;
+      void pending.then((value) => {
+        if (live === pending) deliver(value);
+      });
+    },
+    drop: () => {
+      live = null;
+    },
+  };
+};
+
 export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const { controls, frames, utterances } = config;
   // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch`, from `step`.
@@ -582,6 +606,11 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (neural === null) throw new Error("listen panel: no performer to drive");
     return neural;
   };
+  // [LAW:no-ambient-temporal-coupling] One ask of each kind in flight, owned here: a new ask
+  // supersedes the old, and only the current ask's answer is dispatched. The order two
+  // promises settle in cannot put a stale store or browser answer over a fresh entry.
+  const askHome = latest<Residency>((residency) => dispatch({ kind: "home", residency }));
+  const askKeep = latest<Keeping>((keeping) => dispatch({ kind: "keeping", keeping }));
 
   let frame: number | null = null;
   let shown: ReadAlongAt | null = null;
@@ -614,7 +643,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const performEffect = (effect: Effect): void => {
     switch (effect.kind) {
       case "home":
-        void config.home().then((residency) => dispatch({ kind: "home", residency }));
+        askHome.ask(config.home());
         return;
       case "spawn": {
         port = config.spawn();
@@ -630,7 +659,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       }
       case "load":
         portOf().send({ kind: "load" });
-        void config.keep().then((answer) => dispatch({ kind: "keeping", keeping: answer }));
+        askKeep.ask(config.keep());
         return;
       case "script":
         portOf().send({ kind: "script", id: SCRIPT_ID, utterances });
@@ -666,6 +695,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         port = null;
         void audio?.device.close();
         audio = null;
+        // The keep request belonged to the load the released worker was doing.
+        askKeep.drop();
         return;
       }
     }

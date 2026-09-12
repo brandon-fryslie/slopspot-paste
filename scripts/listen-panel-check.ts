@@ -250,9 +250,18 @@ const rig = (): Rig => {
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
   const counts = { spawned: 0, terminated: 0, disposed: 0, listeners: () => listeners.size + errorListeners.size, homeAsked: 0, keepAsked: 0 };
+  // Answers land on the oldest unanswered ask first, so two asks in flight settle in the
+  // order they were made: the earlier one can be answered after a later one was issued.
   const deferred = <T,>() => {
     const waiting: ((value: T) => void)[] = [];
-    return { ask: () => new Promise<T>((resolve) => waiting.push(resolve)), answer: (value: T) => waiting.splice(0).forEach((resolve) => resolve(value)) };
+    return {
+      ask: () => new Promise<T>((resolve) => waiting.push(resolve)),
+      answer: (value: T) => {
+        const oldest = waiting.shift();
+        if (oldest === undefined) throw new Error("fixture: an answer with nothing asked");
+        oldest(value);
+      },
+    };
   };
   const homes = deferred<Residency>();
   const keeps = deferred<Keeping>();
@@ -459,6 +468,40 @@ console.log("createListenPanel: the store's word before the tap, the browser's a
   r.answer.home({ kind: "absent", bytesToDownload: 239_000_000 });
   await Promise.resolve();
   assert("a store that lost the bytes says so on the next start", r.line() === "Listen | stop(off) | The voice downloads 239 MB once, then runs on this device");
+}
+
+console.log("createListenPanel: a stale answer never lands on a fresher entry");
+{
+  const r = rig();
+  const panel = mount(r);
+  panel.dispose();
+  assert("mount and dispose each asked the store; neither has answered", r.counts.homeAsked === 2 && r.line() === IDLE_LINE);
+  r.answer.home({ kind: "resident" });
+  await Promise.resolve();
+  assert("the mount's answer, arriving after the dispose asked again, is dropped", r.line() === IDLE_LINE);
+  r.answer.home({ kind: "absent", bytesToDownload: 239_000_000 });
+  await Promise.resolve();
+  assert("the dispose's own answer is shown", r.line() === "Listen | stop(off) | The voice downloads 239 MB once, then runs on this device");
+  r.play.click();
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  r.emit({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
+  r.play.click();
+  assert("a failed load and its retry each asked the browser to keep the bytes", r.counts.keepAsked === 2 && r.line() === "Listen(off) | stop(off) | Preparing the voice…");
+  r.answer.keep({ kind: "granted" });
+  await Promise.resolve();
+  assert("the failed load's answer, arriving after the retry asked again, is dropped", r.line() === "Listen(off) | stop(off) | Preparing the voice…");
+  r.answer.keep({ kind: "denied" });
+  await Promise.resolve();
+  assert("the retry's own answer is shown", r.line() === "Listen(off) | stop(off) | Preparing the voice… · this browser may drop the voice when space is short; the next listen would download it again");
+  r.fail("boom");
+  r.play.click();
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  r.fail("boom again");
+  assert("a crash drops the answer to the load it ended", r.counts.keepAsked === 3 && r.line() === "Retry | stop(off) | The voice failed: boom again");
+  r.answer.keep({ kind: "granted" });
+  await Promise.resolve();
+  assert("the crashed load's answer is not shown beside the failure", r.line() === "Retry | stop(off) | The voice failed: boom again");
+  panel.dispose();
 }
 
 console.log("createListenPanel: a crash mid-passage keeps the place, and Retry resumes there");
