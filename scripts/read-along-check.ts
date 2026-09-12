@@ -13,6 +13,7 @@ import { JSDOM } from "jsdom";
 import type { Mark } from "../src/performer";
 import {
   alignWords,
+  caretSource,
   createPainter,
   CURSOR_CLASS,
   markAt,
@@ -206,6 +207,35 @@ console.log("markAt");
   const inSpan = doc.querySelector(`.${CURSOR_CLASS}`)?.firstChild;
   assert("while the card is wrapped, a caret in a word span's text still names the word", inSpan !== null && inSpan !== undefined && mark(inSpan, 1) === `0:${charOf(first, "fix")}`);
   painter.paint(null);
+}
+
+console.log("caretSource");
+{
+  // jsdom places no caret from a point; each spelling is stubbed onto a fresh document,
+  // so what is asserted is which spelling the source reads and what it hands back.
+  const fresh = (): Document => new JSDOM("<!DOCTYPE html><body><p>text</p></body>").window.document;
+  const bare = fresh();
+  let refused = false;
+  try {
+    caretSource(bare);
+  } catch {
+    refused = true;
+  }
+  assert("a document with neither spelling is refused when the source is parsed, before any tap", refused);
+  const node = bare.querySelector("p")?.firstChild ?? null;
+  const describe = (c: Caret | null): string => (c === null ? "null" : `${c.node === node ? "p-text" : "other"}@${c.offset}`);
+
+  const standard = Object.assign(fresh(), {
+    caretPositionFromPoint: (x: number, _y: number) => (x < 0 ? null : { offsetNode: node, offset: 2 }),
+  });
+  const viaPosition = caretSource(standard);
+  assert("the standard spelling yields the node and offset, and null where the browser places none", describe(viaPosition(10, 10)) === "p-text@2" && describe(viaPosition(-1, 0)) === "null");
+
+  const webkit = Object.assign(fresh(), {
+    caretRangeFromPoint: (x: number, _y: number) => (x < 0 ? null : { startContainer: node, startOffset: 3 }),
+  });
+  const viaRange = caretSource(webkit);
+  assert("WebKit's spelling yields the same shape", describe(viaRange(10, 10)) === "p-text@3" && describe(viaRange(-1, 0)) === "null");
 }
 
 console.log(process.exitCode === 1 ? "read-along-check: FAILED" : "read-along-check: ok");

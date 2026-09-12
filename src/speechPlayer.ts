@@ -19,7 +19,7 @@
 //     utterance, so a voice list that arrives late simply takes effect on the next sentence
 //     rather than leaving the whole session stuck on the default voice.
 
-import type { Mark, Performer, PerformerEvent, PerformerState, Spot } from "./performer";
+import { charIn, TOP, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
 import type { Utterance, Voice } from "./speech";
 import { VOICES } from "./speech";
 import { wordSpans, type WordSpan } from "./speechManifest";
@@ -39,7 +39,6 @@ export type PlayerState =
   | { readonly kind: "speaking"; readonly at: Mark }
   | { readonly kind: "paused"; readonly at: Mark };
 
-const TOP: Mark = { utterance: 0, char: 0 };
 const sameMark = (a: Mark, b: Mark): boolean => a.utterance === b.utterance && a.char === b.char;
 
 // [LAW:types-are-the-program] Everything that can move the player, as data. The set is
@@ -200,16 +199,6 @@ export const speechSupport = (
 export const boundaryWord = (text: string, charIndex: number): WordSpan | null =>
   wordSpans(text, 0).findLast((word) => word.charStart <= charIndex) ?? null;
 
-// [LAW:single-enforcer] The one check that a mark's character is in its utterance's text:
-// `advance` proves the utterance index against the count, this proves the character
-// against the text, and a caller naming a character past the end is a bug, not a
-// sentence that plays empty and moves on [LAW:no-silent-failure].
-const charIn = (text: string, mark: Mark): number => {
-  if (!Number.isInteger(mark.char) || mark.char < 0 || mark.char >= text.length) {
-    throw new RangeError(`speech player: cannot seek to character ${mark.char} of ${text.length} in utterance ${mark.utterance}`);
-  }
-  return mark.char;
-};
 
 export const createPlayer = (config: PlayerConfig): Player | null => {
   const support = speechSupport(config.window);

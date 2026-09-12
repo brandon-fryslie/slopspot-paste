@@ -286,22 +286,31 @@ export interface Caret {
 
 // [LAW:parse-dont-validate] The browser's caret-from-point, behind its two spellings: the
 // standard `caretPositionFromPoint` and WebKit's older `caretRangeFromPoint`. Exactly the
-// members read, so a document with either satisfies it structurally; one with neither is
-// a browser this page cannot place a tap in, and says so.
+// members read, so a document with either satisfies it structurally. The capability is
+// parsed ONCE, when the page is wired, into the one function every tap then calls; a
+// document with neither is a browser this page cannot place a tap in, and says so there,
+// once, rather than on every click.
 interface CaretSource {
   readonly caretPositionFromPoint?: (x: number, y: number) => { readonly offsetNode: Node; readonly offset: number } | null;
   readonly caretRangeFromPoint?: (x: number, y: number) => { readonly startContainer: Node; readonly startOffset: number } | null;
 }
 
-export const caretAt = (doc: Document, x: number, y: number): Caret | null => {
+export type CaretAt = (x: number, y: number) => Caret | null;
+
+export const caretSource = (doc: Document): CaretAt => {
   const source: CaretSource = doc;
-  if (source.caretPositionFromPoint !== undefined) {
-    const position = source.caretPositionFromPoint.call(doc, x, y);
-    return position === null ? null : { node: position.offsetNode, offset: position.offset };
+  const { caretPositionFromPoint, caretRangeFromPoint } = source;
+  if (caretPositionFromPoint !== undefined) {
+    return (x, y) => {
+      const position = caretPositionFromPoint.call(doc, x, y);
+      return position === null ? null : { node: position.offsetNode, offset: position.offset };
+    };
   }
-  if (source.caretRangeFromPoint !== undefined) {
-    const range = source.caretRangeFromPoint.call(doc, x, y);
-    return range === null ? null : { node: range.startContainer, offset: range.startOffset };
+  if (caretRangeFromPoint !== undefined) {
+    return (x, y) => {
+      const range = caretRangeFromPoint.call(doc, x, y);
+      return range === null ? null : { node: range.startContainer, offset: range.startOffset };
+    };
   }
   throw new Error("read-along: this browser cannot place a caret from a point");
 };
@@ -310,7 +319,7 @@ export const caretAt = (doc: Document, x: number, y: number): Caret | null => {
 // after it (a tap between words, or on punctuation, starts the next word). Null when the
 // caret is not in text a voice says: outside every turn card, inside an unspoken block,
 // or past the last word the card and its turn share. The caret is a text position because
-// the browser's own caret placement (caretAt) reports one; a caret in an element is a
+// the browser's own caret placement (caretSource) reports one; a caret in an element is a
 // point between children, not in text, and names nothing.
 export const markAt = (utterances: ReadonlyArray<Utterance>, caret: Caret): Mark | null => {
   if (caret.node.nodeType !== TEXT_NODE) return null;
@@ -339,11 +348,11 @@ export const markAt = (utterances: ReadonlyArray<Utterance>, caret: Caret): Mark
 // decides what a tap on the page means for the listen; the page does not re-ask.
 const CONTROLS = "a, button, summary, input, textarea, select, label";
 
-export const tapMark = (doc: Document, utterances: ReadonlyArray<Utterance>, tap: MouseEvent): Mark | null => {
+export const tapMark = (doc: Document, caretAt: CaretAt, utterances: ReadonlyArray<Utterance>, tap: MouseEvent): Mark | null => {
   const target = tap.target;
   const control = target instanceof Element && target.closest(CONTROLS) !== null;
   const selecting = !(doc.defaultView?.getSelection()?.isCollapsed ?? true);
   if (tap.defaultPrevented || control || selecting) return null;
-  const caret = caretAt(doc, tap.clientX, tap.clientY);
+  const caret = caretAt(tap.clientX, tap.clientY);
   return caret === null ? null : markAt(utterances, caret);
 };

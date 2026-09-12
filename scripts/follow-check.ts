@@ -43,7 +43,7 @@ console.log("inBand");
 
 // ── the driver ────────────────────────────────────────────────────────────────────────
 
-const dom = new JSDOM(`<!DOCTYPE html><body><main><p id="a">alpha</p><p id="b">beta</p></main><textarea id="edit"></textarea><button id="follow" hidden>Follow</button></body>`);
+const dom = new JSDOM(`<!DOCTYPE html><body><main><p id="a">alpha</p><p id="b">beta</p></main><textarea id="edit"></textarea><button id="play">Play</button><button id="follow" hidden>Follow</button></body>`);
 const { window } = dom;
 const doc = window.document;
 // The driver asks whether a key's target is an Element, the browser's global; installed
@@ -125,6 +125,8 @@ console.log("createFollower");
   follower.send({ kind: "follow" });
   key("PageDown", el("edit"));
   assert("a paging key inside an editable element is typing, not scrolling", follower.state() === "following");
+  key(" ", el("play"));
+  assert("Space on a focused button presses it, not the page", follower.state() === "following");
   key("k");
   assert("a letter is not a scroll", follower.state() === "following");
 
@@ -140,6 +142,10 @@ console.log("createFollower");
   follower.send({ kind: "follow" });
   gesture("wheel");
   assert("after dispose the reader's gestures no longer reach the follower", follower.state() === "following");
+  follower.send({ kind: "reader" });
+  revealed.length = 0;
+  button.click();
+  assert("after dispose the Follow button neither follows nor reveals", follower.state() === "released" && reveals() === "");
 }
 
 console.log(process.exitCode === 1 ? "follow-check: FAILED" : "follow-check: ok");

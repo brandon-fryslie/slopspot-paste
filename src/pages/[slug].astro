@@ -715,7 +715,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { createPlayer, speechSupport } from "../speechPlayer";
     import { createListenPanel } from "../listenPanel";
     import { DEFAULT_VOICES } from "../speechScript";
-    import { createPainter, tapMark } from "../readAlong";
+    import { caretSource, createPainter, tapMark } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
     import type { Utterance } from "../speech";
@@ -789,8 +789,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       // A tap on the page's prose listens from there; readAlong.tapMark says which taps are
       // that and which are the page's own controls, links and selections. The reader is
       // looking where the voice is about to be, so the page follows again.
+      const caretAt = caretSource(document);
       document.addEventListener("click", (event) => {
-        const mark = tapMark(document, utterances, event);
+        const mark = tapMark(document, caretAt, utterances, event);
         if (mark === null) return;
         panel.seek(mark);
         follower.send({ kind: "follow" });

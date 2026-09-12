@@ -26,7 +26,7 @@
 // [LAW:no-ambient-temporal-coupling] A disposed performer says nothing more: the view the
 // released scheduler raises from its own dispose never reaches the caller.
 
-import type { Mark, Performer, PerformerEvent, PerformerState, Spot } from "./performer";
+import { charIn, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
 import { createScheduler, type SchedulerView } from "./scheduler";
 import type { Utterance } from "./speech";
 import { cursorAt, offsetAt, unitSpan, type Manifest, type Position } from "./speechManifest";
@@ -94,9 +94,10 @@ export const positionOf = (manifest: Manifest, utteranceOf: ReadonlyArray<number
   const saying = manifest.script.flatMap((unit, unitIndex) => (utteranceOf[unitIndex] === mark.utterance ? [{ unit, unitIndex }] : []));
   const first = saying[0];
   if (first === undefined) throw new RangeError(`neural performer: cannot seek to utterance ${mark.utterance}`);
-  const { unitIndex } = saying.findLast(({ unit }) => unit.start <= mark.char) ?? first;
+  const char = charIn(first.unit.utterance.text, mark);
+  const { unitIndex } = saying.findLast(({ unit }) => unit.start <= char) ?? first;
   const record = manifest.units[unitIndex];
-  return { unitIndex, offsetMs: record === undefined ? 0 : offsetAt(record, mark.char) };
+  return { unitIndex, offsetMs: record === undefined ? 0 : offsetAt(record, char) };
 };
 
 export interface NeuralPerformerConfig {

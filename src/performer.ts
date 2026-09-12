@@ -49,6 +49,19 @@ export interface Spot extends Cursor {
 // The mark a spot stands at: its word when it has one, else where its segment begins.
 export const markOf = (at: Spot): Mark => ({ utterance: at.utterance, char: (at.word ?? at.segment).charStart });
 
+// The top of the conversation: where a performer stands before anyone has asked for a place.
+export const TOP: Mark = { utterance: 0, char: 0 };
+
+// [LAW:single-enforcer] The one check that a mark's character is in its utterance's text,
+// run at each performer's door: a caller naming a character past the end is a bug, not a
+// sentence that plays empty and moves on [LAW:no-silent-failure].
+export const charIn = (text: string, mark: Mark): number => {
+  if (!Number.isInteger(mark.char) || mark.char < 0 || mark.char >= text.length) {
+    throw new RangeError(`performer: cannot seek to character ${mark.char} of ${text.length} in utterance ${mark.utterance}`);
+  }
+  return mark.char;
+};
+
 // [LAW:types-are-the-program] `at` exists only while there is somewhere to be: an idle
 // performer holding a stale position is not expressible.
 export type PerformerState =

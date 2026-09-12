@@ -68,7 +68,7 @@
 import { MODEL_ASSETS, allModelAssets } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
-import { carry, markOf, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
+import { carry, markOf, TOP, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
@@ -148,7 +148,6 @@ export const SCRIPT_ID = 1;
 
 const IDLE: PerformerState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
-const TOP: Mark = { utterance: 0, char: 0 };
 
 export const initialState = (standIn: StandIn["kind"]): PanelState => ({
   kind: "provisioning",

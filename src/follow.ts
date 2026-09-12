@@ -64,9 +64,10 @@ export const BAND_MARGIN = 0.25;
 export const inBand = (rect: Rect, height: number, margin: number = BAND_MARGIN): boolean =>
   rect.top >= height * margin && rect.bottom <= height * (1 - margin);
 
-// The keys that scroll a page when nothing editable has the focus.
+// The keys that scroll a page, and the elements on which they do something else instead:
+// type, pick, or activate (Space presses a button and opens a fold).
 export const PAGING_KEYS: ReadonlySet<string> = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
-const EDITABLE = "input, textarea, select, [contenteditable]";
+const KEYS_ELSEWHERE = "input, textarea, select, [contenteditable], button, summary";
 
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ export interface Follower {
   readonly cursor: (painted: Painted | null) => void;
   readonly send: (event: FollowEvent) => void;
   readonly state: () => Follow;
-  // Stops listening to the reader's gestures.
+  // Stops listening to the reader's gestures, the Follow button among them.
   readonly dispose: () => void;
 }
 
@@ -125,21 +126,21 @@ export const createFollower = (config: FollowerConfig): Follower => {
   const reader = (): void => send({ kind: "reader" });
   const onKey = (event: Event): void => {
     const key = event as KeyboardEvent;
-    const editing = key.target instanceof Element && key.target.closest(EDITABLE) !== null;
-    if (PAGING_KEYS.has(key.key) && !editing) reader();
+    const elsewhere = key.target instanceof Element && key.target.closest(KEYS_ELSEWHERE) !== null;
+    if (PAGING_KEYS.has(key.key) && !elsewhere) reader();
   };
   const onPointer = (event: Event): void => {
     const pointer = event as PointerEvent;
     if (view.scrollbarAt(pointer.clientX, pointer.clientY)) reader();
   };
-  const listeners: ReadonlyArray<readonly [string, (event: Event) => void]> = [
-    ["wheel", reader],
-    ["touchmove", reader],
-    ["keydown", onKey],
-    ["pointerdown", onPointer],
+  const listeners: ReadonlyArray<readonly [EventTarget, string, (event: Event) => void]> = [
+    [gestures, "wheel", reader],
+    [gestures, "touchmove", reader],
+    [gestures, "keydown", onKey],
+    [gestures, "pointerdown", onPointer],
+    [button, "click", () => send({ kind: "follow" })],
   ];
-  for (const [type, listener] of listeners) gestures.addEventListener(type, listener, { passive: true });
-  button.addEventListener("click", () => send({ kind: "follow" }));
+  for (const [target, type, listener] of listeners) target.addEventListener(type, listener, { passive: true });
   sync();
 
   return {
@@ -147,7 +148,7 @@ export const createFollower = (config: FollowerConfig): Follower => {
     send,
     state: () => state,
     dispose: () => {
-      for (const [type, listener] of listeners) gestures.removeEventListener(type, listener);
+      for (const [target, type, listener] of listeners) target.removeEventListener(type, listener);
     },
   };
 };

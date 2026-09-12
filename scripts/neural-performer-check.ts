@@ -98,6 +98,8 @@ console.log("spotOf: the position in the page's coordinates");
   assert("a character in the utterance's second unit finds that unit; unrecorded, its start", pos(at(0, 21)) === "1@0" && pos(at(0, 30)) === "1@0");
   assert("another utterance's mark finds its unit", pos(at(1, 5)) === "2@0" && pos(at(2)) === "3@0");
   throws("a mark naming an utterance the page lacks throws", () => positionOf(timed.manifest, table, at(3)));
+  throws("a character past the utterance's text throws: not an empty sentence", () => positionOf(timed.manifest, table, at(0, one.text.length)));
+  throws("a negative character throws", () => positionOf(timed.manifest, table, at(1, -1)));
 }
 
 console.log("createNeuralPerformer: over the real scheduler and player");
