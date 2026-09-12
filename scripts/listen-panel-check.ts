@@ -15,7 +15,6 @@
 import { JSDOM } from "jsdom";
 import {
   createListenPanel,
-  DEFAULT_VOICES,
   DOWNLOAD_BYTES,
   initialState,
   readout,
@@ -30,7 +29,7 @@ import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
 import { createPlayer, type SpeechWindow } from "../src/speechPlayer";
-import type { SynthesisUnit } from "../src/speechScript";
+import { DEFAULT_VOICES, type SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S } from "../src/unitPlayer";
@@ -232,9 +231,10 @@ class StubUtterance {
 interface Synth {
   readonly spoken: StubUtterance[];
   cancels: number;
+  pauses: number;
 }
 const standIn = (w: SpeechWindow): Synth => {
-  const synth: Synth = { spoken: [], cancels: 0 };
+  const synth: Synth = { spoken: [], cancels: 0, pauses: 0 };
   Object.defineProperty(w, "speechSynthesis", {
     configurable: true,
     value: {
@@ -243,7 +243,9 @@ const standIn = (w: SpeechWindow): Synth => {
       cancel: () => {
         synth.cancels += 1;
       },
-      pause: () => undefined,
+      pause: () => {
+        synth.pauses += 1;
+      },
       resume: () => undefined,
     },
   });
@@ -407,14 +409,20 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
   r.play.click();
   assert("Play again plays the neural voice from the top, no new download, no stand-in", r.said().endsWith("synthesize 0") && synth.spoken.length === 2 && line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
 
+  r.play.click();
+  assert("Pause pauses the neural voice on stage, the loop off", line() === "Resume | stop | Paused · passage 1 of 2" && r.frames.pending === 0);
   const beforeCrash = r.positions.length;
+  const spokenBefore = synth.spoken.length;
+  const pausesBefore = synth.pauses;
   r.fail("boom");
-  assert("the worker dies on stage: the device closed, the worker terminated, the stand-in takes passage 1 back", device.calls.at(-1) === "close" && r.counts.terminated === 1 && synth.spoken.at(-1)?.text === one.text && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · the neural voice failed: boom");
+  assert("the worker dies while paused: the device closed, the worker terminated, the stand-in takes passage 1 back PAUSED — one speak, then the pause", device.calls.at(-1) === "close" && r.counts.terminated === 1 && synth.spoken.length === spokenBefore + 1 && synth.spoken.at(-1)?.text === one.text && synth.pauses === pausesBefore + 1 && line() === "Resume | stop | Browser voice standing in · paused at passage 1 of 2 · the neural voice failed: boom" && r.frames.pending === 0);
   assert("the cursor is the stand-in's now, never cleared on the way", r.where() === "t1 0-42 of 1" && !r.positions.slice(beforeCrash).includes(null) && r.counts.listeners() === 0);
   r.play.click();
-  assert("Pause pauses the stand-in and spawns nothing", line() === "Resume | stop | Browser voice standing in · paused at passage 1 of 2 · the neural voice failed: boom" && r.counts.spawned === 1 && r.frames.pending === 0);
+  assert("Resume resumes the stand-in and retries the neural voice", r.counts.spawned === 2 && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · checking this device for the neural voice…" && r.frames.pending === 1);
   r.play.click();
-  assert("Resume resumes the stand-in and retries the neural voice", r.counts.spawned === 2 && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · checking this device for the neural voice…");
+  assert("Pause pauses the stand-in and spawns nothing", line() === "Resume | stop | Browser voice standing in · paused at passage 1 of 2 · checking this device for the neural voice…" && r.counts.spawned === 2 && r.frames.pending === 0);
+  r.play.click();
+  assert("Resume again: the stand-in speaks on, the neural voice already on its way", line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · checking this device for the neural voice…" && r.counts.spawned === 2);
   r.stop.click();
   assert("Stop silences the stand-in; the neural voice stays on its way", line() === "Listen | stop(off) | Browser voice standing in · checking this device for the neural voice…" && r.positions.at(-1) === null);
 

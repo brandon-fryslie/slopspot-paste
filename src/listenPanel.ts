@@ -498,12 +498,6 @@ export interface ListenPanel {
   readonly dispose: () => void;
 }
 
-// Which role the six hosted voices speak. A VALUE, per the epic: the reader's pick by ear
-// replaces it without touching an asset. Until that pick, the spike's word-accuracy
-// ranking chooses — the voices Whisper transcribed with zero errors take the roles that
-// say the most.
-export const DEFAULT_VOICES: VoiceMap = { user: "alba", assistant: "javert", system: "eponine", narrator: "azelma" };
-
 const render = (controls: ListenControls, shown: Readout): void => {
   controls.play.textContent = shown.play.label;
   controls.play.disabled = !shown.play.enabled;

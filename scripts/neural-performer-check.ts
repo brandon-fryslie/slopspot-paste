@@ -11,10 +11,9 @@ import { createNeuralPerformer, passages, spotOf, utteranceTable, type NeuralVie
 import type { PerformerState } from "../src/performer";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
-import type { SynthesisUnit } from "../src/speechScript";
+import { DEFAULT_VOICES, type SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
-import { DEFAULT_VOICES } from "../src/listenPanel";
 import { SCHEDULE_LEAD_S } from "../src/unitPlayer";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 

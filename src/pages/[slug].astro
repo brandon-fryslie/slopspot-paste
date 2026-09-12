@@ -710,7 +710,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // page's turn cards, the real synthesizer, the real worker, the real AudioContext, the
     // real animation frame, and the capability gate.
     import { createPlayer, speechSupport } from "../speechPlayer";
-    import { createListenPanel, DEFAULT_VOICES } from "../listenPanel";
+    import { createListenPanel } from "../listenPanel";
+    import { DEFAULT_VOICES } from "../speechScript";
     import { createPainter } from "../readAlong";
     import { spawnSynthesisWorker } from "../synthesisClient";
     import type { Utterance } from "../speech";
