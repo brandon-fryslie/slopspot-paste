@@ -64,10 +64,19 @@ export const BAND_MARGIN = 0.25;
 export const inBand = (rect: Rect, height: number, margin: number = BAND_MARGIN): boolean =>
   rect.top >= height * margin && rect.bottom <= height * (1 - margin);
 
-// The keys that scroll a page, and the elements on which they do something else instead:
-// type, pick, or activate (Space presses a button and opens a fold).
-export const PAGING_KEYS: ReadonlySet<string> = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
-const KEYS_ELSEWHERE = "input, textarea, select, [contenteditable], button, summary";
+// The keys that scroll a page, each with the elements on which it does something else
+// instead: all of them type or move a caret in an editable element; Space alone also
+// presses a button and opens a fold, while the others scroll straight through both.
+const EDITABLE = "input, textarea, select, [contenteditable]";
+export const PAGING_KEYS: ReadonlyMap<string, string> = new Map([
+  ["PageUp", EDITABLE],
+  ["PageDown", EDITABLE],
+  ["Home", EDITABLE],
+  ["End", EDITABLE],
+  ["ArrowUp", EDITABLE],
+  ["ArrowDown", EDITABLE],
+  [" ", `${EDITABLE}, button, summary`],
+]);
 
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
@@ -126,8 +135,9 @@ export const createFollower = (config: FollowerConfig): Follower => {
   const reader = (): void => send({ kind: "reader" });
   const onKey = (event: Event): void => {
     const key = event as KeyboardEvent;
-    const elsewhere = key.target instanceof Element && key.target.closest(KEYS_ELSEWHERE) !== null;
-    if (PAGING_KEYS.has(key.key) && !elsewhere) reader();
+    const consumedOn = PAGING_KEYS.get(key.key);
+    const consumed = consumedOn !== undefined && key.target instanceof Element && key.target.closest(consumedOn) !== null;
+    if (consumedOn !== undefined && !consumed) reader();
   };
   const onPointer = (event: Event): void => {
     const pointer = event as PointerEvent;

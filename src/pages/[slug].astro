@@ -740,7 +740,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       // probe, and comes only after the tap that spawns it. A page with neither shows no
       // Listen at all.
       const speech = speechSupport(window);
-      document.body.classList.toggle("speech-ready", speech !== null || navigator.gpu !== undefined);
+      const listenOffered = speech !== null || navigator.gpu !== undefined;
+      document.body.classList.toggle("speech-ready", listenOffered);
 
       // The page's part of the read-along: the painter marks the card, the sentence and the
       // word; the follower keeps whatever it marked in view, from this window's geometry.
@@ -788,14 +789,18 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
 
       // A tap on the page's prose listens from there; readAlong.tapMark says which taps are
       // that and which are the page's own controls, links and selections. The reader is
-      // looking where the voice is about to be, so the page follows again.
-      const caretAt = caretSource(document);
-      document.addEventListener("click", (event) => {
-        const mark = tapMark(document, caretAt, utterances, event);
-        if (mark === null) return;
-        panel.seek(mark);
-        follower.send({ kind: "follow" });
-      });
+      // looking where the voice is about to be, so the page follows again. The tap is
+      // Listen's second door, so it opens with the tool [LAW:one-source-of-truth]: a page
+      // that offers no Listen has no tap that starts a voice behind the reader's back.
+      if (listenOffered) {
+        const caretAt = caretSource(document);
+        document.addEventListener("click", (event) => {
+          const mark = tapMark(document, caretAt, utterances, event);
+          if (mark === null) return;
+          panel.seek(mark);
+          follower.send({ kind: "follow" });
+        });
+      }
 
       // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
       // the synthesizer on its own — speech outlives the document that started it, and a

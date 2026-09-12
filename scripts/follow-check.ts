@@ -38,7 +38,7 @@ console.log("inBand");
   assert("a rect crossing the bottom edge is out", !inBand({ top: 700, bottom: height - edge + 1 }, height));
   assert("above and below the viewport are out", !inBand({ top: -50, bottom: -30 }, height) && !inBand({ top: 1200, bottom: 1220 }, height));
   assert("the margin is a parameter: a zero margin is the whole viewport", inBand({ top: 0, bottom: height }, height, 0));
-  assert("the paging keys are the ones that scroll a page from the keyboard", [...PAGING_KEYS].join() === "PageUp,PageDown,Home,End,ArrowUp,ArrowDown, ");
+  assert("the paging keys are the ones that scroll a page from the keyboard", [...PAGING_KEYS.keys()].join() === "PageUp,PageDown,Home,End,ArrowUp,ArrowDown, ");
 }
 
 // ── the driver ────────────────────────────────────────────────────────────────────────
@@ -127,6 +127,9 @@ console.log("createFollower");
   assert("a paging key inside an editable element is typing, not scrolling", follower.state() === "following");
   key(" ", el("play"));
   assert("Space on a focused button presses it, not the page", follower.state() === "following");
+  key("PageDown", el("play"));
+  assert("any other paging key scrolls straight through a focused button: released", follower.state() === "released");
+  follower.send({ kind: "follow" });
   key("k");
   assert("a letter is not a scroll", follower.state() === "following");
 
