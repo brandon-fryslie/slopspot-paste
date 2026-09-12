@@ -3284,8 +3284,8 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .speech-follow[hidden] { display: none; }
 /* A disabled control is dimmed rather than hidden: the control's absence would move
    the row's layout on every play/stop, and a reader tracking the audio should not
-   have the buttons shifting under the pointer. Play spends time disabled only on a
-   browser with no stand-in (probing, downloading, warming). */
+   have the buttons shifting under the pointer. Play spends time disabled while the
+   voice is on its way (probing, downloading, warming). */
 .speech-stop[disabled],
 .speech-play[disabled] { opacity: 0.45; cursor: default; }
 .speech-stop[disabled]:hover,

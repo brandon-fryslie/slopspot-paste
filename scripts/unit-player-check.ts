@@ -26,14 +26,14 @@
 //   complete  with no frames         -> RangeError
 //   complete  twice                  -> RangeError
 //   drop      the unit being played  -> RangeError
-//   dispose   any                    -> idle; sources stopped; close()
+//   dispose   any                    -> idle; sources stopped; suspend()
 //   drop      any other              -> forgotten; a later seek there waits for it
 //   clock crosses a unit boundary    -> reported once, at the new unit (the scheduler's tick)
 //   clock passes the schedule        -> flow waiting at the next needed sample, reported once
 //   delivery while waiting           -> re-anchored at that sample, flow audio
 //   last unit ends                   -> idle; suspend()
 
-import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, extend, openSchedule, positionAt } from "../src/unitPlayer";
+import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, extend, openDevice, openSchedule, positionAt } from "../src/unitPlayer";
 import type { DeviceFactory, PlayerState, UnitAudio } from "../src/unitPlayer";
 import { FRAME_S, FS, SR, StubBuffer, StubDevice, StubSource, describe, frame } from "./playbackStub";
 
@@ -99,7 +99,7 @@ console.log("schedule: pure planning");
 
 const harness = (unitCount: number) => {
   const states: PlayerState[] = [];
-  const player = createUnitPlayer({ Device: StubDevice, unitCount, onState: (state) => states.push(state) });
+  const player = createUnitPlayer({ device: openDevice(StubDevice), unitCount, onState: (state) => states.push(state) });
   const device = StubDevice.instances.at(-1);
   if (device === undefined) throw new Error("the player did not construct its device");
   return { player, device, states, reported: () => states.map(describe) };
@@ -318,7 +318,7 @@ console.log("player: dispose");
   player.send({ kind: "play" });
   const count = states.length;
   player.dispose();
-  assert("dispose while speaking: stopped and reported, the source silenced, the device suspended then closed", player.state().kind === "idle" && states.length === count + 1 && device.live().length === 0 && device.calls.slice(-2).join() === "suspend,close");
+  assert("dispose while speaking: stopped and reported, the source silenced, the device suspended, not closed (its owner closes it)", player.state().kind === "idle" && states.length === count + 1 && device.live().length === 0 && device.calls.at(-1) === "suspend");
 }
 
 console.log(process.exitCode === 1 ? "unit-player-check: FAILED" : "unit-player-check: ok");

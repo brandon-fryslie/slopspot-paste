@@ -347,7 +347,7 @@ export const step = (voices: VoiceMap, state: SchedulerState, event: Event, play
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
 // The reader's controls, forwarded to the player unchanged: the scheduler is the panel's
-// performer, with the same four verbs speechPlayer.ts answers to [LAW:one-type-per-behavior].
+// performer, answering the four verbs performer.ts names [LAW:one-type-per-behavior].
 export type Control = Extract<PlayerEvent, { kind: "play" | "pause" | "stop" | "seek" }>;
 
 export interface SchedulerView {

@@ -483,8 +483,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       {/*
         The Listen controls. The transport is inert markup plus a hidden payload — the SAME
         shape the code and continuation controls use [LAW:one-type-per-behavior] — and the
-        client script reveals it (`speech-ready`) when either voice may work: a synthesizer
-        for the stand-in, or WebGPU for the neural voice.
+        client script reveals it (`speech-ready`) when the voice may work: the page has
+        WebGPU.
 
         [LAW:one-source-of-truth] The payload is the server's derived Utterance[], not the
         page text re-scraped from the DOM. Deriving speech from rendered markup would make
@@ -496,9 +496,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.listen.id)} data-tool={TOOL.listen.id}
           data-requires={requiresAttr(TOOL.listen.availability)} aria-label={TOOL.listen.hint}>
           <h2 class="tool-panel-title">{TOOL.listen.label}<span class="tool-panel-note">{utterances.length} {utterances.length === 1 ? "passage" : "passages"}</span></h2>
-          <p class="tool-panel-lede">Read aloud, a different voice per speaker. The neural voice is synthesized on your device and highlights what it is saying as it goes; while it loads, the browser's own voice stands in. Tap any sentence to listen from there. Code blocks are announced rather than spelled out.</p>
+          <p class="tool-panel-lede">Read aloud, a different voice per speaker, synthesized on your device: the first listen downloads the voice once, and the page highlights what is being said as it goes. Tap any sentence to listen from there. Code blocks are announced rather than spelled out.</p>
           {/*
-            One transport, two performers behind it. The status line is written by
+            One transport. The status line is written by
             listenPanel.ts on every state change (the markup carries no sentence of its own,
             so there is no second copy to drift). Follow is follow.ts's: shown only while the
             reader has scrolled away from the voice.
@@ -707,12 +707,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // The Listen tool's page half. Everything with judgement in it — what is said, in whose
     // voice, where we are in the conversation, which words are being said, who is speaking,
     // what a tap on the page means, when the page follows the voice — lives in ../speech,
-    // ../speechPlayer, ../neuralPerformer, ../listenPanel, ../readAlong and ../follow, each
-    // driven by its own scripts/*-check.ts under jsdom [LAW:verifiable-goals]. What remains
-    // here is the seam: this page's markup, this page's turn cards, the real synthesizer,
-    // the real worker, the real AudioContext, the real animation frame, the real viewport,
-    // and the capability gate.
-    import { createPlayer, speechSupport } from "../speechPlayer";
+    // ../neuralPerformer, ../listenPanel, ../readAlong and ../follow, each driven by its
+    // own scripts/*-check.ts under jsdom [LAW:verifiable-goals]. What remains here is the
+    // seam: this page's markup, this page's turn cards, the real worker, the real
+    // AudioContext, the real animation frame, the real viewport, and the capability gate.
     import { createListenPanel } from "../listenPanel";
     import { DEFAULT_VOICES } from "../speechScript";
     import { caretSource, createPainter, tapMark } from "../readAlong";
@@ -734,13 +732,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       };
       const utterances = JSON.parse(payloadEl.textContent ?? "[]") as Utterance[];
 
-      // [LAW:parse-dont-validate] The browser voice stands in when there is a synthesizer;
-      // the tool is revealed when either voice MAY work — a synthesizer, or WebGPU for the
-      // neural one, whose real answer (adapter, 16-bit floats, a device) is the worker's
-      // probe, and comes only after the tap that spawns it. A page with neither shows no
+      // [LAW:parse-dont-validate] The tool is revealed when the voice MAY work — the page
+      // has WebGPU; its real answer (adapter, 16-bit floats, a device) is the worker's
+      // probe, and comes only after the tap that spawns it. A page without WebGPU shows no
       // Listen at all.
-      const speech = speechSupport(window);
-      const listenOffered = speech !== null || navigator.gpu !== undefined;
+      const listenOffered = navigator.gpu !== undefined;
       document.body.classList.toggle("speech-ready", listenOffered);
 
       // The page's part of the read-along: the painter marks the card, the sentence and the
@@ -775,23 +771,12 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           request: (callback) => window.requestAnimationFrame(callback),
           cancel: (handle) => window.cancelAnimationFrame(handle),
         },
-        standIn:
-          speech === null
-            ? null
-            : (onState) => {
-                const player = createPlayer({ window, utterances, onState });
-                // speechSupport already proved a synthesizer exists, so this is the impossible arm.
-                if (!player) throw new Error("listen: speech support vanished between the check and the player");
-                return player;
-              },
         onPosition: (at) => follower.cursor(painter.paint(at)),
       });
 
-      // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
-      // the synthesizer on its own — speech outlives the document that started it, and a
-      // paste that keeps talking after the reader has left is the one bug every Web Speech
-      // integration ships with — and the worker holds the model on the GPU. The teardown
-      // is owned here, explicitly: the page that started both releases both.
+      // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not release
+      // the model the worker holds on the GPU, nor close the audio device, on its own. The
+      // teardown is owned here, explicitly: the page that started both releases both.
       window.addEventListener("pagehide", () => {
         panel.dispose();
         follower.dispose();

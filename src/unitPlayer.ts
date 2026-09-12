@@ -98,10 +98,26 @@ export interface PlaybackDevice {
   close(): Promise<void>;
 }
 
-// `AudioContext` in the page. The player constructs the device itself, at the PCM's rate,
-// so a frame seam is never resampled and the sample arithmetic below is exact on the
-// context's clock: that invariant is held by construction, never checked.
+// `AudioContext` in the page: what opens a device.
 export type DeviceFactory = new (options: { readonly sampleRate: number }) => PlaybackDevice;
+
+// [LAW:parse-dont-validate] A device is opened by `openDevice` alone, at the PCM's rate,
+// and travels with the format it was opened at, so a frame seam is never resampled and the
+// sample arithmetic below is exact on the context's clock: held by construction, never
+// checked.
+export interface OpenDevice {
+  readonly device: PlaybackDevice;
+  readonly format: PcmFormat;
+}
+
+// [LAW:no-ambient-temporal-coupling] Called by the device's owner on the reader's gesture:
+// a browser starts audio only from one, and a context opened inside the tap is what lets
+// audio scheduled later — once the model is warm — sound. The owner closes what it opened;
+// the player borrows it.
+export const openDevice = (Device: DeviceFactory, format: PcmFormat = MODEL_PCM): OpenDevice => ({
+  device: new Device({ sampleRate: format.sampleRate }),
+  format,
+});
 
 // ── the store ──────────────────────────────────────────────────────────────────────────
 
@@ -202,8 +218,8 @@ export const positionAt = (schedule: Schedule, time: number, format: PcmFormat):
 
 // ── the player ─────────────────────────────────────────────────────────────────────────
 
-// [LAW:types-are-the-program] The same three kinds speechPlayer.ts exposes, so the panel
-// drives either performer; `at` is a manifest Position, derived from the clock on every
+// [LAW:types-are-the-program] The performer's three kinds (performer.ts), as the panel
+// reads them; `at` is a manifest Position, derived from the clock on every
 // read while speaking. `flow` says whether the context holds audio or playback has caught
 // up with delivery and is waiting for the sample at `at`.
 export type Flow = "audio" | "waiting";
@@ -226,22 +242,22 @@ export type PlayerEvent =
   | { readonly kind: "drop"; readonly unit: number };
 
 export interface UnitPlayerConfig {
-  readonly Device: DeviceFactory;
+  // The device the player plays on, borrowed from the owner that opened it.
+  readonly device: OpenDevice;
   readonly unitCount: number;
   // Called after every discontinuity — play, pause, stop, seek, starvation and its relief,
   // the end of the last unit — and after every unit boundary the clock crosses, which is
   // the scheduler's cue to synthesize further ahead. Continuous motion within a unit is
   // read with `state()`.
   readonly onState: (state: PlayerState) => void;
-  readonly format?: PcmFormat;
 }
 
 export interface UnitPlayer {
   readonly send: (event: PlayerEvent) => void;
   readonly state: () => PlayerState;
-  // Stops, then closes the device: a suspended context is still one of the few a browser
-  // allows. The player's last call, made once by its one owner; a send after it, or a
-  // second dispose, is the caller's bug and the closed device rejects it.
+  // Stops: the sources silenced, the device suspended and handed back to its owner to
+  // close. The player's last call, made once by its one owner; a send after it is the
+  // caller's bug, and the device its owner has closed by then rejects it.
   readonly dispose: () => void;
 }
 
@@ -258,8 +274,8 @@ interface MutableUnitAudio {
 const IDLE: Live = { kind: "idle" };
 
 export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
-  const { unitCount, onState, format = MODEL_PCM } = config;
-  const device = new config.Device({ sampleRate: format.sampleRate });
+  const { unitCount, onState } = config;
+  const { device, format } = config.device;
   // [LAW:no-shared-mutable-globals] Owned here; written only through `send`.
   const store = new Map<number, MutableUnitAudio>();
   let live: Live = IDLE;
@@ -465,9 +481,6 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   return {
     send,
     state,
-    dispose: () => {
-      send({ kind: "stop" });
-      void device.close();
-    },
+    dispose: () => send({ kind: "stop" }),
   };
 };

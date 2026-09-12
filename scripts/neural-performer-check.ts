@@ -14,7 +14,7 @@ import { addUnit, emptyManifest, type UnitReport } from "../src/speechManifest";
 import { DEFAULT_VOICES, type SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
-import { SCHEDULE_LEAD_S } from "../src/unitPlayer";
+import { SCHEDULE_LEAD_S, openDevice } from "../src/unitPlayer";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 
 const assert = (label: string, cond: boolean): void => {
@@ -123,7 +123,7 @@ console.log("createNeuralPerformer: over the real scheduler and player");
   const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 
   const views: NeuralView[] = [];
-  const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, Device: StubDevice, onChange: (view) => views.push(view) });
+  const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, device: openDevice(StubDevice), onChange: (view) => views.push(view) });
   const device = StubDevice.instances.at(-1);
   if (device === undefined) throw new Error("the performer did not build a player");
 
@@ -160,7 +160,7 @@ console.log("createNeuralPerformer: over the real scheduler and player");
 
   const before = views.length;
   performer.dispose();
-  assert("dispose stops the player and closes the device", performer.view().player.kind === "idle" && device.calls.at(-1) === "close");
+  assert("dispose stops the player and suspends the device; its owner closes it", performer.view().player.kind === "idle" && device.calls.at(-1) === "suspend");
   assert("a disposed performer reports nothing more", views.length === before);
 }
 
