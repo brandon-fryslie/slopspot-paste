@@ -73,9 +73,17 @@ const stay = (state: PreviewState): PreviewPlan => ({ state, commands: [] });
 
 // [LAW:dataflow-not-control-flow] The worker's messages for the sounding preview, one row
 // per kind: frames and the end go to its player, a failure ends it, and a message the
-// protocol says cannot come for it — a cancel it never sent, a refusal of its request — is
-// a bug and throws. Every message for another id is another conversation's.
+// protocol says cannot come for it — a cancel it never sent — is a bug and throws. Every
+// message for another id is another conversation's. A refusal is judged first, sounding
+// or not: every request below zero is this previewer's, and a refused one means the worker
+// left `ready` under it, which is a bug [LAW:no-silent-failure].
 const fromWorker = (state: PreviewState, message: FromWorker): PreviewPlan => {
+  if (message.kind === "refused") {
+    if ("unitId" in message.request && message.request.unitId < 0) {
+      throw new Error(`voice preview: ${message.request.kind} of preview ${message.request.unitId} refused in phase ${message.phase}`);
+    }
+    return stay(state);
+  }
   const { sounding } = state;
   if (sounding === null) return stay(state);
   switch (message.kind) {
@@ -91,11 +99,6 @@ const fromWorker = (state: PreviewState, message: FromWorker): PreviewPlan => {
       return message.unitId !== sounding.unitId ? stay(state) : { state: silent(state), commands: [] };
     case "cancelled":
       if (message.unitId === sounding.unitId) throw new Error(`voice preview: preview ${message.unitId} was cancelled while sounding`);
-      return stay(state);
-    case "refused":
-      if (message.request.kind === "synthesize" && message.request.unitId === sounding.unitId) {
-        throw new Error(`voice preview: a preview was asked of a worker in phase ${message.phase}`);
-      }
       return stay(state);
     default:
       return stay(state);

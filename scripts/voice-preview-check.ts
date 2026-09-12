@@ -13,7 +13,7 @@
 //   audio | done for another id   -> ignored (a replaced preview's, or the script's)
 //   failed for the sounding       -> silent, nothing sent
 //   cancelled for the sounding    -> Error (a previewer bug)
-//   refused synthesize, sounding  -> Error; other refusals and the panel's messages ignored
+//   refused, id below zero        -> Error (sounding or not); other refusals and the panel's messages ignored
 //   player idle for the sounding  -> silent: the phrase was said
 //   player idle for another id    -> ignored
 //   hush, sounding                -> the request withdrawn, silent
@@ -114,6 +114,8 @@ console.log("step: hearing a voice out");
 
   throws("cancelled for the sounding preview is a previewer bug", () => step(replaced.state, worker({ kind: "cancelled", unitId: -2 })));
   throws("a refused preview is a previewer bug", () => step(replaced.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: -2, text: previewText("marius"), voice: "marius" }, phase: "idle" })));
+  throws("a refused synthesize of a replaced preview is one too", () => step(replaced.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: previewText("alba"), voice: "alba" }, phase: "idle" })));
+  throws("a refused cancel after a hush, nothing sounding, is one too", () => step(run(replaced.state, { kind: "hush" }).state, worker({ kind: "refused", request: { kind: "cancel", unitId: -2 }, phase: "idle" })));
   const others = run(replaced.state, worker({ kind: "refused", request: { kind: "load" }, phase: "ready" }), worker({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 2 } }), worker({ kind: "refused", request: { kind: "synthesize", unitId: 0, text: previewText("alba"), voice: "alba" }, phase: "idle" }));
   assert("the panel's messages and the script's refusals pass by untouched", others.commands.length === 0 && others.state === replaced.state);
 }
