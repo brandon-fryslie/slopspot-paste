@@ -19,7 +19,7 @@
 //     utterance, so a voice list that arrives late simply takes effect on the next sentence
 //     rather than leaving the whole session stuck on the default voice.
 
-import type { Performer, PerformerEvent, PerformerState, Spot } from "./performer";
+import { charIn, TOP, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
 import type { Utterance, Voice } from "./speech";
 import { VOICES } from "./speech";
 import { wordSpans, type WordSpan } from "./speechManifest";
@@ -30,14 +30,16 @@ import { wordSpans, type WordSpan } from "./speechManifest";
 // in front of it [LAW:verifiable-goals] [LAW:no-shared-mutable-globals].
 export type SpeechWindow = Window & typeof globalThis;
 
-// [LAW:types-are-the-program] The player's total state. `at` is an index into the utterance
-// list and exists ONLY while there is something to be at — an idle player holding a stale
-// position, or a paused player with no position, are not expressible, so nothing below has
-// to defend against them.
+// [LAW:types-are-the-program] The player's total state. `at` is a mark in the page's text —
+// the utterance, and the character it is being spoken from — and exists ONLY while there
+// is something to be at: an idle player holding a stale position, or a paused player with
+// no position, are not expressible, so nothing below has to defend against them.
 export type PlayerState =
   | { readonly kind: "idle" }
-  | { readonly kind: "speaking"; readonly at: number }
-  | { readonly kind: "paused"; readonly at: number };
+  | { readonly kind: "speaking"; readonly at: Mark }
+  | { readonly kind: "paused"; readonly at: Mark };
+
+const sameMark = (a: Mark, b: Mark): boolean => a.utterance === b.utterance && a.char === b.char;
 
 // [LAW:types-are-the-program] Everything that can move the player, as data. The set is
 // closed, so `advance` below can be a total function over it and the compiler forces any
@@ -69,7 +71,7 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
       // progress, discarding whatever the listener had already heard of it.
       // Otherwise: play from where we are — resuming a pause keeps its position, starting
       // from idle begins at the top.
-      return state.kind === "speaking" ? state : { kind: "speaking", at: state.kind === "idle" ? 0 : state.at };
+      return state.kind === "speaking" ? state : { kind: "speaking", at: state.kind === "idle" ? TOP : state.at };
     case "pause":
       return state.kind === "speaking" ? { kind: "paused", at: state.at } : state;
     case "stop":
@@ -86,23 +88,25 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
       // never heard. Ignoring it is the whole reason position lives here and not in the
       // browser's queue.
       if (state.kind !== "speaking") return state;
-      const next = state.at + 1;
-      return next >= length ? { kind: "idle" } : { kind: "speaking", at: next };
+      const next = state.at.utterance + 1;
+      return next >= length ? { kind: "idle" } : { kind: "speaking", at: { utterance: next, char: 0 } };
     }
     case "seek": {
       // A seek out of range is not a silent clamp: an out-of-range target is a caller bug,
       // and clamping it would play a turn the caller did not ask for while reporting success
-      // [LAW:no-silent-failure].
-      if (!Number.isInteger(event.to) || event.to < 0 || event.to >= length) {
-        throw new RangeError(`speech player: cannot seek to ${event.to} of ${length} utterances`);
+      // [LAW:no-silent-failure]. The character is checked against the utterance's text by
+      // `send`, which has the text; this function has only the count.
+      const { utterance } = event.to;
+      if (!Number.isInteger(utterance) || utterance < 0 || utterance >= length) {
+        throw new RangeError(`speech player: cannot seek to utterance ${utterance} of ${length}`);
       }
-      // A seek to the SAME index the player is already at (paused or speaking) is a true
+      // A seek to the SAME mark the player is already at (paused or speaking) is a true
       // no-op, not merely an equivalent-looking state: `send()` decides whether to cancel
       // and re-speak by reference-comparing before/after, and a paused player seeked to its
       // own position has nothing to resume from if this allocates a fresh object — the
       // general branch would cancel the held utterance and the next Play would restart it
       // from the beginning instead of resuming where the listener paused.
-      if (state.kind !== "idle" && state.at === event.to) return state;
+      if (state.kind !== "idle" && sameMark(state.at, event.to)) return state;
       // Seeking while paused keeps you paused at the new place — the listener asked to move,
       // not to start playing.
       return state.kind === "paused" ? { kind: "paused", at: event.to } : { kind: "speaking", at: event.to };
@@ -163,7 +167,7 @@ export interface PlayerConfig {
   readonly window: SpeechWindow;
   readonly utterances: ReadonlyArray<Utterance>;
   // Called on every discontinuity: play, pause, stop, seek, and each utterance the
-  // synthesizer moves on to. The span within an utterance moves with no report; it is
+  // synthesizer moves on to. The word within an utterance moves with no report; it is
   // read live through `state()`.
   readonly onState: (state: PerformerState) => void;
 }
@@ -188,14 +192,13 @@ export const speechSupport = (
   return { synth: synth as SpeechSynthesis, Utter: Utter as typeof SpeechSynthesisUtterance };
 };
 
-// The span a word boundary names, by the manifest's own word rule so a painted word is
-// exactly a timed word would be [LAW:one-source-of-truth]: the word containing the
-// boundary's character, or the last word begun before it when the browser reports a
-// boundary on punctuation. A boundary before any word keeps the whole text.
-export const boundarySpan = (text: string, charIndex: number): WordSpan => {
-  const whole: WordSpan = { charStart: 0, charEnd: text.length };
-  return wordSpans(text, 0).findLast((word) => word.charStart <= charIndex) ?? whole;
-};
+// The word a boundary names, by the manifest's own word rule so a painted word is exactly
+// a timed word would be [LAW:one-source-of-truth]: the word containing the boundary's
+// character, or the last word begun before it when the browser reports a boundary on
+// punctuation. A boundary before any word names no word.
+export const boundaryWord = (text: string, charIndex: number): WordSpan | null =>
+  wordSpans(text, 0).findLast((word) => word.charStart <= charIndex) ?? null;
+
 
 export const createPlayer = (config: PlayerConfig): Player | null => {
   const support = speechSupport(config.window);
@@ -204,37 +207,41 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
   const { utterances, onState } = config;
 
   let state: PlayerState = { kind: "idle" };
-  // The utterance object currently handed to the synthesizer, and which position it is
-  // FOR. `live` alone answers "is a late `end` from a cancelled sentence real" (the
-  // browser fires `end` on cancel, and without this the player would advance a turn
-  // nobody heard); `liveAt` additionally answers "does the synthesizer actually hold
-  // the utterance for THIS index" — the fact the resume shortcut below needs, since a
-  // paused player whose index changed via `seek` has a live-utterance slot that no
-  // longer agrees with `state.at` at all.
+  // The utterance object currently handed to the synthesizer, and which mark it is FOR.
+  // `live` alone answers "is a late `end` from a cancelled sentence real" (the browser
+  // fires `end` on cancel, and without this the player would advance a turn nobody
+  // heard); `liveAt` additionally answers "does the synthesizer actually hold the text
+  // from THIS mark" — the fact the resume shortcut below needs, since a paused player
+  // whose mark changed via `seek` has a live-utterance slot that no longer agrees with
+  // `state.at` at all.
   let live: SpeechSynthesisUtterance | null = null;
-  let liveAt: number | null = null;
-  // The span under the voice within the live utterance: the whole text until the
-  // browser fires a word boundary, then the word each boundary names. Browsers that fire
-  // no boundaries (Safari) keep the whole utterance, which is honest: no word is claimed
-  // that was not measured [LAW:no-silent-failure].
-  let span: WordSpan = { charStart: 0, charEnd: 0 };
+  let liveAt: Mark | null = null;
+  // The word under the voice within the live utterance: none until the browser fires a
+  // word boundary, then the word each boundary names. Browsers that fire no boundaries
+  // (Safari) never claim one, which is honest: no word is claimed that was not measured
+  // [LAW:no-silent-failure]. The segment is what the synthesizer holds: the utterance's
+  // text from the mark it was spoken from.
+  let word: WordSpan | null = null;
 
   const utteranceAt = (at: number): Utterance => {
     const utterance = utterances[at];
     if (utterance === undefined) throw new RangeError(`speech player: no utterance at ${at} of ${utterances.length}`);
     return utterance;
   };
-  const whole = (at: number): WordSpan => ({ charStart: 0, charEnd: utteranceAt(at).text.length });
+  const segmentOf = (at: Mark): WordSpan => ({ charStart: at.char, charEnd: utteranceAt(at.utterance).text.length });
 
-  const spot = (at: number): Spot => ({ utterance: at, span });
+  const spot = (at: Mark): Spot => ({ utterance: at.utterance, segment: segmentOf(at), word });
   const performerState = (): PerformerState =>
     state.kind === "idle" ? { kind: "idle" } : { kind: state.kind, at: spot(state.at) };
 
-  const speak = (at: number): void => {
-    const utterance = utteranceAt(at);
+  // The synthesizer is handed the text from the mark on, so a seek to a word starts on
+  // that word; a boundary's index is into that suffix, and is put back into utterance
+  // coordinates before the word rule reads it.
+  const speak = (at: Mark): void => {
+    const utterance = utteranceAt(at.utterance);
     const { text } = utterance;
     const voices = assignVoices(synth.getVoices());
-    const spoken = new Utter(text);
+    const spoken = new Utter(text.slice(at.char));
     const delivery = DELIVERY[utterance.voice];
     spoken.rate = delivery.rate;
     spoken.pitch = delivery.pitch;
@@ -249,11 +256,11 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
     // A boundary from a sentence already abandoned names a word nobody is hearing.
     spoken.onboundary = (event): void => {
       if (spoken !== live || event.name !== "word") return;
-      span = boundarySpan(text, event.charIndex);
+      word = boundaryWord(text, at.char + event.charIndex);
     };
     live = spoken;
     liveAt = at;
-    span = whole(at);
+    word = null;
     synth.speak(spoken);
   };
 
@@ -263,6 +270,7 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
   const send = (event: PlayerEvent): void => {
     const before = state;
     const after = advance(before, event, utterances.length);
+    if (event.kind === "seek") charIn(utteranceAt(event.to.utterance).text, event.to);
 
     // A TRUE no-op — advance() returns `state` itself, unchanged, exactly for the cases
     // it is legitimately ignoring (e.g. `finished` arriving while paused, `pause` while
@@ -283,7 +291,7 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
       onState(performerState());
       return;
     }
-    if (before.kind === "paused" && after.kind === "speaking" && liveAt === after.at) {
+    if (before.kind === "paused" && after.kind === "speaking" && liveAt !== null && sameMark(liveAt, after.at)) {
       synth.resume();
       onState(performerState());
       return;
@@ -299,9 +307,9 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
       speak(after.at);
     } else if (after.kind === "paused") {
       // A seek taken while paused (paused@1 → seek{to:2} → paused@2) has a position worth
-      // showing even though nothing is vocalizing — the whole utterance, since no word of
-      // it has been said.
-      span = whole(after.at);
+      // showing even though nothing is vocalizing — the segment from the mark, and no
+      // word, since none of it has been said.
+      word = null;
     }
     onState(performerState());
   };

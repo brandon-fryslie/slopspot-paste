@@ -15,7 +15,7 @@
 // top while the neural voice is provisioned, and when the neural voice is ready it takes
 // the stage WITHOUT losing the place: one `handover` effect reads the leaving performer's
 // LIVE state as the stage passes and sends the arriving one `carry` of it — the same
-// utterance, from its start — then the stand-in is silenced. The same effect, the other
+// place, the word under the voice — then the stand-in is silenced. The same effect, the other
 // way round, hands the stage back when the neural voice crashes mid-listen. On a browser
 // with no synthesizer there is no stand-in, and the transport waits for the neural voice
 // as it did before there was one.
@@ -31,10 +31,14 @@
 // device and its reason, a failed load and its failure.
 //
 // THE TAP THAT STARTS EVERYTHING. Nothing is spawned, probed or fetched until the reader
-// taps Play: the worker bundle, the probe and the download all follow one tap, and the tap
-// IS the consent modelAssets.downloadNeedsTap asks for on a metered connection. A Play tap
-// that starts or resumes the stand-in also starts the neural voice when it is idle, or
-// retries it after a failed load or a crash; a Pause tap touches nothing but the stand-in.
+// taps Play — or taps a word on the page, which is Play with a place: a `seek` to a Mark.
+// The worker bundle, the probe and the download all follow that one tap, and the tap IS
+// the consent modelAssets.downloadNeedsTap asks for on a metered connection. A Play tap or
+// a seek that starts or resumes the stand-in also starts the neural voice when it is idle,
+// or retries it after a failed load or a crash; a Pause tap touches nothing but the
+// stand-in. With no stand-in there is nobody to seek until the neural voice is on stage, so
+// the place is held in the state (`StandIn.none.from`) and is where the neural voice is
+// sent when it arrives — the same seek, whether the reader tapped Play (the top) or a word.
 // Costs, stated once: an unsupported device learns it only after the worker bundle has
 // loaded; a download in flight cannot be cancelled (the protocol has no message for it).
 //
@@ -63,11 +67,12 @@
 
 import { MODEL_ASSETS, allModelAssets } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
-import { createNeuralPerformer, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
-import { carry, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
-import type { ReadAlongAt } from "./readAlong";
+import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
+import { carry, markOf, TOP, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
+import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
+import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
@@ -91,8 +96,10 @@ export type NeuralPhase =
   | { readonly kind: "load-failed"; readonly failure: LoadFailure }
   | { readonly kind: "crashed"; readonly message: string };
 
-// The browser voice, or its absence on a browser with no synthesizer.
-export type StandIn = { readonly kind: "none" } | { readonly kind: "synth"; readonly state: PerformerState };
+// The browser voice, or its absence on a browser with no synthesizer — in which case the
+// place the neural voice is to start from, once it is on stage, is held here: the top
+// until the reader taps a word.
+export type StandIn = { readonly kind: "none"; readonly from: Mark } | { readonly kind: "synth"; readonly state: PerformerState };
 
 export type PanelState =
   | { readonly kind: "provisioning"; readonly neural: NeuralPhase; readonly standIn: StandIn }
@@ -104,6 +111,8 @@ export type Tap = "play" | "stop";
 
 export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
+  // The reader tapped a place on the page: the stage performer seeks there.
+  | { readonly kind: "seek"; readonly to: Mark }
   | { readonly kind: "worker"; readonly message: FromWorker }
   | { readonly kind: "worker-error"; readonly message: string }
   | { readonly kind: "view"; readonly view: NeuralView }
@@ -143,7 +152,7 @@ const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 export const initialState = (standIn: StandIn["kind"]): PanelState => ({
   kind: "provisioning",
   neural: NEURAL_IDLE,
-  standIn: standIn === "none" ? { kind: "none" } : { kind: "synth", state: IDLE },
+  standIn: standIn === "none" ? { kind: "none", from: TOP } : { kind: "synth", state: IDLE },
 });
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
@@ -159,10 +168,14 @@ const loading = (neural: NeuralPhase): boolean =>
   neural.kind === "preparing" || neural.kind === "downloading" || neural.kind === "warming";
 
 type Provisioning = Extract<PanelState, { kind: "provisioning" }>;
+interface ProvisioningStep {
+  readonly state: Provisioning;
+  readonly effects: ReadonlyArray<Effect>;
+}
 
-// What a Play tap does to the neural voice: starts it when idle, retries it after a
-// failure, leaves it be otherwise.
-const kick = (state: Provisioning): Step => {
+// What a Play tap (or a seek) does to the neural voice: starts it when idle, retries it
+// after a failure, leaves it be otherwise.
+const kick = (state: Provisioning): ProvisioningStep => {
   switch (state.neural.kind) {
     case "idle":
     case "crashed":
@@ -170,7 +183,7 @@ const kick = (state: Provisioning): Step => {
     case "load-failed":
       return { state: { ...state, neural: { kind: "preparing" } }, effects: [{ kind: "load" }] };
     default:
-      return stay(state);
+      return { state, effects: [] };
   }
 };
 
@@ -189,6 +202,20 @@ const tap = (state: PanelState, control: Tap): Step => {
       const verb: Verb = control === "stop" ? "stop" : standIn.state.kind === "speaking" ? "pause" : "play";
       const kicked = verb === "play" ? kick(state) : stay(state);
       return { state: kicked.state, effects: [perform("synth", { kind: verb }), ...kicked.effects] };
+    }
+  }
+};
+
+// A tap on a place: whoever is on stage seeks there, and the neural voice is started as a
+// Play tap starts it. With no stand-in the place is kept for the neural voice's arrival.
+const seek = (state: PanelState, to: Mark): Step => {
+  switch (state.kind) {
+    case "neural":
+      return { state, effects: [perform("neural", { kind: "seek", to })] };
+    case "provisioning": {
+      const kicked = kick(state);
+      if (state.standIn.kind === "none") return { state: { ...kicked.state, standIn: { kind: "none", from: to } }, effects: kicked.effects };
+      return { state: kicked.state, effects: [perform("synth", { kind: "seek", to }), ...kicked.effects] };
     }
   }
 };
@@ -253,12 +280,23 @@ const fromWorker = (state: PanelState, message: FromWorker): Step => {
   }
 };
 
+// Where the neural voice's view says it is, as the mark a retry starts from. The last
+// REPORT, not the live clock: the performer is about to be released, and a unit boundary
+// is reported one hop after the clock crosses it. Cost, stated once: a crash retry with no
+// stand-in resumes from the reported unit, at most one unit behind the ear.
+const placeOf = (view: NeuralView): Mark => {
+  const at = spotOf(view);
+  return at.kind === "idle" ? TOP : markOf(at.at);
+};
+
 // The stage handed back to the stand-in, or to nobody: what the state becomes and what
 // the stand-in is told.
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
   const release: Effect = { kind: "release", worker: "terminate" };
   if (state.kind === "provisioning") return { state: { ...state, neural }, effects: [release] };
-  if (state.standIn === "none") return { state: { kind: "provisioning", neural, standIn: { kind: "none" } }, effects: [release] };
+  if (state.standIn === "none") {
+    return { state: { kind: "provisioning", neural, standIn: { kind: "none", from: placeOf(state.view) } }, effects: [release] };
+  }
   // The stand-in's own report of where it lands is the next event; until then it is idle.
   return {
     state: { kind: "provisioning", neural, standIn: { kind: "synth", state: IDLE } },
@@ -270,6 +308,8 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
   switch (event.kind) {
     case "tap":
       return tap(state, event.control);
+    case "seek":
+      return seek(state, event.to);
     case "worker":
       return fromWorker(state, event.message);
     case "worker-error":
@@ -286,9 +326,11 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
       // The performer's first view: the neural voice takes the stage where the stand-in
       // stands, and the stand-in is silenced. With no stand-in, the tap that started the
-      // download is the consent to play.
+      // download is the consent to play, from the place it named.
       const onto: ReadonlyArray<Effect> =
-        state.standIn.kind === "synth" ? [handover("synth", "neural"), perform("synth", { kind: "stop" })] : [perform("neural", { kind: "play" })];
+        state.standIn.kind === "synth"
+          ? [handover("synth", "neural"), perform("synth", { kind: "stop" })]
+          : [perform("neural", { kind: "seek", to: state.standIn.from })];
       return { state: { kind: "neural", view: event.view, standIn: state.standIn.kind }, effects: onto };
     }
     case "synth":
@@ -448,11 +490,11 @@ export const readout = (state: PanelState, total: number): Readout => {
 // ── the cursor ─────────────────────────────────────────────────────────────────────────
 
 // Where the read-along is, from a performer's spot: the utterance, every utterance of its
-// turn, and the span to paint.
+// turn, and the cursor to paint.
 export const readAlongAt = (spot: Spot, utterances: ReadonlyArray<Utterance>): ReadAlongAt => {
   const utterance = utterances[spot.utterance];
   if (utterance === undefined) throw new Error(`listen panel: the performer is at utterance ${spot.utterance} of ${utterances.length}`);
-  return { utterance, turn: utterances.filter((u) => u.anchor === utterance.anchor), span: spot.span };
+  return { utterance, turn: turnOf(utterances, utterance.anchor), segment: spot.segment, word: spot.word };
 };
 
 // Whether the stage performer is speaking, from the state: exactly when the frame loop runs.
@@ -491,6 +533,8 @@ export interface ListenPanelConfig {
 
 export interface ListenPanel {
   readonly send: (control: Tap) => void;
+  // The reader tapped a place on the page.
+  readonly seek: (to: Mark) => void;
   readonly state: () => PanelState;
   // Ends the listen, the stand-in and the worker (gracefully: the model is released before
   // the worker ends); the page is left as the renderer made it, the controls show the
@@ -508,8 +552,10 @@ const render = (controls: ListenControls, shown: Readout): void => {
   controls.progress.value = shown.progress?.loadedBytes ?? 0;
 };
 
+const sameSpan = (a: WordSpan | null, b: WordSpan | null): boolean =>
+  a === b || (a !== null && b !== null && a.charStart === b.charStart && a.charEnd === b.charEnd);
 const samePlace = (a: ReadAlongAt | null, b: ReadAlongAt | null): boolean =>
-  a === b || (a !== null && b !== null && a.utterance === b.utterance && a.span.charStart === b.span.charStart && a.span.charEnd === b.span.charEnd);
+  a === b || (a !== null && b !== null && a.utterance === b.utterance && sameSpan(a.segment, b.segment) && sameSpan(a.word, b.word));
 
 export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const { controls, frames, utterances } = config;
@@ -656,6 +702,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   return {
     send: (control) => dispatch({ kind: "tap", control }),
+    seek: (to) => dispatch({ kind: "seek", to }),
     state: () => state,
     // One more event through the same machine: the idle state disarms the frame loop,
     // clears the position, and the controls say what the state says, so a page back from

@@ -24,7 +24,7 @@ import {
   type PanelState,
 } from "../src/listenPanel";
 import { utteranceTable, type NeuralView } from "../src/neuralPerformer";
-import { carry, type PerformerState } from "../src/performer";
+import { carry, type Mark, type PerformerState } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
@@ -75,8 +75,10 @@ const tapStop: PanelEvent = { kind: "tap", control: "stop" };
 const progress = (loadedBytes: number, totalBytes: number): PanelEvent => worker({ kind: "progress", progress: { loadedBytes, totalBytes } });
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 const synthAt = (state: PerformerState): PanelEvent => ({ kind: "synth", state });
-const speakingAt = (utterance: number): PerformerState => ({ kind: "speaking", at: { utterance, span: { charStart: 0, charEnd: 5 } } });
-const pausedAt = (utterance: number): PerformerState => ({ kind: "paused", at: { utterance, span: { charStart: 0, charEnd: 5 } } });
+const speakingAt = (utterance: number): PerformerState => ({ kind: "speaking", at: { utterance, segment: { charStart: 0, charEnd: 5 }, word: null } });
+const pausedAt = (utterance: number): PerformerState => ({ kind: "paused", at: { utterance, segment: { charStart: 0, charEnd: 5 }, word: null } });
+const mark = (utterance: number, char = 0): Mark => ({ utterance, char });
+const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to: mark(utterance, char) });
 
 const viewOf = (player: NeuralView["player"]): NeuralView => ({
   player,
@@ -89,7 +91,7 @@ const effects = (s: ReturnType<typeof step>): string =>
   s.effects
     .map((e) =>
       e.kind === "perform"
-        ? `${e.on} ${e.event.kind}${e.event.kind === "seek" ? ` ${e.event.to}` : ""}`
+        ? `${e.on} ${e.event.kind}${e.event.kind === "seek" ? ` ${e.event.to.utterance}:${e.event.to.char}` : ""}`
         : e.kind === "release"
           ? `release ${e.worker}`
           : e.kind === "handover"
@@ -136,12 +138,32 @@ console.log("step, no stand-in: the way to audio");
   throws("a script reply with another id is not ours", () => step(scripting.state, worker({ kind: "script", id: 7, units })));
 
   const listening = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("the performer's first view puts the neural voice on stage and plays it: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "neural play" && shown(listening.state) === "Listen | stop(off) | Ready");
+  assert("the performer's first view puts the neural voice on stage and plays it from the top: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "neural seek 0:0" && shown(listening.state) === "Listen | stop(off) | Ready");
+  assert("a seek on stage seeks the neural voice", effects(step(listening.state, seekTo(1, 3))) === "neural seek 1:3");
+
+  // A tap on the page with no stand-in: the place is kept for the neural voice's arrival.
+  const tapped = step(idle, seekTo(1, 3));
+  assert("a seek from idle spawns the worker like Play, and holds the place", effects(tapped) === "spawn" && tapped.state.kind === "provisioning" && tapped.state.standIn.kind === "none" && tapped.state.standIn.from.utterance === 1 && tapped.state.standIn.from.char === 3);
+  const tappedTwice = step(tapped.state, seekTo(0, 21));
+  assert("a later seek replaces the place and spawns nothing more", effects(tappedTwice) === "" && tappedTwice.state.kind === "provisioning" && tappedTwice.state.standIn.kind === "none" && tappedTwice.state.standIn.from.char === 21);
+  // The way to audio, walked from the held place: the neural voice's first view goes there.
+  const arrivingEvents: ReadonlyArray<PanelEvent> = [
+    worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } }),
+    progress(1, 1),
+    worker({ kind: "ready", backend: "webgpu", modelVersion: "v" }),
+    worker({ kind: "script", id: SCRIPT_ID, units }),
+  ];
+  const arriving = arrivingEvents.reduce((state, event) => step(state, event).state, tappedTwice.state);
+  const arrivedAtPlace = step(arriving, { kind: "view", view: viewOf({ kind: "idle" }) });
+  assert("the neural voice arriving after a tap is sent to the tapped place", effects(arrivedAtPlace) === "neural seek 0:21" && arrivedAtPlace.state.kind === "neural");
   const crashed = step(downloading.state, { kind: "worker-error", message: "the worker bundle failed to load" });
   assert("a worker error while downloading: crashed, the worker terminated, Play reads Retry", effects(crashed) === "release terminate" && shown(crashed.state) === "Retry | stop(off) | The neural voice failed: the worker bundle failed to load");
   assert("an error with no message still names the failure", shown(step(warming.state, { kind: "worker-error", message: "" }).state).endsWith("The neural voice failed"));
   const crashedOnStage = step(listening.state, { kind: "worker-error", message: "boom" });
   assert("a crash on stage with no stand-in: released, nobody to hand the stage to", effects(crashedOnStage) === "release terminate" && crashedOnStage.state.kind === "provisioning" && crashedOnStage.state.standIn.kind === "none");
+  const playing = step(listening.state, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "audio" }) });
+  const fellPlaying = step(playing.state, { kind: "worker-error", message: "boom" });
+  assert("a crash while playing with no stand-in keeps the reported place for the retry", fellPlaying.state.kind === "provisioning" && fellPlaying.state.standIn.kind === "none" && fellPlaying.state.standIn.from.utterance === 1 && fellPlaying.state.standIn.from.char === 0);
   throws("a view after the crash is a violation: the released performer's last view never reaches step", () => step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }));
   const disposedMid = step(listening.state, { kind: "dispose" });
   assert("dispose, anywhere: back to the start, the live worker asked to dispose", disposedMid.state.kind === "provisioning" && disposedMid.state.neural.kind === "idle" && effects(disposedMid) === "release dispose");
@@ -166,6 +188,8 @@ console.log("step, with a stand-in: the browser voice speaks while the neural vo
   assert("paused: Resume, and the position held", shown(paused.state) === "Resume | stop | Browser voice standing in · paused at passage 1 of 2 · checking this device for the neural voice…");
   assert("tap play while paused resumes; the neural voice is already on its way, so nothing more", effects(step(paused.state, tapPlay)) === "synth play");
   assert("tap stop stops the stand-in", effects(step(speaking.state, tapStop)) === "synth stop");
+  assert("a seek from idle seeks the stand-in AND spawns the worker, like Play", effects(step(idle, seekTo(1, 3))) === "synth seek 1:3,spawn");
+  assert("a seek while the neural voice is on its way only seeks the stand-in", effects(step(paused.state, seekTo(0, 21))) === "synth seek 0:21");
 
   const downloading = step(step(speaking.state, worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } })).state, progress(50_000_000, 239_000_000));
   assert("downloading while the stand-in speaks: both facts on one line, and the bar", shown(downloading.state) === "Pause | stop | Browser voice standing in · passage 1 of 2 · downloading the neural voice · 50 MB of 239 MB | bar 50000000/239000000");
@@ -198,10 +222,12 @@ console.log("step, with a stand-in: the browser voice speaks while the neural vo
 
 console.log("carry: what one performer tells the next");
 {
-  const carried = (state: PerformerState): string => carry(state).map((e) => `${e.kind}${e.kind === "seek" ? ` ${e.to}` : ""}`).join();
+  const carried = (state: PerformerState): string => carry(state).map((e) => `${e.kind}${e.kind === "seek" ? ` ${e.to.utterance}:${e.to.char}` : ""}`).join();
   assert("idle carries nothing", carried({ kind: "idle" }) === "");
-  assert("speaking carries a seek to the same utterance", carried(speakingAt(1)) === "seek 1");
-  assert("paused carries a seek to the same utterance, then a pause", carried(pausedAt(1)) === "seek 1,pause");
+  assert("speaking with no word carries a seek to where its segment begins", carried(speakingAt(1)) === "seek 1:0");
+  assert("paused carries the seek, then a pause", carried(pausedAt(1)) === "seek 1:0,pause");
+  const onWord: PerformerState = { kind: "speaking", at: { utterance: 1, segment: { charStart: 0, charEnd: 40 }, word: { charStart: 21, charEnd: 29 } } };
+  assert("speaking on a word carries a seek to that word", carried(onWord) === "seek 1:21");
 }
 
 console.log("step: violations throw");
@@ -346,7 +372,9 @@ const rig = (): Rig => {
     positions,
     where: () => {
       const at = positions.at(-1);
-      return at === null || at === undefined ? "silent" : `${at.utterance.anchor} ${at.span.charStart}-${at.span.charEnd} of ${at.turn.length}`;
+      return at === null || at === undefined
+        ? "silent"
+        : `${at.utterance.anchor} ${at.segment.charStart}-${at.segment.charEnd}${at.word === null ? "" : `/${at.word.charStart}-${at.word.charEnd}`} of ${at.turn.length}`;
     },
   };
 };
@@ -381,13 +409,18 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
   assert("the cursor is on the whole first utterance, its turn of one", r.where() === "t1 0-42 of 1" && r.frames.pending === 1);
   synth.spoken[0]?.onboundary?.({ name: "word", charIndex: 6 });
   r.frames.tick();
-  assert("a word boundary moves the cursor on the next frame", r.where() === "t1 6-14 of 1");
+  assert("a word boundary moves the cursor on the next frame: the word inside the whole segment", r.where() === "t1 0-42/6-14 of 1");
+  panel.seek(mark(0, 21));
+  assert("a tap on the second sentence: the stand-in speaks from there, the cursor follows", synth.spoken.at(-1)?.text === "Second sentence here." && r.where() === "t1 21-42 of 1" && r.counts.spawned === 1);
+  synth.spoken.at(-1)?.onboundary?.({ name: "word", charIndex: 7 });
+  r.frames.tick();
+  assert("a boundary in the suffix lands on the utterance's own word", r.where() === "t1 21-42/28-36 of 1");
 
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
   assert("downloading: the bar shows beside the stand-in's line", !r.bar.hidden && r.bar.value === 50_000_000 && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · downloading the neural voice · 50 MB of 200 MB");
-  synth.spoken[0]?.onend?.();
-  assert("the stand-in moves on to passage 2 while the download runs", synth.spoken[1]?.text === two.text && line().includes("passage 2 of 2") && r.where() === "t2 0-8 of 1");
+  synth.spoken.at(-1)?.onend?.();
+  assert("the stand-in moves on to passage 2 while the download runs", synth.spoken.at(-1)?.text === two.text && line().includes("passage 2 of 2") && r.where() === "t2 0-8 of 1");
   r.play.click();
   assert("Pause mid-download pauses the stand-in; the download goes on, the loop is off", line() === "Resume | stop | Browser voice standing in · paused at passage 2 of 2 · downloading the neural voice · 50 MB of 200 MB" && r.frames.pending === 0);
   r.emit({ kind: "progress", progress: { loadedBytes: 200_000_000, totalBytes: 200_000_000 } });
@@ -403,6 +436,13 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
   assert("the cursor stays on passage 2 across the handover: not one position emitted, none lost", r.positions.length === emittedBefore && r.where() === "t2 0-8 of 1");
   r.play.click();
   assert("Resume plays the neural voice from passage 2 and asks for its unit", r.said().endsWith("synthesize 2") && line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2" && r.frames.pending === 1);
+  panel.seek(mark(0, 25));
+  assert("a tap on the first passage's second sentence: the unit in flight is cancelled, the neural voice seeks to the tapped unit and asks for it", r.said().endsWith("cancel 2,synthesize 1") && r.where() === "t1 21-42 of 1" && line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
+  panel.seek(mark(1));
+  assert("and back to passage 2 before the worker has let go of it: the cursor moves, the unit waits for the worker's word", r.said().endsWith("cancel 2,synthesize 1") && r.where() === "t2 0-8 of 1");
+  r.emit({ kind: "cancelled", unitId: 2 });
+  assert("the worker lets go: the unit is asked for again, the other cancelled", r.said().endsWith("cancel 1,synthesize 2"));
+  r.emit({ kind: "cancelled", unitId: 1 });
 
   r.emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });
   r.emit({ kind: "done", unitId: 2, report: report(FRAME_S * 1000), elapsedMs: 5 });
@@ -411,7 +451,7 @@ console.log("createListenPanel: the browser voice stands in, the neural voice ta
   assert("the last unit ends: Ready, the cursor cleared, the loop off", line() === "Listen | stop(off) | Ready" && r.positions.at(-1) === null && r.frames.pending === 0);
 
   r.play.click();
-  assert("Play again plays the neural voice from the top, no new download, no stand-in", r.said().endsWith("synthesize 0") && synth.spoken.length === 2 && line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
+  assert("Play again plays the neural voice from the top, no new download, no stand-in", r.said().endsWith("synthesize 0") && synth.spoken.length === 3 && line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
 
   r.play.click();
   assert("Pause pauses the neural voice on stage, the loop off", line() === "Resume | stop | Paused · passage 1 of 2" && r.frames.pending === 0);

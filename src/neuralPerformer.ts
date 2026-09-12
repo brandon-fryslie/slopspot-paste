@@ -16,18 +16,20 @@
 // rather than seeked through by a table that lies [LAW:no-silent-failure].
 //
 // [LAW:one-source-of-truth] The position is the unit player's, read from the audio clock on
-// every call; the span is the manifest's cursor when the unit has a record and the unit's
-// own span while it is still being synthesized, exactly as listenPanel.ts read it before
-// the seam existed. The table is delivered with every view, so a reader of the view
-// (the panel's status line, naming a failed unit's passage) needs no second copy.
+// every call; the cursor is the manifest's when the unit has a record and the unit's own
+// span with no word while it is still being synthesized. A seek to a mark is the same
+// table read the other way — `positionOf`: the unit of that utterance holding the
+// character, and the time its word begins when the unit has a record, its start when it
+// does not. The table is delivered with every view, so a reader of the view (the panel's
+// status line, naming a failed unit's passage) needs no second copy.
 //
 // [LAW:no-ambient-temporal-coupling] A disposed performer says nothing more: the view the
 // released scheduler raises from its own dispose never reaches the caller.
 
-import type { Performer, PerformerEvent, PerformerState, Spot } from "./performer";
+import { charIn, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
 import { createScheduler, type SchedulerView } from "./scheduler";
 import type { Utterance } from "./speech";
-import { cursorAt, type WordSpan } from "./speechManifest";
+import { cursorAt, offsetAt, unitSpan, type Manifest, type Position } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import { createUnitPlayer, type DeviceFactory } from "./unitPlayer";
@@ -67,8 +69,8 @@ export const utteranceTable = (utterances: ReadonlyArray<Utterance>, script: Rea
 };
 
 // Where the neural voice is, in the page's coordinates: nothing while idle; otherwise the
-// utterance under the player and the span to paint — the manifest's cursor when the unit
-// has a record, the unit's whole span while it is still being synthesized.
+// utterance under the player and the cursor to paint — the manifest's when the unit has a
+// record, the unit's whole span and no word while it is still being synthesized.
 export const spotOf = (view: NeuralView): PerformerState => {
   const { player } = view;
   if (player.kind === "idle") return { kind: "idle" };
@@ -79,9 +81,23 @@ export const spotOf = (view: NeuralView): PerformerState => {
     throw new Error(`neural performer: the player is at unit ${unitIndex} of ${view.manifest.script.length}`);
   }
   const record = view.manifest.units[unitIndex];
-  const span: WordSpan = record === undefined ? { charStart: unit.start, charEnd: unit.end } : cursorAt(record, offsetMs);
-  const at: Spot = { utterance, span };
+  const at: Spot = { utterance, ...(record === undefined ? { segment: unitSpan(unit), word: null } : cursorAt(record, offsetMs)) };
   return { kind: player.kind, at };
+};
+
+// The pipeline position a mark seeks to: among the units that say the mark's utterance
+// (contiguous, and never empty — every utterance has one), the last whose text begins at
+// or before the character, else the first; and within it, the time the word holding the
+// character begins when the unit is recorded, its start when it is not. A mark naming an
+// utterance the page does not have is a caller bug and throws [LAW:no-silent-failure].
+export const positionOf = (manifest: Manifest, utteranceOf: ReadonlyArray<number>, mark: Mark): Position => {
+  const saying = manifest.script.flatMap((unit, unitIndex) => (utteranceOf[unitIndex] === mark.utterance ? [{ unit, unitIndex }] : []));
+  const first = saying[0];
+  if (first === undefined) throw new RangeError(`neural performer: cannot seek to utterance ${mark.utterance}`);
+  const char = charIn(first.unit.utterance.text, mark);
+  const { unitIndex } = saying.findLast(({ unit }) => unit.start <= char) ?? first;
+  const record = manifest.units[unitIndex];
+  return { unitIndex, offsetMs: record === undefined ? 0 : offsetAt(record, char) };
 };
 
 export interface NeuralPerformerConfig {
@@ -116,16 +132,8 @@ export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerf
 
   const view = (): NeuralView => withTable(scheduler.view());
 
-  // The first unit of an utterance: every utterance has one, so a miss is a caller naming
-  // an utterance the page does not have.
-  const firstUnitOf = (utterance: number): number => {
-    const unitIndex = utteranceOf.indexOf(utterance);
-    if (unitIndex === -1) throw new RangeError(`neural performer: cannot seek to utterance ${utterance} of ${config.utterances.length}`);
-    return unitIndex;
-  };
-
   const send = (event: PerformerEvent): void =>
-    scheduler.send(event.kind === "seek" ? { kind: "seek", to: { unitIndex: firstUnitOf(event.to), offsetMs: 0 } } : event);
+    scheduler.send(event.kind === "seek" ? { kind: "seek", to: positionOf(scheduler.view().manifest, utteranceOf, event.to) } : event);
 
   return {
     send,

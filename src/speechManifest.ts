@@ -18,9 +18,13 @@
 //
 // WHY PRECISION IS A KIND. Only `words` is a measurement. `unit` says the model gave no
 // per-word signal; `estimated` carries times interpolated by character length, a guess
-// typed as one. `cursorAt` hands out a word cursor for `words` alone and the unit's own
-// span otherwise, so a guess can never be painted as a measurement
-// [LAW:no-silent-failure].
+// typed as one. `cursorAt` hands out a word for `words` alone and no word otherwise, so a
+// guess can never be painted as a measurement [LAW:no-silent-failure]. The other
+// direction, `offsetAt` — where in the audio a character of the text falls, for a reader
+// who taps a word — reads the estimate too: a seek that lands a word early is a better
+// answer to the tap than the start of the sentence group, and the cursor painted after it
+// still claims no word. Cost, stated once: on an estimated unit a tapped word may start
+// a word or so off.
 //
 // WHY GLOBAL TIME RUNS OVER THE KNOWN PREFIX. Units finish out of order — the scheduler
 // synthesizes ahead of the cursor and a seek starts it mid-paste — so a global timeline is
@@ -267,16 +271,26 @@ export const unitsForTurn = (manifest: Manifest, index: number): UnitRange => {
 export const wordAt = (words: ReadonlyArray<WordTime>, offsetMs: number): WordTime | undefined =>
   words.findLast((word) => word.startMs <= offsetMs);
 
-// What to highlight at a position, in utterance-text coordinates, and what that
-// highlight is allowed to claim: a word only from a measured alignment, otherwise the
-// unit's own span — a guess never looks like a measurement [LAW:no-silent-failure].
-export interface Cursor extends WordSpan {
-  readonly precision: "word" | "unit";
+// What to highlight at a position, in utterance-text coordinates: the segment the voice
+// is inside — the unit's own span — and the word it is on, or null when no word may be
+// claimed: an alignment that is not a measurement, or a position before the first word
+// has begun [LAW:types-are-the-program]. The two are the two tiers the page paints.
+export interface Cursor {
+  readonly segment: WordSpan;
+  readonly word: WordSpan | null;
 }
 
+export const unitSpan = (unit: SynthesisUnit): WordSpan => ({ charStart: unit.start, charEnd: unit.end });
+
 export const cursorAt = (record: ManifestUnit, offsetMs: number): Cursor => {
-  const span: Cursor = { precision: "unit", charStart: record.unit.start, charEnd: record.unit.end };
-  if (record.alignment.kind !== "words") return span;
+  const segment = unitSpan(record.unit);
+  if (record.alignment.kind !== "words") return { segment, word: null };
   const word = wordAt(record.alignment.words, offsetMs);
-  return word === undefined ? span : { precision: "word", charStart: word.charStart, charEnd: word.charEnd };
+  return { segment, word: word === undefined ? null : { charStart: word.charStart, charEnd: word.charEnd } };
 };
+
+// The reverse: how far into the unit's audio the word holding `char` (or the last word
+// begun before it) starts — the offset a tap on that character seeks to. Zero before the
+// first word, and zero for a `unit` alignment, which has no word times at all.
+export const offsetAt = (record: ManifestUnit, char: number): number =>
+  record.alignment.kind === "unit" ? 0 : (record.alignment.words.findLast((word) => word.charStart <= char)?.startMs ?? 0);
