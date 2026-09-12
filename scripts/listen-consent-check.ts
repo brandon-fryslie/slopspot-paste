@@ -2,7 +2,7 @@
 // an in-memory store, and the one decision that reads it with the metered rule.
 // Run: `tsx scripts/listen-consent-check.ts`.
 
-import { PREFERENCE_KEY, readPreference, standingConsent, writePreference } from "../src/listenConsent";
+import { PREFERENCE_KEY, readPreference, standingConsent, writePreference, type PreferenceStore } from "../src/listenConsent";
 import { memoryPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
@@ -24,6 +24,24 @@ console.log("the preference round-trips through the store");
   assert("forgotten: the key is removed, not written as a second value", !readPreference(store) && store.keys().length === 0);
   store.setItem(PREFERENCE_KEY, "yes please");
   assert("a value this build did not write reads as not remembered", !readPreference(store));
+}
+
+console.log("a store that refuses — a browser that throws on site storage — reads as not remembered and takes no write");
+{
+  const refuse = (): never => {
+    throw new Error("SecurityError: storage refused");
+  };
+  const refusing: PreferenceStore = { getItem: refuse, setItem: refuse, removeItem: refuse };
+  const survives = (act: () => void): boolean => {
+    try {
+      act();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  assert("a refusing store reads as not remembered", !readPreference(refusing));
+  assert("neither the write nor the removal throws", survives(() => writePreference(refusing, true)) && survives(() => writePreference(refusing, false)));
 }
 
 console.log("standing consent: remembered, unless the connection is metered");

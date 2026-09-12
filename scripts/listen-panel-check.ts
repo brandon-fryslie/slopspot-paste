@@ -789,6 +789,25 @@ console.log("createListenPanel: the hover pins on a tap, and lets go on a tap ou
   panel.dispose();
 }
 
+console.log("createListenPanel: focus never rides a hidden element out to the body");
+{
+  const r = rig();
+  const panel = mount(r);
+  await ableAbsent(r);
+  r.mark.button.focus();
+  r.mark.yes.focus();
+  assert("the yes reached by keyboard holds focus in the pinned hover", r.doc.activeElement === r.mark.yes && r.mark.root.dataset.open === "true");
+  r.mark.yes.click();
+  assert("the yes activated: the load is sent, the yes hides, focus is on the mark's button, the hover still pinned", r.said() === "load" && r.mark.yes.hidden && r.doc.activeElement === r.mark.button && r.mark.root.dataset.open === "true");
+  r.press("Escape");
+  assert("Escape from the button closes the hover and leaves focus on the button", r.mark.root.dataset.open === "false" && r.doc.activeElement === r.mark.button);
+  r.mark.remember.focus();
+  assert("focus on the box pins the hover", r.doc.activeElement === r.mark.remember && r.mark.root.dataset.open === "true");
+  r.press("Escape");
+  assert("Escape with focus on the box: the hover closes and focus is on the mark's button", r.mark.root.dataset.open === "false" && r.doc.activeElement === r.mark.button);
+  panel.dispose();
+}
+
 console.log("createListenPanel: a page back from the cache wakes the panel it disposed");
 {
   const r = rig();

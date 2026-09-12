@@ -40,8 +40,8 @@
 // with a place: a `seek` to a Mark). A later word only raises it; a crash lowers `play` to
 // `download` — the device the tap unlocked went with the worker, and a wake is never a yes
 // to speak — and a dispose forgets it. The tap is also the reader's gesture, the one moment
-// a browser lets audio start [LAW:no-ambient-temporal-coupling]: every gesture yields an
-// `unlock` effect on its own stack, which opens the audio device if it is not yet open and
+// a browser lets audio start [LAW:no-ambient-temporal-coupling]: a gesture on an able device
+// yields an `unlock` effect on its own stack, which opens the audio device if not yet open and
 // resumes it there, so the context is running long before the model is warm and the first
 // unit — scheduled from a worker message many seconds later — sounds. A voice that arrives
 // on a standing consent is built on a device opened outside any gesture; the reader's first
@@ -752,6 +752,13 @@ export interface ListenPanel {
   readonly dispose: () => void;
 }
 
+// Focus never rides a hidden element out to the body: an element about to hide hands the
+// focus it holds to the mark's button. The button's focusin pins the hover, so a close
+// orders the hand-off first [LAW:single-enforcer].
+const handOff = (mark: MarkControls, hiding: ReadonlyArray<Element>): void => {
+  if (hiding.some((element) => element === mark.root.ownerDocument.activeElement)) mark.button.focus();
+};
+
 // [LAW:dataflow-not-control-flow] Every attribute written on every render, only the values
 // vary: no path leaves a stale form, a stale sentence or a stale ring behind.
 const render = (controls: ListenControls, shown: Readout): void => {
@@ -770,6 +777,7 @@ const render = (controls: ListenControls, shown: Readout): void => {
   mark.sentence.textContent = shown.status;
   mark.ask.textContent = shown.ask ?? "";
   mark.ask.hidden = shown.ask === null;
+  handOff(mark, shown.ask === null ? [mark.yes] : []);
   mark.yes.hidden = shown.ask === null;
   mark.remember.checked = shown.remembered;
 };
@@ -974,6 +982,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // here: the machine has no state for it [LAW:one-source-of-truth].
   const { mark } = controls;
   const pin = (open: boolean): void => {
+    handOff(mark, open ? [] : [mark.yes, mark.remember]);
     mark.root.dataset.open = String(open);
     mark.button.setAttribute("aria-expanded", String(open));
   };
