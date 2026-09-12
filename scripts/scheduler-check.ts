@@ -336,6 +336,22 @@ console.log("step: the reader's voices");
     other.commands.join() === "drop 0,drop 2,cancel 4,drop 4,synthesize 2" && kinds(other.state) === "ahrhca",
   );
 
+  const bothVoices: VoiceMap = { ...VOICES, user: "fantine", assistant: "azelma" };
+  const both = run(at1.state, speaking(1, 300, "audio"), voices(bothVoices));
+  assert(
+    "both voices change while unit 1 speaks: one pause, every held unit dropped, the in-flight one cancelled, one seek to 1's start and play, then 1 asked again",
+    both.commands.join() === "pause,drop 0,drop 1,drop 2,drop 3,cancel 4,drop 4,seek 1:0,play,synthesize 1" && kinds(both.state) === "araaca",
+  );
+  const bothAsked = step(at1.state, voices(bothVoices), speaking(1, 300, "audio")).commands.at(-1);
+  assert("unit 1 is asked in the new user voice", bothAsked?.kind === "worker" && bothAsked.message.kind === "synthesize" && bothAsked.message.unitId === 1 && bothAsked.message.voice === "fantine");
+  const bothCancelled = run(both.state, speaking(1), worker({ kind: "cancelled", unitId: 4 }));
+  const bothSettled = run(bothCancelled.state, speaking(1), done(1, 900));
+  const nextAsked = step(bothCancelled.state, done(1, 900), speaking(1)).commands.at(-1);
+  assert(
+    "the cancel lands and 1 arrives: held, and the next unit, Claude's, asked in the new assistant voice",
+    bothCancelled.commands.length === 0 && bothSettled.commands.join() === "complete 1,synthesize 2" && kinds(bothSettled.state) === "ahraaa" && nextAsked?.kind === "worker" && nextAsked.message.kind === "synthesize" && nextAsked.message.unitId === 2 && nextAsked.message.voice === "azelma",
+  );
+
   const heldStill = run(at1.state, paused(1, 300), voices(userVoice));
   assert("paused: the held place moves to the unit's start, with no pause and no play", heldStill.commands.join() === "drop 1,drop 3,seek 1:0,cancel 4,drop 4,synthesize 1");
 
