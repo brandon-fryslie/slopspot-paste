@@ -347,8 +347,12 @@ export const step = (voices: VoiceMap, state: SchedulerState, event: Event, play
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
 // The reader's controls, forwarded to the player unchanged: the scheduler is the panel's
-// performer, with the same four verbs speechPlayer.ts answers to [LAW:one-type-per-behavior].
-export type Control = Extract<PlayerEvent, { kind: "play" | "pause" | "stop" | "seek" }>;
+// performer, with the same five verbs speechPlayer.ts answers to [LAW:one-type-per-behavior].
+// Speed is forwarded and not planned around: the window below is a length of AUDIO, so at
+// 2.5x the reader crosses it in two fifths of the wall-clock time and may reach the frontier
+// sooner. That shows as the honest "Synthesizing ahead…" the player already reports, and
+// making the window itself speed-aware belongs with pre-synthesis (a35.6), not here.
+export type Control = Extract<PlayerEvent, { kind: "play" | "pause" | "stop" | "seek" | "rate" }>;
 
 export interface SchedulerView {
   readonly player: PlayerState;

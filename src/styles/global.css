@@ -1960,9 +1960,16 @@ body.overlay-editing .minimap-scrim { display: none; }
 body {
   --reserve-overlay-bar: 0px;
   --reserve-tool-dock: 0px;
+  --reserve-player: 0px;
   --dock-lift: 0px;
-  padding-bottom: calc(var(--reserve-overlay-bar) + var(--reserve-tool-dock));
+  padding-bottom: calc(var(--reserve-overlay-bar) + var(--reserve-tool-dock) + var(--reserve-player));
 }
+/* The player's term in that sum, read off the same two bits its own placement is: the
+   class that says a voice may work here, and the strip being on the page at all. Cost,
+   stated once: the number is the strip at one row of controls plus its status line, which
+   is every desktop face; a phone, where the scrubber takes a row of its own, overhangs it
+   by that row — the last turn is still reachable by scrolling. */
+body.speech-ready:has(.speech-bar) { --reserve-player: 80px; }
 body.overlay-bar-present { --reserve-overlay-bar: 72px; --dock-lift: 66px; }
 /* [LAW:one-source-of-truth] The reserve is a PROJECTION of the dock's visibility, read
    off the very bit that decides it: `hidden`, which the dock script writes from its own
@@ -3242,24 +3249,161 @@ body:has(.diff-aligned) main { max-width: 1400px; }
    the "which turn is playing" colour and the control that started it cannot
    drift apart [LAW:one-source-of-truth]. The buttons wear .mono-pill for their
    chrome; only the row's layout is local. */
+/* The player is a fixed strip of its own, riding just above the dock's. Its bottom is
+   DERIVED from the dock's own tokens — the dock's offset, plus the height of the launcher
+   row it always shows, plus the gap it keeps — so moving the dock moves the player with it
+   and neither has to remember the other's number [LAW:one-source-of-truth]. Without the
+   client script there is no player at all: the markup is inert and `speech-ready` is what
+   says a voice may work on this device. */
+.speech-bar { display: none; }
+body.speech-ready .speech-bar {
+  display: flex;
+  justify-content: center;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + var(--dock-lift) + var(--dock-launcher-size) + var(--dock-gap));
+  /* Under the dock's layer, so an open tool panel and its scrim cover the player rather
+     than fighting it for the same pixels. */
+  z-index: 29;
+  pointer-events: none;
+}
+/* The strip's one row of controls, and its status line under them. `flex-wrap` plus a
+   growable scrubber is the whole of the responsiveness: on a wide screen everything shares
+   one line, and on a phone the scrubber takes a line of its own — no media query decides
+   it, the available width does [LAW:dataflow-not-control-flow]. */
 .speech-controls {
+  pointer-events: auto;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
+  width: min(680px, 100% - 2 * var(--dock-side-inset));
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elev) 94%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--fg) 14%, transparent);
 }
-/* The position readout is a status line, not a control: it takes the muted meta
-   voice the other panels' status rows use rather than competing with the buttons. */
-.speech-now {
+/* Until the reader engages the voice the strip is ONE control and the sentence that says
+   what tapping it costs. Stated as "everything that is not those two", so a control added
+   later is collapsed by default rather than by being remembered here. */
+.speech-bar:not(.is-engaged) .speech-controls > :not(.speech-main):not(.speech-now) { display: none; }
+.speech-bar.is-engaged .speech-play-word { display: none; }
+.speech-bar.is-engaged .speech-main {
+  width: 34px;
+  padding: 0;
+  justify-content: center;
+}
+/* The main button's two faces, picked by the action the readout wrote — never by a script
+   toggling one and forgetting the other. Every action but `pause` is about to start a
+   voice, so every action but `pause` shows the play mark [LAW:dataflow-not-control-flow]. */
+.speech-mark { display: none; line-height: 0; }
+.speech-play[data-action="pause"] [data-mark="pause"],
+.speech-play:not([data-action="pause"]) [data-mark="play"] { display: block; }
+.speech-mark svg { width: 20px; height: 20px; display: block; }
+.speech-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.speech-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The transport's other controls: a mark in a circle, quiet until the pointer is on it. */
+.speech-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.speech-mark-one { display: grid; place-items: center; line-height: 0; }
+.speech-icon svg { width: 18px; height: 18px; display: block; }
+.speech-icon:hover { color: var(--fg); border-color: var(--accent); }
+.speech-icon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Everything in the strip that reads rather than acts — the status line, the two times
+   either side of the scrubber, the speed between its buttons — takes the muted meta voice
+   the other panels' status rows use, declared once so they cannot drift apart. */
+.speech-now,
+.speech-played,
+.speech-left,
+.speech-speed {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
+/* A clock whose digits change every frame must not move what is beside it: the times keep
+   their width, and the speed keeps its own so the two buttons do not shift when 1× becomes
+   1.25×. */
+.speech-played,
+.speech-left,
+.speech-speed { font-variant-numeric: tabular-nums; }
+.speech-played,
+.speech-left { white-space: nowrap; }
+.speech-speed {
+  min-width: 3.2em;
+  text-align: center;
+}
+/* The status line always takes a row of its own, and never more than one: a sentence that
+   grew to two lines would move the whole strip up under the reader's thumb, so it is
+   clipped, with the full text in the element's own title for anyone who wants it. */
+.speech-now {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .speech-progress {
   width: 140px;
   height: 6px;
+  accent-color: var(--accent);
+}
+/* The speed stepper reads as one control: two pills with their value between them, so the
+   number cannot be taken for a button and a wrap cannot split the three apart. */
+.speech-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The scrubber takes the room the buttons leave, and a whole line of its own when that
+   room is under 220px: `flex: 1 0 220px` is that sentence, said once, and it is why there
+   is no media query here. It comes last in the markup for exactly this reason — a scrubber
+   that wrapped from the middle of the row would leave the controls after it stranded on a
+   third line [LAW:dataflow-not-control-flow]. */
+.speech-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 0 220px;
+  min-width: 0;
+}
+.speech-scrub {
+  flex: 1;
+  min-width: 0;
   accent-color: var(--accent);
 }
 /* The read-along cursor, two tiers inside the turn card: the sentence group the voice is
@@ -3280,16 +3424,15 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   border-radius: 3px;
 }
 /* Follow appears only while the reader has scrolled away from the voice (follow.ts sets
-   `hidden`); when shown it takes the same pill chrome as its neighbours. */
+   `hidden`); when shown it is a mark like its neighbours. */
 .speech-follow[hidden] { display: none; }
-/* A disabled control is dimmed rather than hidden: the control's absence would move
-   the row's layout on every play/stop, and a reader tracking the audio should not
-   have the buttons shifting under the pointer. Play spends time disabled only on a
-   browser with no stand-in (probing, downloading, warming). */
-.speech-stop[disabled],
-.speech-play[disabled] { opacity: 0.45; cursor: default; }
-.speech-stop[disabled]:hover,
-.speech-play[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
+/* A disabled control is dimmed rather than hidden: the control's absence would move the
+   row's layout on every play and stop, and a reader tracking the audio should not have the
+   buttons shifting under the pointer. One rule for every button in the strip — the main
+   one (disabled only on a browser with no stand-in), Stop, the turn skips at the ends of
+   the conversation, the speed steps at the ends of the list [LAW:one-type-per-behavior]. */
+.speech-controls button[disabled] { opacity: 0.4; cursor: default; }
+.speech-controls button[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
 
 /* The turn currently being spoken. Box-shadow only, deliberately — NOT `background`:
    every bubble already carries a role-tinted background (.bubble-user/-assistant/-system,

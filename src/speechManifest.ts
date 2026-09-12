@@ -26,12 +26,13 @@
 // still claims no word. Cost, stated once: on an estimated unit a tapped word may start
 // a word or so off.
 //
-// WHY GLOBAL TIME RUNS OVER THE KNOWN PREFIX. Units finish out of order — the scheduler
-// synthesizes ahead of the cursor and a seek starts it mid-paste — so a global timeline is
-// only defined as far as every unit before a point is known. `totalDurationMs` sums the
-// longest synthesized prefix, and the global<->position conversions return a typed absence
-// beyond it, rather than summing whatever happens to exist and calling that a position
-// [LAW:no-silent-failure].
+// WHERE GLOBAL TIME LIVES, AND WHY NOT HERE. This module measures ONE unit's audio: its
+// duration and where its words fall in it. Laying those measurements end to end into a clock
+// for the whole conversation is timeline.ts's job, because a transport's clock must also
+// cover the passages nobody has measured yet — and a length this module could honestly
+// report would stop at the synthesized prefix, which is a scrubber the reader cannot drag
+// forward [LAW:one-source-of-truth]. So a record here, a clock there, and no second answer
+// to "how long is this paste" in between.
 //
 // Nothing here is persisted and no audio is ever stored: the manifest is a client-side,
 // disposable projection of the stored original's rendition [LAW:one-way-deps].
@@ -205,61 +206,6 @@ export interface Position {
   readonly unitIndex: number;
   readonly offsetMs: number;
 }
-
-// The units synthesized without a gap from the start — the stretch a global timeline is
-// defined over.
-export const knownPrefix = (manifest: Manifest): ReadonlyArray<ManifestUnit> => {
-  const prefix: ManifestUnit[] = [];
-  for (const unit of manifest.units) {
-    if (unit === undefined) break;
-    prefix.push(unit);
-  }
-  return prefix;
-};
-
-export const totalDurationMs = (manifest: Manifest): number =>
-  knownPrefix(manifest).reduce((sum, unit) => sum + unit.durationMs, 0);
-
-// Milliseconds from the start of the rendition, or `undefined` when a unit before the
-// position (or the position's own unit) has not been synthesized.
-export const toGlobalMs = (manifest: Manifest, position: Position): number | undefined => {
-  const prefix = knownPrefix(manifest);
-  return position.unitIndex < prefix.length
-    ? prefix.slice(0, position.unitIndex).reduce((sum, unit) => sum + unit.durationMs, 0) + position.offsetMs
-    : undefined;
-};
-
-// The position at a global time over the known prefix, clamped to its ends: before the
-// start is the start, at or past the end is the end of the last known unit. `undefined`
-// only when nothing has been synthesized yet, so there is no timeline to be on.
-export const toPosition = (manifest: Manifest, globalMs: number): Position | undefined => {
-  const prefix = knownPrefix(manifest);
-  let start = 0;
-  for (const [unitIndex, unit] of prefix.entries()) {
-    if (globalMs < start + unit.durationMs) return { unitIndex, offsetMs: Math.max(0, globalMs - start) };
-    start += unit.durationMs;
-  }
-  const lastUnit = prefix.at(-1);
-  return lastUnit === undefined ? undefined : { unitIndex: prefix.length - 1, offsetMs: lastUnit.durationMs };
-};
-
-// The script units that say turn `index` — the node index every utterance of that turn
-// carries as `Utterance.index`, the same N as its t<N> anchor — as a half-open index
-// range. The script is in turn order, so the range is [first unit of a turn >= it, first
-// unit of a turn > it): contiguous, and for a turn that says nothing (no utterances, or
-// only whitespace) empty at the next spoken unit, which is where a seek to that turn lands.
-export interface UnitRange {
-  readonly from: number;
-  readonly to: number;
-}
-
-export const unitsForTurn = (manifest: Manifest, index: number): UnitRange => {
-  const firstAtOrAfter = (turn: number): number => {
-    const at = manifest.script.findIndex((unit) => unit.utterance.index >= turn);
-    return at === -1 ? manifest.script.length : at;
-  };
-  return { from: firstAtOrAfter(index), to: firstAtOrAfter(index + 1) };
-};
 
 // ── the cursor ──────────────────────────────────────────────────────────────────────
 

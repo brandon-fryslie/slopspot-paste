@@ -36,7 +36,11 @@ type ToolSpec = {
   readonly availability: ToolAvailability;
 };
 
-const icon = (paths: string): string =>
+// [LAW:one-source-of-truth] The site's stroke-icon style: one viewBox, one weight, one
+// set of joins, shared by the dock's tools and by the player's transport (the paste page
+// draws its marks with this), so the two fixtures on the same edge of the screen cannot
+// drift apart on how an icon looks.
+export const icon = (paths: string): string =>
   `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" ` +
   `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 
@@ -94,21 +98,10 @@ const TOOLS = [
     ),
     availability: { kind: "when", bodyClasses: ["tldr-ready"] },
   },
-  {
-    id: "listen",
-    label: "Listen",
-    hint: "Read this conversation aloud",
-    icon: icon(
-      '<path d="M4.5 8.2v3.6"/><path d="M7.6 5.6v8.8"/><path d="M10.7 3.4v13.2"/>' +
-        '<path d="M13.8 6.4v7.2"/><path d="M16.9 8.8v2.4"/>',
-    ),
-    // The item appears once the page has found a performer that MAY work: a speech
-    // synthesizer (absent on more browsers than one would guess, and behind a flag on
-    // some) for the browser voice, or WebGPU for the neural voice, whose full answer comes
-    // only from the worker the first tap spawns. A reader with neither sees no Listen,
-    // rather than a play button that stays silent.
-    availability: { kind: "when", bodyClasses: ["speech-ready"] },
-  },
+  // Listen is deliberately absent: the player is a fixture of the paste page itself, not a
+  // panel behind this menu. A transport the reader has to re-open a menu to reach is one
+  // they stop using, and the tap that engages the voice has to BE the control's first act
+  // rather than its second, after a panel has opened [LAW:decomposition].
   {
     id: "code",
     label: "Code",

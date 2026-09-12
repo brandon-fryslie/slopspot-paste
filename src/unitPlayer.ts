@@ -47,12 +47,27 @@
 // — no timer is set — it is the one clock's event, and it is the tick the scheduler needs
 // to slide its window without polling [LAW:no-ambient-temporal-coupling].
 //
+// SPEED SHIFTS PITCH, AND THAT IS THE CHOSEN COST. A rate belongs to the schedule, not to a
+// source: every source in one schedule is started at the same `playbackRate`, and a change
+// re-anchors the schedule at the sample under the clock, exactly as a seek does. That keeps
+// position a pure reading of `context.currentTime` against the times units were scheduled to
+// begin — the one clock this module exists to preserve [LAW:one-source-of-truth]. The
+// alternative the ticket weighed, a pitch-preserving time-stretch in an AudioWorklet, cannot
+// keep it: a stretcher's output is its own sample counter behind a message port, which is a
+// second clock reporting late, and every reading here — the cursor, the scrubber, the unit
+// boundary the scheduler slides its window on — would have to come from it instead. So the
+// resampling shift is accepted and stated: at 1.25x the voice is a little brighter, at 2.5x
+// it is plainly higher. The browser voice, which stands in while the model loads, has a
+// pitch-preserving rate of its own and uses it — speed is a value each performer honours its
+// own way, which is the whole point of the seam [LAW:one-type-per-behavior].
+//
 // Not here, deliberately: the word cursor (the panel samples `state().at` on its paint
 // clock and asks the manifest — a boundary timer in this module would be a second clock),
 // the lookahead window and memory bound (the scheduler decides what to `drop`), and a fade
 // on seek and pause (a cut mid-sample can click; the UX epic owns the ramp).
 
 import { MODEL_ASSETS } from "./modelAssets";
+import { NORMAL, type Speed } from "./performer";
 import type { Position } from "./speechManifest";
 
 // ── the PCM the player speaks ──────────────────────────────────────────────────────────
@@ -82,6 +97,7 @@ export interface PcmBuffer {
 
 export interface PcmSource {
   buffer: PcmBuffer | null;
+  readonly playbackRate: { value: number };
   onended: ((event: Event) => unknown) | null;
   connect(destination: unknown): unknown;
   start(when: number, offset: number): void;
@@ -133,13 +149,21 @@ export interface UnitStart {
 // scheduled sample would play — the end of the audio the context holds. `need` is that
 // sample: the next one to schedule, or `unit === unitCount`, one past the end, when the
 // last unit has been scheduled to its last sample. `starts` always holds the anchored unit
-// first, so a position lookup is total.
+// first, so a position lookup is total. `rate` is the speed every source in this schedule
+// was started at, which is what makes context seconds and samples convertible both ways; a
+// change of speed opens a new schedule rather than mixing two rates under one set of times.
 export interface Schedule {
   readonly anchor: number;
   readonly cursor: number;
   readonly starts: readonly [UnitStart, ...UnitStart[]];
   readonly need: Sample;
+  readonly rate: Speed;
 }
+
+// [LAW:single-enforcer] Samples of audio per second of the CONTEXT's clock at a given
+// speed: the one conversion every time below is stated in terms of, so a rate can never be
+// applied to the cursor and forgotten on the position, or the other way about.
+const perSecond = (format: PcmFormat, rate: Speed): number => format.sampleRate * rate;
 
 // One frame to hand the device: play `pcm` at `when`, skipping its first `skip` samples.
 export interface Cue {
@@ -148,11 +172,12 @@ export interface Cue {
   readonly skip: number;
 }
 
-export const openSchedule = (from: Sample, anchor: number, format: PcmFormat): Schedule => ({
+export const openSchedule = (from: Sample, anchor: number, format: PcmFormat, rate: Speed = NORMAL): Schedule => ({
   anchor,
   cursor: anchor,
   need: from,
-  starts: [{ unit: from.unit, time: anchor - from.sample / format.sampleRate }],
+  rate,
+  starts: [{ unit: from.unit, time: anchor - from.sample / perSecond(format, rate) }],
 });
 
 // [LAW:effects-at-boundaries] Schedule every frame the store can supply at the cursor, as
@@ -167,7 +192,8 @@ export const extend = (
   unitCount: number,
   format: PcmFormat,
 ): { readonly schedule: Schedule; readonly cues: ReadonlyArray<Cue> } => {
-  const { sampleRate, frameSamples } = format;
+  const { frameSamples } = format;
+  const perSec = perSecond(format, schedule.rate);
   const cues: Cue[] = [];
   const starts: [UnitStart, ...UnitStart[]] = [...schedule.starts];
   let { cursor, need } = schedule;
@@ -179,7 +205,7 @@ export const extend = (
     if (pcm !== undefined) {
       const skip = need.sample - frame * frameSamples;
       cues.push({ pcm, when: cursor, skip });
-      cursor += (frameSamples - skip) / sampleRate;
+      cursor += (frameSamples - skip) / perSec;
       need = { unit: need.unit, sample: (frame + 1) * frameSamples };
       continue;
     }
@@ -197,7 +223,7 @@ export const positionAt = (schedule: Schedule, time: number, format: PcmFormat):
   const t = Math.min(Math.max(time, schedule.anchor), schedule.cursor);
   let start = schedule.starts[0];
   for (const candidate of schedule.starts) if (candidate.time <= t) start = candidate;
-  return { unit: start.unit, sample: Math.round((t - start.time) * format.sampleRate) };
+  return { unit: start.unit, sample: Math.round((t - start.time) * perSecond(format, schedule.rate)) };
 };
 
 // ── the player ─────────────────────────────────────────────────────────────────────────
@@ -221,6 +247,7 @@ export type PlayerEvent =
   | { readonly kind: "pause" }
   | { readonly kind: "stop" }
   | { readonly kind: "seek"; readonly to: Position }
+  | { readonly kind: "rate"; readonly to: Speed }
   | { readonly kind: "frame"; readonly unit: number; readonly frameIndex: number; readonly pcm: Float32Array<ArrayBuffer> }
   | { readonly kind: "complete"; readonly unit: number }
   | { readonly kind: "drop"; readonly unit: number };
@@ -260,9 +287,13 @@ const IDLE: Live = { kind: "idle" };
 export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   const { unitCount, onState, format = MODEL_PCM } = config;
   const device = new config.Device({ sampleRate: format.sampleRate });
-  // [LAW:no-shared-mutable-globals] Owned here; written only through `send`.
+  // [LAW:no-shared-mutable-globals] Owned here; both written only through `send`. The rate
+  // outlives every schedule — a seek, a pause, a starvation and the units themselves all
+  // open new schedules at whatever speed the reader last chose, which is what makes speed
+  // persist across units without anyone re-sending it.
   const store = new Map<number, MutableUnitAudio>();
   let live: Live = IDLE;
+  let rate: Speed = NORMAL;
 
   const toPosition = (at: Sample): Position => ({ unitIndex: at.unit, offsetMs: (at.sample / format.sampleRate) * 1000 });
   const flowOf = (speaking: Speaking): Flow => (speaking.sources.size > 0 ? "audio" : "waiting");
@@ -302,6 +333,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
       buffer.copyToChannel(cue.pcm, 0);
       const source = device.createBufferSource();
       source.buffer = buffer;
+      source.playbackRate.value = speaking.schedule.rate;
       source.connect(device.destination);
       // A source silenced by pause, stop or seek is no longer in its set: its late `ended`
       // reports on audio the player already abandoned and changes nothing.
@@ -326,7 +358,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
     if (live.kind === "speaking") silence(live);
     const speaking: Speaking = {
       kind: "speaking",
-      schedule: openSchedule(from, device.currentTime + SCHEDULE_LEAD_S, format),
+      schedule: openSchedule(from, device.currentTime + SCHEDULE_LEAD_S, format, rate),
       sources: new Set(),
     };
     live = speaking;
@@ -395,6 +427,16 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
         live = IDLE;
         void device.suspend();
         return;
+      case "rate": {
+        // The one fact that changes, then the same re-anchor a seek performs: the sample
+        // under the clock is where the new speed starts, so the reader hears the words they
+        // were hearing, faster. A rate that is already the rate changes nothing — the
+        // schedule would be re-opened for no audible reason [LAW:dataflow-not-control-flow].
+        if (event.to === rate) return;
+        rate = event.to;
+        if (live.kind === "speaking") begin(positionAt(live.schedule, device.currentTime, format));
+        return;
+      }
       case "seek": {
         // Seeking while paused moves the held position; the reader asked to move, not to
         // start. Otherwise it plays from there, from buffered samples when they exist and

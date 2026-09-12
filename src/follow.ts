@@ -67,7 +67,13 @@ export const inBand = (rect: Rect, height: number, margin: number = BAND_MARGIN)
 // The keys that scroll a page, each with the elements on which it does something else
 // instead: all of them type or move a caret in an editable element; Space alone also
 // presses a button and opens a fold, while the others scroll straight through both.
-const EDITABLE = "input, textarea, select, [contenteditable]";
+//
+// [LAW:one-source-of-truth] Exported because the transport's keyboard asks the same
+// question of the same page (shortcuts.ts): "does the element under this press take the key
+// itself?" One table answers it for both, so a control that swallows Space cannot be a
+// button to one of them and the page to the other. EDITABLE is the answer for every key
+// this map does not name.
+export const EDITABLE = "input, textarea, select, [contenteditable]";
 export const PAGING_KEYS: ReadonlyMap<string, string> = new Map([
   ["PageUp", EDITABLE],
   ["PageDown", EDITABLE],
@@ -135,6 +141,11 @@ export const createFollower = (config: FollowerConfig): Follower => {
   const reader = (): void => send({ kind: "reader" });
   const onKey = (event: Event): void => {
     const key = event as KeyboardEvent;
+    // A key whose default has already been prevented did not scroll the page: the transport
+    // claimed it (shortcuts.ts, in the capture phase, which the DOM runs before this
+    // listener whatever order the page wired them in) and the reader is seeking, not
+    // scrolling away from the voice [LAW:no-ambient-temporal-coupling].
+    if (key.defaultPrevented) return;
     const consumedOn = PAGING_KEYS.get(key.key);
     const consumed = consumedOn !== undefined && key.target instanceof Element && key.target.closest(consumedOn) !== null;
     if (consumedOn !== undefined && !consumed) reader();

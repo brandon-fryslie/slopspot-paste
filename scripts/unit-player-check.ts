@@ -32,6 +32,9 @@
 //   clock passes the schedule        -> flow waiting at the next needed sample, reported once
 //   delivery while waiting           -> re-anchored at that sample, flow audio
 //   last unit ends                   -> idle; suspend()
+//   rate      speaking               -> re-anchored at the clock's sample, new sources at it
+//   rate      idle | paused          -> held for the next play; nothing reported
+//   rate      the rate already set   -> no-op
 
 import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, extend, openSchedule, positionAt } from "../src/unitPlayer";
 import type { DeviceFactory, PlayerState, UnitAudio } from "../src/unitPlayer";
@@ -149,6 +152,70 @@ const main = harness(4);
   device.advance(0.06);
   const continued = player.state();
   assert("position continues from the relieved sample", continued.kind === "speaking" && near(continued.at.offsetMs, 90));
+}
+
+// ── speed ─────────────────────────────────────────────────────────────────────────────
+
+console.log("schedule: a rate is context seconds per sample, both ways");
+{
+  const store = new Map<number, UnitAudio>([
+    [0, { frames: [frame(0, 0), frame(0, 1)], complete: true }],
+    [1, { frames: [frame(1, 0)], complete: true }],
+  ]);
+  const RATE = 1.25;
+  const fast = extend(openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM, RATE), store, 2, MODEL_PCM);
+  assert("a frame at 1.25x occupies four fifths of the context time it would at 1x", near(fast.cues[1]?.when ?? NaN, 1 + FRAME_S / RATE));
+  assert("and the unit that follows begins that much sooner", near(fast.schedule.starts[1]?.time ?? NaN, 1 + (2 * FRAME_S) / RATE));
+  const at = positionAt(fast.schedule, 1 + FRAME_S / RATE, MODEL_PCM);
+  assert("the position at a context time is the sample the ear is on, not the sample a 1x clock would be", at.unit === 0 && at.sample === FS);
+  assert("the round trip holds at the boundary: the cursor is the second unit's first sample", positionAt(fast.schedule, fast.schedule.starts[1]?.time ?? NaN, MODEL_PCM).unit === 1);
+  assert("a schedule opened without a rate is the ordinary one", openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM).rate === 1);
+}
+
+console.log("player: speed re-anchors where the ear is, and outlives every unit");
+{
+  const { player, device, states, reported } = harness(2);
+  player.send({ kind: "frame", unit: 0, frameIndex: 0, pcm: frame(0, 0) });
+  player.send({ kind: "frame", unit: 0, frameIndex: 1, pcm: frame(0, 1) });
+  player.send({ kind: "complete", unit: 0 });
+  player.send({ kind: "frame", unit: 1, frameIndex: 0, pcm: frame(1, 0) });
+  player.send({ kind: "complete", unit: 1 });
+  player.send({ kind: "play" });
+  assert("every source of the first schedule plays at 1x", device.live().every((source) => source.playbackRate.value === 1));
+
+  device.advance(SCHEDULE_LEAD_S + FRAME_S / 2);
+  const before = player.state();
+  const reportsBefore = states.length;
+  player.send({ kind: "rate", to: 2 });
+  const after = player.state();
+  assert(
+    "the speed change keeps the place: the same unit, the same millisecond, reported once",
+    before.kind === "speaking" && after.kind === "speaking" && after.at.unitIndex === before.at.unitIndex && near(after.at.offsetMs, before.at.offsetMs, 1) && states.length === reportsBefore + 1,
+  );
+  assert("the sources now holding the audio were started at the new speed", device.live().length > 0 && device.live().every((source) => source.playbackRate.value === 2));
+  assert("and they are still contiguous, so the boundary stays gapless at speed", contiguous(device.live()));
+
+  const liveBefore = device.live().length;
+  player.send({ kind: "rate", to: 2 });
+  assert("the same speed again changes nothing: no re-anchor, no report", device.live().length === liveBefore && states.length === reportsBefore + 1);
+
+  // Across the boundary: the unit that follows is played at the speed the reader chose,
+  // which nobody re-sends — the player's own, outliving each schedule.
+  // Half of the first unit's two frames was heard before the change, so one and a half
+  // frames remain — at double speed, three quarters of a frame's worth of context time,
+  // plus the lead the re-anchored schedule starts after.
+  device.advance(SCHEDULE_LEAD_S + (1.5 * FRAME_S) / 2 + 0.005);
+  const crossed = player.state();
+  assert("the clock crosses into the second unit at the new speed", crossed.kind === "speaking" && crossed.at.unitIndex === 1 && reported().at(-1)?.startsWith("speaking/audio@1") === true);
+  assert("its sources carry the speed too", device.sources.filter((source) => !source.stopped).every((source) => source.playbackRate.value === 2));
+
+  player.send({ kind: "pause" });
+  player.send({ kind: "rate", to: 0.75 });
+  const held = player.state();
+  assert("a speed change while paused moves nothing and is not reported", held.kind === "paused" && near(held.at.offsetMs, crossed.kind === "speaking" ? crossed.at.offsetMs : NaN, 20));
+  player.send({ kind: "play" });
+  assert("the resume plays from the held sample at the speed chosen while paused", device.live().every((source) => source.playbackRate.value === 0.75));
+  player.dispose();
 }
 
 console.log("player: pause holds a sample, resume is sample-accurate");

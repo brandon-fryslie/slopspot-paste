@@ -30,6 +30,9 @@ export class StubBuffer implements PcmBuffer {
 
 export class StubSource implements PcmSource {
   buffer: PcmBuffer | null = null;
+  // The rate the player started this source at, as a real AudioBufferSourceNode carries
+  // it: a k-rate param whose `value` is read, never a plain number.
+  readonly playbackRate = { value: 1 };
   onended: ((event: Event) => unknown) | null = null;
   connected: unknown = null;
   started: { readonly when: number; readonly offset: number } | null = null;
@@ -46,10 +49,12 @@ export class StubSource implements PcmSource {
   stop(): void {
     this.stopped = true;
   }
-  // The context time this source's last sample ends.
+  // The context time this source's last sample ends. A source played faster ends sooner:
+  // the buffer's own seconds divided by the rate it is resampled at, which is what the
+  // player's schedule arithmetic assumes of the device.
   endTime(): number {
     if (this.started === null || !(this.buffer instanceof StubBuffer)) throw new Error("stub source: not started");
-    return this.started.when + (this.buffer.length / this.buffer.sampleRate - this.started.offset);
+    return this.started.when + (this.buffer.length / this.buffer.sampleRate - this.started.offset) / this.playbackRate.value;
   }
 }
 

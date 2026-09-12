@@ -19,7 +19,7 @@
 //     utterance, so a voice list that arrives late simply takes effect on the next sentence
 //     rather than leaving the whole session stuck on the default voice.
 
-import { charIn, TOP, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
+import { charIn, markOf, NORMAL, TOP, type Mark, type Performer, type PerformerEvent, type PerformerState, type Speed, type Spot } from "./performer";
 import type { Utterance, Voice } from "./speech";
 import { VOICES } from "./speech";
 import { wordSpans, type WordSpan } from "./speechManifest";
@@ -91,6 +91,11 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
       const next = state.at.utterance + 1;
       return next >= length ? { kind: "idle" } : { kind: "speaking", at: { utterance: next, char: 0 } };
     }
+    case "rate":
+      // Speed is not a position: the machine below is about WHERE the voice is, and a rate
+      // change moves it nowhere. What the synthesizer must be told is `send`'s, which is
+      // where the one effect a rate has — re-speaking the sentence at the new speed — lives.
+      return state;
     case "seek": {
       // A seek out of range is not a silent clamp: an out-of-range target is a caller bug,
       // and clamping it would play a turn the caller did not ask for while reporting success
@@ -119,6 +124,8 @@ export const advance = (state: PlayerState, event: PlayerEvent, length: number):
 // The per-voice delivery. Narration is OUR words about the conversation, so it is set
 // apart by how it sounds rather than by a spoken label like "narrator:" on every line —
 // the listener learns the timbre in one sentence and never has to hear the word again.
+// The reader's speed multiplies these: a narrator at 1.5x is still faster than the prose
+// it introduces, because the two facts compose rather than replace one another.
 const DELIVERY: { readonly [K in Voice]: { readonly rate: number; readonly pitch: number } } = {
   user: { rate: 1, pitch: 1 },
   assistant: { rate: 1, pitch: 0.95 },
@@ -222,6 +229,10 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
   // [LAW:no-silent-failure]. The segment is what the synthesizer holds: the utterance's
   // text from the mark it was spoken from.
   let word: WordSpan | null = null;
+  // The reader's speed, the one thing here that outlives every utterance: each sentence is
+  // handed to the synthesizer at this rate, so speed persists across the conversation
+  // without the panel re-sending it [LAW:one-source-of-truth].
+  let speed: Speed = NORMAL;
 
   const utteranceAt = (at: number): Utterance => {
     const utterance = utterances[at];
@@ -243,7 +254,7 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
     const voices = assignVoices(synth.getVoices());
     const spoken = new Utter(text.slice(at.char));
     const delivery = DELIVERY[utterance.voice];
-    spoken.rate = delivery.rate;
+    spoken.rate = delivery.rate * speed;
     spoken.pitch = delivery.pitch;
     // A null assignment leaves the synthesizer's own default in place — the honest
     // encoding of "this browser had nothing to choose from".
@@ -264,10 +275,31 @@ export const createPlayer = (config: PlayerConfig): Player | null => {
     synth.speak(spoken);
   };
 
+  // The browser fixes an utterance's rate when it is handed the text, so a speed change
+  // mid-sentence is a re-speak from where the voice stands — the same cancel-and-speak a
+  // move performs, at the place it already occupies. Pitch is preserved: this is the
+  // synthesizer's own rate, not a resampling, which is why the stand-in sounds better fast
+  // than the neural voice does. Cost, stated once: on a browser that fires no word
+  // boundaries (Safari) there is no word to resume from, so the sentence restarts at the
+  // place it was last seeked to rather than at the word being said [LAW:no-silent-failure].
+  const setRate = (to: Speed): void => {
+    if (to === speed) return;
+    speed = to;
+    if (state.kind !== "speaking") return;
+    const from = markOf(spot(state.at));
+    live = null;
+    liveAt = null;
+    synth.cancel();
+    state = { kind: "speaking", at: from };
+    speak(from);
+    onState(performerState());
+  };
+
   // [LAW:single-enforcer] The ONE place state changes and effects are applied. Every
   // control on the page routes through here, so "cancel the current sentence before
   // starting another" is guaranteed by the shape rather than remembered at four call sites.
   const send = (event: PlayerEvent): void => {
+    if (event.kind === "rate") return setRate(event.to);
     const before = state;
     const after = advance(before, event, utterances.length);
     if (event.kind === "seek") charIn(utteranceAt(event.to.utterance).text, event.to);

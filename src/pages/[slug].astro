@@ -21,6 +21,7 @@ import {
   LAUNCHER_CLOSE_ICON,
   LAUNCHER_ICON,
   TOOL,
+  icon,
   panelDomId,
   requiresAttr,
   type ToolId,
@@ -161,17 +162,34 @@ const present = {
   compare: true,
   // Content-gated: the renderers return "" when there is nothing to export or continue,
   // and the freshness/version surfaces exist only for url-arm pastes that have them.
-  // Content-gated on there being something to say: a paste whose spine is entirely
-  // blank/whitespace turns yields no utterances (a fenced code block still gets an
-  // "announced" utterance, never zero), and offering to read silence aloud would be a
-  // promise the button can't keep.
-  listen: utterances.length > 0,
   code: codeExportHtml !== "",
   continue: continuationHtml !== "",
   freshness: hasUpstream,
   versions: trail !== null,
 } satisfies Record<ToolId, boolean>;
 const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
+
+// Whether this paste can be read aloud at all. Deliberately NOT a dock tool: a transport
+// the reader must re-open a menu to reach is a transport they stop using, and the tap that
+// engages the voice must be the FIRST thing the control does rather than the second, after
+// a panel has opened. Content-gated on there being something to say: a paste whose spine is
+// entirely blank/whitespace turns yields no utterances (a fenced code block still gets an
+// "announced" utterance, never zero), and offering to read silence aloud would be a promise
+// the button can't keep.
+const speakable = utterances.length > 0;
+
+// The player's marks, in the site's one stroke-icon style (toolDock's `icon`, shared so the
+// dock and the transport cannot drift apart on weight or size). Each is what the control
+// does, at a glance: the two faces of the main button, a turn skip either way, the page
+// coming back to the voice, and the square that ends a listen.
+const PLAYER_ICONS = {
+  play: icon('<path d="M7 4.6l8.4 5.4L7 15.4z"/>'),
+  pause: icon('<path d="M7.6 4.8v10.4M12.4 4.8v10.4"/>'),
+  back: icon('<path d="M15.2 5.2v9.6L7.8 10z"/><path d="M5.2 5v10"/>'),
+  forward: icon('<path d="M4.8 5.2v9.6L12.2 10z"/><path d="M14.8 5v10"/>'),
+  follow: icon('<path d="M10 3.4v8"/><path d="M6.6 8.2L10 11.6l3.4-3.4"/><path d="M4.6 16.4h10.8"/>'),
+  stop: icon('<rect x="6.2" y="6.2" width="7.6" height="7.6" rx="1.4"/>'),
+} as const;
 ---
 
 <Base title={`${title} · slopspot paste`} platform={platform}>
@@ -481,40 +499,6 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       )}
 
       {/*
-        The Listen controls. The transport is inert markup plus a hidden payload — the SAME
-        shape the code and continuation controls use [LAW:one-type-per-behavior] — and the
-        client script reveals it (`speech-ready`) when either voice may work: a synthesizer
-        for the stand-in, or WebGPU for the neural voice.
-
-        [LAW:one-source-of-truth] The payload is the server's derived Utterance[], not the
-        page text re-scraped from the DOM. Deriving speech from rendered markup would make
-        the audio depend on the renderer's classes — an upward dependency on a disposable
-        projection [LAW:one-way-deps] — and would re-answer "what does a reader see" a second
-        way, free to disagree with the first.
-      */}
-      {present.listen && (
-        <section class={DOCK_SELECTORS.panel} id={panelDomId(TOOL.listen.id)} data-tool={TOOL.listen.id}
-          data-requires={requiresAttr(TOOL.listen.availability)} aria-label={TOOL.listen.hint}>
-          <h2 class="tool-panel-title">{TOOL.listen.label}<span class="tool-panel-note">{utterances.length} {utterances.length === 1 ? "passage" : "passages"}</span></h2>
-          <p class="tool-panel-lede">Read aloud, a different voice per speaker. The neural voice is synthesized on your device and highlights what it is saying as it goes; while it loads, the browser's own voice stands in. Tap any sentence to listen from there. Code blocks are announced rather than spelled out.</p>
-          {/*
-            One transport, two performers behind it. The status line is written by
-            listenPanel.ts on every state change (the markup carries no sentence of its own,
-            so there is no second copy to drift). Follow is follow.ts's: shown only while the
-            reader has scrolled away from the voice.
-          */}
-          <div class="speech-controls">
-            <button class="mono-pill speech-play" type="button">Listen</button>
-            <button class="mono-pill speech-stop" type="button" disabled>Stop</button>
-            <button class="mono-pill speech-follow" type="button" hidden>Follow</button>
-            <progress class="speech-progress" hidden></progress>
-            <p class="speech-now" aria-live="polite"></p>
-          </div>
-          <pre class="speech-payload" hidden aria-hidden="true">{JSON.stringify(utterances)}</pre>
-        </section>
-      )}
-
-      {/*
         [LAW:dataflow-not-control-flow] The document-scoped code controls. Present only
         when there IS code — codeExportHtml is "" otherwise, so the panel and its menu
         item are both simply absent, never an empty box or a dead button. The buttons +
@@ -687,6 +671,67 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     </div>
   </div>
 
+  {/*
+    The player. A fixture of the page rather than a panel in the dock, and one control until
+    the reader taps it: [▶ Listen] engages the voice — spawning the worker and starting the
+    model download, which is what the tap is consent FOR — and from then on the whole
+    transport stays out, wherever the reader scrolls to.
+
+    [LAW:dataflow-not-control-flow] The two faces are one class: listenPanel.ts puts
+    `is-engaged` on this element from its readout, and the stylesheet decides what a
+    collapsed strip shows. No script hides a control one at a time.
+
+    [LAW:one-way-deps] A sibling of the dock, never a child: the dock hides its own root
+    when no tool of ITS set is reachable, and whether this paste can be read aloud has
+    nothing to do with that.
+
+    [LAW:no-silent-failure] The status line is always out, under the controls: the download
+    and its progress, a device that cannot run the neural voice and why, a load that failed,
+    the browser voice standing in. The strip never plays silently or waits silently.
+
+    [LAW:one-source-of-truth] The payload is the server's derived Utterance[], not the page
+    text re-scraped from the DOM. Deriving speech from rendered markup would make the audio
+    depend on the renderer's classes — an upward dependency on a disposable projection —
+    and would re-answer "what does a reader see" a second way, free to disagree with it.
+  */}
+  {speakable && (
+    <div class="speech-bar" role="group" aria-label="Listen to this conversation"
+      title="Tap any sentence in the conversation to listen from there">
+      <div class="speech-controls">
+        <button class="speech-main speech-play" type="button" data-action="listen" aria-label="Listen" title="Play and pause — space">
+          <span class="speech-mark" data-mark="play" set:html={PLAYER_ICONS.play} />
+          <span class="speech-mark" data-mark="pause" set:html={PLAYER_ICONS.pause} />
+          <span class="speech-play-word">Listen</span>
+        </button>
+        <button class="speech-icon speech-back" type="button" aria-label="Previous turn" title="Previous turn — [" disabled>
+          <span class="speech-mark-one" set:html={PLAYER_ICONS.back} />
+        </button>
+        <button class="speech-icon speech-forward" type="button" aria-label="Next turn" title="Next turn — ]" disabled>
+          <span class="speech-mark-one" set:html={PLAYER_ICONS.forward} />
+        </button>
+        <span class="speech-rate">
+          <button class="speech-icon speech-slower" type="button" aria-label="Slower" title="Slower — −" disabled>−</button>
+          <span class="speech-speed">1×</span>
+          <button class="speech-icon speech-faster" type="button" aria-label="Faster" title="Faster — +" disabled>+</button>
+        </span>
+        <button class="speech-icon speech-follow" type="button" aria-label="Follow the voice" hidden>
+          <span class="speech-mark-one" set:html={PLAYER_ICONS.follow} />
+        </button>
+        <button class="speech-icon speech-stop" type="button" aria-label="Stop" disabled>
+          <span class="speech-mark-one" set:html={PLAYER_ICONS.stop} />
+        </button>
+        <div class="speech-scrubber">
+          <span class="speech-played">0:00</span>
+          <input class="speech-scrub" type="range" min="0" max="1" value="0" step="1" aria-label="Position in the conversation" title="Drag to move through the conversation — the arrow keys move ten seconds" />
+          <span class="speech-left"></span>
+        </div>
+        <progress class="speech-progress" hidden></progress>
+        <p class="speech-now" aria-live="polite"></p>
+      </div>
+      <pre class="speech-payload" hidden aria-hidden="true">{JSON.stringify(utterances)}</pre>
+    </div>
+  )}
+
   <script>
     // [LAW:decomposition] The dock owns exactly one thing: which tool region the
     // reader is looking at. It never touches what a tool DOES — every tool keeps its
@@ -713,20 +758,22 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // the real worker, the real AudioContext, the real animation frame, the real viewport,
     // and the capability gate.
     import { createPlayer, speechSupport } from "../speechPlayer";
-    import { createListenPanel } from "../listenPanel";
+    import { createListenPanel, listening } from "../listenPanel";
+    import { shortcut } from "../shortcuts";
     import { DEFAULT_VOICES } from "../speechScript";
     import { caretSource, createPainter, tapMark } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
     import type { Utterance } from "../speech";
 
+    const bar = document.querySelector<HTMLElement>(".speech-bar");
     const controls = document.querySelector(".speech-controls");
     const payloadEl = document.querySelector(".speech-payload");
 
-    // A page with no speakable prose renders neither of these, so their joint absence is
-    // the normal empty case. One without the other is a broken template invariant, and the
+    // A page with no speakable prose renders none of these, so their joint absence is the
+    // normal empty case. One without the others is a broken template invariant, and the
     // panel below would otherwise wire a button to nothing [LAW:no-silent-failure].
-    if (controls && payloadEl) {
+    if (bar && controls && payloadEl) {
       const control = <T extends Element>(selector: string): T => {
         const el = controls.querySelector<T>(selector);
         if (!el) throw new Error(`listen: the speech panel is missing ${selector}`);
@@ -762,8 +809,18 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       });
       const panel = createListenPanel({
         controls: {
+          bar,
+          playWord: control<HTMLElement>(".speech-play-word"),
           play: control<HTMLButtonElement>(".speech-play"),
           stop: control<HTMLButtonElement>(".speech-stop"),
+          back: control<HTMLButtonElement>(".speech-back"),
+          forward: control<HTMLButtonElement>(".speech-forward"),
+          slower: control<HTMLButtonElement>(".speech-slower"),
+          faster: control<HTMLButtonElement>(".speech-faster"),
+          speed: control<HTMLElement>(".speech-speed"),
+          scrub: control<HTMLInputElement>(".speech-scrub"),
+          played: control<HTMLElement>(".speech-played"),
+          remaining: control<HTMLElement>(".speech-left"),
           status: control<HTMLElement>(".speech-now"),
           progress: control<HTMLProgressElement>(".speech-progress"),
         },
@@ -785,6 +842,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
                 return player;
               },
         onPosition: (at) => follower.cursor(painter.paint(at)),
+        // A reader who asked to be somewhere is looking where the voice is about to be, so
+        // the page follows again — whether they tapped a word, dragged the scrubber, nudged
+        // or skipped a turn. One rule for every door [LAW:single-enforcer].
+        onSeek: () => follower.send({ kind: "follow" }),
       });
 
       // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
@@ -807,9 +868,28 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         document.addEventListener("click", (event) => {
           const mark = tapMark(document, caretAt, utterances, event);
           if (mark === null) return;
-          panel.seek(mark);
-          follower.send({ kind: "follow" });
+          panel.send({ kind: "mark", to: mark });
         });
+
+        // The transport's keys, claimed in the CAPTURE phase. Two things follow from the
+        // phase and neither from the wiring order: the page's own default (space paging,
+        // an arrow in a field) is prevented before it happens, and follow.ts's bubbling
+        // listener — which reads `defaultPrevented` to tell a seek from the reader
+        // scrolling away — is guaranteed to run after this one
+        // [LAW:no-ambient-temporal-coupling]. A key is the transport's only while there is
+        // a voice to pause (`listening`); before the first Listen and after a Stop the page
+        // keeps every one of them, which is why a reading page can have shortcuts at all.
+        window.addEventListener(
+          "keydown",
+          (event) => {
+            if (!listening(panel.state())) return;
+            const gesture = shortcut(event);
+            if (gesture === null) return;
+            event.preventDefault();
+            panel.send(gesture);
+          },
+          { capture: true },
+        );
       }
     }
   </script>
