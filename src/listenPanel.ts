@@ -614,10 +614,12 @@ export const markForm = (state: PanelState): MarkForm => {
   const { neural } = state;
   switch (neural.kind) {
     case "idle":
-    case "probing":
     case "supported":
-      // A held consent through the probe is a voice on its way: the ask would be answered.
-      return granted(state) === "none" ? homeForm(state.home) : { kind: "warming" };
+      return homeForm(state.home);
+    case "probing":
+      // A held consent through the probe is the probe's own form, not the store's word: the
+      // ask it would put up is already answered.
+      return granted(state) === "none" ? homeForm(state.home) : { kind: "checking" };
     case "preparing":
     case "warming":
     case "scripting":

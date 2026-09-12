@@ -309,7 +309,7 @@ console.log("readout: every form the mark can take, and the question its hover a
 
   const ask = (state: PanelState, visit: Visit = ASKING): string | null => readout(state, TOTAL, visit).ask;
   const promised = step(step(idle, wake("download")).state, home(ABSENT)).state;
-  assert("a held consent through the probe is a voice on its way: warming to the eye, nothing to ask", markForm(promised).kind === "warming" && ask(promised) === null);
+  assert("a held consent through the probe: checking to the eye, as the sentence says, nothing to ask", markForm(promised).kind === "checking" && ask(promised) === null && shown(promised) === MOUNT_LINE);
   assert("download needed: the hover asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
   assert("a store that cannot keep the voice: the hover asks for the whole model", ask(forms.unavailable) === `Download speech model? · ${MB}`);
   assert("remembered on a metered connection: the hover says why it asks anyway", ask(forms.download, { remembered: true, metered: true }) === "Download speech model? · 239 MB · asking because this connection is metered");
@@ -714,7 +714,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
 
   const next = rig({ remembered: true });
   const nextPanel = mount(next);
-  assert("a later visit with the preference: the probe first, the mark already on its way, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "warming | no ask | yes hidden | remember on" && next.sent.length === 0);
+  assert("a later visit with the preference: the probe first, the mark checking with nothing to ask, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "checking | no ask | yes hidden | remember on" && next.sent.length === 0);
   next.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   assert("supported: load is sent with no tap, the browser asked to keep, no device opened", next.said() === "load" && next.counts.keepAsked === 1 && next.devices().length === 0 && next.line() === PREPARING_LINE);
   next.answer.home(ABSENT);
