@@ -787,6 +787,16 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         onPosition: (at) => follower.cursor(painter.paint(at)),
       });
 
+      // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
+      // the synthesizer on its own — speech outlives the document that started it, and a
+      // paste that keeps talking after the reader has left is the one bug every Web Speech
+      // integration ships with — and the worker holds the model on the GPU. The teardown
+      // is owned here, explicitly: the page that started both releases both.
+      window.addEventListener("pagehide", () => {
+        panel.dispose();
+        follower.dispose();
+      });
+
       // A tap on the page's prose listens from there; readAlong.tapMark says which taps are
       // that and which are the page's own controls, links and selections. The reader is
       // looking where the voice is about to be, so the page follows again. The tap is
@@ -801,16 +811,6 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           follower.send({ kind: "follow" });
         });
       }
-
-      // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not stop
-      // the synthesizer on its own — speech outlives the document that started it, and a
-      // paste that keeps talking after the reader has left is the one bug every Web Speech
-      // integration ships with — and the worker holds the model on the GPU. The teardown
-      // is owned here, explicitly: the page that started both releases both.
-      window.addEventListener("pagehide", () => {
-        panel.dispose();
-        follower.dispose();
-      });
     }
   </script>
 
