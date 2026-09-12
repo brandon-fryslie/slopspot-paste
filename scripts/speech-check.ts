@@ -23,8 +23,8 @@ import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { plainView, spineNodeLabel, type Dialogue, type SpineNode } from "../src/dialogue";
 import { deriveUtterances, speakableSegments, type Utterance } from "../src/speech";
-import type { PerformerState } from "../src/performer";
-import { advance, assignVoices, boundarySpan, createPlayer, type PlayerState } from "../src/speechPlayer";
+import type { Mark, PerformerState } from "../src/performer";
+import { advance, assignVoices, boundaryWord, createPlayer, type PlayerState } from "../src/speechPlayer";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -34,6 +34,9 @@ const assert = (label: string, cond: boolean): void => {
     console.log(`  ✓ ${label}`);
   }
 };
+
+// A mark: the utterance and the character in it the player is at or seeks to.
+const at = (utterance: number, char = 0): Mark => ({ utterance, char });
 
 // The two things every rule below is really asking: what does a listener HEAR, and what
 // did we say ON THEIR BEHALF. Spoken text is the concatenation of the quoted segments;
@@ -348,24 +351,24 @@ console.log("\nPlayer position machine (slopspot-speech-ins):");
   const idle: PlayerState = { kind: "idle" };
 
   assert("play from idle starts at the top", advance(idle, { kind: "play" }, N).kind === "speaking");
-  assert("play from idle starts at 0", JSON.stringify(advance(idle, { kind: "play" }, N)) === JSON.stringify({ kind: "speaking", at: 0 }));
-  assert("pause holds the position", JSON.stringify(advance({ kind: "speaking", at: 1 }, { kind: "pause" }, N)) === JSON.stringify({ kind: "paused", at: 1 }));
-  assert("play from paused resumes where it stopped", JSON.stringify(advance({ kind: "paused", at: 1 }, { kind: "play" }, N)) === JSON.stringify({ kind: "speaking", at: 1 }));
-  assert("stop returns to idle", advance({ kind: "speaking", at: 2 }, { kind: "stop" }, N).kind === "idle");
-  assert("finishing advances one utterance", JSON.stringify(advance({ kind: "speaking", at: 0 }, { kind: "finished" }, N)) === JSON.stringify({ kind: "speaking", at: 1 }));
-  assert("finishing the last utterance ends the session", advance({ kind: "speaking", at: N - 1 }, { kind: "finished" }, N).kind === "idle");
+  assert("play from idle starts at 0", JSON.stringify(advance(idle, { kind: "play" }, N)) === JSON.stringify({ kind: "speaking", at: at(0) }));
+  assert("pause holds the position", JSON.stringify(advance({ kind: "speaking", at: at(1) }, { kind: "pause" }, N)) === JSON.stringify({ kind: "paused", at: at(1) }));
+  assert("play from paused resumes where it stopped", JSON.stringify(advance({ kind: "paused", at: at(1) }, { kind: "play" }, N)) === JSON.stringify({ kind: "speaking", at: at(1) }));
+  assert("stop returns to idle", advance({ kind: "speaking", at: at(2) }, { kind: "stop" }, N).kind === "idle");
+  assert("finishing advances one utterance", JSON.stringify(advance({ kind: "speaking", at: at(0) }, { kind: "finished" }, N)) === JSON.stringify({ kind: "speaking", at: at(1) }));
+  assert("finishing the last utterance ends the session", advance({ kind: "speaking", at: at(N - 1) }, { kind: "finished" }, N).kind === "idle");
 
   // The case the whole design exists for: cancel() makes the browser fire `end` on a
   // sentence we abandoned. Acting on it would skip a turn the listener never heard.
-  assert("a finish arriving while paused is ignored", JSON.stringify(advance({ kind: "paused", at: 1 }, { kind: "finished" }, N)) === JSON.stringify({ kind: "paused", at: 1 }));
+  assert("a finish arriving while paused is ignored", JSON.stringify(advance({ kind: "paused", at: at(1) }, { kind: "finished" }, N)) === JSON.stringify({ kind: "paused", at: at(1) }));
   assert("a finish arriving while idle is ignored", advance(idle, { kind: "finished" }, N).kind === "idle");
 
-  assert("seeking moves and plays", JSON.stringify(advance(idle, { kind: "seek", to: 2 }, N)) === JSON.stringify({ kind: "speaking", at: 2 }));
-  assert("seeking while paused stays paused at the new place", JSON.stringify(advance({ kind: "paused", at: 0 }, { kind: "seek", to: 2 }, N)) === JSON.stringify({ kind: "paused", at: 2 }));
+  assert("seeking moves and plays", JSON.stringify(advance(idle, { kind: "seek", to: at(2) }, N)) === JSON.stringify({ kind: "speaking", at: at(2) }));
+  assert("seeking while paused stays paused at the new place", JSON.stringify(advance({ kind: "paused", at: at(0) }, { kind: "seek", to: at(2) }, N)) === JSON.stringify({ kind: "paused", at: at(2) }));
 
   // [LAW:no-silent-failure] An out-of-range jump is a caller bug; clamping it would play a
   // turn nobody asked for while reporting success.
-  const throwsOn = (to: number): boolean => {
+  const throwsOn = (to: Mark): boolean => {
     try {
       advance(idle, { kind: "seek", to }, N);
       return false;
@@ -373,19 +376,22 @@ console.log("\nPlayer position machine (slopspot-speech-ins):");
       return true;
     }
   };
-  assert("seeking past the end throws rather than clamping", throwsOn(N));
-  assert("seeking to a negative index throws", throwsOn(-1));
-  assert("seeking to a fractional index throws", throwsOn(1.5));
+  assert("seeking past the end throws rather than clamping", throwsOn(at(N)));
+  assert("seeking to a negative index throws", throwsOn(at(-1)));
+  assert("seeking to a fractional index throws", throwsOn(at(1.5)));
+  assert("seeking to a character within an utterance plays from that mark", JSON.stringify(advance(idle, { kind: "seek", to: at(1, 7) }, N)) === JSON.stringify({ kind: "speaking", at: at(1, 7) }));
+  assert("finishing an utterance entered mid-way starts the next at its top", JSON.stringify(advance({ kind: "speaking", at: at(1, 7) }, { kind: "finished" }, N)) === JSON.stringify({ kind: "speaking", at: at(2) }));
 
   assert("a conversation with nothing to say cannot be played", advance(idle, { kind: "play" }, 0).kind === "idle");
 
   // [LAW:one-source-of-truth] send()'s no-op short-circuit is a REFERENCE check
   // (`after === before`), not a value check — so every arm that is conceptually already
   // there must return the SAME state object, not merely an equal-looking one.
-  const pausedAt1: PlayerState = { kind: "paused", at: 1 };
-  assert("seeking to the position already paused at is a true no-op", advance(pausedAt1, { kind: "seek", to: 1 }, N) === pausedAt1);
-  const speakingAt1: PlayerState = { kind: "speaking", at: 1 };
-  assert("seeking to the position already speaking at is a true no-op", advance(speakingAt1, { kind: "seek", to: 1 }, N) === speakingAt1);
+  const pausedAt1: PlayerState = { kind: "paused", at: at(1) };
+  assert("seeking to the position already paused at is a true no-op", advance(pausedAt1, { kind: "seek", to: at(1) }, N) === pausedAt1);
+  assert("seeking to another character of the same utterance is a move", advance(pausedAt1, { kind: "seek", to: at(1, 3) }, N) !== pausedAt1);
+  const speakingAt1: PlayerState = { kind: "speaking", at: at(1) };
+  assert("seeking to the position already speaking at is a true no-op", advance(speakingAt1, { kind: "seek", to: at(1) }, N) === speakingAt1);
   assert("stopping while already idle is a true no-op", advance(idle, { kind: "stop" }, N) === idle);
   assert("playing while already speaking is a true no-op", advance(speakingAt1, { kind: "play" }, N) === speakingAt1);
 
@@ -469,7 +475,11 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
   // The anchor a reported state is at, or null for idle: what the page lights.
   const anchorOf = (state: PerformerState | undefined): string | null =>
     state === undefined || state.kind === "idle" ? null : (utterances[state.at.utterance]?.anchor ?? "?");
-  const spanOf = (state: PerformerState): string => (state.kind === "idle" ? "-" : `${state.at.span.charStart}-${state.at.span.charEnd}`);
+  // The cursor a state carries: the segment, and the word after a slash when one is claimed.
+  const spanOf = (state: PerformerState): string =>
+    state.kind === "idle"
+      ? "-"
+      : `${state.at.segment.charStart}-${state.at.segment.charEnd}${state.at.word === null ? "" : `/${state.at.word.charStart}-${state.at.word.charEnd}`}`;
 
   // [LAW:no-silent-failure] A browser with no speech synthesis yields no player, which is
   // what lets the page have no stand-in instead of a dead one.
@@ -537,7 +547,7 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     const player = createPlayer({ window, utterances, onState: () => {} });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
-    player.send({ kind: "seek", to: 2 });
+    player.send({ kind: "seek", to: at(2) });
     assert("seeking speaks the utterance seeked to", synth.spoken.at(-1)?.text === "third");
     assert("seeking abandons whatever was mid-sentence", synth.cancels === 1);
 
@@ -545,8 +555,9 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     assert("finishing the last utterance ends the session", player.state().kind === "idle");
   }
 
-  // The cursor channel: the span under the voice is the whole utterance until the browser
-  // names a word, then the word each boundary names — by the manifest's own word rule.
+  // The cursor channel: the segment is what the synthesizer holds, the utterance from the
+  // mark it was spoken from; the word is none until the browser names one, then the word
+  // each boundary names — by the manifest's own word rule.
   {
     const { window, synth } = stand();
     const long: ReadonlyArray<Utterance> = [
@@ -557,28 +568,46 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
     player.send({ kind: "play" });
-    assert("before any boundary the whole utterance is under the voice", spanOf(player.state()) === "0-19");
+    assert("before any boundary the whole utterance is the segment and no word is claimed", spanOf(player.state()) === "0-19");
     const live = synth.spoken.at(-1);
     live?.onboundary?.({ name: "word", charIndex: 6 });
-    assert("a word boundary moves the span to that word", spanOf(player.state()) === "6-12");
+    assert("a word boundary claims that word inside the segment", spanOf(player.state()) === "0-19/6-12");
     live?.onboundary?.({ name: "sentence", charIndex: 0 });
-    assert("a sentence boundary is not a word", spanOf(player.state()) === "6-12");
+    assert("a sentence boundary is not a word", spanOf(player.state()) === "0-19/6-12");
     live?.onboundary?.({ name: "word", charIndex: 13 });
-    assert("the last word", spanOf(player.state()) === "13-19");
-    assert("a boundary between words names the word begun before it", JSON.stringify(boundarySpan("a, b", 2)) === JSON.stringify({ charStart: 0, charEnd: 2 }));
-    assert("a boundary before any word keeps the whole text", JSON.stringify(boundarySpan(" a", 0)) === JSON.stringify({ charStart: 0, charEnd: 2 }));
+    assert("the last word", spanOf(player.state()) === "0-19/13-19");
+    assert("a boundary between words names the word begun before it", JSON.stringify(boundaryWord("a, b", 2)) === JSON.stringify({ charStart: 0, charEnd: 2 }));
+    assert("a boundary before any word names none", boundaryWord(" a", 0) === null);
 
     player.send({ kind: "pause" });
-    assert("pausing keeps the word under the voice", spanOf(player.state()) === "13-19");
+    assert("pausing keeps the word under the voice", spanOf(player.state()) === "0-19/13-19");
     player.send({ kind: "stop" });
     live?.onboundary?.({ name: "word", charIndex: 0 });
     assert("a late boundary from a cancelled sentence names nothing", player.state().kind === "idle");
     player.send({ kind: "play" });
-    assert("speaking again starts from the whole utterance", spanOf(player.state()) === "0-19");
+    assert("speaking again starts from the whole utterance, no word yet", spanOf(player.state()) === "0-19");
     const abandoned = synth.spoken.at(-1);
-    player.send({ kind: "seek", to: 1 });
+    player.send({ kind: "seek", to: at(1) });
     abandoned?.onboundary?.({ name: "word", charIndex: 13 });
     assert("a boundary from the sentence a seek abandoned is ignored", spanOf(player.state()) === "0-4");
+
+    // A seek to a word: the synthesizer is handed the text from there, and a boundary's
+    // index into that suffix is put back into utterance coordinates.
+    player.send({ kind: "seek", to: at(0, 13) });
+    assert("seeking to a word speaks the utterance from that word", synth.spoken.at(-1)?.text === "world." && spanOf(player.state()) === "13-19");
+    synth.spoken.at(-1)?.onboundary?.({ name: "word", charIndex: 0 });
+    assert("a boundary in the suffix names the word in the utterance's own coordinates", spanOf(player.state()) === "13-19/13-19");
+    const past = (char: number): boolean => {
+      try {
+        player.send({ kind: "seek", to: at(0, char) });
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    assert("a mark past the utterance's text is a caller bug, not an empty sentence", past(19) && past(-1) && past(2.5));
+    synth.spoken.at(-1)?.onend?.();
+    assert("finishing a suffix moves on to the next utterance from its top", synth.spoken.at(-1)?.text === "Bye." && spanOf(player.state()) === "0-4");
   }
 
   // Delivery differs by voice, which is how a listener tells our narration from the
@@ -587,7 +616,7 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     const { window, synth } = stand();
     const player = createPlayer({ window, utterances, onState: () => {} });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
-    player.send({ kind: "seek", to: 2 });
+    player.send({ kind: "seek", to: at(2) });
     const narrated = synth.spoken.at(-1);
     assert("narration is delivered differently from speech", narrated?.rate !== 1 || narrated?.pitch !== 1);
   }
@@ -605,7 +634,7 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
 
     player.send({ kind: "play" }); // speaking at 0
     player.send({ kind: "pause" }); // paused at 0
-    player.send({ kind: "seek", to: 2 }); // paused at 2 — nothing queued for index 2
+    player.send({ kind: "seek", to: at(2) }); // paused at 2 — nothing queued for index 2
     assert("seeking while paused does not resume the synthesizer", synth.resumes === 0);
     assert("seeking while paused reports the player still paused", states.at(-1)?.kind === "paused");
     // A seeked-to PAUSE position is still worth showing — the same reasoning the

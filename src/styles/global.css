@@ -3262,14 +3262,26 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   height: 6px;
   accent-color: var(--accent);
 }
-/* The read-along cursor: the words the neural voice is saying, inside the turn card.
-   `.ra-word` (the span readAlong.ts wraps each matched word in) is deliberately unstyled —
-   the wrap must not move a glyph — so only the span under the cursor shows. */
-.ra-on {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+/* The read-along cursor, two tiers inside the turn card: the sentence group the voice is
+   inside (`.ra-in`, light) and the word it is on (`.ra-on`, bright), both classes toggled
+   by readAlong.ts on the span it wraps each matched word in. `.ra-word` itself is
+   deliberately unstyled — the wrap must not move a glyph — so only the spans under the
+   cursor show. The 2px shadow spread bridges the space between adjacent words, so a lit
+   sentence reads as one band rather than a row of boxes. The word tier is declared after
+   the segment tier and wins the tie on a span carrying both. */
+.ra-in {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 3px;
 }
+.ra-on {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 3px;
+}
+/* Follow appears only while the reader has scrolled away from the voice (follow.ts sets
+   `hidden`); when shown it takes the same pill chrome as its neighbours. */
+.speech-follow[hidden] { display: none; }
 /* A disabled control is dimmed rather than hidden: the control's absence would move
    the row's layout on every play/stop, and a reader tracking the audio should not
    have the buttons shifting under the pointer. Play spends time disabled only on a

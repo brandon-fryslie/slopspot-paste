@@ -27,6 +27,7 @@ import {
   emptyManifest,
   estimateTimes,
   knownPrefix,
+  offsetAt,
   toGlobalMs,
   toPosition,
   totalDurationMs,
@@ -211,23 +212,34 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
         before.offsetMs === 0,
     );
 
-    // The cursor: a word only from a measured alignment.
+    // The cursor: the segment is the unit's own span at every offset; a word only from a
+    // measured alignment, and then inside the segment.
+    const within = (outer: { charStart: number; charEnd: number }, inner: { charStart: number; charEnd: number }): boolean =>
+      outer.charStart <= inner.charStart && inner.charEnd <= outer.charEnd;
     const cursorHonest = all.every((r) => {
       const probes = [0, r.durationMs / 3, r.durationMs / 2, r.durationMs];
       return probes.every((ms) => {
         const c = cursorAt(r, ms);
-        const inUnit = r.unit.start <= c.charStart && c.charEnd <= r.unit.end;
-        return r.alignment.kind === "words"
-          ? inUnit
-          : c.precision === "unit" && c.charStart === r.unit.start && c.charEnd === r.unit.end;
+        const segmentIsUnit = c.segment.charStart === r.unit.start && c.segment.charEnd === r.unit.end;
+        const wordHonest = c.word === null ? r.alignment.kind !== "words" || ms < (r.alignment.words[0]?.startMs ?? Infinity) : r.alignment.kind === "words" && within(c.segment, c.word);
+        return segmentIsUnit && wordHonest;
       });
     });
-    assert("cursorAt claims word precision only for a `words` alignment; `unit` and `estimated` get the unit span", cursorHonest);
+    assert("cursorAt: the segment is always the unit's span; a word is claimed only for a `words` alignment, inside the segment", cursorHonest);
     const measured = all.filter((r) => r.alignment.kind === "words" && r.alignment.words.length > 0);
     assert(
       "for a measured unit the cursor is on a word by the time its last word has started",
-      measured.every((r) => cursorAt(r, r.durationMs).precision === "word"),
+      measured.every((r) => cursorAt(r, r.durationMs).word !== null),
     );
+
+    // The reverse: a character seeks to the start of the word holding it.
+    const offsetsHonest = all.every((r) => {
+      const beforeUnit = offsetAt(r, r.unit.start - 1) === 0;
+      if (r.alignment.kind === "unit") return beforeUnit && [r.unit.start, r.unit.end - 1].every((ch) => offsetAt(r, ch) === 0);
+      const { words } = r.alignment;
+      return beforeUnit && words.every((w) => offsetAt(r, w.charStart) === w.startMs && offsetAt(r, w.charEnd - 1) === w.startMs);
+    });
+    assert("offsetAt: a word's first and last character seek to its start; before the unit, and for a `unit` alignment anywhere, zero", offsetsHonest);
 
     // Turn ranges tile the script in order. Several utterances share a turn (a turn's
     // prose, its announced code blocks, its images), so the distinct turn indices are
@@ -333,16 +345,35 @@ console.log("\nSpeech manifest — admission and rejection:");
   const r1 = m3.units[1];
   assert(
     "the cursor on an `estimated` unit is its span at every offset, never a word",
-    r1 !== undefined && r1.alignment.kind === "estimated" && [0, dur(1) / 2, dur(1)].every((ms) => cursorAt(r1, ms).precision === "unit"),
+    r1 !== undefined &&
+      r1.alignment.kind === "estimated" &&
+      [0, dur(1) / 2, dur(1)].every((ms) => {
+        const c = cursorAt(r1, ms);
+        return c.word === null && c.segment.charStart === r1.unit.start && c.segment.charEnd === r1.unit.end;
+      }),
+  );
+  assert(
+    "offsetAt on an `estimated` unit reads the estimate: a tap on its second word seeks to that word's estimated start, not zero",
+    r1 !== undefined &&
+      r1.alignment.kind === "estimated" &&
+      r1.alignment.words.every((w) => offsetAt(r1, w.charStart) === w.startMs) &&
+      (r1.alignment.words[1]?.startMs ?? 0) > 0,
   );
   const r0 = m3.units[0];
   assert(
-    "the cursor on a `words` unit is the utterance's own word at that time",
-    r0 !== undefined && (() => {
-      const c = cursorAt(r0, 250);
-      return c.precision === "word" && r0.unit.utterance.text.slice(c.charStart, c.charEnd) === "two";
-    })(),
+    "the cursor on a `words` unit is the utterance's own word at that time, inside the unit's segment",
+    r0 !== undefined &&
+      (() => {
+        const c = cursorAt(r0, 250);
+        return c.word !== null && r0.unit.utterance.text.slice(c.word.charStart, c.word.charEnd) === "two" && c.segment.charStart === r0.unit.start && c.segment.charEnd === r0.unit.end;
+      })(),
   );
+  assert(
+    "offsetAt on a `words` unit: 'two' (chars 4-6) seeks to 200 ms, 'One' to 0, 'three.' to 500",
+    r0 !== undefined && offsetAt(r0, 4) === 200 && offsetAt(r0, 6) === 200 && offsetAt(r0, 0) === 0 && offsetAt(r0, 8) === 500,
+  );
+  const r2 = m3.units[2];
+  assert("offsetAt on a `unit` alignment is zero everywhere: nothing finer to seek to", r2 !== undefined && r2.alignment.kind === "unit" && [0, 2, 3].every((ch) => offsetAt(r2, ch) === 0));
 
   assert(
     "unitsForTurn: a whitespace-only turn is an empty range at the next spoken unit; a missing one is empty at the end",
