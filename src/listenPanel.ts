@@ -83,7 +83,7 @@ import { MODEL_ASSETS, allModelAssets, downloadNeedsTap, type ConnectionReading 
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
-import { markOf, TOP, type Mark, type PerformerEvent, type PerformerState, type Spot } from "./performer";
+import { markOf, NORMAL, stepSpeed, TOP, type Mark, type PerformerEvent, type PerformerState, type Speed, type Spot } from "./performer";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
@@ -91,6 +91,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
+import { clockText, estimated, markAt, timeAt, timelineOfScript, timelineOfUtterances, turnMark, turnStarts, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 
 // ── state ──────────────────────────────────────────────────────────────────────────────
@@ -136,6 +137,10 @@ export interface Consents {
 const NO_CONSENT: Consents = { given: "none", standing: "none" };
 const granted = ({ consent }: PanelState): Consent => raise(consent.given, consent.standing);
 
+// [LAW:one-source-of-truth] `speed` is on both arms because it belongs to neither: it is
+// the reader's, set before any performer exists, obeyed by the one that arrives, and kept
+// across a crash and the whole download. A performer that held its own copy would lose it
+// at every one of those moments.
 export type PanelState =
   // The voice on its way, and the place it starts from when it arrives: the top until the
   // reader taps a word. `keeping` is the browser's answer to keeping the bytes, once asked.
@@ -146,16 +151,50 @@ export type PanelState =
       readonly home: Home;
       readonly keeping: Keeping | null;
       readonly consent: Consents;
+      readonly speed: Speed;
     }
   // The voice on stage; the view is the scheduler's, the consent kept for a fall.
-  | { readonly kind: "neural"; readonly view: NeuralView; readonly consent: Consents };
+  | { readonly kind: "neural"; readonly view: NeuralView; readonly consent: Consents; readonly speed: Speed };
 
 export type Tap = "play" | "stop";
 
+// [LAW:dataflow-not-control-flow] Everything the reader can ask the transport for, as one
+// closed set of values rather than a method each: the two buttons, a tap on a word, the
+// scrubber, the ten-second nudges, the turn skips, the speed steps. A key press is one of
+// these (shortcuts.ts) and so is a click, so nothing downstream can tell which door a
+// gesture came through. The three that name a place in TIME are resolved to a Mark by the
+// driver, where the timeline is: a scrubber never names a unit index.
+export type Gesture =
+  | { readonly kind: "tap"; readonly control: Tap }
+  | { readonly kind: "mark"; readonly to: Mark }
+  | { readonly kind: "scrub"; readonly toMs: number }
+  | { readonly kind: "nudge"; readonly bySeconds: number }
+  | { readonly kind: "turn"; readonly by: -1 | 1 }
+  | { readonly kind: "speed"; readonly by: -1 | 1 };
+
+// Whether a gesture asks to be somewhere else — the one question whoever keeps the page in
+// view needs answered, and exhaustive, so a gesture added later cannot quietly default to
+// "the reader did not move".
+const moves = (gesture: Gesture): boolean => {
+  switch (gesture.kind) {
+    case "tap":
+    case "speed":
+      return false;
+    case "mark":
+    case "scrub":
+    case "nudge":
+    case "turn":
+      return true;
+  }
+};
+
 export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
-  // The reader tapped a place on the page: the voice seeks there, or starts from there.
+  // The reader named a place — a tap on a word, the scrubber, a nudge, a turn skip — and
+  // the driver resolved it to the one coordinate the performer stands in.
   | { readonly kind: "seek"; readonly to: Mark }
+  // One step along the speed list, in whichever direction.
+  | { readonly kind: "speed"; readonly by: -1 | 1 }
   // The hover's yes: a gesture that consents to the download and no more.
   | { readonly kind: "yes" }
   // The page waking the panel with no gesture — at mount, on a restore from the back-forward
@@ -201,24 +240,25 @@ export const SCRIPT_ID = 1;
 const IDLE: PerformerState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
-// Every entry to the start: the voice in the given phase, the place and the consent kept,
-// and the store asked afresh what it holds.
-const enter = (neural: NeuralPhase, from: Mark, consent: Consents): Step => ({
-  state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null, consent },
+// Every entry to the start: the voice in the given phase, the place, the consent and the
+// speed kept, and the store asked afresh what it holds.
+const enter = (neural: NeuralPhase, from: Mark, consent: Consents, speed: Speed): Step => ({
+  state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null, consent, speed },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP, NO_CONSENT).state;
+export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP, NO_CONSENT, NORMAL).state;
 // The panel's first step: the state, and the read of the store that fills its `home`. The
 // worker is not spawned here but by the `wake` that follows, so a dispose — which returns
 // here — spawns nothing on a page that is going away.
-export const start = (): Step => enter(NEURAL_IDLE, TOP, NO_CONSENT);
+export const start = (): Step => enter(NEURAL_IDLE, TOP, NO_CONSENT, NORMAL);
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
 const violation = (state: PanelState, what: string): Error =>
   new Error(`listen panel: ${what} while ${state.kind === "neural" ? "the voice is on stage" : state.neural.kind}`);
-// The verbs a tap can send: a seek is never a tap's.
-type Verb = Exclude<PerformerEvent, { kind: "seek" }>["kind"];
+// The verbs a tap can send: neither a seek nor a rate is ever a tap's — those carry a value
+// the two buttons do not name.
+type Verb = Exclude<PerformerEvent, { kind: "seek" | "rate" }>["kind"];
 const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
 
 // The phases in which a `progress`, `ready` or `load-failed` may arrive.
@@ -292,6 +332,16 @@ const seek = (state: PanelState, to: Mark): Step => {
       return { state: { ...kicked.state, from: to }, effects: kicked.effects };
     }
   }
+};
+
+// One step along the speed list, obeyed by whoever is on stage — and by nobody at all when
+// no performer exists yet, in which case the state carries it to the one that arrives, the
+// same way `from` carries the place. A step off either end of the list returns the same
+// speed, which `readout` shows as a disabled control.
+const speed = (state: PanelState, by: -1 | 1): Step => {
+  const to = stepSpeed(state.speed, by);
+  if (to === state.speed) return stay(state);
+  return { state: { ...state, speed: to }, effects: state.kind === "neural" ? [perform({ kind: "rate", to })] : [] };
 };
 
 // The hover's yes, and the page's wake: the same kick, with and without a gesture. A voice
@@ -384,7 +434,7 @@ const placeOf = (view: NeuralView): Mark => {
 // that fell mid-word then comes back speaking there, while a wake brings it back standing.
 const outlives = (consent: Consents): Consents => ({ ...consent, given: consent.given === "none" ? "none" : "download" });
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const entered = enter(neural, state.kind === "provisioning" ? state.from : placeOf(state.view), outlives(state.consent));
+  const entered = enter(neural, state.kind === "provisioning" ? state.from : placeOf(state.view), outlives(state.consent), state.speed);
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -401,6 +451,8 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       return tap(state, event.control);
     case "seek":
       return seek(state, event.to);
+    case "speed":
+      return speed(state, event.by);
     case "yes":
       return yes(state);
     case "wake":
@@ -415,16 +467,20 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       return keeping(state, event.keeping);
     case "dispose": {
       const started = start();
-      return { state: started.state, effects: [{ kind: "release", worker: "dispose" }, ...started.effects] };
+      // The speed is the reader's, not the panel's, and a teardown is not the reader
+      // changing their mind [LAW:one-source-of-truth].
+      return { state: { ...started.state, speed: state.speed }, effects: [{ kind: "release", worker: "dispose" }, ...started.effects] };
     }
     case "view": {
       if (state.kind === "neural") return stay({ ...state, view: event.view });
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
-      // The performer's first view: the voice takes the stage, and is sent to the place the
-      // tap named when a tap is what brought it — a download alone leaves it standing ready.
+      // The performer's first view: the voice takes the stage at the reader's speed, sent
+      // unconditionally so it never speaks a syllable at a speed it left behind, and to the
+      // place the tap named when a tap is what brought it — a download alone leaves it
+      // standing ready.
       return {
-        state: { kind: "neural", view: event.view, consent: state.consent },
-        effects: granted(state) === "play" ? [perform({ kind: "seek", to: state.from })] : [],
+        state: { kind: "neural", view: event.view, consent: state.consent, speed: state.speed },
+        effects: [perform({ kind: "rate", to: state.speed }), ...(granted(state) === "play" ? [perform({ kind: "seek", to: state.from })] : [])],
       };
     }
   }
@@ -464,11 +520,29 @@ export interface Visit {
 export interface Readout {
   readonly play: { readonly label: string; readonly enabled: boolean };
   readonly stop: { readonly enabled: boolean };
+  // Which turn skips are there to take, and which way the speed list still runs: a control
+  // that would do nothing is `false` rather than a button that answers a tap with silence
+  // [LAW:no-silent-failure].
+  readonly skip: { readonly back: boolean; readonly forward: boolean };
+  readonly speed: { readonly label: string; readonly slower: boolean; readonly faster: boolean };
   readonly status: string;
   readonly progress: AssetProgress | null;
   readonly mark: MarkForm;
   readonly ask: string | null;
   readonly remembered: boolean;
+}
+
+// What the scrubber and the two times show. Separate from `Readout` because it has a
+// different clock: everything above changes only when the machine's state does, while this
+// moves continuously as the voice speaks, so the driver paints it on every animation frame
+// from the performer's LIVE position [LAW:one-source-of-truth]. In the conversation's own
+// milliseconds throughout — media time, not wall-clock: at 1.5x the paste ends sooner than
+// `remaining` says in seconds you can count, and the speed beside it is what says so.
+interface Clock {
+  readonly atMs: number;
+  readonly totalMs: number;
+  readonly played: string;
+  readonly remaining: string;
 }
 
 export const DOWNLOAD_BYTES = allModelAssets(MODEL_ASSETS).reduce((sum, asset) => sum + asset.bytes, 0);
@@ -606,6 +680,50 @@ const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Reado
   stop: { enabled: state.kind !== "idle" },
 });
 
+// Where the transport stands, from the state alone: the performer's own place when it has
+// one, the place held for a performer that does not exist yet. This is the last REPORT —
+// the driver reads the live clock for the cursor and the scrubber; a button's shape needs
+// only the passage, which no report can be stale about, since every passage boundary is one.
+const placeIn = (state: PanelState): Mark => (state.kind === "neural" ? placeOf(state.view) : state.from);
+
+// The timeline the state implies: the script's, measured as far as the worker has got, once
+// the neural voice is on stage; the page's own passages, every leg an estimate, before that
+// [LAW:one-type-per-behavior].
+const timelineOf = (state: PanelState, utterances: ReadonlyArray<Utterance>): Timeline =>
+  state.kind === "neural" ? timelineOfScript(state.view.manifest, state.view.utteranceOf) : timelineOfUtterances(utterances);
+
+// The scrubber and the times at a point on the clock. Takes the milliseconds rather than a
+// mark because the reader dragging the scrubber is at a time that is not yet anybody's
+// place, and the drag must read the same words the voice does.
+const clockAt = (timeline: Timeline, ms: number): Clock => {
+  const atMs = Math.min(Math.max(ms, 0), timeline.totalMs);
+  const left = timeline.totalMs - atMs;
+  return {
+    atMs,
+    totalMs: timeline.totalMs,
+    played: clockText(atMs),
+    // "about" over exactly the guesses: the tail the worker has not measured is shared out
+    // by character count, and saying so is the difference between an estimate and a lie
+    // [LAW:no-silent-failure].
+    remaining: `${estimated(timeline, atMs) ? "about " : ""}${clockText(left)} left`,
+  };
+};
+
+// The controls that read the conversation rather than the voice: which turn skips are there
+// to take, and which way the speed list still runs.
+const around = (state: PanelState, utterances: ReadonlyArray<Utterance>): Pick<Readout, "skip" | "speed"> => {
+  const turns = turnStarts(utterances);
+  const at = placeIn(state);
+  return {
+    skip: { back: turnMark(turns, at, -1) !== null, forward: turnMark(turns, at, 1) !== null },
+    speed: {
+      label: `${state.speed}×`,
+      slower: stepSpeed(state.speed, -1) !== state.speed,
+      faster: stepSpeed(state.speed, 1) !== state.speed,
+    },
+  };
+};
+
 // The store's word as a form: before the probe has answered, the store's word is the
 // mark's, since only a `no` from the probe changes it.
 const homeForm = (home: Home): MarkForm => {
@@ -666,13 +784,17 @@ const askText = (state: PanelState, form: MarkForm, visit: Visit): string | null
   return [`Download speech model? · ${megabytes(bytes)}`, ...why].join("");
 };
 
-// `total` is the page's utterance count: the "of N" every position reads.
-export const readout = (state: PanelState, total: number, visit: Visit): Readout => {
+// `utterances` is the page's own list: `total` is its count, the "of N" every position
+// reads, and `around` reads it for the turn landmarks and the timeline before a voice has
+// measured any of it.
+export const readout = (state: PanelState, utterances: ReadonlyArray<Utterance>, visit: Visit): Readout => {
+  const total = utterances.length;
   const mark = markForm(state);
   const ask = askText(state, mark, visit);
   const { remembered } = visit;
+  const rest = around(state, utterances);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player), status: neuralStatus(state.view, total), progress: null, mark, ask, remembered };
+    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total), progress: null, mark, ask, remembered };
   }
   const { neural } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -683,6 +805,7 @@ export const readout = (state: PanelState, total: number, visit: Visit): Readout
   return {
     play: { label: retry ? "Retry" : "Listen", enabled: retry || (neural.kind !== "unsupported" && granted(state) !== "play") },
     stop: { enabled: false },
+    ...rest,
     status: sentence(fragments.join(" · ")),
     progress: neural.kind === "downloading" || neural.kind === "load-failed" ? neural.progress : null,
     mark,
@@ -704,6 +827,12 @@ export const readAlongAt = (spot: Spot, utterances: ReadonlyArray<Utterance>): R
 // Whether the voice is speaking, from the state: exactly when the frame loop runs.
 const speaking = (state: PanelState): boolean => state.kind === "neural" && state.view.player.kind === "speaking";
 
+// Whether the transport's keys are the reader's rather than the page's: exactly while there
+// is a voice to pause. Before the first Listen and after a Stop, Space scrolls the page as
+// it always did and the arrows are the browser's — a reading page that swallowed those keys
+// for a tool nobody has opened would be worse than one with no shortcuts at all.
+export const listening = (state: PanelState): boolean => state.kind === "neural" && state.view.player.kind !== "idle";
+
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
 // The mark's markup: the root carries the form (`data-state`), the ring's fraction and
@@ -721,6 +850,14 @@ export interface MarkControls {
 export interface ListenControls {
   readonly play: HTMLButtonElement;
   readonly stop: HTMLButtonElement;
+  readonly back: HTMLButtonElement;
+  readonly forward: HTMLButtonElement;
+  readonly slower: HTMLButtonElement;
+  readonly faster: HTMLButtonElement;
+  readonly speed: HTMLElement;
+  readonly scrub: HTMLInputElement;
+  readonly played: HTMLElement;
+  readonly remaining: HTMLElement;
   readonly status: HTMLElement;
   readonly progress: HTMLProgressElement;
   readonly mark: MarkControls;
@@ -757,12 +894,16 @@ export interface ListenPanelConfig {
   // Called with where the read-along is whenever it moves, and with null when it stops.
   // This is the panel's one outward signal; the state itself is readable through `state()`.
   readonly onPosition: (at: ReadAlongAt | null) => void;
+  // Called when the reader asked to BE somewhere — a tap on a word, the scrubber, a nudge, a
+  // turn skip — so whoever keeps the page in view looks there. One place decides this for
+  // every door a seek can come through [LAW:single-enforcer]: a key and a click cannot drift
+  // apart on whether the page follows.
+  readonly onSeek: () => void;
 }
 
 export interface ListenPanel {
-  readonly send: (control: Tap) => void;
-  // The reader tapped a place on the page.
-  readonly seek: (to: Mark) => void;
+  // The reader's one door: every gesture, from every control and every key, arrives here.
+  readonly send: (gesture: Gesture) => void;
   // The page is back: a restore from the back-forward cache after the pagehide that
   // disposed. The worker is spawned to probe again and the standing consent given again,
   // as at mount.
@@ -781,12 +922,23 @@ const handOff = (mark: MarkControls, hiding: ReadonlyArray<Element>): void => {
   if (hiding.some((element) => element === mark.root.ownerDocument.activeElement)) mark.button.focus();
 };
 
+// Writing text the element already has replaces its text node for nothing, and the clock
+// below is painted sixty times a second; this is the one place that decides not to.
+const setText = (el: Element, text: string): void => {
+  if (el.textContent !== text) el.textContent = text;
+};
+
 // [LAW:dataflow-not-control-flow] Every attribute written on every render, only the values
 // vary: no path leaves a stale form, a stale sentence or a stale ring behind.
 const render = (controls: ListenControls, shown: Readout): void => {
   controls.play.textContent = shown.play.label;
   controls.play.disabled = !shown.play.enabled;
   controls.stop.disabled = !shown.stop.enabled;
+  controls.back.disabled = !shown.skip.back;
+  controls.forward.disabled = !shown.skip.forward;
+  controls.slower.disabled = !shown.speed.slower;
+  controls.faster.disabled = !shown.speed.faster;
+  setText(controls.speed, shown.speed.label);
   controls.status.textContent = shown.status;
   controls.progress.hidden = shown.progress === null;
   controls.progress.max = shown.progress?.totalBytes ?? 1;
@@ -802,6 +954,20 @@ const render = (controls: ListenControls, shown: Readout): void => {
   handOff(mark, shown.ask === null ? [mark.yes] : []);
   mark.yes.hidden = shown.ask === null;
   mark.remember.checked = shown.remembered;
+};
+
+// The scrubber and the times. `held` is the reader's thumb: while they drag, the input's
+// value is their intent and must not be pulled back under the pointer, though the times
+// still follow it so the drag can be aimed [LAW:one-source-of-truth] — the voice's place is
+// authoritative for where playback IS, the drag for where the reader is asking to go.
+const renderClock = (controls: ListenControls, clock: Clock, held: boolean): void => {
+  if (!held) {
+    controls.scrub.max = String(Math.round(clock.totalMs));
+    controls.scrub.value = String(Math.round(clock.atMs));
+  }
+  controls.scrub.setAttribute("aria-valuetext", clock.played);
+  setText(controls.played, clock.played);
+  setText(controls.remaining, clock.remaining);
 };
 
 const sameSpan = (a: WordSpan | null, b: WordSpan | null): boolean =>
@@ -860,9 +1026,45 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   let frame: number | null = null;
   let shown: ReadAlongAt | null = null;
+  // [LAW:no-shared-mutable-globals] The reader's thumb on the scrubber, owned here and
+  // written only by its two listeners. It is not a second position: it is the one fact
+  // nobody else holds — that the reader is asking for a place they have not committed to.
+  let held = false;
+  // The timeline the current state implies, rebuilt when the state changes rather than on
+  // every frame: a long paste is thousands of legs, and re-deriving the whole clock sixty
+  // times a second would cost more than the thumb it moves. A cache with one owner and one
+  // key — the state object it was built from, which every change replaces, so the two can
+  // never disagree about which clock this is [LAW:one-source-of-truth].
+  let clockFor: PanelState = state;
+  let clockLine: Timeline = timelineOf(state, utterances);
+  const timeline = (): Timeline => {
+    if (clockFor !== state) {
+      clockLine = timelineOf(state, utterances);
+      clockFor = state;
+    }
+    return clockLine;
+  };
+  // The turn landmarks: a fact of the page's utterance list, read once for the panel's
+  // whole life rather than with each skip.
+  const turns = turnStarts(utterances);
+
   // Read live from the performer, not from the state's snapshot: within an utterance the
   // span moves with no event.
   const stageState = (): PerformerState => (state.kind === "neural" ? performer().state() : IDLE);
+  // Where the voice is now, as the one coordinate every transport reading is in: the live
+  // spot while there is one, else the place the state holds.
+  const placeNow = (): Mark => {
+    const now = stageState();
+    return now.kind === "idle" ? placeIn(state) : markOf(now.at);
+  };
+  // What the scrubber and the times show right now: the reader's drag while they are
+  // dragging, the voice's own place otherwise.
+  const clockNow = (): Clock => {
+    const line = timeline();
+    return clockAt(line, held ? Number(controls.scrub.value) : timeAt(line, placeNow()));
+  };
+  const paintClock = (): void => renderClock(controls, clockNow(), held);
+
   const emitPosition = (): void => {
     const now = stageState();
     const at = now.kind === "idle" ? null : readAlongAt(now.at, utterances);
@@ -877,6 +1079,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       frame = frames.request(() => {
         frame = null;
         emitPosition();
+        paintClock();
         syncFrames();
       });
     }
@@ -949,7 +1152,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   // The visit as it is now: the preference from storage, the connection from the browser.
   const visit = (): Visit => ({ remembered: config.preference.read(), metered: downloadNeedsTap(config.connection()) });
-  const show = (): void => render(controls, readout(state, utterances.length, visit()));
+  const show = (): void => render(controls, readout(state, utterances, visit()));
 
   const run = (event: PanelEvent): void => {
     const planned = step(state, event);
@@ -958,6 +1161,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     show();
     syncFrames();
     emitPosition();
+    paintClock();
   };
   const dispatch = (event: PanelEvent): void => {
     queue.push(event);
@@ -990,11 +1194,67 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // to the machine at mount, on a restore, and when the preference changes.
   const wakeUp = (): void => dispatch({ kind: "wake", consent: standingConsent(config.preference.read(), config.connection()) });
 
+  // [LAW:dataflow-not-control-flow] Every gesture becomes the one event the machine already
+  // had — a tap, a seek to a mark, a speed step — so nothing below the panel knows a
+  // scrubber exists. The three gestures that name a TIME are resolved here, where the
+  // timeline is: a scrubber position becomes a Mark, never a unit index, and the neural
+  // voice on stage refines it its own way, to the word's own measured time.
+  //
+  // Null is the honest answer to a gesture that names nowhere: no turn before the first,
+  // none after the last, no mark at all in a conversation with nothing to say. The control
+  // that would send it is disabled by `readout`, so only a key can reach this, and the
+  // reader hears what they already hear.
+  const resolve = (g: Gesture): PanelEvent | null => {
+    const to = (mark: Mark | null): PanelEvent | null => (mark === null ? null : { kind: "seek", to: mark });
+    switch (g.kind) {
+      case "tap":
+        return { kind: "tap", control: g.control };
+      case "speed":
+        return { kind: "speed", by: g.by };
+      case "mark":
+        return { kind: "seek", to: g.to };
+      case "scrub":
+        return to(markAt(timeline(), g.toMs));
+      case "nudge":
+        return to(markAt(timeline(), timeAt(timeline(), placeNow()) + g.bySeconds * 1000));
+      case "turn":
+        return to(turnMark(turns, placeNow(), g.by));
+    }
+  };
+
+  const send = (g: Gesture): void => {
+    const event = resolve(g);
+    if (event === null) return;
+    dispatch(event);
+    if (moves(g)) config.onSeek();
+  };
+
   // The first step, performed like every other: the state shown, the store asked.
   for (const effect of start().effects) performEffect(effect);
   show();
-  controls.play.addEventListener("click", () => dispatch({ kind: "tap", control: "play" }));
-  controls.stop.addEventListener("click", () => dispatch({ kind: "tap", control: "stop" }));
+  paintClock();
+  const taps: ReadonlyArray<readonly [HTMLElement, Gesture]> = [
+    [controls.play, { kind: "tap", control: "play" }],
+    [controls.stop, { kind: "tap", control: "stop" }],
+    [controls.back, { kind: "turn", by: -1 }],
+    [controls.forward, { kind: "turn", by: 1 }],
+    [controls.slower, { kind: "speed", by: -1 }],
+    [controls.faster, { kind: "speed", by: 1 }],
+  ];
+  for (const [button, g] of taps) button.addEventListener("click", () => send(g));
+  // A drag is two facts, and the input reports them separately: `input` is the thumb
+  // moving, which only the times follow, and `change` is the reader letting go, which is
+  // the seek. Seeking on every `input` would restart the audio schedule and re-aim the
+  // worker dozens of times across one drag, so the seek waits for the thumb to land
+  // [LAW:no-ambient-temporal-coupling]. Cost, stated once: no audio scrub preview.
+  controls.scrub.addEventListener("input", () => {
+    held = true;
+    paintClock();
+  });
+  controls.scrub.addEventListener("change", () => {
+    held = false;
+    send({ kind: "scrub", toMs: Number(controls.scrub.value) });
+  });
 
   // The hover: shown by hover in CSS, the sighted reader's affordance, and pinned here —
   // for the touch reader's tap and the keyboard reader's focus, and told to assistive
@@ -1031,8 +1291,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   wakeUp();
 
   return {
-    send: (control) => dispatch({ kind: "tap", control }),
-    seek: (to) => dispatch({ kind: "seek", to }),
+    send,
     // The page's door back in: the hover closed as at mount, then the wake.
     wake: () => {
       pin(false);

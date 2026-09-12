@@ -83,8 +83,10 @@ const reveals = (): string => revealed.map((target) => target.id).join();
 const gesture = (type: string): void => {
   window.dispatchEvent(new window.Event(type));
 };
+// Cancelable, as a real keydown is: whether a key's default was prevented is one of the
+// facts the follower reads off it.
 const key = (name: string, target: EventTarget = window): void => {
-  target.dispatchEvent(new window.KeyboardEvent("keydown", { key: name, bubbles: true }));
+  target.dispatchEvent(new window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
 };
 const pointer = (x: number): void => {
   window.dispatchEvent(new window.MouseEvent("pointerdown", { clientX: x, clientY: 300 }));
@@ -132,6 +134,17 @@ console.log("createFollower");
   follower.send({ kind: "follow" });
   key("k");
   assert("a letter is not a scroll", follower.state() === "following");
+
+  // The transport claims its keys in the capture phase and prevents their default, which
+  // the DOM runs before this bubbling listener whatever order the page wired the two in.
+  const claim = (event: Event): void => event.preventDefault();
+  window.addEventListener("keydown", claim, { capture: true });
+  key("ArrowDown");
+  assert("a paging key the transport claimed did not scroll the page: the reader is seeking, not leaving", follower.state() === "following");
+  window.removeEventListener("keydown", claim, { capture: true });
+  key("ArrowDown");
+  assert("the same key, unclaimed, still releases", follower.state() === "released");
+  follower.send({ kind: "follow" });
 
   pointer(300);
   assert("a pointer on the content is a tap, not a scroll", follower.state() === "following");

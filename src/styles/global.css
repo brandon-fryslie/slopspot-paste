@@ -3248,19 +3248,57 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   gap: 10px;
   flex-wrap: wrap;
 }
-/* The position readout is a status line, not a control: it takes the muted meta
-   voice the other panels' status rows use rather than competing with the buttons. */
-.speech-now {
+/* Everything in the panel that reads rather than acts — the status line, the two times
+   either side of the scrubber, the speed between its buttons — takes the muted meta voice
+   the other panels' status rows use, declared once so they cannot drift apart. */
+.speech-now,
+.speech-played,
+.speech-left,
+.speech-speed {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
+/* A clock whose digits change every frame must not move what is beside it: the times keep
+   their width, and the speed keeps its own so the two buttons do not shift when 1× becomes
+   1.25×. */
+.speech-played,
+.speech-left,
+.speech-speed { font-variant-numeric: tabular-nums; }
+.speech-played,
+.speech-left { white-space: nowrap; }
+.speech-speed {
+  min-width: 3.2em;
+  text-align: center;
+}
 /* The download's bar, beside the sentence that reads it out: wide enough to see move. */
 .speech-progress {
   width: 200px;
   height: 8px;
+  accent-color: var(--accent);
+}
+/* The speed stepper reads as one control: two pills with their value between them, so the
+   number cannot be taken for a button and a wrap cannot split the three apart. */
+.speech-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The scrubber takes the room the row leaves, and a whole line of its own when that room is
+   under 220px: `flex: 1 0 220px` is that sentence, said once, and it is why there is no
+   media query here [LAW:dataflow-not-control-flow]. */
+.speech-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 0 220px;
+  min-width: 0;
+}
+.speech-scrub {
+  flex: 1;
+  min-width: 0;
   accent-color: var(--accent);
 }
 /* The read-along cursor, two tiers inside the turn card: the sentence group the voice is
@@ -3281,16 +3319,15 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   border-radius: 3px;
 }
 /* Follow appears only while the reader has scrolled away from the voice (follow.ts sets
-   `hidden`); when shown it takes the same pill chrome as its neighbours. */
+   `hidden`); when shown it is a mark like its neighbours. */
 .speech-follow[hidden] { display: none; }
-/* A disabled control is dimmed rather than hidden: the control's absence would move
-   the row's layout on every play/stop, and a reader tracking the audio should not
-   have the buttons shifting under the pointer. Play spends time disabled while the
-   voice is on its way (probing, downloading, warming). */
-.speech-stop[disabled],
-.speech-play[disabled] { opacity: 0.45; cursor: default; }
-.speech-stop[disabled]:hover,
-.speech-play[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
+/* A disabled control is dimmed rather than hidden: the control's absence would move the
+   row's layout on every play and stop, and a reader tracking the audio should not have the
+   buttons shifting under the pointer. One rule for every button in the panel — Play (while
+   the voice is on its way), Stop, the turn skips at the ends of the conversation, the speed
+   steps at the ends of the list. */
+.speech-controls button[disabled] { opacity: 0.45; cursor: default; }
+.speech-controls button[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
 
 /* ─── The Listen mark (slopspot-read-along-a35.a4l) ────────────────────────
    One always-visible icon beside the dock's launcher, in the launcher's own row, that says

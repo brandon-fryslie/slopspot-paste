@@ -36,6 +36,8 @@ type ToolSpec = {
   readonly availability: ToolAvailability;
 };
 
+// [LAW:one-source-of-truth] The dock's stroke-icon style: one viewBox, one weight, one set
+// of joins, so no tool's icon can drift from another's on how it looks.
 const icon = (paths: string): string =>
   `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" ` +
   `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
