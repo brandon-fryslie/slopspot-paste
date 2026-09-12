@@ -1,8 +1,8 @@
 // [LAW:decomposition] The spoken projection of a conversation: one ordered list of
 // utterances derived from the viewable dialogue. One sentence, no "and" — this module
 // decides WHAT is said and IN WHOSE VOICE. It never speaks: it holds no reference to
-// speechSynthesis, no DOM, no timers. Performing these utterances is speechPlayer.ts's
-// job, at the browser edge [LAW:effects-at-boundaries], which is also what lets every
+// synthesizer, no DOM, no timers. Performing these utterances is the neural performer's
+// job (neuralPerformer.ts), at the browser edge [LAW:effects-at-boundaries], which is also what lets every
 // rule below be tested with no mocks at all.
 //
 // Audio is a DERIVED, DISPOSABLE projection of the stored original — a sibling of the

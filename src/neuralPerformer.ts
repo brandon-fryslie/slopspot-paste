@@ -32,7 +32,7 @@ import type { Utterance } from "./speech";
 import { cursorAt, offsetAt, unitSpan, type Manifest, type Position } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
-import { createUnitPlayer, type DeviceFactory } from "./unitPlayer";
+import { createUnitPlayer, type OpenDevice } from "./unitPlayer";
 
 // The scheduler's view with the table attached: for each unit of the script, the index
 // of the page utterance it says.
@@ -105,7 +105,8 @@ export interface NeuralPerformerConfig {
   readonly script: ReadonlyArray<SynthesisUnit>;
   readonly utterances: ReadonlyArray<Utterance>;
   readonly voices: VoiceMap;
-  readonly Device: DeviceFactory;
+  // The audio device, opened on the reader's gesture by the owner that also closes it.
+  readonly device: OpenDevice;
   // Called after every event that changed what is held or where the player is.
   readonly onChange: (view: NeuralView) => void;
 }
@@ -124,7 +125,7 @@ export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerf
     port: config.port,
     script: config.script,
     voices: config.voices,
-    player: (playerConfig) => createUnitPlayer({ ...playerConfig, Device: config.Device }),
+    player: (playerConfig) => createUnitPlayer({ ...playerConfig, device: config.device }),
     onChange: (view) => {
       if (!disposed) config.onChange(withTable(view));
     },

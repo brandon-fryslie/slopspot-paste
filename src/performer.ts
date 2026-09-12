@@ -1,36 +1,20 @@
-// [LAW:decomposition] The performer seam: the one shape a voice must have to be driven by
-// the Listen panel. One sentence, no "and": this module says what a performer is. It
-// performs nothing — the browser synthesizer is speechPlayer.ts, the neural voice is
-// neuralPerformer.ts — and it depends on nothing but the manifest's span types, so both
-// implementations, the painter and the panel sit downhill of it [LAW:one-way-deps].
-//
-// [LAW:one-type-per-behavior] Two engines, one type. The neural unit player and the Web
-// Speech synthesizer differ in everything internal — one plays PCM on the audio clock unit
-// by unit, the other hands the browser a sentence at a time — and in nothing the panel can
-// see: both answer the same four verbs, both are idle, speaking or paused, and both stand
-// somewhere in the page's text. That shared surface is this file; what a performer cannot
-// be asked here (the manifest's timeline) is the neural performer's own, reached through
-// its own type.
+// [LAW:decomposition] The performer seam: the shape a voice has to be driven by the Listen
+// panel. One sentence, no "and": this module says what a performer is. It performs nothing
+// — the neural voice is neuralPerformer.ts — and it depends on nothing but the manifest's
+// span types, so the performer, the painter and the panel sit downhill of it
+// [LAW:one-way-deps].
 //
 // [LAW:one-source-of-truth] Position is ONE value, `Spot`: which utterance, the segment of
 // its text the voice is inside, and the word it is on when one may be claimed — all in
 // utterance-text coordinates. The panel reads it — on every frame while speaking, through
-// `state()` — and paints from it; it never keeps a copy of its own. A synthesizer reports
-// the word from its boundary events where the browser fires them, the neural voice from
-// the manifest's word table; a voice that has no word yet reports none, so a guess never
-// looks like a measurement [LAW:no-silent-failure].
+// `state()` — and paints from it; it never keeps a copy of its own. The voice reports the
+// word from the manifest's word table; a unit that has no record yet reports none, so a
+// guess never looks like a measurement [LAW:no-silent-failure].
 //
 // A `Mark` is the same coordinates as a point: an utterance and a character in its text.
-// It is what a seek names — the start of an utterance, a tapped word, the place the last
-// performer stood — and both performers resolve it to their own clock: the synthesizer
-// speaks the text from that character, the neural voice finds the unit that holds it and
-// the time its word begins.
-//
-// [LAW:no-ambient-temporal-coupling] The takeover is a pure function of the outgoing
-// performer's state, `carry`: the same events for the browser voice handing over to the
-// neural voice once it is ready as for the neural voice handing back on a crash. The
-// place carries over as a Mark — the word under the voice when it had one, else the start
-// of the segment it was inside — which is the one place both performers can stand.
+// It is what a seek names — the start of an utterance, a tapped word, the place the voice
+// stood before a crash — and the performer resolves it to its own clock: the unit that
+// holds the character and the time its word begins.
 
 import type { Cursor } from "./speechManifest";
 
@@ -53,7 +37,7 @@ export const markOf = (at: Spot): Mark => ({ utterance: at.utterance, char: (at.
 export const TOP: Mark = { utterance: 0, char: 0 };
 
 // [LAW:single-enforcer] The one check that a mark's character is in its utterance's text,
-// run at each performer's door: a caller naming a character past the end is a bug, not a
+// run at the performer's door: a caller naming a character past the end is a bug, not a
 // sentence that plays empty and moves on [LAW:no-silent-failure].
 export const charIn = (text: string, mark: Mark): number => {
   if (!Number.isInteger(mark.char) || mark.char < 0 || mark.char >= text.length) {
@@ -85,16 +69,3 @@ export interface Performer {
   // The performer's last call: silent, and whatever it held is released.
   readonly dispose: () => void;
 }
-
-// What an incoming performer is told so it stands where the outgoing one stood. Idle
-// carries nothing; speaking seeks (which plays); paused seeks, then holds.
-export const carry = (from: PerformerState): ReadonlyArray<PerformerEvent> => {
-  switch (from.kind) {
-    case "idle":
-      return [];
-    case "speaking":
-      return [{ kind: "seek", to: markOf(from.at) }];
-    case "paused":
-      return [{ kind: "seek", to: markOf(from.at) }, { kind: "pause" }];
-  }
-};

@@ -45,7 +45,7 @@ import type { Utterance } from "../src/speech";
 import { unitText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
-import { SCHEDULE_LEAD_S, createUnitPlayer } from "../src/unitPlayer";
+import { SCHEDULE_LEAD_S, createUnitPlayer, openDevice } from "../src/unitPlayer";
 import type { PlayerState } from "../src/unitPlayer";
 import { FRAME_S, StubDevice, describe, frame } from "./playbackStub";
 
@@ -330,7 +330,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
     port,
     script,
     voices: VOICES,
-    player: (config) => createUnitPlayer({ ...config, Device: StubDevice }),
+    player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice) }),
     onChange: (view) => views.push(view),
   });
   const device = StubDevice.instances.at(-1);
@@ -373,7 +373,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
 
   const before = sent.length;
   scheduler.dispose();
-  assert("dispose: the player is idle, the in-flight unit cancelled, the port no longer heard, the device closed", scheduler.view().player.kind === "idle" && sent.slice(before).some((m) => m.kind === "cancel" && m.unitId === 0) && listeners.size === 0 && device?.calls.at(-1) === "close");
+  assert("dispose: the player is idle, the in-flight unit cancelled, the port no longer heard, the device suspended", scheduler.view().player.kind === "idle" && sent.slice(before).some((m) => m.kind === "cancel" && m.unitId === 0) && listeners.size === 0 && device?.calls.at(-1) === "suspend");
   emit({ kind: "audio", unitId: 0, frameIndex: 1, pcm: frame(0, 1) });
   assert("a message after dispose changes nothing", scheduler.view().player.kind === "idle");
 }

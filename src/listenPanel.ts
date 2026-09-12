@@ -1,74 +1,64 @@
-// [LAW:decomposition] The Listen panel: it takes the reader from a Play tap to audio and
-// shows, at every moment, who is speaking and why. One sentence, no "and": this module
-// drives one transport over two performers. It does not probe or download (the worker),
-// cut text (the worker's script reply), decide what to synthesize (scheduler.ts), speak
-// (speechPlayer.ts, neuralPerformer.ts) or paint the page (readAlong.ts, through the
-// callback below). Every decision is the pure `step` over a typed state and an event; it
-// returns effects, the driver `createListenPanel` performs them against a port, a device,
-// a stand-in and a frame loop it is HANDED, so scripts/listen-panel-check.ts drives every
-// state under jsdom with a stub of each [LAW:effects-at-boundaries] [LAW:verifiable-goals].
+// [LAW:decomposition] The Listen panel: it takes the reader from a tap to audio and shows,
+// at every moment, where the voice is and why it is not yet speaking. One sentence, no
+// "and": this module drives one transport over the neural voice. It does not probe or
+// download (the worker), cut text (the worker's script reply), decide what to synthesize
+// (scheduler.ts), play (unitPlayer.ts, behind neuralPerformer.ts) or paint the page
+// (readAlong.ts, through the callback below). Every decision is the pure `step` over a
+// typed state and an event; it returns effects, and the driver `createListenPanel`
+// performs them against a port, a device and a frame loop it is HANDED, so
+// scripts/listen-panel-check.ts drives every state under jsdom with a stub of each
+// [LAW:effects-at-boundaries] [LAW:verifiable-goals].
 //
-// ONE PLAYER, TWO PERFORMERS [LAW:one-type-per-behavior]. The reader sees one Play and one
-// Stop, whatever engine is behind them. The neural voice is the point of the tool and is a
-// probe and, on a first listen, a 239 MB download away; the browser's own synthesizer is
-// there at once. So the tap that starts everything does both: the stand-in speaks from the
-// top while the neural voice is provisioned, and when the neural voice is ready it takes
-// the stage WITHOUT losing the place: one `handover` effect reads the leaving performer's
-// LIVE state as the stage passes and sends the arriving one `carry` of it — the same
-// place, the word under the voice — then the stand-in is silenced. The same effect, the other
-// way round, hands the stage back when the neural voice crashes mid-listen. On a browser
-// with no synthesizer there is no stand-in, and the transport waits for the neural voice
-// as it did before there was one.
+// ONE VOICE. The neural voice is the tool, and on a first listen it is a probe and a
+// 239 MB download away. Until it is on stage the panel is `provisioning`: where the voice
+// is on its way (`NeuralPhase`) and the place it will start from (`from`) — the top, or
+// the word the reader tapped. A browser-voice stand-in spoke while the model loaded once
+// (slopspot-read-along-a35.1); it went in slopspot-read-along-a35.bse: a different system
+// voice per turn and a handover mid-sentence read as a defect, not a bridge.
 //
-// EVERY STATE THE READER CAN BE IN, SHOWN HONESTLY. The state is two facts that can both be
-// true at once — where the neural voice is on its way (`NeuralPhase`) and what the stand-in
-// is doing (`StandIn`) — until the neural voice is on stage, when the stand-in is silent by
-// construction and the view is the scheduler's. `readout` maps every combination to the
-// words on the status line and the shape of the two buttons, so a state with no honest
-// sentence for it cannot be added without the compiler asking for one
-// [LAW:types-are-the-program] [LAW:no-silent-failure]. When the browser voice is standing
-// in, the status SAYS so, and says why: the download and its progress, an unsupported
-// device and its reason, a failed load and its failure.
+// EVERY STATE THE READER CAN BE IN, SHOWN HONESTLY. `readout` maps every phase to the words
+// on the status line and the shape of the two buttons, so a state with no honest sentence
+// for it cannot be added without the compiler asking for one [LAW:types-are-the-program]
+// [LAW:no-silent-failure]: the download and its progress, an unsupported device and its
+// reason, a failed load and its failure, a crash and its message.
 //
-// THE TAP THAT STARTS EVERYTHING. Nothing is spawned, probed or fetched until the reader
-// taps Play — or taps a word on the page, which is Play with a place: a `seek` to a Mark.
-// The worker bundle, the probe and the download all follow that one tap, and the tap IS
-// the consent modelAssets.downloadNeedsTap asks for on a metered connection. A Play tap or
-// a seek that starts or resumes the stand-in also starts the neural voice when it is idle,
-// or retries it after a failed load or a crash; a Pause tap touches nothing but the
-// stand-in. With no stand-in there is nobody to seek until the neural voice is on stage, so
-// the place is held in the state (`StandIn.none.from`) and is where the neural voice is
-// sent when it arrives — the same seek, whether the reader tapped Play (the top) or a word.
-// Costs, stated once: an unsupported device learns it only after the worker bundle has
-// loaded; a download in flight cannot be cancelled (the protocol has no message for it).
+// THE TAP THAT STARTS EVERYTHING. Nothing is spawned, probed, fetched or opened until the
+// reader taps Play — or taps a word on the page, which is Play with a place: a `seek` to a
+// Mark. The worker bundle, the probe and the download all follow that one tap, and the tap
+// IS the consent modelAssets.downloadNeedsTap asks for on a metered connection. The tap is
+// also the reader's gesture, the one moment a browser lets audio start
+// [LAW:no-ambient-temporal-coupling]: the `spawn` effect runs on the tap's own stack and
+// opens the audio device there, so the context is unlocked long before the model is warm,
+// and the first unit — scheduled from a worker message many seconds later — sounds. A Play
+// tap or a seek starts the voice when idle and retries it after a failed load or a crash;
+// while it is on its way, a seek only moves `from`. Costs, stated once: an unsupported
+// device learns it only after the worker bundle has loaded; a download in flight cannot
+// be cancelled (the protocol has no message for it).
 //
 // THE WORKER'S OWN DEATH. A bundle that fails to load, an exception outside the protocol:
 // these arrive on the port's error channel, not as a message, and the panel answers with
-// `crashed` — the neural performer and the worker are discarded, the status names the
-// failure, and the stand-in carries on (or takes the place back, if the neural voice was
-// on stage). A panel that hangs in "Checking this device…" forever is the silent failure
-// the state union exists to make unrepresentable [LAW:no-silent-failure].
+// `crashed` — the performer, the device and the worker are discarded, the status names the
+// failure, and the place the voice stood is kept for the retry. A panel that hangs in
+// "Checking this device…" forever is the silent failure the state union exists to make
+// unrepresentable [LAW:no-silent-failure].
 //
 // WHAT THE PANEL MIRRORS. The `neural` arm carries the scheduler's view — player position,
-// manifest, holdings — as delivered by its onChange; the `provisioning` arm carries the
-// stand-in's state as delivered by its onState; the panel never computes a second opinion
-// of either [LAW:one-source-of-truth]. The read-along cursor is derived from the stage
+// manifest, holdings — as delivered by its onChange; the panel never computes a second
+// opinion of it [LAW:one-source-of-truth]. The read-along cursor is derived from the
 // performer's live `state()` on every animation frame while speaking: within an utterance
 // the position moves with no event.
 //
 // [LAW:no-ambient-temporal-coupling] Events run to completion in arrival order, as in the
-// scheduler: an effect's synchronous consequence (the stand-in's report on being silenced,
-// the neural performer's first view) is queued behind the event being handled, never
-// handled inside it. The frame loop is armed and disarmed from the state after each event,
-// so it runs exactly while the stage performer is speaking. The stage itself is a fact of
-// the state, never of the queue's order: the step that receives the neural performer's
-// first view is the one that enters `neural` and performs the handover, so no event in
-// between reads a silenced stand-in as the stage.
+// scheduler: an effect's synchronous consequence (the performer's first view) is queued
+// behind the event being handled, never handled inside it. The frame loop is armed and
+// disarmed from the state after each event, so it runs exactly while the voice is speaking.
+// The stage is a fact of the state, never of the queue's order: the step that receives
+// the performer's first view is the one that enters `neural` and sends it to `from`.
 
 import { MODEL_ASSETS, allModelAssets } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
-import { carry, markOf, TOP, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
+import { markOf, TOP, type Mark, type PerformerEvent, type PerformerState, type Spot } from "./performer";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
@@ -76,7 +66,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
-import type { DeviceFactory } from "./unitPlayer";
+import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 
 // ── state ──────────────────────────────────────────────────────────────────────────────
 
@@ -96,46 +86,35 @@ export type NeuralPhase =
   | { readonly kind: "load-failed"; readonly failure: LoadFailure }
   | { readonly kind: "crashed"; readonly message: string };
 
-// The browser voice, or its absence on a browser with no synthesizer — in which case the
-// place the neural voice is to start from, once it is on stage, is held here: the top
-// until the reader taps a word.
-export type StandIn = { readonly kind: "none"; readonly from: Mark } | { readonly kind: "synth"; readonly state: PerformerState };
-
 export type PanelState =
-  | { readonly kind: "provisioning"; readonly neural: NeuralPhase; readonly standIn: StandIn }
-  // The neural voice on stage. The stand-in is silent by construction; only whether one
-  // exists to hand the stage back to is carried.
-  | { readonly kind: "neural"; readonly view: NeuralView; readonly standIn: StandIn["kind"] };
+  // The voice on its way, and the place it starts from when it arrives: the top until the
+  // reader taps a word.
+  | { readonly kind: "provisioning"; readonly neural: NeuralPhase; readonly from: Mark }
+  // The voice on stage; the view is the scheduler's.
+  | { readonly kind: "neural"; readonly view: NeuralView };
 
 export type Tap = "play" | "stop";
 
 export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
-  // The reader tapped a place on the page: the stage performer seeks there.
+  // The reader tapped a place on the page: the voice seeks there, or starts from there.
   | { readonly kind: "seek"; readonly to: Mark }
   | { readonly kind: "worker"; readonly message: FromWorker }
   | { readonly kind: "worker-error"; readonly message: string }
   | { readonly kind: "view"; readonly view: NeuralView }
-  | { readonly kind: "synth"; readonly state: PerformerState }
-  // The page is done with the panel: everything it built is released, the stand-in silenced.
+  // The page is done with the panel: everything it built is released.
   | { readonly kind: "dispose" };
 
-export type Stage = "synth" | "neural";
-
 export type Effect =
+  // The worker and the audio device, both on the tap's stack: the gesture that unlocks audio.
   | { readonly kind: "spawn" }
   | { readonly kind: "load" }
   | { readonly kind: "script" }
   | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit> }
-  | { readonly kind: "perform"; readonly on: Stage; readonly event: PerformerEvent }
-  // The stage passes: the performer leaving it is read live, at the edge, and the one
-  // arriving is sent `carry` of that state. Read live, not from the state's snapshot: the
-  // snapshot is the last REPORT, and the unit player reports a unit crossing only when the
-  // source's `ended` arrives, one hop after the clock crossed [LAW:one-source-of-truth].
-  | { readonly kind: "handover"; readonly from: Stage; readonly to: Stage }
-  // Releases the neural performer and the worker; how the worker ends is the value: a dead
-  // worker is terminated, since nothing can be sent to it, a live one is asked to dispose
-  // so the model is released first.
+  | { readonly kind: "perform"; readonly event: PerformerEvent }
+  // Releases the performer, the device and the worker; how the worker ends is the value: a
+  // dead worker is terminated, since nothing can be sent to it, a live one is asked to
+  // dispose so the model is released first.
   | { readonly kind: "release"; readonly worker: "terminate" | "dispose" };
 
 export interface Step {
@@ -149,19 +128,14 @@ export const SCRIPT_ID = 1;
 const IDLE: PerformerState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
-export const initialState = (standIn: StandIn["kind"]): PanelState => ({
-  kind: "provisioning",
-  neural: NEURAL_IDLE,
-  standIn: standIn === "none" ? { kind: "none", from: TOP } : { kind: "synth", state: IDLE },
-});
+export const initialState = (): PanelState => ({ kind: "provisioning", neural: NEURAL_IDLE, from: TOP });
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
 const violation = (state: PanelState, what: string): Error =>
-  new Error(`listen panel: ${what} while ${state.kind === "neural" ? "the neural voice is on stage" : state.neural.kind}`);
+  new Error(`listen panel: ${what} while ${state.kind === "neural" ? "the voice is on stage" : state.neural.kind}`);
 // The verbs a tap can send: a seek is never a tap's.
 type Verb = Exclude<PerformerEvent, { kind: "seek" }>["kind"];
-const perform = (on: Stage, event: PerformerEvent): Effect => ({ kind: "perform", on, event });
-const handover = (from: Stage, to: Stage): Effect => ({ kind: "handover", from, to });
+const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
 
 // The phases in which a `progress`, `ready` or `load-failed` may arrive.
 const loading = (neural: NeuralPhase): boolean =>
@@ -173,7 +147,7 @@ interface ProvisioningStep {
   readonly effects: ReadonlyArray<Effect>;
 }
 
-// What a Play tap (or a seek) does to the neural voice: starts it when idle, retries it
+// What a Play tap or a seek does to the voice on its way: starts it when idle, retries it
 // after a failure, leaves it be otherwise.
 const kick = (state: Provisioning): ProvisioningStep => {
   switch (state.neural.kind) {
@@ -191,35 +165,26 @@ const tap = (state: PanelState, control: Tap): Step => {
   switch (state.kind) {
     case "neural": {
       const verb: Verb = control === "stop" ? "stop" : state.view.player.kind === "speaking" ? "pause" : "play";
-      return { state, effects: [perform("neural", { kind: verb })] };
+      return { state, effects: [perform({ kind: verb })] };
     }
-    case "provisioning": {
-      const { standIn } = state;
-      if (standIn.kind === "none") {
-        // Stop is disabled by `readout` here; a tap that reaches it anyway changes nothing.
-        return control === "stop" ? stay(state) : kick(state);
-      }
-      const verb: Verb = control === "stop" ? "stop" : standIn.state.kind === "speaking" ? "pause" : "play";
-      const kicked = verb === "play" ? kick(state) : stay(state);
-      return { state: kicked.state, effects: [perform("synth", { kind: verb }), ...kicked.effects] };
-    }
+    case "provisioning":
+      // Stop is disabled by `readout` here; a tap that reaches it anyway changes nothing.
+      return control === "stop" ? stay(state) : kick(state);
   }
 };
 
-// A tap on a place: whoever is on stage seeks there, and the neural voice is started as a
-// Play tap starts it. With no stand-in the place is kept for the neural voice's arrival.
+// A tap on a place: the voice on stage seeks there; the voice on its way is started as a
+// Play tap starts it, and the place is kept for its arrival.
 const seek = (state: PanelState, to: Mark): Step => {
   switch (state.kind) {
     case "neural":
-      return { state, effects: [perform("neural", { kind: "seek", to })] };
+      return { state, effects: [perform({ kind: "seek", to })] };
     case "provisioning": {
       const kicked = kick(state);
-      if (state.standIn.kind === "none") return { state: { ...kicked.state, standIn: { kind: "none", from: to } }, effects: kicked.effects };
-      return { state: kicked.state, effects: [perform("synth", { kind: "seek", to }), ...kicked.effects] };
+      return { state: { ...kicked.state, from: to }, effects: kicked.effects };
     }
   }
 };
-
 
 const provision = (state: Provisioning, message: FromWorker): Step => {
   const { neural } = state;
@@ -229,7 +194,7 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
       if (neural.kind !== "probing") throw violation(state, "capability");
       return message.support.kind === "supported"
         ? phase({ kind: "preparing" }, [{ kind: "load" }])
-        : phase({ kind: "unsupported", reason: message.support.reason });
+        : phase({ kind: "unsupported", reason: message.support.reason }, [{ kind: "release", worker: "terminate" }]);
     case "progress":
       if (!loading(neural)) throw violation(state, "progress");
       return phase(
@@ -246,8 +211,8 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
     case "script": {
       if (neural.kind !== "scripting") throw violation(state, "script");
       if (message.id !== SCRIPT_ID) throw new Error(`listen panel: script reply ${message.id}, sent ${SCRIPT_ID}`);
-      // The neural performer is built; its first view is the next event, and the step
-      // that receives it takes the stage. The stand-in speaks on until then.
+      // The performer is built; its first view is the next event, and the step that
+      // receives it takes the stage.
       return { state, effects: [{ kind: "build", units: message.units }] };
     }
     case "refused":
@@ -260,8 +225,8 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
     case "done":
     case "cancelled":
     case "failed":
-      // The scheduler's messages: nothing is synthesizing before the neural voice is on
-      // stage, and a released worker is no longer heard.
+      // The scheduler's messages: nothing is synthesizing before the voice is on stage, and
+      // a released worker is no longer heard.
       throw violation(state, message.kind);
   }
 };
@@ -280,29 +245,21 @@ const fromWorker = (state: PanelState, message: FromWorker): Step => {
   }
 };
 
-// Where the neural voice's view says it is, as the mark a retry starts from. The last
-// REPORT, not the live clock: the performer is about to be released, and a unit boundary
-// is reported one hop after the clock crosses it. Cost, stated once: a crash retry with no
-// stand-in resumes from the reported unit, at most one unit behind the ear.
+// Where the voice's view says it is, as the mark a retry starts from. The last REPORT, not
+// the live clock: the performer is about to be released, and a unit boundary is reported
+// one hop after the clock crosses it. Cost, stated once: a crash retry resumes from the
+// reported unit, at most one unit behind the ear.
 const placeOf = (view: NeuralView): Mark => {
   const at = spotOf(view);
   return at.kind === "idle" ? TOP : markOf(at.at);
 };
 
-// The stage handed back to the stand-in, or to nobody: what the state becomes and what
-// the stand-in is told.
-const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const release: Effect = { kind: "release", worker: "terminate" };
-  if (state.kind === "provisioning") return { state: { ...state, neural }, effects: [release] };
-  if (state.standIn === "none") {
-    return { state: { kind: "provisioning", neural, standIn: { kind: "none", from: placeOf(state.view) } }, effects: [release] };
-  }
-  // The stand-in's own report of where it lands is the next event; until then it is idle.
-  return {
-    state: { kind: "provisioning", neural, standIn: { kind: "synth", state: IDLE } },
-    effects: [handover("neural", "synth"), release],
-  };
-};
+// The voice leaves the stage, or never reached it: the phase it fell to, the place kept
+// for the retry, and the release of everything the tap had built.
+const fallback = (state: PanelState, neural: NeuralPhase): Step => ({
+  state: { kind: "provisioning", neural, from: state.kind === "provisioning" ? state.from : placeOf(state.view) },
+  effects: [{ kind: "release", worker: "terminate" }],
+});
 
 export const step = (state: PanelState, event: PanelEvent): Step => {
   switch (event.kind) {
@@ -314,34 +271,15 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       return fromWorker(state, event.message);
     case "worker-error":
       return fallback(state, { kind: "crashed", message: event.message });
-    case "dispose": {
-      const standIn = state.kind === "neural" ? state.standIn : state.standIn.kind;
-      return {
-        state: initialState(standIn),
-        effects: [{ kind: "release", worker: "dispose" }, ...(standIn === "synth" ? [perform("synth", { kind: "stop" })] : [])],
-      };
-    }
+    case "dispose":
+      return { state: initialState(), effects: [{ kind: "release", worker: "dispose" }] };
     case "view": {
       if (state.kind === "neural") return stay({ ...state, view: event.view });
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
-      // The performer's first view: the neural voice takes the stage where the stand-in
-      // stands, and the stand-in is silenced. With no stand-in, the tap that started the
-      // download is the consent to play, from the place it named.
-      const onto: ReadonlyArray<Effect> =
-        state.standIn.kind === "synth"
-          ? [handover("synth", "neural"), perform("synth", { kind: "stop" })]
-          : [perform("neural", { kind: "seek", to: state.standIn.from })];
-      return { state: { kind: "neural", view: event.view, standIn: state.standIn.kind }, effects: onto };
+      // The performer's first view: the voice takes the stage and is sent to the place the
+      // tap named. The tap that started the download is the consent to play.
+      return { state: { kind: "neural", view: event.view }, effects: [perform({ kind: "seek", to: state.from })] };
     }
-    case "synth":
-      if (state.kind === "neural") {
-        // The idle the stand-in reports on being silenced at the handover; a stand-in
-        // speaking beside the neural voice is a violation.
-        if (event.state.kind === "idle") return stay(state);
-        throw violation(state, "a stand-in report");
-      }
-      if (state.standIn.kind === "none") throw violation(state, "a report from a stand-in that does not exist");
-      return stay({ ...state, standIn: { kind: "synth", state: event.state } });
   }
 };
 
@@ -399,45 +337,34 @@ const unitFailureText = (reason: FailureReason): string => {
   }
 };
 
-// The neural voice's own sentence, as a fragment the status line can lead with or follow
-// the stand-in's with — one set of words for both [LAW:one-source-of-truth].
+// The voice's own sentence, as a fragment: one set of words for every phase
+// [LAW:one-source-of-truth].
 const neuralText = (neural: NeuralPhase): string => {
   switch (neural.kind) {
     case "idle":
-      return `the neural voice downloads a ${megabytes(DOWNLOAD_BYTES)} model once, then runs on this device`;
+      return `the voice downloads a ${megabytes(DOWNLOAD_BYTES)} model once, then runs on this device`;
     case "probing":
-      return "checking this device for the neural voice…";
+      return "checking this device for the voice…";
     case "preparing":
-      return "preparing the neural voice…";
+      return "preparing the voice…";
     case "downloading":
-      return `downloading the neural voice · ${megabytes(neural.progress.loadedBytes)} of ${megabytes(neural.progress.totalBytes)}`;
+      return `downloading the voice · ${megabytes(neural.progress.loadedBytes)} of ${megabytes(neural.progress.totalBytes)}`;
     case "warming":
-      return "warming up the neural voice…";
+      return "warming up the voice…";
     case "scripting":
       return "preparing the script…";
     case "unsupported":
-      return `this device can't run the neural voice: ${unsupportedText(neural.reason)}`;
+      return `this device can't run the voice: ${unsupportedText(neural.reason)}`;
     case "load-failed":
-      return `the neural voice could not load: ${loadFailureText(neural.failure)}`;
+      return `the voice could not load: ${loadFailureText(neural.failure)}`;
     case "crashed":
-      return `the neural voice failed${neural.message === "" ? "" : `: ${neural.message}`}`;
+      return `the voice failed${neural.message === "" ? "" : `: ${neural.message}`}`;
   }
 };
 
 const sentence = (fragment: string): string => fragment.charAt(0).toUpperCase() + fragment.slice(1);
 
 const where = (utterance: number, total: number): string => `passage ${utterance + 1} of ${total}`;
-
-const standInStatus = (state: PerformerState, total: number): string => {
-  switch (state.kind) {
-    case "idle":
-      return "Browser voice standing in";
-    case "speaking":
-      return `Browser voice standing in · ${where(state.at.utterance, total)}`;
-    case "paused":
-      return `Browser voice standing in · paused at ${where(state.at.utterance, total)}`;
-  }
-};
 
 const neuralStatus = (view: NeuralView, total: number): string => {
   const at = (unitIndex: number): string => {
@@ -460,8 +387,7 @@ const neuralStatus = (view: NeuralView, total: number): string => {
   return [now, ...skipped].join(" · ");
 };
 
-// The transport over whoever is on stage: the label follows what a tap would do. Only
-// the kind is read, which the unit player's state and the performer's share.
+// The transport over the voice on stage: the label follows what a tap would do.
 const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Readout, "play" | "stop"> => ({
   play: { label: state.kind === "speaking" ? "Pause" : state.kind === "paused" ? "Resume" : "Listen", enabled: true },
   stop: { enabled: state.kind !== "idle" },
@@ -472,34 +398,29 @@ export const readout = (state: PanelState, total: number): Readout => {
   if (state.kind === "neural") {
     return { ...transport(state.view.player), status: neuralStatus(state.view, total), progress: null };
   }
-  const { neural, standIn } = state;
-  const progress = neural.kind === "downloading" ? neural.progress : null;
-  if (standIn.kind === "synth") {
-    return { ...transport(standIn.state), status: `${standInStatus(standIn.state, total)} · ${neuralText(neural)}`, progress };
-  }
-  // No stand-in: the transport waits for the neural voice, and Play is the retry.
+  const { neural } = state;
+  // On its way: the transport waits for the voice, and Play is the retry.
   const retry = neural.kind === "load-failed" || neural.kind === "crashed";
   return {
     play: { label: retry ? "Retry" : "Listen", enabled: retry || neural.kind === "idle" },
     stop: { enabled: false },
     status: sentence(neuralText(neural)),
-    progress,
+    progress: neural.kind === "downloading" ? neural.progress : null,
   };
 };
 
 // ── the cursor ─────────────────────────────────────────────────────────────────────────
 
-// Where the read-along is, from a performer's spot: the utterance, every utterance of its
-// turn, and the cursor to paint.
+// Where the read-along is, from the performer's spot: the utterance, every utterance of
+// its turn, and the cursor to paint.
 export const readAlongAt = (spot: Spot, utterances: ReadonlyArray<Utterance>): ReadAlongAt => {
   const utterance = utterances[spot.utterance];
   if (utterance === undefined) throw new Error(`listen panel: the performer is at utterance ${spot.utterance} of ${utterances.length}`);
   return { utterance, turn: turnOf(utterances, utterance.anchor), segment: spot.segment, word: spot.word };
 };
 
-// Whether the stage performer is speaking, from the state: exactly when the frame loop runs.
-const speaking = (state: PanelState): boolean =>
-  state.kind === "neural" ? state.view.player.kind === "speaking" : state.standIn.kind === "synth" && state.standIn.state.kind === "speaking";
+// Whether the voice is speaking, from the state: exactly when the frame loop runs.
+const speaking = (state: PanelState): boolean => state.kind === "neural" && state.view.player.kind === "speaking";
 
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
@@ -521,11 +442,10 @@ export interface ListenPanelConfig {
   readonly utterances: ReadonlyArray<Utterance>;
   readonly voices: VoiceMap;
   readonly spawn: () => SynthesisPort;
+  // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
+  // tap, closed by the panel with the worker.
   readonly Device: DeviceFactory;
   readonly frames: FrameLoop;
-  // The browser voice that stands in while the neural voice is on its way, built over the
-  // panel's report callback — or null on a browser with no synthesizer.
-  readonly standIn: ((onState: (state: PerformerState) => void) => Performer) | null;
   // Called with where the read-along is whenever it moves, and with null when it stops.
   // This is the panel's one outward signal; the state itself is readable through `state()`.
   readonly onPosition: (at: ReadAlongAt | null) => void;
@@ -536,7 +456,7 @@ export interface ListenPanel {
   // The reader tapped a place on the page.
   readonly seek: (to: Mark) => void;
   readonly state: () => PanelState;
-  // Ends the listen, the stand-in and the worker (gracefully: the model is released before
+  // Ends the listen, the device and the worker (gracefully: the model is released before
   // the worker ends); the page is left as the renderer made it, the controls show the
   // idle readout.
   readonly dispose: () => void;
@@ -560,14 +480,14 @@ const samePlace = (a: ReadAlongAt | null, b: ReadAlongAt | null): boolean =>
 export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const { controls, frames, utterances } = config;
   // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch`, from `step`.
-  const synth = config.standIn === null ? null : config.standIn((reported) => dispatch({ kind: "synth", state: reported }));
-  let state: PanelState = initialState(synth === null ? "none" : "synth");
+  let state: PanelState = initialState();
   const queue: PanelEvent[] = [];
   let draining = false;
   // The handles effects create; an effect that needs one before it exists is a bug in
   // `step`, and says so.
   const unheard = (): void => undefined;
   let port: SynthesisPort | null = null;
+  let audio: OpenDevice | null = null;
   let unsubscribe: () => void = unheard;
   let unsubscribeErrors: () => void = unheard;
   let neural: NeuralPerformer | null = null;
@@ -575,18 +495,20 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (port === null) throw new Error("listen panel: no worker to send to");
     return port;
   };
-  const performerOn = (stage: Stage): Performer => {
-    const performer = stage === "neural" ? neural : synth;
-    if (performer === null) throw new Error(`listen panel: no ${stage} performer to drive`);
-    return performer;
+  const audioOf = (): OpenDevice => {
+    if (audio === null) throw new Error("listen panel: no audio device open");
+    return audio;
+  };
+  const performer = (): NeuralPerformer => {
+    if (neural === null) throw new Error("listen panel: no performer to drive");
+    return neural;
   };
 
   let frame: number | null = null;
   let shown: ReadAlongAt | null = null;
-  // Read live from the stage performer, not from the state's snapshot: within an
-  // utterance the span moves with no event.
-  const stageState = (): PerformerState =>
-    state.kind === "neural" ? performerOn("neural").state() : state.standIn.kind === "synth" ? performerOn("synth").state() : IDLE;
+  // Read live from the performer, not from the state's snapshot: within an utterance the
+  // span moves with no event.
+  const stageState = (): PerformerState => (state.kind === "neural" ? performer().state() : IDLE);
   const emitPosition = (): void => {
     const now = stageState();
     const at = now.kind === "idle" ? null : readAlongAt(now.at, utterances);
@@ -594,7 +516,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     shown = at;
     config.onPosition(at);
   };
-  // The loop runs exactly while the stage performer is speaking.
+  // The loop runs exactly while the voice is speaking.
   const syncFrames = (): void => {
     const running = speaking(state);
     if (running && frame === null) {
@@ -612,11 +534,18 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   const performEffect = (effect: Effect): void => {
     switch (effect.kind) {
-      case "spawn":
+      case "spawn": {
         port = config.spawn();
         unsubscribe = port.subscribe((message) => dispatch({ kind: "worker", message }));
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
+        // On the tap's stack: opened AND resumed inside the gesture, which is the unlock
+        // every browser honours; the player's own resume, on a worker message later, is
+        // then a no-op on a running context.
+        const opened = openDevice(config.Device);
+        void opened.device.resume();
+        audio = opened;
         return;
+      }
       case "load":
         portOf().send({ kind: "load" });
         return;
@@ -626,10 +555,10 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "build": {
         const built = createNeuralPerformer({
           port: portOf(),
+          device: audioOf(),
           script: effect.units,
           utterances,
           voices: config.voices,
-          Device: config.Device,
           onChange: (view) => dispatch({ kind: "view", view }),
         });
         neural = built;
@@ -637,16 +566,12 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         return;
       }
       case "perform":
-        performerOn(effect.on).send(effect.event);
+        performer().send(effect.event);
         return;
-      case "handover": {
-        const arriving = performerOn(effect.to);
-        for (const event of carry(performerOn(effect.from).state())) arriving.send(event);
-        return;
-      }
       case "release": {
-        // A worker can die before the neural performer exists (the bundle failed to load)
-        // or after; either way what exists is released, the performer before the worker.
+        // A worker can die before the performer exists (the bundle failed to load) or
+        // after; either way what exists is released: the performer, then the worker, then
+        // the device the performer borrowed.
         const releasing = neural;
         neural = null;
         releasing?.dispose();
@@ -656,6 +581,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         unsubscribeErrors = unheard;
         port?.[effect.worker]();
         port = null;
+        void audio?.device.close();
+        audio = null;
         return;
       }
     }
@@ -679,9 +606,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       // [LAW:no-silent-failure] A step or effect that throws is a bug in the machine. The
       // events queued behind it would drain against a state the performed effects have
       // left behind, and the readout would keep describing a stage nobody is on; so the
-      // panel is torn down to its start — worker released, stand-in silenced — and the
-      // error goes out as it is. A teardown that fails too goes out WITH it: neither
-      // failure hides the other.
+      // panel is torn down to its start — worker released, device closed — and the error
+      // goes out as it is. A teardown that fails too goes out WITH it: neither failure
+      // hides the other.
       queue.length = 0;
       try {
         run({ kind: "dispose" });
