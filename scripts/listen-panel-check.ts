@@ -77,10 +77,11 @@ const units: SynthesisUnit[] = ((): SynthesisUnit[] => {
 })();
 const table = utteranceTable(utterances, units);
 
-const worker = (message: FromWorker): PanelEvent => ({ kind: "worker", message });
+// Worker messages arrive at the check's own time: zero unless a case reads the pace.
+const worker = (message: FromWorker, at = 0): PanelEvent => ({ kind: "worker", message, at });
 const tapPlay: PanelEvent = { kind: "tap", control: "play" };
 const tapStop: PanelEvent = { kind: "tap", control: "stop" };
-const progress = (loadedBytes: number, totalBytes: number): PanelEvent => worker({ kind: "progress", progress: { loadedBytes, totalBytes } });
+const progress = (loadedBytes: number, totalBytes: number, at = 0): PanelEvent => worker({ kind: "progress", progress: { loadedBytes, totalBytes } }, at);
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 const mark = (utterance: number, char = 0): Mark => ({ utterance, char });
 const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to: mark(utterance, char) });
@@ -150,7 +151,15 @@ console.log("step: the way to audio");
   const preparing = step(probing.state, supported);
   assert("supported with the tap held: load is sent", effects(preparing) === "load" && shown(preparing.state) === "Listen(off) | stop(off) | Preparing the voice…");
   const downloading = step(preparing.state, progress(120_000_000, 239_000_000));
-  assert("progress short of the total: downloading, with the bytes and the bar", shown(downloading.state) === "Listen(off) | stop(off) | Downloading the voice · 120 MB of 239 MB | bar 120000000/239000000");
+  assert("progress short of the total: downloading, with the percentage, the bytes, the bar, and no estimate from one sample", shown(downloading.state) === "Listen(off) | stop(off) | Downloading the voice · 50% · 120 of 239 MB · estimating time left… | bar 120000000/239000000");
+  // 120 MB at t=0, 130 MB at t=10 s: 1 MB/s, 109 MB to go, about 2 min. The floor keeps
+  // 54.39% from reading as 54% only; the estimate reads from the pace the phase carries.
+  const paced = step(downloading.state, progress(130_000_000, 239_000_000, 10_000));
+  assert("a later progress: the pace speaks, the percentage and the bytes move with it", shown(paced.state) === "Listen(off) | stop(off) | Downloading the voice · 54% · 130 of 239 MB · about 2 min left | bar 130000000/239000000");
+  const stopped = step(paced.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
+  assert("a failure mid-download keeps the bar where it stopped, under the failure and Retry", shown(stopped.state) === "Retry | stop(off) | The voice could not load: network error fetching u: offline | bar 130000000/239000000");
+  const stoppedEarly = step(preparing.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
+  assert("a failure before any byte has no bar", shown(stoppedEarly.state) === "Retry | stop(off) | The voice could not load: network error fetching u: offline");
   const warming = step(downloading.state, progress(239_000_000, 239_000_000));
   assert("the last byte: warming, no bar", shown(warming.state) === "Listen(off) | stop(off) | Warming up the voice…");
 
@@ -206,7 +215,7 @@ console.log("step: the way to audio");
   const kept1 = step(preparing.state, kept({ kind: "granted" }));
   assert("keeping granted while preparing: said beside the phase", shown(kept1.state) === "Listen(off) | stop(off) | Preparing the voice… · this browser will keep the voice");
   const kept2 = step(step(kept1.state, progress(1, 2)).state, kept({ kind: "failed", message: "no StorageManager" }));
-  assert("a keep request that failed: its message, beside the download", shown(kept2.state) === "Listen(off) | stop(off) | Downloading the voice · 0 MB of 0 MB · this browser could not be asked to keep the voice: no StorageManager | bar 1/2");
+  assert("a keep request that failed: its message, beside the download", shown(kept2.state) === "Listen(off) | stop(off) | Downloading the voice · 50% · 0 of 0 MB · estimating time left… · this browser could not be asked to keep the voice: no StorageManager | bar 1/2");
   assert("an answer after the voice took the stage changes nothing", step(listening.state, kept({ kind: "denied" })).state === listening.state && step(listening.state, home({ kind: "resident" })).state === listening.state);
   assert("a crash returns to the start with the store asked again, the last answer dropped", (() => { const s = step(kept1.state, { kind: "worker-error", message: "x" }).state; return s.kind === "provisioning" && s.home.kind === "reading" && s.keeping === null; })());
 }
@@ -385,6 +394,8 @@ interface Rig {
   readonly refusing: { dispose: boolean };
   readonly said: () => string;
   readonly frames: { request: (callback: () => void) => number; cancel: () => void; pending: number; tick: () => void };
+  // The clock the driver stamps worker messages with, in ms; the check sets it by hand.
+  now: number;
   readonly positions: (ReadAlongAt | null)[];
   readonly where: () => string;
   readonly line: () => string;
@@ -484,6 +495,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     status,
     bar: el(".speech-progress"),
     mark,
+    now: 0,
     doc,
     port,
     sent,
@@ -544,6 +556,7 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     connection: () => r.connection.reading,
     Device: StubDevice,
     frames: r.frames,
+    clock: () => r.now,
     onPosition: (at) => r.positions.push(at),
   });
 
@@ -581,7 +594,12 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   assert("supported with the tap held: load is sent", r.said() === "load" && r.shownMark() === "warming | no ask | yes hidden | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
-  assert("downloading: the bar shows and carries the bytes, the mark's ring the fraction", !r.bar.hidden && r.bar.value === 50_000_000 && r.bar.max === 200_000_000 && r.line() === "Listen(off) | stop(off) | Downloading the voice · 50 MB of 200 MB" && r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25");
+  assert("downloading: the bar shows and carries the bytes, the mark's ring the fraction", !r.bar.hidden && r.bar.value === 50_000_000 && r.bar.max === 200_000_000 && r.line() === "Listen(off) | stop(off) | Downloading the voice · 25% · 50 of 200 MB · estimating time left…" && r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25");
+  // The driver stamps each message with the clock's reading: 50 MB more in 5 s is 10 MB/s,
+  // 100 MB to go, about 10 s.
+  r.now = 5_000;
+  r.emit({ kind: "progress", progress: { loadedBytes: 100_000_000, totalBytes: 200_000_000 } });
+  assert("the pace reads the driver's clock: the estimate speaks", r.line() === "Listen(off) | stop(off) | Downloading the voice · 50% · 100 of 200 MB · about 10 s left" && r.mark.root.style.getPropertyValue("--fraction") === "0.5");
   r.emit({ kind: "progress", progress: { loadedBytes: 200_000_000, totalBytes: 200_000_000 } });
   assert("warming: the bar goes, the ring is empty", r.bar.hidden && r.line() === "Listen(off) | stop(off) | Warming up the voice…" && r.mark.root.dataset.state === "warming" && r.mark.root.style.getPropertyValue("--fraction") === "0");
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });

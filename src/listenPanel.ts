@@ -77,6 +77,7 @@
 // The stage is a fact of the state, never of the queue's order: the step that receives
 // the performer's first view is the one that enters `neural` and sends it to `from`.
 
+import { begin, estimate, record, remainingText, type Pace } from "./downloadPace";
 import { standingConsent, type StandingConsent } from "./listenConsent";
 import { MODEL_ASSETS, allModelAssets, downloadNeedsTap, type ConnectionReading } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
@@ -99,17 +100,19 @@ import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 // worker cannot see: `idle` (no worker) against `supported` (the worker's idle: probed,
 // able, the weights awaiting consent), `downloading` versus `warming` (the same `progress`
 // message, before and after the last byte), `scripting` (utterances sent, units not yet
-// back), and the two ways it ends without a voice that a Play tap retries.
+// back), and the two ways it ends without a voice that a Play tap retries. `downloading`
+// carries its pace, the estimate's one source; `load-failed` carries the download where it
+// stopped, when one was under way, so the bar stays as the failure found it.
 export type NeuralPhase =
   | { readonly kind: "idle" }
   | { readonly kind: "probing" }
   | { readonly kind: "supported" }
   | { readonly kind: "preparing" }
-  | { readonly kind: "downloading"; readonly progress: AssetProgress }
+  | { readonly kind: "downloading"; readonly progress: AssetProgress; readonly pace: Pace }
   | { readonly kind: "warming" }
   | { readonly kind: "scripting" }
   | { readonly kind: "unsupported"; readonly reason: UnsupportedReason }
-  | { readonly kind: "load-failed"; readonly failure: LoadFailure }
+  | { readonly kind: "load-failed"; readonly failure: LoadFailure; readonly progress: AssetProgress | null }
   | { readonly kind: "crashed"; readonly message: string };
 
 // What the store has said it holds of the model: asked on every entry to the start, so it is
@@ -159,7 +162,9 @@ export type PanelEvent =
   // cache, when the preference changes: the worker is spawned to probe, and the visit's
   // standing consent, if any, is given.
   | { readonly kind: "wake"; readonly consent: StandingConsent }
-  | { readonly kind: "worker"; readonly message: FromWorker }
+  // A message from the worker, stamped with its arrival on the driver's clock: the one
+  // reading of time the download's pace is built from.
+  | { readonly kind: "worker"; readonly message: FromWorker; readonly at: number }
   | { readonly kind: "worker-error"; readonly message: string }
   // The store's answer to `home`, and the browser's to the keep request that `load` makes.
   | { readonly kind: "home"; readonly residency: Residency }
@@ -297,7 +302,7 @@ const wake = (state: PanelState, standing: StandingConsent): Step => {
   return told.kind === "provisioning" ? kick(told) : stay(told);
 };
 
-const provision = (state: Provisioning, message: FromWorker): Step => {
+const provision = (state: Provisioning, message: FromWorker, at: number): Step => {
   const { neural } = state;
   const phase = (next: NeuralPhase, effects: ReadonlyArray<Effect> = []): Step => ({ state: { ...state, neural: next }, effects });
   switch (message.kind) {
@@ -310,19 +315,22 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
         : granted(state) === "none"
           ? phase({ kind: "supported" })
           : load(state);
-    case "progress":
+    case "progress": {
       if (!loading(neural)) throw violation(state, "progress");
+      const { progress } = message;
+      const sample = { at, bytes: progress.loadedBytes };
       return phase(
-        message.progress.loadedBytes < message.progress.totalBytes
-          ? { kind: "downloading", progress: message.progress }
+        progress.loadedBytes < progress.totalBytes
+          ? { kind: "downloading", progress, pace: neural.kind === "downloading" ? record(neural.pace, sample) : begin(sample) }
           : { kind: "warming" },
       );
+    }
     case "ready":
       if (!loading(neural)) throw violation(state, "ready");
       return phase({ kind: "scripting" }, [{ kind: "script" }]);
     case "load-failed":
       if (!loading(neural)) throw violation(state, "load-failed");
-      return phase({ kind: "load-failed", failure: message.failure });
+      return phase({ kind: "load-failed", failure: message.failure, progress: neural.kind === "downloading" ? neural.progress : null });
     case "script": {
       if (neural.kind !== "scripting") throw violation(state, "script");
       if (message.id !== SCRIPT_ID) throw new Error(`listen panel: script reply ${message.id}, sent ${SCRIPT_ID}`);
@@ -346,8 +354,8 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
   }
 };
 
-const fromWorker = (state: PanelState, message: FromWorker): Step => {
-  if (state.kind === "provisioning") return provision(state, message);
+const fromWorker = (state: PanelState, message: FromWorker, at: number): Step => {
+  if (state.kind === "provisioning") return provision(state, message, at);
   switch (message.kind) {
     case "audio":
     case "done":
@@ -398,7 +406,7 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
     case "wake":
       return wake(state, event.consent);
     case "worker":
-      return fromWorker(state, event.message);
+      return fromWorker(state, event.message, event.at);
     case "worker-error":
       return fallback(state, { kind: "crashed", message: event.message });
     case "home":
@@ -449,9 +457,10 @@ export interface Visit {
 }
 
 // What the panel shows: the two buttons' shape, the status sentence, the download when
-// there is one, and the mark — its form, the question its hover asks when a download
-// stands between the reader and the voice, and the preference's box. A pure projection of
-// the state and the visit, so the check reads it directly.
+// there is one (under way, or where a failure stopped it), and the mark — its form, the
+// question its hover asks when a download stands between the reader and the voice, and the
+// preference's box. A pure projection of the state and the visit, so the check reads it
+// directly.
 export interface Readout {
   readonly play: { readonly label: string; readonly enabled: boolean };
   readonly stop: { readonly enabled: boolean };
@@ -543,8 +552,11 @@ const neuralText = (neural: NeuralPhase, home: Home): string => {
       return "checking this device for the voice…";
     case "preparing":
       return "preparing the voice…";
-    case "downloading":
-      return `downloading the voice · ${megabytes(neural.progress.loadedBytes)} of ${megabytes(neural.progress.totalBytes)}`;
+    case "downloading": {
+      const { loadedBytes, totalBytes } = neural.progress;
+      // The percentage floors: short of the last byte is short of 100.
+      return `downloading the voice · ${Math.floor((100 * loadedBytes) / totalBytes)}% · ${Math.round(loadedBytes / 1_000_000)} of ${megabytes(totalBytes)} · ${remainingText(estimate(neural.pace, totalBytes))}`;
+    }
     case "warming":
       return "warming up the voice…";
     case "scripting":
@@ -667,7 +679,7 @@ export const readout = (state: PanelState, total: number, visit: Visit): Readout
     play: { label: retry ? "Retry" : "Listen", enabled: retry || (neural.kind !== "unsupported" && granted(state) !== "play") },
     stop: { enabled: false },
     status: sentence(fragments.join(" · ")),
-    progress: neural.kind === "downloading" ? neural.progress : null,
+    progress: neural.kind === "downloading" || neural.kind === "load-failed" ? neural.progress : null,
     mark,
     ask,
     remembered,
@@ -734,6 +746,9 @@ export interface ListenPanelConfig {
   // first gesture or the first build, whichever comes first; closed with the worker.
   readonly Device: DeviceFactory;
   readonly frames: FrameLoop;
+  // The clock the download's pace is read by, in milliseconds; only differences are read.
+  // performance.now in the page, a counter the check advances by hand.
+  readonly clock: () => number;
   // Called with where the read-along is whenever it moves, and with null when it stops.
   // This is the panel's one outward signal; the state itself is readable through `state()`.
   readonly onPosition: (at: ReadAlongAt | null) => void;
@@ -873,7 +888,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         return;
       case "spawn":
         port = config.spawn();
-        unsubscribe = port.subscribe((message) => dispatch({ kind: "worker", message }));
+        unsubscribe = port.subscribe((message) => dispatch({ kind: "worker", message, at: config.clock() }));
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
         return;
       case "unlock":

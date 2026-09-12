@@ -3257,9 +3257,10 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
+/* The download's bar, beside the sentence that reads it out: wide enough to see move. */
 .speech-progress {
-  width: 140px;
-  height: 6px;
+  width: 200px;
+  height: 8px;
   accent-color: var(--accent);
 }
 /* The read-along cursor, two tiers inside the turn card: the sentence group the voice is

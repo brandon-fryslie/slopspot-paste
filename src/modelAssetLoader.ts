@@ -159,7 +159,9 @@ const readPartInto = async (
   }
 };
 
-// The whole path for one asset: proven store hit, else network → prove → store.
+// The whole path for one asset: proven store hit, else network → prove → store. Progress
+// is the download's alone: a store hit reports none, since nothing was downloaded and a
+// bar over it would be a lie; `loadAssets` says the last byte once, whatever served it.
 export const loadAsset = async (
   asset: ModelAsset,
   io: AssetIo,
@@ -169,10 +171,7 @@ export const loadAsset = async (
   const totalBytes = asset.bytes;
 
   const held = await fromStore(io.store, asset);
-  if (held.kind === "hit") {
-    onProgress({ loadedBytes: totalBytes, totalBytes });
-    return { ok: true, loaded: { asset, data: held.data, origin: { kind: "store" } } };
-  }
+  if (held.kind === "hit") return { ok: true, loaded: { asset, data: held.data, origin: { kind: "store" } } };
 
   const data = new Uint8Array(new ArrayBuffer(totalBytes));
   let loadedBytes = 0;
@@ -217,8 +216,9 @@ export type LoadAllOutcome =
   | { readonly ok: false; readonly failure: AssetFailure };
 
 // Several assets as one download with one progress bar: bytes are summed across the set
-// so the UI shows "x of 239 MB", not ten resets. Assets load in order; parts within one
-// asset load concurrently. The first failure stops the sequence and is reported as-is.
+// so the UI shows "x of 239 MB", not ten resets, and a set the store already holds shows
+// no bar at all. Assets load in order; parts within one asset load concurrently. The first
+// failure stops the sequence and is reported as-is.
 export const loadAssets = async (
   assets: readonly ModelAsset[],
   io: AssetIo,
@@ -233,6 +233,9 @@ export const loadAssets = async (
     loaded.push(outcome.loaded);
     doneBytes += asset.bytes;
   }
+  // [LAW:dataflow-not-control-flow] The last byte, said once on every path: the bar's end,
+  // and the panel's word that the warm-up is next.
+  onProgress({ loadedBytes: totalBytes, totalBytes });
   return { ok: true, loaded };
 };
 
