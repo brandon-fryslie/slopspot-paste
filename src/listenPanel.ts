@@ -473,7 +473,13 @@ export interface Readout {
 
 export const DOWNLOAD_BYTES = allModelAssets(MODEL_ASSETS).reduce((sum, asset) => sum + asset.bytes, 0);
 
-const megabytes = (bytes: number): string => `${Math.round(bytes / 1_000_000)} MB`;
+// One rounding rule: a size never understates (up to the megabyte) and progress never
+// overstates (down), so while the bytes are short of the total the downloaded figure is
+// under the size and the percentage under 100 — the fragments agree the download is short
+// of done exactly while it is [LAW:one-source-of-truth].
+const MEGABYTE = 1_000_000;
+const megabytes = (bytes: number): string => `${Math.ceil(bytes / MEGABYTE)} MB`;
+const megabytesDone = (bytes: number): number => Math.floor(bytes / MEGABYTE);
 
 const unsupportedText = (reason: UnsupportedReason): string => {
   switch (reason.kind) {
@@ -554,8 +560,7 @@ const neuralText = (neural: NeuralPhase, home: Home): string => {
       return "preparing the voice…";
     case "downloading": {
       const { loadedBytes, totalBytes } = neural.progress;
-      // The percentage floors: short of the last byte is short of 100.
-      return `downloading the voice · ${Math.floor((100 * loadedBytes) / totalBytes)}% · ${Math.round(loadedBytes / 1_000_000)} of ${megabytes(totalBytes)} · ${remainingText(estimate(neural.pace, totalBytes - loadedBytes))}`;
+      return `downloading the voice · ${Math.floor((100 * loadedBytes) / totalBytes)}% · ${megabytesDone(loadedBytes)} of ${megabytes(totalBytes)} · ${remainingText(estimate(neural.pace, totalBytes - loadedBytes))}`;
     }
     case "warming":
       return "warming up the voice…";

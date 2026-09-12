@@ -115,7 +115,8 @@ const shown = (state: PanelState, visit: Visit = ASKING): string => {
 };
 // The place a voice on its way starts from, as "utterance:char"; a voice on stage has none.
 const held = (state: PanelState): string => (state.kind === "provisioning" ? `${state.from.utterance}:${state.from.char}` : "on stage");
-const MB = `${Math.round(DOWNLOAD_BYTES / 1e6)} MB`;
+// Sizes round up to the megabyte, as the panel says them.
+const MB = `${Math.ceil(DOWNLOAD_BYTES / 1e6)} MB`;
 // The start, before the store has answered: the driver asks it on every entry.
 const IDLE_LINE = "Listen | stop(off) | Looking for the voice on this device…";
 // The mount: the worker spawned at once to probe, with no consent yet, so Play still reads.
@@ -152,8 +153,10 @@ console.log("step: the way to audio");
   assert("supported with the tap held: load is sent", effects(preparing) === "load" && shown(preparing.state) === "Listen(off) | stop(off) | Preparing the voice…");
   const downloading = step(preparing.state, progress(120_000_000, 239_000_000));
   assert("progress short of the total: downloading, with the percentage, the bytes, the bar, and no estimate from one sample", shown(downloading.state) === "Listen(off) | stop(off) | Downloading the voice · 50% · 120 of 239 MB · estimating time left… | bar 120000000/239000000");
-  // 120 MB at t=0, 130 MB at t=10 s: 1 MB/s, 109 MB to go, about 2 min. The floor keeps
-  // 54.39% from reading as 54% only; the estimate reads from the pace the phase carries.
+  // 120 MB at t=0, 130 MB at t=10 s: 1 MB/s, 109 MB to go, about 2 min; the estimate reads
+  // from the pace the phase carries.
+  const nearlyDone = step(downloading.state, progress(238_600_000, 239_000_000, 10_000));
+  assert("the last half-megabyte: the percentage, the downloaded figure and the size all say short of done", shown(nearlyDone.state).startsWith("Listen(off) | stop(off) | Downloading the voice · 99% · 238 of 239 MB · "));
   const paced = step(downloading.state, progress(130_000_000, 239_000_000, 10_000));
   assert("a later progress: the pace speaks, the percentage and the bytes move with it", shown(paced.state) === "Listen(off) | stop(off) | Downloading the voice · 54% · 130 of 239 MB · about 2 min left | bar 130000000/239000000");
   const stopped = step(paced.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
@@ -215,7 +218,7 @@ console.log("step: the way to audio");
   const kept1 = step(preparing.state, kept({ kind: "granted" }));
   assert("keeping granted while preparing: said beside the phase", shown(kept1.state) === "Listen(off) | stop(off) | Preparing the voice… · this browser will keep the voice");
   const kept2 = step(step(kept1.state, progress(1, 2)).state, kept({ kind: "failed", message: "no StorageManager" }));
-  assert("a keep request that failed: its message, beside the download", shown(kept2.state) === "Listen(off) | stop(off) | Downloading the voice · 50% · 0 of 0 MB · estimating time left… · this browser could not be asked to keep the voice: no StorageManager | bar 1/2");
+  assert("a keep request that failed: its message, beside the download", shown(kept2.state) === "Listen(off) | stop(off) | Downloading the voice · 50% · 0 of 1 MB · estimating time left… · this browser could not be asked to keep the voice: no StorageManager | bar 1/2");
   assert("an answer after the voice took the stage changes nothing", step(listening.state, kept({ kind: "denied" })).state === listening.state && step(listening.state, home({ kind: "resident" })).state === listening.state);
   assert("a crash returns to the start with the store asked again, the last answer dropped", (() => { const s = step(kept1.state, { kind: "worker-error", message: "x" }).state; return s.kind === "provisioning" && s.home.kind === "reading" && s.keeping === null; })());
 }

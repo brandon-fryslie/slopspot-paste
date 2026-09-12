@@ -225,17 +225,26 @@ export const loadAssets = async (
   onProgress: (p: AssetProgress) => void,
 ): Promise<LoadAllOutcome> => {
   const totalBytes = assets.reduce((sum, a) => sum + a.bytes, 0);
+  // [LAW:single-enforcer] Each count is reported once: a network asset's last chunk and
+  // the set's last word, a store hit's silence and the next asset's zero, each say a count
+  // already said, and the repeat carries nothing.
+  let reported = -1;
+  const report = (loadedBytes: number): void => {
+    if (loadedBytes === reported) return;
+    reported = loadedBytes;
+    onProgress({ loadedBytes, totalBytes });
+  };
   const loaded: LoadedAsset[] = [];
   let doneBytes = 0;
   for (const asset of assets) {
-    const outcome = await loadAsset(asset, io, (p) => onProgress({ loadedBytes: doneBytes + p.loadedBytes, totalBytes }));
+    const outcome = await loadAsset(asset, io, (p) => report(doneBytes + p.loadedBytes));
     if (!outcome.ok) return outcome;
     loaded.push(outcome.loaded);
     doneBytes += asset.bytes;
   }
-  // [LAW:dataflow-not-control-flow] The last byte, said once on every path: the bar's end,
-  // and the panel's word that the warm-up is next.
-  onProgress({ loadedBytes: totalBytes, totalBytes });
+  // The last byte, on every path: the bar's end, and the panel's word that the warm-up is
+  // next.
+  report(totalBytes);
   return { ok: true, loaded };
 };
 

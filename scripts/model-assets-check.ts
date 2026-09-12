@@ -320,7 +320,7 @@ console.log("residency:");
   const progress: number[] = [];
   const outcome = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => progress.push(p.loadedBytes));
   assert("loadAssets loads a set in order", outcome.ok && outcome.loaded.map((l) => l.asset.name).join(",") === "small,synthetic");
-  assert("set progress is summed across assets and monotone, and ends on the last byte", progress.every((v, i) => i === 0 || v >= progress[i - 1]!) && progress[progress.length - 1] === 4096 + SYNTH_BYTES);
+  assert("set progress is summed across assets, each count said once, and ends on the last byte", progress.every((v, i) => i === 0 || v > progress[i - 1]!) && progress[0] === 0 && progress[progress.length - 1] === 4096 + SYNTH_BYTES);
   const heldProgress: number[] = [];
   const held = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => heldProgress.push(p.loadedBytes));
   assert("a set the store holds reports the last byte once and no partial: no bar flashes", held.ok && held.loaded.every((l) => l.origin.kind === "store") && heldProgress.join() === String(4096 + SYNTH_BYTES));
