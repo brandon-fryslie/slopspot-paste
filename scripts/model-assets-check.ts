@@ -16,8 +16,9 @@
 //     directory, both keyed on the same prefix.
 //
 // ─── loadAsset ACCEPT TABLE ──────────────────────────────────────────────────
-//   store has key at the right size   -> ok, origin store, persisted hit, 0 fetches
-//   store empty, parts correct         -> ok, origin network, persisted written, stored
+//   store has key, bytes prove         -> ok, origin store, 0 fetches
+//   store empty, parts correct         -> ok, origin network (miss absent), persisted
+//                                         written, stored
 //   store empty, a byte flipped        -> integrity failure, nothing stored
 //   store empty, a part truncated      -> integrity failure (short read), nothing stored
 //   a part 404s                        -> http failure naming the url, nothing stored,
@@ -25,8 +26,19 @@
 //   a part's fetch rejects             -> network failure naming the url, nothing stored
 //   a part's body errors mid-stream    -> network failure naming the url, nothing stored
 //   store.write throws                 -> ok with persisted failed{message}; bytes returned
-//   store.read throws                  -> a miss: downloaded, persisted failed{message}
-//   store has key at the WRONG size    -> treated as absent: re-downloaded, origin network
+//   store.read throws                  -> miss unreadable{message}: downloaded, persisted
+//                                         failed{message}
+//   store has key at the WRONG size    -> miss corrupt naming the size: re-downloaded, replaced
+//   store has key, right size, wrong   -> miss corrupt naming the hash: re-downloaded,
+//   bytes                                 replaced, never used
+//
+// ─── residency (modelResidency.ts) ──────────────────────────────────────────
+//   every asset listed at its size     -> resident
+//   one asset short (or absent)        -> absent, bytesToDownload = that asset's bytes
+//   a stale key beside the live ones   -> resident; prune removes the stale key only
+//   the store throws on list           -> unavailable with the store's message
+//   persist resolves true / false /    -> keeping granted / denied / failed{message}
+//   throws
 
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -47,6 +59,7 @@ import {
   type ModelAsset,
 } from "../src/modelAssets";
 import { loadAsset, loadAssets, pruneStaleAssets, type AssetStore } from "../src/modelAssetLoader";
+import { askToKeep, readResidency, residencyOf } from "../src/modelResidency";
 import { mirror, mirrorIsCorrect, pruneStaleParts } from "./modelAssetMirror";
 
 const assert = (label: string, cond: boolean): void => {
@@ -116,7 +129,8 @@ class MemoryStore implements AssetStore {
     this.files.set(name, data);
   }
   async list() {
-    return [...this.files.keys()].map((name) => ({ name }));
+    if (this.fault !== null) throw new Error(this.fault);
+    return [...this.files].map(([name, data]) => ({ name, size: data.byteLength }));
   }
   async remove(name: string) {
     this.files.delete(name);
@@ -164,7 +178,7 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   const outcome = await loadAsset(synth, { fetch: fetchLike, store }, (p) => progress.push(p.loadedBytes));
   assert("network load succeeds", outcome.ok);
   if (outcome.ok) {
-    assert("origin is network, persisted written", outcome.loaded.origin === "network" && outcome.loaded.persisted.kind === "written");
+    assert("origin is network from an absent entry, persisted written", outcome.loaded.origin.kind === "network" && outcome.loaded.origin.miss.kind === "absent" && outcome.loaded.origin.persisted.kind === "written");
     assert("returned bytes equal the source", Buffer.compare(outcome.loaded.data, synthData) === 0);
   }
   assert("every part was fetched exactly once", calls.length === 3 && new Set(calls).size === 3);
@@ -176,7 +190,7 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   const again = serve(synthData);
   const second = await loadAsset(synth, { fetch: again.fetchLike, store }, () => {});
   assert("second load fetches zero parts", again.calls.length === 0);
-  assert("second load comes from the store", second.ok && second.loaded.origin === "store" && second.loaded.persisted.kind === "hit");
+  assert("second load comes from the store", second.ok && second.loaded.origin.kind === "store");
 }
 
 {
@@ -242,8 +256,9 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   store.files.set(assetKey(synth), synthData.slice() as Uint8Array<ArrayBuffer>);
   const { fetchLike, calls } = serve(synthData);
   const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
-  assert("a store that cannot be read is a miss: the bytes are downloaded", outcome.ok && outcome.loaded.origin === "network" && calls.length === 3 && outcome.loaded.data.byteLength === SYNTH_BYTES);
-  assert("and the store's fault is reported as persisted failed with the message", outcome.ok && outcome.loaded.persisted.kind === "failed" && outcome.loaded.persisted.message === "QuotaExceededError");
+  const origin = outcome.ok ? outcome.loaded.origin : null;
+  assert("a store that cannot be read is an unreadable miss naming the fault: the bytes are downloaded", outcome.ok && origin?.kind === "network" && origin.miss.kind === "unreadable" && origin.miss.message === "QuotaExceededError" && calls.length === 3 && outcome.loaded.data.byteLength === SYNTH_BYTES);
+  assert("and the store's fault is reported as persisted failed with the message", origin?.kind === "network" && origin.persisted.kind === "failed" && origin.persisted.message === "QuotaExceededError");
 }
 
 {
@@ -251,8 +266,47 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   store.files.set(assetKey(synth), new Uint8Array(new ArrayBuffer(10)));
   const { fetchLike, calls } = serve(synthData);
   const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
-  assert("a wrong-sized store entry is re-downloaded", outcome.ok && outcome.loaded.origin === "network" && calls.length === 3);
+  const origin = outcome.ok ? outcome.loaded.origin : null;
+  assert("a wrong-sized store entry is a corrupt miss naming the size, re-downloaded", origin?.kind === "network" && origin.miss.kind === "corrupt" && origin.miss.actual === `10 of ${SYNTH_BYTES} bytes` && calls.length === 3);
   assert("and replaced in the store", store.files.get(assetKey(synth))?.byteLength === SYNTH_BYTES);
+}
+
+{
+  const store = new MemoryStore();
+  const wrong = synthData.slice();
+  wrong.fill(0x55, SHARD_BYTES + 7, SHARD_BYTES + 8);
+  store.files.set(assetKey(synth), wrong);
+  const { fetchLike, calls } = serve(synthData);
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
+  const origin = outcome.ok ? outcome.loaded.origin : null;
+  assert("a right-sized store entry with the wrong bytes is a corrupt miss naming its hash, re-downloaded", origin?.kind === "network" && origin.miss.kind === "corrupt" && origin.miss.expected === synth.sha256 && origin.miss.actual === createHash("sha256").update(wrong).digest("hex") && calls.length === 3);
+  assert("the bytes handed on are the network's, never the store's", outcome.ok && Buffer.compare(outcome.loaded.data, synthData) === 0);
+  assert("and the store now holds the proven bytes", Buffer.compare(store.files.get(assetKey(synth))!, synthData) === 0 && origin?.kind === "network" && origin.persisted.kind === "written");
+}
+
+// ── 2b. residency ─────────────────────────────────────────────────────────────
+console.log("residency:");
+{
+  const small: ModelAsset = { ...synth, name: "small", bytes: 4096, sha256: createHash("sha256").update(synthData.subarray(0, 4096)).digest("hex") };
+  const both = [small, synth];
+  const store = new MemoryStore();
+  assert("an empty store: absent, every byte to download", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "absent", bytesToDownload: 4096 + SYNTH_BYTES }));
+  store.files.set(assetKey(synth), synthData.slice());
+  assert("one asset short: absent, its bytes to download", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "absent", bytesToDownload: 4096 }));
+  store.files.set(assetKey(small), new Uint8Array(new ArrayBuffer(10)));
+  assert("an entry at the wrong size counts as absent", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "absent", bytesToDownload: 4096 }));
+  store.files.set(assetKey(small), synthData.slice(0, 4096));
+  assert("every asset listed at its size: resident", (await readResidency(store, both)).kind === "resident");
+  store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
+  assert("a stale key beside the live ones changes nothing", (await readResidency(store, both)).kind === "resident");
+  assert("and prune removes only the stale key", (await pruneStaleAssets(store, both)).join() === `${MODEL_ASSET_PREFIX}weights-000000000000` && (await readResidency(store, both)).kind === "resident");
+  assert("the pure derivation is the same answer over the same listing", JSON.stringify(residencyOf(await store.list(), both)) === JSON.stringify({ kind: "resident" }));
+  store.fault = "SecurityError: private browsing";
+  assert("a store that cannot be listed: unavailable with its message", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "unavailable", message: "SecurityError: private browsing" }));
+
+  assert("persist granted", (await askToKeep(async () => true)).kind === "granted");
+  assert("persist denied", (await askToKeep(async () => false)).kind === "denied");
+  assert("persist that throws: failed with the message", JSON.stringify(await askToKeep(async () => { throw new Error("no StorageManager"); })) === JSON.stringify({ kind: "failed", message: "no StorageManager" }));
 }
 
 {

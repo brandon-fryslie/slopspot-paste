@@ -712,6 +712,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // seam: this page's markup, this page's turn cards, the real worker, the real
     // AudioContext, the real animation frame, the real viewport, and the capability gate.
     import { createListenPanel } from "../listenPanel";
+    import { MODEL_ASSETS, allModelAssets } from "../modelAssets";
+    import { askToKeep, readResidency } from "../modelResidency";
+    import { opfs } from "@jax-js/loaders";
     import { DEFAULT_VOICES } from "../speechScript";
     import { caretSource, createPainter, tapMark } from "../readAlong";
     import { createFollower } from "../follow";
@@ -766,6 +769,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         utterances,
         voices: DEFAULT_VOICES,
         spawn: spawnSynthesisWorker,
+        // [LAW:one-source-of-truth] The store the worker's loader writes, listed here under the
+        // same keys; and the browser's own keep request, a Window-only API, so it is the
+        // page's to ask (every browser with WebGPU has it).
+        home: () => readResidency(opfs, allModelAssets(MODEL_ASSETS)),
+        keep: () => askToKeep(() => navigator.storage.persist()),
         Device: AudioContext,
         frames: {
           request: (callback) => window.requestAnimationFrame(callback),
