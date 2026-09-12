@@ -188,9 +188,11 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   assert("store holds the bytes under the asset key", store.files.get(assetKey(synth))?.byteLength === SYNTH_BYTES);
 
   const again = serve(synthData);
-  const second = await loadAsset(synth, { fetch: again.fetchLike, store }, () => {});
+  const secondProgress: number[] = [];
+  const second = await loadAsset(synth, { fetch: again.fetchLike, store }, (p) => secondProgress.push(p.loadedBytes));
   assert("second load fetches zero parts", again.calls.length === 0);
   assert("second load comes from the store", second.ok && second.loaded.origin.kind === "store");
+  assert("a store hit reports no progress: nothing was downloaded", secondProgress.length === 0);
 }
 
 {
@@ -318,7 +320,10 @@ console.log("residency:");
   const progress: number[] = [];
   const outcome = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => progress.push(p.loadedBytes));
   assert("loadAssets loads a set in order", outcome.ok && outcome.loaded.map((l) => l.asset.name).join(",") === "small,synthetic");
-  assert("set progress is summed across assets and monotone", progress.every((v, i) => i === 0 || v >= progress[i - 1]!) && progress[progress.length - 1] === 4096 + SYNTH_BYTES);
+  assert("set progress is summed across assets, each count said once, and ends on the last byte", progress.every((v, i) => i === 0 || v > progress[i - 1]!) && progress[0] === 0 && progress[progress.length - 1] === 4096 + SYNTH_BYTES);
+  const heldProgress: number[] = [];
+  const held = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => heldProgress.push(p.loadedBytes));
+  assert("a set the store holds reports the last byte once and no partial: no bar flashes", held.ok && held.loaded.every((l) => l.origin.kind === "store") && heldProgress.join() === String(4096 + SYNTH_BYTES));
 
   store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
   store.files.set("unrelated", new Uint8Array(new ArrayBuffer(1)));
