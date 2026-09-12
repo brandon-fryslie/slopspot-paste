@@ -3291,6 +3291,131 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .speech-stop[disabled]:hover,
 .speech-play[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
 
+/* ─── The Listen mark (slopspot-read-along-a35.a4l) ────────────────────────
+   One always-visible icon beside the dock's launcher, in the launcher's own row, that says
+   where the voice is. Its whole appearance is a projection of `data-state` on its root —
+   written by listenPanel.ts from the panel's state — and of `--fraction` for the ring, so
+   the icon can never show a state the panel is not in [LAW:one-source-of-truth]. Shown
+   only where Listen is offered (`speech-ready`) and while the menu is closed: the open
+   menu's width is budgeted against the launcher alone, and would run under the mark.
+
+   Placement is absolute, not in flow: the dock's height stays the launcher's, so the
+   page's bottom reserve (--reserve-tool-dock) stays one number. The mark rides the same
+   row from the right, one launcher and one gap in from the corner. */
+.listen-mark { display: none; }
+body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
+  display: grid;
+  position: absolute;
+  bottom: 0;
+  right: calc(var(--dock-corner-inset) + var(--dock-launcher-size) + var(--dock-gap));
+  height: var(--dock-launcher-size);
+  place-items: center;
+}
+.listen-mark-button {
+  --mark-size: 34px;
+  --mark-ring: var(--border);
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--mark-size);
+  height: var(--mark-size);
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  /* Two paints: the face inside the padding box, the ring on the border box. Every state
+     values --mark-ring; only `downloading` and `warming` turn it into a conic sweep. */
+  background:
+    linear-gradient(var(--bg-elev), var(--bg-elev)) padding-box,
+    var(--mark-ring) border-box;
+  color: var(--fg-muted);
+  cursor: pointer;
+  appearance: none;
+  box-shadow: var(--dock-pill-shadow);
+}
+.listen-mark-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.listen-mark-glyph { display: grid; place-items: center; }
+.listen-mark-glyph svg { width: 15px; height: 15px; }
+/* The badge: a small disc on the button's lower-right corner, empty in the states that
+   have nothing to add. Its text is the whole of what each state adds. */
+.listen-mark-button::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  font: 700 10px/1 var(--font-mono);
+  background: var(--accent);
+  color: var(--accent-fg);
+  opacity: 0;
+}
+.listen-mark[data-state="checking"] .listen-mark-button { opacity: 0.6; animation: listen-mark-breathe 1.6s ease-in-out infinite; }
+.listen-mark[data-state="ready"] .listen-mark-button { color: var(--fg); }
+.listen-mark[data-state="download"] .listen-mark-button::after,
+.listen-mark[data-state="unavailable"] .listen-mark-button::after { content: "↓"; opacity: 1; }
+.listen-mark[data-state="downloading"] .listen-mark-button,
+.listen-mark[data-state="warming"] .listen-mark-button {
+  color: var(--fg);
+  --mark-ring: conic-gradient(var(--accent) calc(var(--fraction) * 1turn), var(--border) 0);
+}
+/* Warming has no fraction: the ring is a quarter sweep that turns. */
+.listen-mark[data-state="warming"] .listen-mark-button {
+  --mark-ring: conic-gradient(from var(--mark-turn, 0turn), var(--accent) 0.25turn, var(--border) 0);
+  animation: listen-mark-turn 1.1s linear infinite;
+}
+.listen-mark[data-state="speaking"] .listen-mark-button,
+.listen-mark[data-state="paused"] .listen-mark-button {
+  color: var(--accent);
+  --mark-ring: var(--accent);
+}
+.listen-mark[data-state="paused"] .listen-mark-button::after { content: "‖"; opacity: 1; }
+.listen-mark[data-state="unsupported"] .listen-mark-button { opacity: 0.55; }
+.listen-mark[data-state="unsupported"] .listen-mark-button::after,
+.listen-mark[data-state="failed"] .listen-mark-button::after { content: "!"; opacity: 1; background: var(--fg); color: var(--bg-elev); }
+@property --mark-turn { syntax: "<angle>"; inherits: false; initial-value: 0turn; }
+@keyframes listen-mark-turn { to { --mark-turn: 1turn; } }
+@keyframes listen-mark-breathe { 50% { opacity: 0.3; } }
+
+/* The hover: a small card above the mark, shown while the mark is hovered or holds focus,
+   or pinned by a tap on the mark (`data-open`, the touch reader's way in). The question,
+   the yes and the box are all in the markup always; listenPanel.ts hides the question and
+   the yes outside the download-needed state, and the box shows the preference. */
+.listen-mark-hover {
+  display: none;
+  position: absolute;
+  right: 0;
+  bottom: calc(100% - 2px);
+  width: 250px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--dock-pill-shadow);
+  font-size: 12px;
+  color: var(--fg);
+}
+.listen-mark:hover .listen-mark-hover,
+.listen-mark:focus-within .listen-mark-hover,
+.listen-mark[data-open="true"] .listen-mark-hover { display: grid; gap: 8px; }
+.listen-mark-sentence,
+.listen-mark-ask { margin: 0; }
+.listen-mark-sentence { color: var(--fg-muted); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em; }
+.listen-mark-ask { font-weight: 600; }
+.listen-mark-ask[hidden],
+.listen-mark-yes[hidden] { display: none; }
+.listen-mark-yes { justify-self: start; }
+.listen-mark-remember { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); cursor: pointer; }
+.listen-mark-remember input { margin: 0; accent-color: var(--accent); }
+/* Stilled at the same (0,2,1) the animating rules carry, later in the file: the ring's
+   fraction and the badge still say everything the motion said. */
+@media (prefers-reduced-motion: reduce) {
+  .listen-mark[data-state] .listen-mark-button { animation: none; }
+}
+
 /* The turn currently being spoken. Box-shadow only, deliberately — NOT `background`:
    every bubble already carries a role-tinted background (.bubble-user/-assistant/-system,
    set above at the same one-class specificity), and a `background` declaration here would

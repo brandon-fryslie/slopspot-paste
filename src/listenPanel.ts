@@ -24,24 +24,37 @@
 //
 // WHAT THE PAGE KNOWS BEFORE THE TAP. The store is asked, at mount and on every return to
 // the start, what it holds of the model (modelResidency.ts): the idle status says "on this
-// device" or names the bytes to download before the reader decides anything. The tap that
-// sends `load` is also the moment the browser is asked to KEEP the bytes, and its answer —
-// granted, or denied with the honest consequence — joins the status line
-// [LAW:no-silent-failure]. Both are facts the state carries and the readout projects; the
-// driver performs the two reads and feeds their answers back as events, like the worker's.
+// device" or names the bytes to download before the reader decides anything. The worker is
+// spawned at mount too, so its probe — WebGPU, an adapter, 16-bit floats, a device — is
+// answered before the reader hopes; a device that cannot run the voice says so on the mark
+// without a tap. The load that follows a yes is also the moment the browser is asked to
+// KEEP the bytes, and its answer — granted, or denied with the honest consequence — joins
+// the status line [LAW:no-silent-failure]. All are facts the state carries and the readout
+// projects; the driver performs the reads and feeds their answers back as events.
 //
-// THE TAP THAT STARTS EVERYTHING. Nothing is spawned, probed, fetched or opened until the
-// reader taps Play — or taps a word on the page, which is Play with a place: a `seek` to a
-// Mark. The worker bundle, the probe and the download all follow that one tap, and the tap
-// IS the consent modelAssets.downloadNeedsTap asks for on a metered connection. The tap is
-// also the reader's gesture, the one moment a browser lets audio start
-// [LAW:no-ambient-temporal-coupling]: the `spawn` effect runs on the tap's own stack and
-// opens the audio device there, so the context is unlocked long before the model is warm,
-// and the first unit — scheduled from a worker message many seconds later — sounds. A Play
-// tap or a seek starts the voice when idle and retries it after a failed load or a crash;
-// while it is on its way, a seek only moves `from`. Costs, stated once: an unsupported
-// device learns it only after the worker bundle has loaded; a download in flight cannot
-// be cancelled (the protocol has no message for it).
+// CONSENT IS THE ONLY DOOR TO THE WEIGHTS. No byte of the model is fetched until the reader
+// has said yes, and `consent` is that yes as one ordered value [LAW:types-are-the-program]:
+// `none` (the worker waits in `supported`), `download` (fetch and warm the voice, then stand
+// ready — the hover's yes, or the device's remembered preference through listenConsent.ts),
+// `play` (fetch, warm, and speak from `from` — a Play tap, or a tap on a word, which is Play
+// with a place: a `seek` to a Mark). A later word only raises it; nothing lowers it short of
+// a dispose. The tap is also the reader's gesture, the one moment a browser lets audio start
+// [LAW:no-ambient-temporal-coupling]: every gesture yields an `unlock` effect on its own
+// stack, which opens the audio device if it is not yet open and resumes it there, so the
+// context is running long before the model is warm and the first unit — scheduled from a
+// worker message many seconds later — sounds. A voice that arrives on a standing consent is
+// built on a device opened outside any gesture; the reader's first Play resumes it through
+// the unit player, on the tap's stack. Costs, stated once: every reader with WebGPU spends
+// the worker bundle on the probe; a download in flight cannot be cancelled (the protocol
+// has no message for it).
+//
+// THE MARK. Beside the dock's launcher, one always-visible icon says where the voice is —
+// on this device, a download away and how large, downloading and how far, warming,
+// speaking, paused, unsupported and why, or in a store that cannot keep it — and its hover
+// asks "Download speech model?" with the size when that is what stands between the reader
+// and a voice. The mark is a projection of the same state as the status line: its sentence
+// IS the status line, and its form is `markForm`, total over every phase, so a state with no
+// form cannot be added [LAW:one-source-of-truth] [LAW:types-are-the-program].
 //
 // THE WORKER'S OWN DEATH. A bundle that fails to load, an exception outside the protocol:
 // these arrive on the port's error channel, not as a message, and the panel answers with
@@ -63,7 +76,8 @@
 // The stage is a fact of the state, never of the queue's order: the step that receives
 // the performer's first view is the one that enters `neural` and sends it to `from`.
 
-import { MODEL_ASSETS, allModelAssets } from "./modelAssets";
+import { standingConsent, type StandingConsent } from "./listenConsent";
+import { MODEL_ASSETS, allModelAssets, downloadNeedsTap, type ConnectionReading } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
@@ -81,12 +95,14 @@ import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 
 // Where the neural voice is on its way. The worker's own phases are a line (probing →
 // unsupported | idle → loading → ready); these follow it one for one and add what the
-// worker cannot see: `downloading` versus `warming` (the same `progress` message, before
-// and after the last byte), `scripting` (utterances sent, units not yet back), and the
-// two ways it ends without a voice that a Play tap retries.
+// worker cannot see: `idle` (no worker) against `supported` (the worker's idle: probed,
+// able, the weights awaiting consent), `downloading` versus `warming` (the same `progress`
+// message, before and after the last byte), `scripting` (utterances sent, units not yet
+// back), and the two ways it ends without a voice that a Play tap retries.
 export type NeuralPhase =
   | { readonly kind: "idle" }
   | { readonly kind: "probing" }
+  | { readonly kind: "supported" }
   | { readonly kind: "preparing" }
   | { readonly kind: "downloading"; readonly progress: AssetProgress }
   | { readonly kind: "warming" }
@@ -99,6 +115,12 @@ export type NeuralPhase =
 // never a value carried across a load that changed it [LAW:one-source-of-truth].
 export type Home = { readonly kind: "reading" } | Residency;
 
+// What the reader has said about the weights so far, in the order a later word may raise
+// it: nothing yet; download and warm the voice; download, warm and speak.
+export type Consent = "none" | "download" | "play";
+const CONSENT_ORDER: Readonly<Record<Consent, number>> = { none: 0, download: 1, play: 2 };
+const raise = (held: Consent, given: Consent): Consent => (CONSENT_ORDER[given] > CONSENT_ORDER[held] ? given : held);
+
 export type PanelState =
   // The voice on its way, and the place it starts from when it arrives: the top until the
   // reader taps a word. `keeping` is the browser's answer to keeping the bytes, once asked.
@@ -108,6 +130,7 @@ export type PanelState =
       readonly from: Mark;
       readonly home: Home;
       readonly keeping: Keeping | null;
+      readonly consent: Consent;
     }
   // The voice on stage; the view is the scheduler's.
   | { readonly kind: "neural"; readonly view: NeuralView };
@@ -118,6 +141,12 @@ export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
   // The reader tapped a place on the page: the voice seeks there, or starts from there.
   | { readonly kind: "seek"; readonly to: Mark }
+  // The hover's yes: a gesture that consents to the download and no more.
+  | { readonly kind: "yes" }
+  // The page waking the panel with no gesture — at mount, on a restore from the back-forward
+  // cache, when the preference changes: the worker is spawned to probe, and the visit's
+  // standing consent, if any, is given.
+  | { readonly kind: "wake"; readonly consent: StandingConsent }
   | { readonly kind: "worker"; readonly message: FromWorker }
   | { readonly kind: "worker-error"; readonly message: string }
   // The store's answer to `home`, and the browser's to the keep request that `load` makes.
@@ -130,8 +159,10 @@ export type PanelEvent =
 export type Effect =
   // Asks the store what it holds of the model; answered by a `home` event.
   | { readonly kind: "home" }
-  // The worker and the audio device, both on the tap's stack: the gesture that unlocks audio.
+  // Spawns the worker, which probes on its own.
   | { readonly kind: "spawn" }
+  // The reader's gesture, spent: the audio device is opened if it is not, and resumed.
+  | { readonly kind: "unlock" }
   // Sends `load`, and asks the browser to keep the bytes; answered by a `keeping` event.
   | { readonly kind: "load" }
   | { readonly kind: "script" }
@@ -153,16 +184,18 @@ export const SCRIPT_ID = 1;
 const IDLE: PerformerState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
-// Every entry to the start: the voice in the given phase, the place kept, and the store
-// asked afresh what it holds.
-const enter = (neural: NeuralPhase, from: Mark): Step => ({
-  state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null },
+// Every entry to the start: the voice in the given phase, the place and the consent kept,
+// and the store asked afresh what it holds.
+const enter = (neural: NeuralPhase, from: Mark, consent: Consent): Step => ({
+  state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null, consent },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP).state;
-// The panel's first step: the state, and the read of the store that fills its `home`.
-export const start = (): Step => enter(NEURAL_IDLE, TOP);
+export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP, "none").state;
+// The panel's first step: the state, and the read of the store that fills its `home`. The
+// worker is not spawned here but by the `wake` that follows, so a dispose — which returns
+// here — spawns nothing on a page that is going away.
+export const start = (): Step => enter(NEURAL_IDLE, TOP, "none");
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
 const violation = (state: PanelState, what: string): Error =>
@@ -188,18 +221,37 @@ const load = (state: Provisioning): ProvisioningStep => ({
   effects: [{ kind: "load" }],
 });
 
-// What a Play tap or a seek does to the voice on its way: starts it when idle, retries it
-// after a failure, leaves it be otherwise.
-const kick = (state: Provisioning): ProvisioningStep => {
+// What a word from the reader does to the voice on its way, once the consent it carries is
+// raised into the state: spawns the worker when there is none, sends the load when the
+// worker is able and a yes is held, retries a failed load, and otherwise only holds the
+// word for the phase that will act on it — a `capability` reads the consent, a first view
+// reads it again. A device that cannot run the voice is left as it is.
+const kick = (state: Provisioning, given: Consent): ProvisioningStep => {
+  const held: Provisioning = { ...state, consent: raise(state.consent, given) };
   switch (state.neural.kind) {
     case "idle":
     case "crashed":
-      return { state: { ...state, neural: { kind: "probing" } }, effects: [{ kind: "spawn" }] };
+      return { state: { ...held, neural: { kind: "probing" } }, effects: [{ kind: "spawn" }] };
+    case "supported":
     case "load-failed":
-      return load(state);
-    default:
+      return held.consent === "none" ? { state: held, effects: [] } : load(held);
+    case "unsupported":
       return { state, effects: [] };
+    case "probing":
+    case "preparing":
+    case "downloading":
+    case "warming":
+    case "scripting":
+      return { state: held, effects: [] };
   }
+};
+
+// A gesture is a kick with the reader's one moment of audio spent on it. There is nothing
+// to unlock for a device that cannot run the voice.
+const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
+  if (state.neural.kind === "unsupported") return { state, effects: [] };
+  const kicked = kick(state, given);
+  return { state: kicked.state, effects: [{ kind: "unlock" }, ...kicked.effects] };
 };
 
 const tap = (state: PanelState, control: Tap): Step => {
@@ -210,7 +262,7 @@ const tap = (state: PanelState, control: Tap): Step => {
     }
     case "provisioning":
       // Stop is disabled by `readout` here; a tap that reaches it anyway changes nothing.
-      return control === "stop" ? stay(state) : kick(state);
+      return control === "stop" ? stay(state) : gesture(state, "play");
   }
 };
 
@@ -221,11 +273,16 @@ const seek = (state: PanelState, to: Mark): Step => {
     case "neural":
       return { state, effects: [perform({ kind: "seek", to })] };
     case "provisioning": {
-      const kicked = kick(state);
+      const kicked = gesture(state, "play");
       return { state: { ...kicked.state, from: to }, effects: kicked.effects };
     }
   }
 };
+
+// The hover's yes, and the page's wake: the same kick, with and without a gesture. A voice
+// on stage has nothing left to consent to.
+const yes = (state: PanelState): Step => (state.kind === "provisioning" ? gesture(state, "download") : stay(state));
+const wake = (state: PanelState, consent: StandingConsent): Step => (state.kind === "provisioning" ? kick(state, consent) : stay(state));
 
 const provision = (state: Provisioning, message: FromWorker): Step => {
   const { neural } = state;
@@ -233,9 +290,13 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
   switch (message.kind) {
     case "capability":
       if (neural.kind !== "probing") throw violation(state, "capability");
-      return message.support.kind === "supported"
-        ? load(state)
-        : phase({ kind: "unsupported", reason: message.support.reason }, [{ kind: "release", worker: "terminate" }]);
+      // An able device loads on the consent held, or waits for one; the weights are never
+      // fetched on the probe alone.
+      return message.support.kind !== "supported"
+        ? phase({ kind: "unsupported", reason: message.support.reason }, [{ kind: "release", worker: "terminate" }])
+        : state.consent === "none"
+          ? phase({ kind: "supported" })
+          : load(state);
     case "progress":
       if (!loading(neural)) throw violation(state, "progress");
       return phase(
@@ -295,10 +356,14 @@ const placeOf = (view: NeuralView): Mark => {
   return at.kind === "idle" ? TOP : markOf(at.at);
 };
 
-// The voice leaves the stage, or never reached it: the phase it fell to, the place kept
-// for the retry, and the release of everything the tap had built.
+// The voice leaves the stage, or never reached it: the phase it fell to, the place and the
+// consent kept for the retry, and the release of everything that had been built. A voice
+// that fell mid-word comes back speaking there; one that fell idle comes back idle.
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const entered = enter(neural, state.kind === "provisioning" ? state.from : placeOf(state.view));
+  const entered =
+    state.kind === "provisioning"
+      ? enter(neural, state.from, state.consent)
+      : enter(neural, placeOf(state.view), state.view.player.kind === "idle" ? "download" : "play");
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -315,6 +380,10 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       return tap(state, event.control);
     case "seek":
       return seek(state, event.to);
+    case "yes":
+      return yes(state);
+    case "wake":
+      return wake(state, event.consent);
     case "worker":
       return fromWorker(state, event.message);
     case "worker-error":
@@ -330,22 +399,54 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
     case "view": {
       if (state.kind === "neural") return stay({ ...state, view: event.view });
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
-      // The performer's first view: the voice takes the stage and is sent to the place the
-      // tap named. The tap that started the download is the consent to play.
-      return { state: { kind: "neural", view: event.view }, effects: [perform({ kind: "seek", to: state.from })] };
+      // The performer's first view: the voice takes the stage, and is sent to the place the
+      // tap named when a tap is what brought it — a download alone leaves it standing ready.
+      return {
+        state: { kind: "neural", view: event.view },
+        effects: state.consent === "play" ? [perform({ kind: "seek", to: state.from })] : [],
+      };
     }
   }
 };
 
 // ── the readout ────────────────────────────────────────────────────────────────────────
 
-// What the panel shows: the two buttons' shape, the status sentence, and the download
-// when there is one. A pure projection of the state, so the check reads it directly.
+// [LAW:types-are-the-program] The mark's forms: one for every place the voice can be, as
+// the reader sees them. `downloading` carries how far, for the ring; the sizes, reasons and
+// positions each form would name ride the sentence beside it (`Readout.status`), so the
+// form and the sentence are one state read twice, never two states kept in step.
+export type MarkForm =
+  | { readonly kind: "checking" }
+  | { readonly kind: "ready" }
+  | { readonly kind: "download" }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "downloading"; readonly fraction: number }
+  | { readonly kind: "warming" }
+  | { readonly kind: "speaking" }
+  | { readonly kind: "paused" }
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "failed" };
+
+// What the visit knows that the machine does not decide on: the device's remembered
+// preference (read from storage at every render, never copied) and whether the connection
+// is one the standing consent must not act on.
+export interface Visit {
+  readonly remembered: boolean;
+  readonly metered: boolean;
+}
+
+// What the panel shows: the two buttons' shape, the status sentence, the download when
+// there is one, and the mark — its form, the question its hover asks when a download
+// stands between the reader and the voice, and the preference's box. A pure projection of
+// the state and the visit, so the check reads it directly.
 export interface Readout {
   readonly play: { readonly label: string; readonly enabled: boolean };
   readonly stop: { readonly enabled: boolean };
   readonly status: string;
   readonly progress: AssetProgress | null;
+  readonly mark: MarkForm;
+  readonly ask: string | null;
+  readonly remembered: boolean;
 }
 
 export const DOWNLOAD_BYTES = allModelAssets(MODEL_ASSETS).reduce((sum, asset) => sum + asset.bytes, 0);
@@ -423,6 +524,7 @@ const keepingText = (keeping: Keeping): string => {
 const neuralText = (neural: NeuralPhase, home: Home): string => {
   switch (neural.kind) {
     case "idle":
+    case "supported":
       return homeText(home);
     case "probing":
       return "checking this device for the voice…";
@@ -474,20 +576,85 @@ const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Reado
   stop: { enabled: state.kind !== "idle" },
 });
 
-// `total` is the page's utterance count: the "of N" every position reads.
-export const readout = (state: PanelState, total: number): Readout => {
+// The store's word as a form: before the probe has answered, the store's word is the
+// mark's, since only a `no` from the probe changes it.
+const homeForm = (home: Home): MarkForm => {
+  switch (home.kind) {
+    case "reading":
+      return { kind: "checking" };
+    case "resident":
+      return { kind: "ready" };
+    case "absent":
+      return { kind: "download" };
+    case "unavailable":
+      return { kind: "unavailable" };
+  }
+};
+
+// [LAW:dataflow-not-control-flow] Total over every phase and every player state: the one
+// derivation of the mark's form.
+export const markForm = (state: PanelState): MarkForm => {
   if (state.kind === "neural") {
-    return { ...transport(state.view.player), status: neuralStatus(state.view, total), progress: null };
+    const { player } = state.view;
+    return player.kind === "idle" ? { kind: "ready" } : { kind: player.kind };
   }
   const { neural } = state;
-  // On its way: the transport waits for the voice, and Play is the retry.
+  switch (neural.kind) {
+    case "idle":
+    case "probing":
+    case "supported":
+      return homeForm(state.home);
+    case "preparing":
+    case "warming":
+    case "scripting":
+      return { kind: "warming" };
+    case "downloading":
+      return { kind: "downloading", fraction: neural.progress.loadedBytes / neural.progress.totalBytes };
+    case "unsupported":
+      return { kind: "unsupported" };
+    case "load-failed":
+    case "crashed":
+      return { kind: "failed" };
+  }
+};
+
+// The hover's question, when a download is what the reader is deciding: the size, and —
+// when the remembered yes is being overridden — why it asks anyway. The store that cannot
+// keep the voice asks for the whole model every time.
+const askText = (state: PanelState, form: MarkForm, visit: Visit): string | null => {
+  const bytes =
+    form.kind === "download" && state.kind === "provisioning" && state.home.kind === "absent"
+      ? state.home.bytesToDownload
+      : form.kind === "unavailable"
+        ? DOWNLOAD_BYTES
+        : null;
+  if (bytes === null) return null;
+  const why = visit.remembered && visit.metered ? [" · asking because this connection is metered"] : [];
+  return [`Download speech model? · ${megabytes(bytes)}`, ...why].join("");
+};
+
+// `total` is the page's utterance count: the "of N" every position reads.
+export const readout = (state: PanelState, total: number, visit: Visit): Readout => {
+  const mark = markForm(state);
+  const ask = askText(state, mark, visit);
+  const { remembered } = visit;
+  if (state.kind === "neural") {
+    return { ...transport(state.view.player), status: neuralStatus(state.view, total), progress: null, mark, ask, remembered };
+  }
+  const { neural } = state;
+  // On its way: Play is the retry after a failure, and otherwise the word that raises the
+  // consent to `play` — so it has nothing to say once that word is held, and nothing on a
+  // device that cannot run the voice.
   const retry = neural.kind === "load-failed" || neural.kind === "crashed";
   const fragments = [neuralText(neural, state.home), ...(state.keeping === null ? [] : [keepingText(state.keeping)])];
   return {
-    play: { label: retry ? "Retry" : "Listen", enabled: retry || neural.kind === "idle" },
+    play: { label: retry ? "Retry" : "Listen", enabled: retry || (neural.kind !== "unsupported" && state.consent !== "play") },
     stop: { enabled: false },
     status: sentence(fragments.join(" · ")),
     progress: neural.kind === "downloading" ? neural.progress : null,
+    mark,
+    ask,
+    remembered,
   };
 };
 
@@ -506,11 +673,24 @@ const speaking = (state: PanelState): boolean => state.kind === "neural" && stat
 
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
+// The mark's markup: the root carries the form (`data-state`), the ring's fraction and
+// whether the hover is pinned open; the button is what the reader hovers, focuses or taps;
+// the hover holds the sentence, the question, the yes and the preference's box.
+export interface MarkControls {
+  readonly root: HTMLElement;
+  readonly button: HTMLButtonElement;
+  readonly sentence: HTMLElement;
+  readonly ask: HTMLElement;
+  readonly yes: HTMLButtonElement;
+  readonly remember: HTMLInputElement;
+}
+
 export interface ListenControls {
   readonly play: HTMLButtonElement;
   readonly stop: HTMLButtonElement;
   readonly status: HTMLElement;
   readonly progress: HTMLProgressElement;
+  readonly mark: MarkControls;
 }
 
 // The animation-frame seam, so the check fires frames by hand.
@@ -528,8 +708,14 @@ export interface ListenPanelConfig {
   // edges over the real store and navigator.storage.persist in the page, stubs in the check.
   readonly home: () => Promise<Residency>;
   readonly keep: () => Promise<Keeping>;
+  // The device's remembered preference, read at every render and written by the hover's
+  // box: listenConsent's two edges over window.localStorage in the page, over a Map in the
+  // check. And the connection reading the metered rule judges: navigator.connection, which
+  // only Chromium exposes; absent is honestly "unknown".
+  readonly preference: { readonly read: () => boolean; readonly write: (remembered: boolean) => void };
+  readonly connection: () => ConnectionReading | undefined;
   // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
-  // tap, closed by the panel with the worker.
+  // first gesture or the first build, whichever comes first; closed with the worker.
   readonly Device: DeviceFactory;
   readonly frames: FrameLoop;
   // Called with where the read-along is whenever it moves, and with null when it stops.
@@ -541,6 +727,10 @@ export interface ListenPanel {
   readonly send: (control: Tap) => void;
   // The reader tapped a place on the page.
   readonly seek: (to: Mark) => void;
+  // The page is back: a restore from the back-forward cache after the pagehide that
+  // disposed. The worker is spawned to probe again and the standing consent given again,
+  // as at mount.
+  readonly wake: () => void;
   readonly state: () => PanelState;
   // Ends the listen, the device and the worker (gracefully: the model is released before
   // the worker ends); the page is left as the renderer made it, the controls show the
@@ -548,6 +738,8 @@ export interface ListenPanel {
   readonly dispose: () => void;
 }
 
+// [LAW:dataflow-not-control-flow] Every attribute written on every render, only the values
+// vary: no path leaves a stale form, a stale sentence or a stale ring behind.
 const render = (controls: ListenControls, shown: Readout): void => {
   controls.play.textContent = shown.play.label;
   controls.play.disabled = !shown.play.enabled;
@@ -556,6 +748,16 @@ const render = (controls: ListenControls, shown: Readout): void => {
   controls.progress.hidden = shown.progress === null;
   controls.progress.max = shown.progress?.totalBytes ?? 1;
   controls.progress.value = shown.progress?.loadedBytes ?? 0;
+  const { mark } = controls;
+  mark.root.dataset.state = shown.mark.kind;
+  mark.root.style.setProperty("--fraction", String(shown.mark.kind === "downloading" ? shown.mark.fraction : 0));
+  // The sentence names the mark for assistive tech, and is the hover's first line.
+  mark.button.setAttribute("aria-label", `Listen: ${shown.status}`);
+  mark.sentence.textContent = shown.status;
+  mark.ask.textContent = shown.ask ?? "";
+  mark.ask.hidden = shown.ask === null;
+  mark.yes.hidden = shown.ask === null;
+  mark.remember.checked = shown.remembered;
 };
 
 const sameSpan = (a: WordSpan | null, b: WordSpan | null): boolean =>
@@ -598,10 +800,10 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (port === null) throw new Error("listen panel: no worker to send to");
     return port;
   };
-  const audioOf = (): OpenDevice => {
-    if (audio === null) throw new Error("listen panel: no audio device open");
-    return audio;
-  };
+  // The device, opened on first use: by a gesture's `unlock`, on the tap's stack, or by a
+  // `build` that a standing consent brought about with no tap — in which case it opens
+  // suspended, and the reader's first Play resumes it through the unit player.
+  const device = (): OpenDevice => (audio ??= openDevice(config.Device));
   const performer = (): NeuralPerformer => {
     if (neural === null) throw new Error("listen panel: no performer to drive");
     return neural;
@@ -645,18 +847,17 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "home":
         askHome.ask(config.home());
         return;
-      case "spawn": {
+      case "spawn":
         port = config.spawn();
         unsubscribe = port.subscribe((message) => dispatch({ kind: "worker", message }));
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
-        // On the tap's stack: opened AND resumed inside the gesture, which is the unlock
-        // every browser honours; the player's own resume, on a worker message later, is
-        // then a no-op on a running context.
-        const opened = openDevice(config.Device);
-        void opened.device.resume();
-        audio = opened;
         return;
-      }
+      case "unlock":
+        // On the gesture's stack: opened AND resumed inside it, which is the unlock every
+        // browser honours; the player's own resume, on a worker message later, is then a
+        // no-op on a running context.
+        void device().device.resume();
+        return;
       case "load":
         portOf().send({ kind: "load" });
         askKeep.ask(config.keep());
@@ -667,7 +868,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "build": {
         const built = createNeuralPerformer({
           port: portOf(),
-          device: audioOf(),
+          device: device(),
           script: effect.units,
           utterances,
           voices: config.voices,
@@ -702,11 +903,15 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     }
   };
 
+  // The visit as it is now: the preference from storage, the connection from the browser.
+  const visit = (): Visit => ({ remembered: config.preference.read(), metered: downloadNeedsTap(config.connection()) });
+  const show = (): void => render(controls, readout(state, utterances.length, visit()));
+
   const run = (event: PanelEvent): void => {
     const planned = step(state, event);
     state = planned.state;
     for (const effect of planned.effects) performEffect(effect);
-    render(controls, readout(state, utterances.length));
+    show();
     syncFrames();
     emitPosition();
   };
@@ -737,15 +942,47 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     }
   };
 
+  // [LAW:single-enforcer] The one reading of what the visit grants without a tap, given
+  // to the machine at mount, on a restore, and when the preference changes.
+  const wakeUp = (): void => dispatch({ kind: "wake", consent: standingConsent(config.preference.read(), config.connection()) });
+
   // The first step, performed like every other: the state shown, the store asked.
   for (const effect of start().effects) performEffect(effect);
-  render(controls, readout(state, utterances.length));
+  show();
   controls.play.addEventListener("click", () => dispatch({ kind: "tap", control: "play" }));
   controls.stop.addEventListener("click", () => dispatch({ kind: "tap", control: "stop" }));
+
+  // The hover: shown by hover and focus in CSS, and pinned by a tap on the mark — the touch
+  // reader's way in — until a tap outside or Escape. Whether it is pinned is a fact of the
+  // markup alone, owned here: the machine has no state for it.
+  const { mark } = controls;
+  const pin = (open: boolean): void => {
+    mark.root.dataset.open = String(open);
+    mark.button.setAttribute("aria-expanded", String(open));
+  };
+  pin(false);
+  mark.button.addEventListener("click", () => pin(mark.root.dataset.open !== "true"));
+  mark.yes.addEventListener("click", () => dispatch({ kind: "yes" }));
+  // Checking the box is the yes for this visit too, subject to the same rule as any
+  // standing consent; unchecking only stops asking on the reader's behalf.
+  mark.remember.addEventListener("change", () => {
+    config.preference.write(mark.remember.checked);
+    wakeUp();
+  });
+  const doc = mark.root.ownerDocument;
+  doc.addEventListener("click", (event) => {
+    if (event.composedPath().includes(mark.root)) return;
+    pin(false);
+  });
+  doc.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") pin(false);
+  });
+  wakeUp();
 
   return {
     send: (control) => dispatch({ kind: "tap", control }),
     seek: (to) => dispatch({ kind: "seek", to }),
+    wake: wakeUp,
     state: () => state,
     // One more event through the same machine: the idle state disarms the frame loop,
     // clears the position, and the controls say what the state says, so a page back from

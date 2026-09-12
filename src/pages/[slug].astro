@@ -660,6 +660,33 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       through and the order the a11y tree reports, and it is now free of any layout
       duty, since neither element's position is expressed as "next to the other one".
     */}
+    {/*
+      The Listen mark: the always-visible icon beside the launcher that says where the
+      voice is, and whose hover asks "Download speech model?" when a download is what
+      stands between the reader and a voice. Inert markup: listenPanel.ts writes its form
+      (`data-state`), its sentence, the question and the preference's box on every state
+      change, so nothing here carries a sentence of its own [LAW:one-source-of-truth]. The
+      glyph is the Listen tool's, so the menu item and the mark can never draw the voice
+      two ways. Present exactly when the Listen panel is, and shown by CSS only once the
+      page has WebGPU (`speech-ready`), like the panel's menu item.
+    */}
+    {present.listen && (
+      <div class="listen-mark" data-state="checking" data-open="false">
+        <button class="listen-mark-button" type="button" aria-expanded="false"
+          aria-controls="listen-mark-hover" aria-label="Listen">
+          <span class="listen-mark-glyph" set:html={TOOL.listen.icon} />
+        </button>
+        <div class="listen-mark-hover" id="listen-mark-hover" role="group" aria-label="Listen">
+          <p class="listen-mark-sentence"></p>
+          <p class="listen-mark-ask" hidden></p>
+          <button class="mono-pill listen-mark-yes" type="button" hidden>Download</button>
+          <label class="listen-mark-remember">
+            <input type="checkbox" />
+            <span>Always download it on this device</span>
+          </label>
+        </div>
+      </div>
+    )}
     <button class={DOCK_SELECTORS.launcher} type="button" aria-expanded="false"
       aria-controls="tool-dock-menu" aria-label="Tools">
       {/*
@@ -712,7 +739,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // seam: this page's markup, this page's turn cards, the real worker, the real
     // AudioContext, the real animation frame, the real viewport, and the capability gate.
     import { createListenPanel } from "../listenPanel";
-    import { MODEL_ASSETS, allModelAssets } from "../modelAssets";
+    import { readPreference, writePreference } from "../listenConsent";
+    import { MODEL_ASSETS, allModelAssets, type ConnectionReading } from "../modelAssets";
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
     import { DEFAULT_VOICES } from "../speechScript";
@@ -723,14 +751,20 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
 
     const controls = document.querySelector(".speech-controls");
     const payloadEl = document.querySelector(".speech-payload");
+    const markEl = document.querySelector<HTMLElement>(".listen-mark");
 
-    // A page with no speakable prose renders neither of these, so their joint absence is
-    // the normal empty case. One without the other is a broken template invariant, and the
+    // A page with no speakable prose renders none of these, so their joint absence is the
+    // normal empty case. One without the others is a broken template invariant, and the
     // panel below would otherwise wire a button to nothing [LAW:no-silent-failure].
-    if (controls && payloadEl) {
+    if (controls && payloadEl && markEl) {
       const control = <T extends Element>(selector: string): T => {
         const el = controls.querySelector<T>(selector);
         if (!el) throw new Error(`listen: the speech panel is missing ${selector}`);
+        return el;
+      };
+      const markPart = <T extends Element>(selector: string): T => {
+        const el = markEl.querySelector<T>(selector);
+        if (!el) throw new Error(`listen: the mark is missing ${selector}`);
         return el;
       };
       const utterances = JSON.parse(payloadEl.textContent ?? "[]") as Utterance[];
@@ -765,6 +799,14 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           stop: control<HTMLButtonElement>(".speech-stop"),
           status: control<HTMLElement>(".speech-now"),
           progress: control<HTMLProgressElement>(".speech-progress"),
+          mark: {
+            root: markEl,
+            button: markPart<HTMLButtonElement>(".listen-mark-button"),
+            sentence: markPart<HTMLElement>(".listen-mark-sentence"),
+            ask: markPart<HTMLElement>(".listen-mark-ask"),
+            yes: markPart<HTMLButtonElement>(".listen-mark-yes"),
+            remember: markPart<HTMLInputElement>(".listen-mark-remember input"),
+          },
         },
         utterances,
         voices: DEFAULT_VOICES,
@@ -774,6 +816,13 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // page's to ask (every browser with WebGPU has it).
         home: () => readResidency(opfs, allModelAssets(MODEL_ASSETS)),
         keep: () => askToKeep(() => navigator.storage.persist()),
+        // The device's remembered preference, in this origin's storage; and the connection
+        // reading only Chromium exposes, absent elsewhere.
+        preference: {
+          read: () => readPreference(window.localStorage),
+          write: (remembered) => writePreference(window.localStorage, remembered),
+        },
+        connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
         Device: AudioContext,
         frames: {
           request: (callback) => window.requestAnimationFrame(callback),
@@ -788,6 +837,12 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       window.addEventListener("pagehide", () => {
         panel.dispose();
         follower.dispose();
+      });
+      // A page restored from the back-forward cache comes back through the same door it
+      // left by: the panel that was disposed wakes, probes again, and gives the standing
+      // consent again, as at mount.
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) panel.wake();
       });
 
       // A tap on the page's prose listens from there; readAlong.tapMark says which taps are
