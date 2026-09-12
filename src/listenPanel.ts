@@ -194,7 +194,7 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
       if (neural.kind !== "probing") throw violation(state, "capability");
       return message.support.kind === "supported"
         ? phase({ kind: "preparing" }, [{ kind: "load" }])
-        : phase({ kind: "unsupported", reason: message.support.reason });
+        : phase({ kind: "unsupported", reason: message.support.reason }, [{ kind: "release", worker: "terminate" }]);
     case "progress":
       if (!loading(neural)) throw violation(state, "progress");
       return phase(

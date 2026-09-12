@@ -116,7 +116,7 @@ console.log("step: the way to audio");
   assert("a stop tap before there is anything to stop changes nothing", step(probing.state, tapStop).state === probing.state);
 
   const unsupported = step(probing.state, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } }));
-  assert("unsupported: the reason is shown, nothing to tap", shown(unsupported.state) === "Listen(off) | stop(off) | This device can't run the voice: this browser has no WebGPU");
+  assert("unsupported: the reason is shown, nothing to tap, the worker and the device the tap opened are released", effects(unsupported) === "release terminate" && shown(unsupported.state) === "Listen(off) | stop(off) | This device can't run the voice: this browser has no WebGPU");
   assert("a tap on an unsupported device changes nothing", step(unsupported.state, tapPlay).state === unsupported.state);
 
   const preparing = step(probing.state, supported);

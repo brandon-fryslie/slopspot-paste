@@ -414,8 +414,7 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
     send: (control) => player.send(control),
     view,
     dispose: () => {
-      // Stopping empties the window, which is what cancels and drops everything; the
-      // player then closes its device.
+      // Stopping empties the window, which is what cancels and drops everything.
       player.send({ kind: "stop" });
       unsubscribe();
       player.dispose();
