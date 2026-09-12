@@ -16,7 +16,25 @@
 // merge the program back into this chunk. scripts/verify-worker-entry.ts asserts the shape
 // of the built entry after every build.
 //
+// [LAW:no-ambient-temporal-coupling] The port dispatches each message to whatever listener
+// exists when it arrives — nothing queues for one installed later — and the program's chunk
+// takes time to load. So the door owns the listener from its first instant: a mailbox holds
+// what arrives before the program, and the program's handler takes over and drains it in
+// order on one synchronous stack, where no message can slip between. The type-only import
+// erases; the built entry still imports nothing.
+//
 // [LAW:no-silent-failure] A rejection inside a worker never reaches the page's Worker
 // `error` event on its own; `reportError` raises it as one, so a main module that fails to
 // load is a crashed worker to the panel, not a probe that never answers.
-import("./synthesisWorkerMain").catch((error: unknown) => self.reportError(error));
+import type { ToWorker } from "./synthesisProtocol";
+
+const mailbox: ToWorker[] = [];
+self.onmessage = (event: MessageEvent<ToWorker>): void => {
+  mailbox.push(event.data);
+};
+import("./synthesisWorkerMain")
+  .then(({ receive }) => {
+    self.onmessage = (event: MessageEvent<ToWorker>): void => receive(event.data);
+    for (const message of mailbox.splice(0)) receive(message);
+  })
+  .catch((error: unknown) => self.reportError(error));

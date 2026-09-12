@@ -1,11 +1,12 @@
-// [LAW:effects-at-boundaries] The Web Worker entry: the one file that binds the protocol
-// handler to a real runtime and a real message port. It has no logic of its own — every
+// [LAW:effects-at-boundaries] The worker's program: the one file that binds the protocol
+// handler to a real runtime and the real outbound port. It has no logic of its own — every
 // decision is synthesisHandler's, every effect pocketTtsRuntime's — so there is nothing here
 // for a check to drive; scripts/synthesis-worker-check.ts drives the handler with a stub
 // runtime, and a real browser drives this file (see the ticket's acceptance).
 //
-// This is the worker's whole program, but not its entry: synthesisWorker.ts is a shell that
-// loads this module dynamically, and the comment there says why WebKit forces the split.
+// This is the program, not the entry: synthesisWorker.ts is the door that loads this module
+// dynamically (the comment there says why WebKit forces the split) and owns the inbound
+// listener, handing each message to `receive`.
 //
 // `postMessage` uses the options form so the same call type-checks against the DOM lib the
 // rest of `src` compiles under and runs on the worker global at runtime.
@@ -21,4 +22,4 @@ const handler = createSynthesisHandler({
   now: () => performance.now(),
 });
 
-self.onmessage = (event: MessageEvent<ToWorker>): void => handler.receive(event.data);
+export const receive: (message: ToWorker) => void = handler.receive;
