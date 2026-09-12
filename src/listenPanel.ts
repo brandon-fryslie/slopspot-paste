@@ -209,6 +209,8 @@ export type Effect =
   | { readonly kind: "perform"; readonly event: PerformerEvent }
   // The previewer says its phrase in the voice; on the tap's stack, which opens its device.
   | { readonly kind: "preview"; readonly voice: VoiceId }
+  // The previewer is silenced.
+  | { readonly kind: "hush" }
   // The performer is told the reader's voices.
   | { readonly kind: "revoice"; readonly voices: VoiceMap }
   // Releases the performer, the previewer, the device and the worker; how the worker ends is the value: a
@@ -246,6 +248,10 @@ const violation = (state: PanelState, what: string): Error =>
 // The verbs a tap can send: a seek is never a tap's.
 type Verb = Exclude<PerformerEvent, { kind: "seek" }>["kind"];
 const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
+// A phrase and the reading never sound together: a preview pauses the reading (`preview`),
+// and a tap on the transport hushes the phrase — always, since a hush on a silent
+// previewer is its own no-op [LAW:dataflow-not-control-flow].
+const HUSH: Effect = { kind: "hush" };
 
 // The phases in which a `progress`, `ready` or `load-failed` may arrive.
 const loading = (neural: NeuralPhase): boolean =>
@@ -299,7 +305,7 @@ const tap = (state: PanelState, control: Tap): Step => {
   switch (state.kind) {
     case "neural": {
       const verb: Verb = control === "stop" ? "stop" : state.view.player.kind === "speaking" ? "pause" : "play";
-      return { state, effects: [perform({ kind: verb })] };
+      return { state, effects: [HUSH, perform({ kind: verb })] };
     }
     case "provisioning":
       // Stop is disabled by `readout` here; a tap that reaches it anyway changes nothing.
@@ -312,7 +318,7 @@ const tap = (state: PanelState, control: Tap): Step => {
 const seek = (state: PanelState, to: Mark): Step => {
   switch (state.kind) {
     case "neural":
-      return { state, effects: [perform({ kind: "seek", to })] };
+      return { state, effects: [HUSH, perform({ kind: "seek", to })] };
     case "provisioning": {
       const kicked = gesture(state, "play");
       return { state: { ...kicked.state, from: to }, effects: kicked.effects };
@@ -387,7 +393,9 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
     case "done":
     case "cancelled":
     case "failed":
-      // The scheduler's messages, on the port the panel also hears. Not ours to act on.
+    case "refused":
+      // The performers' messages, on the port the panel also hears; the scheduler and the
+      // previewer each judge a refusal of their own request. Not ours to act on.
       return stay(state);
     default:
       throw violation(state, message.kind);
@@ -1025,6 +1033,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         return;
       case "preview":
         previewerOf().say(effect.voice);
+        return;
+      case "hush":
+        previewerOf().hush();
         return;
       case "revoice":
         performer().voices(effect.voices);

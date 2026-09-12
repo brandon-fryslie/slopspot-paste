@@ -315,7 +315,7 @@ console.log("step: the reader's voices");
   const userVoice: VoiceMap = { ...VOICES, user: "fantine" };
 
   const same = run(at1.state, speaking(1, 300, "audio"), voices(VOICES));
-  assert("the same voices: nothing dropped, nothing asked", same.commands.length === 0 && kinds(same.state) === "hhhhra");
+  assert("the same voices: nothing dropped, nothing asked, the very same state", same.commands.length === 0 && same.state === at1.state);
 
   const mid = run(at1.state, speaking(1, 300, "audio"), voices(userVoice));
   assert(
@@ -349,8 +349,17 @@ console.log("step: the reader's voices");
   const retried = run(capped.state, speaking(0, 100, "audio"), voices({ ...VOICES, assistant: "azelma" }));
   assert("a failed unit of the changed voice is forgotten with its frames: the new voice gets its own try", retried.commands.join() === "pause,drop 0,drop 2,seek 0:0,play,cancel 3,drop 3,synthesize 0" && kinds(retried.state) === "rhac");
 
-  const foreign = run(at1.state, speaking(1), audio(-1, 0), done(-1), worker({ kind: "cancelled", unitId: -1 }), worker({ kind: "failed", unitId: -1, reason: { kind: "runtime", message: "x" } }));
-  assert("a voice preview's messages, ids below zero, pass by untouched", foreign.commands.length === 0 && foreign.state === at1.state);
+  const foreign = run(
+    at1.state,
+    speaking(1),
+    audio(-1, 0),
+    done(-1),
+    worker({ kind: "cancelled", unitId: -1 }),
+    worker({ kind: "failed", unitId: -1, reason: { kind: "runtime", message: "x" } }),
+    worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: unitText(unitOf(2, "")), voice: "alba" }, phase: "idle" }),
+    worker({ kind: "refused", request: { kind: "cancel", unitId: -1 }, phase: "idle" }),
+  );
+  assert("a voice preview's messages, ids below zero, pass by untouched — the refusals of its requests too", foreign.commands.length === 0 && foreign.state === at1.state);
 }
 
 // ── the driver, over the real player ──────────────────────────────────────────────────

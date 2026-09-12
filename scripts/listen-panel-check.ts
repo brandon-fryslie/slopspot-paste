@@ -180,10 +180,10 @@ console.log("step: the way to audio");
 
   const listening = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
   assert("the performer's first view puts the voice on stage and sends it to the top: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "perform seek 0:0" && shown(listening.state) === "Listen | stop(off) | Ready");
-  assert("a seek on stage seeks the voice", effects(step(listening.state, seekTo(1, 3))) === "perform seek 1:3");
+  assert("a seek on stage hushes any preview, then seeks the voice", effects(step(listening.state, seekTo(1, 3))) === "hush,perform seek 1:3");
   const playing = step(listening.state, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "audio" }) });
-  assert("tap play while speaking pauses", effects(step(playing.state, tapPlay)) === "perform pause");
-  assert("tap stop while speaking stops", effects(step(playing.state, tapStop)) === "perform stop");
+  assert("tap play while speaking hushes any preview, then pauses", effects(step(playing.state, tapPlay)) === "hush,perform pause");
+  assert("tap stop while speaking hushes any preview, then stops", effects(step(playing.state, tapStop)) === "hush,perform stop");
   const failedHolding: NeuralView["holdings"][number] = { kind: "failed", reason: { kind: "frame-cap", frames: 500 }, frames: "none" };
   const holdings: NeuralView["holdings"] = units.map((_, i): NeuralView["holdings"][number] => (i === 1 ? failedHolding : { kind: "absent" }));
   const withFailure = { ...viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "audio" }), holdings };
@@ -341,7 +341,7 @@ console.log("step: violations throw");
   throws("script outside scripting", () => step(idle, scriptBack));
   throws("a view before there is a performer", () => step(idle, { kind: "view", view: viewOf({ kind: "idle" }) }));
   throws("a synthesis message before the voice is on stage", () => step(idle, worker({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) })));
-  throws("refused, anywhere", () => step(idle, worker({ kind: "refused", request: { kind: "load" }, phase: "loading" })));
+  throws("refused while the voice is on its way", () => step(idle, worker({ kind: "refused", request: { kind: "load" }, phase: "loading" })));
   throws("disposed, anywhere: the port ends the worker on it first", () => step(idle, worker({ kind: "disposed" })));
 }
 
@@ -365,6 +365,8 @@ console.log("readout: the voice picker, cold, warm and mid-listen");
 
   const tapped = step(speaking, { kind: "preview", voice: "azelma" });
   assert("a preview tapped on stage: the reading is paused, then the previewer speaks", effects(tapped) === "perform pause,preview" && tapped.state === speaking);
+  const refusedPreview = step(speaking, worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: { text: "x", source: "x" }, voice: "azelma" }, phase: "idle" }));
+  assert("a refusal with the voice on stage: the performer that asked judges it, the panel stays", effects(refusedPreview) === "" && refusedPreview.state === speaking);
   assert("a preview tapped before the voice is on stage changes nothing", effects(step(probing, { kind: "preview", voice: "azelma" })) === "" && effects(step(idle, { kind: "preview", voice: "azelma" })) === "");
   const heard = step(speaking, { kind: "sounding", voice: "azelma" }).state;
   assert("the previewer's word: the voice sounding shows", voices(heard) === "alba/javert | offered | azelma | reset off");
@@ -446,12 +448,22 @@ interface Rig {
   readonly devices: () => StubDevice[];
 }
 
-// A visit: what the device remembered before the page loaded, and what the browser says
-// of the connection.
+type Store = ReturnType<typeof memoryPreferences>;
+// The device's storage: a fresh one, remembering the download consent or not, or one
+// carried over from an earlier rig — the storage surviving a reload, exactly as that rig
+// left it.
+type Storage = { readonly remembered: boolean } | { readonly store: Store };
+const storeOf = (storage: Storage): Store => {
+  if ("store" in storage) return storage.store;
+  const store = memoryPreferences();
+  writePreference(store, storage.remembered);
+  return store;
+};
+
+// A visit: what the device's storage held before the page loaded, and what the browser
+// says of the connection.
 interface VisitSetup {
-  readonly remembered?: boolean;
-  // A store carried over from an earlier rig: the device's storage surviving a reload.
-  readonly store?: ReturnType<typeof memoryPreferences>;
+  readonly storage?: Storage;
   readonly connection?: ConnectionReading;
 }
 
@@ -514,8 +526,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
       for (const callback of pending.splice(0)) callback();
     },
   };
-  const store = setup.store ?? memoryPreferences();
-  writePreference(store, setup.remembered === true);
+  const store = storeOf(setup.storage ?? { remembered: false });
   const positions: (ReadAlongAt | null)[] = [];
   const play = el<HTMLButtonElement>(".speech-play");
   const stop = el<HTMLButtonElement>(".speech-stop");
@@ -771,7 +782,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   assert("clearing the box removes the preference; the voice on stage is untouched", r.store.keys().length === 0 && r.shownMark() === "speaking | no ask | yes hidden | remember off" && r.counts.spawned === 1 && panel.state().kind === "neural");
   panel.dispose();
 
-  const next = rig({ remembered: true });
+  const next = rig({ storage: { remembered: true } });
   const nextPanel = mount(next);
   assert("a later visit with the preference: the probe first, the mark checking with nothing to ask, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "checking | no ask | yes hidden | remember on" && next.sent.length === 0);
   next.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
@@ -787,7 +798,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
 
 console.log("createListenPanel: on a metered connection the remembered yes still asks");
 {
-  const r = rig({ remembered: true, connection: { type: "cellular" } });
+  const r = rig({ storage: { remembered: true }, connection: { type: "cellular" } });
   const panel = mount(r);
   await ableAbsent(r);
   assert("nothing loads; the hover asks and says why, the box still checked", r.sent.length === 0 && r.shownMark() === "download | Download speech model? · 239 MB · asking because this connection is metered | yes shown | remember on" && r.line() === ABSENT_LINE);
@@ -796,7 +807,7 @@ console.log("createListenPanel: on a metered connection the remembered yes still
   assert("off the metered connection, the page's next wake gives the standing yes: load, no gesture", r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE);
   panel.dispose();
 
-  const tapped = rig({ remembered: true, connection: { saveData: true } });
+  const tapped = rig({ storage: { remembered: true }, connection: { saveData: true } });
   const tappedPanel = mount(tapped);
   await ableAbsent(tapped);
   tapped.mark.yes.click();
@@ -1001,7 +1012,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("the toggle opens it", !picker.hidden && toggle.getAttribute("aria-expanded") === "true");
   assert("two rows, six voices each, the defaults checked", picker.querySelectorAll(".voice-row").length === 2 && picker.querySelectorAll(".voice-option").length === 12 && checked() === "alba/javert");
   assert("the rows are named You and Claude", [...picker.querySelectorAll(".voice-role")].map((l) => l.textContent).join() === "You,Claude");
-  assert("each name carries its credit for the hover", part<HTMLElement>(option("assistant", "javert"), ".voice-label").title.includes("CC") || part<HTMLElement>(option("assistant", "javert"), ".voice-label").title.length > 0);
+  assert("each name carries its attribution and licence for the hover", part<HTMLElement>(option("assistant", "javert"), ".voice-label").title === "voice-donations/Butter via Kyutai tts-voices · CC0-1.0");
   assert("cold: every preview withheld and the note says why; nothing to reset", previews().every((b) => b.disabled) && !note.hidden && note.textContent === "Previews play once the voice is ready on this device." && reset.disabled);
   assert("previews are named for assistive tech", hear("azelma").getAttribute("aria-label") === "Hear Azelma");
 
@@ -1024,9 +1035,13 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   r.emit({ kind: "done", unitId: -1, report: report(FRAME_S * 1000), elapsedMs: 1 });
   assert("the phrase plays on the preview's device, not the reading's", heard?.sources.length === 1 && stage?.sources.length === 0 && r.line() === "Resume | stop | Paused · passage 1 of 2");
   heard?.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
-  assert("the phrase ends: nothing lit", soundingNow() === "");
+  assert("the phrase ends: nothing lit, the preview's device suspended", soundingNow() === "" && heard?.calls.join() === "resume,suspend");
 
+  hear("marius").click();
+  assert("a second preview: the next id down, its device resumed", r.said().endsWith("synthesize -2") && soundingNow() === "Hear Marius,Hear Marius" && heard?.calls.join() === "resume,suspend,resume");
   r.play.click();
+  assert("Play while the phrase sounds: the preview is withdrawn, unlit and its device suspended before the reading resumes, so the two never sound together", r.said().endsWith("cancel -2") && soundingNow() === "" && heard?.calls.join() === "resume,suspend,resume,suspend" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
+  r.emit({ kind: "cancelled", unitId: -2 });
   r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
   r.emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
   r.emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
@@ -1042,7 +1057,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("dispose closes the preview's device with the reading's", heard?.calls.at(-1) === "close" && stage?.calls.at(-1) === "close");
 
   // The reload: a fresh page over the same device storage.
-  const again = rig({ store: r.store });
+  const again = rig({ storage: { store: r.store } });
   const reloaded = mount(again);
   const checkedAgain = (): string => ["user", "assistant"].map((role) => again.voices.picker.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
   assert("after a reload the pick is still chosen", checkedAgain() === "fantine/marius" && !part<HTMLButtonElement>(again.voices.picker, ".voice-reset").disabled);

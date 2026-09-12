@@ -1,7 +1,7 @@
-// The in-memory PreferenceStore the listen-consent and listen-panel checks drive
-// listenConsent.ts over: the exact surface the module declares, plus `keys` so a check can
-// see that unchecking removes the key rather than writing a second value. Not a check
-// itself (run-checks.ts discovers `*-check.ts`), so it is shared rather than copied
+// The in-memory PreferenceStore the checks hand the modules that read the device's
+// storage: the exact surface those modules declare, plus `keys` so a check can see that
+// unchecking removes the key rather than writing a second value. Not a check itself
+// (run-checks.ts discovers `*-check.ts`), so it is shared rather than copied
 // [LAW:one-source-of-truth].
 
 import type { PreferenceStore } from "../src/preferenceStore";

@@ -71,7 +71,7 @@ console.log("the rule: two rows, four voices");
   assert("the reader's row speaks for the user, Claude's for the assistant", map.user === "marius" && map.assistant === "fantine");
   assert("the narrator takes Claude's voice", map.narrator === "fantine");
   assert("the system message keeps a voice of its own, not the reader's and not Claude's", map.system === SYSTEM_VOICE && map.system !== map.user && map.system !== map.assistant);
-  assert("the defaults are the rule over the default pick", Object.entries(voiceMapOf(DEFAULT_PICK)).every(([role, voice]) => DEFAULT_VOICES[role as keyof typeof DEFAULT_VOICES] === voice));
+  assert("the defaults: Alba for the reader, Javert for Claude and the narrator, Eponine for the system", DEFAULT_VOICES.user === "alba" && DEFAULT_VOICES.assistant === "javert" && DEFAULT_VOICES.narrator === "javert" && DEFAULT_VOICES.system === "eponine");
   assert("the same pick is the same pick; a pick that differs in one role is not", samePick(CHOSEN, { ...CHOSEN }) && !samePick(CHOSEN, { ...CHOSEN, user: "alba" }));
 }
 

@@ -171,8 +171,10 @@ const unexpected = (message: FromWorker, holding: Holding): Error =>
   new Error(`scheduler: ${message.kind} for a unit that is ${holding.kind}`);
 
 // The page's other requests on the same port — a voice preview — take ids below zero
-// (synthesisProtocol.ts): their messages are another conversation, not a unit of ours.
-const foreign = (message: FromWorker): boolean => "unitId" in message && message.unitId < 0;
+// (synthesisProtocol.ts): their messages are another conversation, not a unit of ours. A
+// refusal carries the id on the request it answers.
+const foreign = (message: FromWorker): boolean =>
+  "unitId" in message ? message.unitId < 0 : message.kind === "refused" && "unitId" in message.request && message.request.unitId < 0;
 
 // [LAW:dataflow-not-control-flow] One row per (message, holding) the protocol allows; every
 // other pair is a violation and throws. `cancelling` accepts any terminal as "over" — the
@@ -384,6 +386,8 @@ const revoice = (state: SchedulerState, voices: VoiceMap, player: PlayerState): 
     if (said === undefined) throw new RangeError(`scheduler: no script unit ${unit}`);
     return state.voices[said.utterance.voice] !== voices[said.utterance.voice];
   };
+  // The very same state object when no unit's voice changed: nothing changed, and it says so.
+  if (!state.holdings.some((_, unit) => changed(unit))) return { state, commands: [] };
   const commands: Command[] = [];
   const holdings = state.holdings.map((holding, unit): Holding => {
     if (!changed(unit)) return holding;
