@@ -23,7 +23,8 @@ import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { plainView, spineNodeLabel, type Dialogue, type SpineNode } from "../src/dialogue";
 import { deriveUtterances, speakableSegments, type Utterance } from "../src/speech";
-import { advance, assignVoices, createPlayer, type PlayerState } from "../src/speechPlayer";
+import type { PerformerState } from "../src/performer";
+import { advance, assignVoices, boundarySpan, createPlayer, type PlayerState } from "../src/speechPlayer";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -359,22 +360,22 @@ console.log("\nPlayer position machine (slopspot-speech-ins):");
   assert("a finish arriving while paused is ignored", JSON.stringify(advance({ kind: "paused", at: 1 }, { kind: "finished" }, N)) === JSON.stringify({ kind: "paused", at: 1 }));
   assert("a finish arriving while idle is ignored", advance(idle, { kind: "finished" }, N).kind === "idle");
 
-  assert("jumping moves and plays", JSON.stringify(advance(idle, { kind: "jump", to: 2 }, N)) === JSON.stringify({ kind: "speaking", at: 2 }));
-  assert("jumping while paused stays paused at the new place", JSON.stringify(advance({ kind: "paused", at: 0 }, { kind: "jump", to: 2 }, N)) === JSON.stringify({ kind: "paused", at: 2 }));
+  assert("seeking moves and plays", JSON.stringify(advance(idle, { kind: "seek", to: 2 }, N)) === JSON.stringify({ kind: "speaking", at: 2 }));
+  assert("seeking while paused stays paused at the new place", JSON.stringify(advance({ kind: "paused", at: 0 }, { kind: "seek", to: 2 }, N)) === JSON.stringify({ kind: "paused", at: 2 }));
 
   // [LAW:no-silent-failure] An out-of-range jump is a caller bug; clamping it would play a
   // turn nobody asked for while reporting success.
   const throwsOn = (to: number): boolean => {
     try {
-      advance(idle, { kind: "jump", to }, N);
+      advance(idle, { kind: "seek", to }, N);
       return false;
     } catch {
       return true;
     }
   };
-  assert("jumping past the end throws rather than clamping", throwsOn(N));
-  assert("jumping to a negative index throws", throwsOn(-1));
-  assert("jumping to a fractional index throws", throwsOn(1.5));
+  assert("seeking past the end throws rather than clamping", throwsOn(N));
+  assert("seeking to a negative index throws", throwsOn(-1));
+  assert("seeking to a fractional index throws", throwsOn(1.5));
 
   assert("a conversation with nothing to say cannot be played", advance(idle, { kind: "play" }, 0).kind === "idle");
 
@@ -382,9 +383,9 @@ console.log("\nPlayer position machine (slopspot-speech-ins):");
   // (`after === before`), not a value check — so every arm that is conceptually already
   // there must return the SAME state object, not merely an equal-looking one.
   const pausedAt1: PlayerState = { kind: "paused", at: 1 };
-  assert("jumping to the position already paused at is a true no-op", advance(pausedAt1, { kind: "jump", to: 1 }, N) === pausedAt1);
+  assert("seeking to the position already paused at is a true no-op", advance(pausedAt1, { kind: "seek", to: 1 }, N) === pausedAt1);
   const speakingAt1: PlayerState = { kind: "speaking", at: 1 };
-  assert("jumping to the position already speaking at is a true no-op", advance(speakingAt1, { kind: "jump", to: 1 }, N) === speakingAt1);
+  assert("seeking to the position already speaking at is a true no-op", advance(speakingAt1, { kind: "seek", to: 1 }, N) === speakingAt1);
   assert("stopping while already idle is a true no-op", advance(idle, { kind: "stop" }, N) === idle);
   assert("playing while already speaking is a true no-op", advance(speakingAt1, { kind: "play" }, N) === speakingAt1);
 
@@ -416,15 +417,16 @@ console.log("\nVoice assignment (slopspot-speech-ins):");
 console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
 {
   // A stub standing exactly where the browser's synthesizer stands. It records what it was
-  // asked to say and, crucially, lets the check fire `end` by hand — including the LATE end
-  // a real cancel() produces, which is the event no hand-driven browser session can be
-  // relied on to reproduce.
+  // asked to say and, crucially, lets the check fire `end` and word boundaries by hand —
+  // including the LATE end a real cancel() produces, which is the event no hand-driven
+  // browser session can be relied on to reproduce.
   class StubUtterance {
     text: string;
     voice: SpeechSynthesisVoice | null = null;
     rate = 1;
     pitch = 1;
     onend: (() => void) | null = null;
+    onboundary: ((event: { name: string; charIndex: number }) => void) | null = null;
     constructor(text: string) {
       this.text = text;
     }
@@ -464,31 +466,35 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     { index: 1, anchor: "t1", voice: "assistant", text: "second" },
     { index: 2, anchor: "t2", voice: "narrator", text: "third" },
   ];
+  // The anchor a reported state is at, or null for idle: what the page lights.
+  const anchorOf = (state: PerformerState | undefined): string | null =>
+    state === undefined || state.kind === "idle" ? null : (utterances[state.at.utterance]?.anchor ?? "?");
+  const spanOf = (state: PerformerState): string => (state.kind === "idle" ? "-" : `${state.at.span.charStart}-${state.at.span.charEnd}`);
 
   // [LAW:no-silent-failure] A browser with no speech synthesis yields no player, which is
-  // what lets the page omit the Listen tool entirely instead of showing a dead button.
+  // what lets the page have no stand-in instead of a dead one.
   {
     const dom = new JSDOM(`<!DOCTYPE html><body></body>`);
     const bare = dom.window as unknown as Window & typeof globalThis;
-    const player = createPlayer({ window: bare, utterances, onUtterance: () => {}, onState: () => {} });
+    const player = createPlayer({ window: bare, utterances, onState: () => {} });
     assert("a browser without speech synthesis yields no player", player === null);
   }
 
   {
     const { window, synth } = stand();
-    const seen: (Utterance | null)[] = [];
-    const player = createPlayer({ window, utterances, onUtterance: (u) => seen.push(u), onState: () => {} });
+    const seen: PerformerState[] = [];
+    const player = createPlayer({ window, utterances, onState: (s) => seen.push(s) });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
     player.send({ kind: "play" });
     assert("playing speaks the first utterance", synth.spoken[0]?.text === "first");
-    assert("playing reports which utterance is speaking", seen[0]?.anchor === "t0");
+    assert("playing reports which utterance is speaking", anchorOf(seen[0]) === "t0");
 
     // The synthesizer finishing is what advances the conversation — the player never
     // queues ahead of itself.
     synth.spoken[0]?.onend?.();
     assert("finishing one utterance speaks the next", synth.spoken[1]?.text === "second");
-    assert("the reported utterance follows along", seen[1]?.anchor === "t1");
+    assert("the reported utterance follows along", anchorOf(seen[1]) === "t1");
 
     // Deltas, not totals: starting playback legitimately cancels first, to take ownership
     // of a queue the page shares with anything else that speaks. What matters is that
@@ -497,7 +503,7 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     player.send({ kind: "pause" });
     assert("pausing pauses the synthesizer", synth.pauses === 1);
     assert("pausing does not cancel the sentence it is holding", synth.cancels === cancelsBeforePause);
-    assert("pausing holds the position", player.state().kind === "paused");
+    assert("pausing holds the position", player.state().kind === "paused" && anchorOf(player.state()) === "t1");
 
     player.send({ kind: "play" });
     assert("resuming resumes rather than re-speaking the sentence", synth.resumes === 1 && synth.spoken.length === 2);
@@ -505,7 +511,7 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     const cancelsBeforeStop = synth.cancels;
     player.send({ kind: "stop" });
     assert("stopping cancels the sentence in progress", synth.cancels === cancelsBeforeStop + 1);
-    assert("stopping reports that nothing is speaking", seen.at(-1) === null);
+    assert("stopping reports that nothing is speaking", seen.at(-1)?.kind === "idle");
     assert("stopping returns to idle", player.state().kind === "idle");
   }
 
@@ -513,7 +519,7 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
   // A player that trusted that event would advance past a turn nobody heard.
   {
     const { window, synth } = stand();
-    const player = createPlayer({ window, utterances, onUtterance: () => {}, onState: () => {} });
+    const player = createPlayer({ window, utterances, onState: () => {} });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
     player.send({ kind: "play" });
@@ -524,59 +530,95 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     assert("a late 'end' speaks nothing further", synth.spoken.length === 1);
   }
 
-  // Jumping is how the page will wire "listen from this turn".
+  // Seeking is how the page will wire "listen from this turn", and how the neural voice
+  // hands the stage back to the stand-in.
   {
     const { window, synth } = stand();
-    const player = createPlayer({ window, utterances, onUtterance: () => {}, onState: () => {} });
+    const player = createPlayer({ window, utterances, onState: () => {} });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
-    player.send({ kind: "jump", to: 2 });
-    assert("jumping speaks the utterance jumped to", synth.spoken.at(-1)?.text === "third");
-    assert("jumping abandons whatever was mid-sentence", synth.cancels === 1);
+    player.send({ kind: "seek", to: 2 });
+    assert("seeking speaks the utterance seeked to", synth.spoken.at(-1)?.text === "third");
+    assert("seeking abandons whatever was mid-sentence", synth.cancels === 1);
 
     synth.spoken.at(-1)?.onend?.();
     assert("finishing the last utterance ends the session", player.state().kind === "idle");
+  }
+
+  // The cursor channel: the span under the voice is the whole utterance until the browser
+  // names a word, then the word each boundary names — by the manifest's own word rule.
+  {
+    const { window, synth } = stand();
+    const long: ReadonlyArray<Utterance> = [
+      { index: 0, anchor: "t0", voice: "user", text: "Hello there, world." },
+      { index: 1, anchor: "t1", voice: "assistant", text: "Bye." },
+    ];
+    const player = createPlayer({ window, utterances: long, onState: () => {} });
+    if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
+
+    player.send({ kind: "play" });
+    assert("before any boundary the whole utterance is under the voice", spanOf(player.state()) === "0-19");
+    const live = synth.spoken.at(-1);
+    live?.onboundary?.({ name: "word", charIndex: 6 });
+    assert("a word boundary moves the span to that word", spanOf(player.state()) === "6-12");
+    live?.onboundary?.({ name: "sentence", charIndex: 0 });
+    assert("a sentence boundary is not a word", spanOf(player.state()) === "6-12");
+    live?.onboundary?.({ name: "word", charIndex: 13 });
+    assert("the last word", spanOf(player.state()) === "13-19");
+    assert("a boundary between words names the word begun before it", JSON.stringify(boundarySpan("a, b", 2)) === JSON.stringify({ charStart: 0, charEnd: 2 }));
+    assert("a boundary before any word keeps the whole text", JSON.stringify(boundarySpan(" a", 0)) === JSON.stringify({ charStart: 0, charEnd: 2 }));
+
+    player.send({ kind: "pause" });
+    assert("pausing keeps the word under the voice", spanOf(player.state()) === "13-19");
+    player.send({ kind: "stop" });
+    live?.onboundary?.({ name: "word", charIndex: 0 });
+    assert("a late boundary from a cancelled sentence names nothing", player.state().kind === "idle");
+    player.send({ kind: "play" });
+    assert("speaking again starts from the whole utterance", spanOf(player.state()) === "0-19");
+    const abandoned = synth.spoken.at(-1);
+    player.send({ kind: "seek", to: 1 });
+    abandoned?.onboundary?.({ name: "word", charIndex: 13 });
+    assert("a boundary from the sentence a seek abandoned is ignored", spanOf(player.state()) === "0-4");
   }
 
   // Delivery differs by voice, which is how a listener tells our narration from the
   // author's words without us saying the word "narrator" on every announcement.
   {
     const { window, synth } = stand();
-    const player = createPlayer({ window, utterances, onUtterance: () => {}, onState: () => {} });
+    const player = createPlayer({ window, utterances, onState: () => {} });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
-    player.send({ kind: "jump", to: 2 });
+    player.send({ kind: "seek", to: 2 });
     const narrated = synth.spoken.at(-1);
     assert("narration is delivered differently from speech", narrated?.rate !== 1 || narrated?.pitch !== 1);
   }
 
-  // The bug this design exists to prevent: jumping while paused cancels the live sentence
+  // The bug this design exists to prevent: seeking while paused cancels the live sentence
   // without requeuing it (advance()'s pure spec says "stay paused at the new place", and
   // nothing SHOULD speak yet) — so a naive "same index => resume" shortcut on the
   // subsequent Play would call synth.resume() on a synthesizer holding nothing at all,
   // producing silence with the transport stuck reporting "speaking" forever.
   {
     const { window, synth } = stand();
-    const states: PlayerState[] = [];
-    const seen: (Utterance | null)[] = [];
-    const player = createPlayer({ window, utterances, onUtterance: (u) => seen.push(u), onState: (s) => states.push(s) });
+    const states: PerformerState[] = [];
+    const player = createPlayer({ window, utterances, onState: (s) => states.push(s) });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
     player.send({ kind: "play" }); // speaking at 0
     player.send({ kind: "pause" }); // paused at 0
-    player.send({ kind: "jump", to: 2 }); // paused at 2 — nothing queued for index 2
-    assert("jumping while paused does not resume the synthesizer", synth.resumes === 0);
-    assert("jumping while paused reports the player still paused", states.at(-1)?.kind === "paused");
-    // A jumped-to PAUSE position is still worth showing — the same reasoning the
-    // pause-from-speaking shortcut already gets — so this must NOT clear to null the way
-    // idling does.
-    assert("jumping while paused reports the jumped-to utterance, not null", seen.at(-1)?.anchor === "t2");
+    player.send({ kind: "seek", to: 2 }); // paused at 2 — nothing queued for index 2
+    assert("seeking while paused does not resume the synthesizer", synth.resumes === 0);
+    assert("seeking while paused reports the player still paused", states.at(-1)?.kind === "paused");
+    // A seeked-to PAUSE position is still worth showing — the same reasoning the
+    // pause-from-speaking shortcut already gets — so this must NOT report idle the way
+    // stopping does; and no word of it has been said, so the whole utterance is under it.
+    assert("seeking while paused reports the seeked-to utterance, whole", anchorOf(states.at(-1)) === "t2" && spanOf(states.at(-1)!) === "0-5");
 
     const resumesBeforePlay = synth.resumes;
     const spokenBeforePlay = synth.spoken.length;
     player.send({ kind: "play" });
-    assert("playing after a paused jump speaks fresh rather than resuming stale state", synth.resumes === resumesBeforePlay);
-    assert("playing after a paused jump actually queues the jumped-to utterance", synth.spoken.length === spokenBeforePlay + 1);
-    assert("the utterance queued is the one jumped to, not the one abandoned before pausing", synth.spoken.at(-1)?.text === "third");
+    assert("playing after a paused seek speaks fresh rather than resuming stale state", synth.resumes === resumesBeforePlay);
+    assert("playing after a paused seek actually queues the seeked-to utterance", synth.spoken.length === spokenBeforePlay + 1);
+    assert("the utterance queued is the one seeked to, not the one abandoned before pausing", synth.spoken.at(-1)?.text === "third");
     assert("the player is genuinely speaking, not stuck silent", player.state().kind === "speaking");
   }
 
@@ -585,8 +627,8 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
   // never asked to stop, for an event that changed nothing.
   {
     const { window, synth } = stand();
-    const states: PlayerState[] = [];
-    const player = createPlayer({ window, utterances, onUtterance: () => {}, onState: (s) => states.push(s) });
+    const states: PerformerState[] = [];
+    const player = createPlayer({ window, utterances, onState: (s) => states.push(s) });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
     player.send({ kind: "play" });
@@ -596,6 +638,8 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     player.send({ kind: "pause" }); // already paused — advance() returns the same state
     assert("a redundant pause does not cancel the held sentence", synth.cancels === cancelsBeforeRedundant);
     assert("a redundant pause reports no new state change", states.length === statesBeforeRedundant);
+    player.dispose();
+    assert("disposing the performer silences it", player.state().kind === "idle" && states.at(-1)?.kind === "idle");
   }
 
   // The header comment's stated invariant: voices are assigned FRESH per utterance, never
@@ -621,7 +665,7 @@ console.log("\nPlayer against a synthesizer (slopspot-speech-ins):");
     });
     Object.defineProperty(w, "SpeechSynthesisUtterance", { configurable: true, value: StubUtterance });
 
-    const player = createPlayer({ window: w, utterances, onUtterance: () => {}, onState: () => {} });
+    const player = createPlayer({ window: w, utterances, onState: () => {} });
     if (player === null) throw new Error("speech-check: stub synthesizer did not yield a player");
 
     player.send({ kind: "play" }); // getVoices() still returns [] here

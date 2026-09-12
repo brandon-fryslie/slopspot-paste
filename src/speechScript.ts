@@ -70,6 +70,12 @@ export const unitText = ({ utterance, start, end, text }: SynthesisUnit): UnitTe
 // every rendition rather than re-deploying an asset.
 export type VoiceMap = Readonly<Record<Voice, VoiceId>>;
 
+// Which role the six hosted voices speak. A VALUE, per the epic: the reader's pick by ear
+// replaces it without touching an asset. Until that pick, the spike's word-accuracy
+// ranking chooses — the voices Whisper transcribed with zero errors take the roles that
+// say the most.
+export const DEFAULT_VOICES: VoiceMap = { user: "alba", assistant: "javert", system: "eponine", narrator: "azelma" };
+
 // ── text preparation ────────────────────────────────────────────────────────────────
 //
 // Mirrors upstream prepare_text_prompt + _ensure_terminal_punctuation under the options
