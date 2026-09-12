@@ -181,6 +181,10 @@ console.log("step, with a stand-in: the browser voice speaks while the neural vo
   const onStage = step(built.state, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "waiting" }) });
   assert("the first view: the stage passes from the stand-in to the neural voice, then the stand-in is silenced", effects(onStage) === "handover synth>neural,synth stop");
   assert("on stage: the neural readout, passage 2", onStage.state.kind === "neural" && shown(onStage.state) === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
+  const failed: NeuralView["holdings"][number] = { kind: "failed", reason: { kind: "frame-cap", frames: 500 }, frames: "none" };
+  const holdings: NeuralView["holdings"] = units.map((_, i): NeuralView["holdings"][number] => (i === 1 ? failed : { kind: "absent" }));
+  const withFailure = { ...viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "audio" }), holdings };
+  assert("a failed unit is named by its passage and its reason, after the player's own line", shown(step(onStage.state, { kind: "view", view: withFailure }).state) === "Pause | stop | Playing · passage 2 of 2 · passage 1 of 2 could not be synthesized: the model looped for 500 frames without finishing");
   assert("the stand-in's idle on being silenced is heard and changes nothing", step(onStage.state, synthAt({ kind: "idle" })).state === onStage.state);
   throws("a stand-in speaking while the neural voice is on stage is a violation", () => step(onStage.state, synthAt(speakingAt(0))));
   const fell = step(onStage.state, { kind: "worker-error", message: "boom" });
@@ -460,6 +464,51 @@ console.log("createListenPanel: a bug in the machine tears the panel down, loudl
   assert("after the throw: the worker released, the stand-in silenced, the cursor cleared, the panel at its start", r.counts.disposed === 1 && r.counts.listeners() === 0 && synth.cancels === cancelsBefore + 1 && r.positions.at(-1) === null && r.frames.pending === 0 && after.kind === "provisioning" && after.neural.kind === "idle" && line() === `Listen | stop(off) | Browser voice standing in · the neural voice downloads a ${MB} model once, then runs on this device`);
   r.play.click();
   assert("Play after the teardown starts over: the stand-in speaks and a worker is spawned", synth.spoken.at(-1)?.text === one.text && line() === "Pause | stop | Browser voice standing in · passage 1 of 2 · checking this device for the neural voice…");
+}
+
+console.log("createListenPanel: a teardown that fails too goes out with the bug it followed");
+{
+  const r = rig();
+  standIn(r.window);
+  let refusing = false;
+  const panel = createListenPanel({
+    controls: { play: r.play, stop: r.stop, status: r.status, progress: r.bar },
+    utterances,
+    voices: DEFAULT_VOICES,
+    spawn: () => r.port,
+    Device: StubDevice,
+    frames: r.frames,
+    standIn: (onState) => {
+      const player = createPlayer({ window: r.window, utterances, onState });
+      if (player === null) throw new Error("fixture: the stub synthesizer did not yield a player");
+      return {
+        ...player,
+        send: (event) => {
+          if (refusing && event.kind === "stop") throw new Error("the stand-in would not stop");
+          player.send(event);
+        },
+      };
+    },
+    onPosition: (at) => r.positions.push(at),
+  });
+  const line = (): string => `${r.play.textContent}${r.play.disabled ? "(off)" : ""} | stop${r.stop.disabled ? "(off)" : ""} | ${r.status.textContent}`;
+  r.play.click();
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
+  r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
+  refusing = true;
+  const foreign = [unit({ ...one, text: "Another page entirely." }, 0, 22), unit({ ...two }, 0, 8)];
+  let caught: unknown = null;
+  try {
+    r.emit({ kind: "script", id: SCRIPT_ID, units: foreign });
+  } catch (error) {
+    caught = error;
+  }
+  const errors = caught instanceof AggregateError ? caught.errors.map((e) => (e instanceof Error ? e.message : String(e))) : [];
+  assert("both failures go out as one AggregateError: the bug first, the teardown second", errors.length === 2 && errors[0]?.includes("passage 0 of the script") === true && errors[1] === "the stand-in would not stop" && r.counts.disposed === 1);
+  refusing = false;
+  panel.dispose();
+  assert("the panel is not left draining: the next event is handled and lands at the start", panel.state().kind === "provisioning" && r.counts.disposed === 1 && line() === `Listen | stop(off) | Browser voice standing in · the neural voice downloads a ${MB} model once, then runs on this device`);
 }
 
 console.log("createListenPanel: no stand-in, the transport waits for the neural voice");
