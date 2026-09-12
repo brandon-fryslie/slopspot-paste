@@ -15,8 +15,11 @@
 // [LAW:one-source-of-truth].
 //
 // The estimate is `estimating` until the pace has seen enough of the download to speak, and
-// when no byte arrived over what it saw; it is never negative (the bytes are short of the
-// total by construction) and `remainingText` never rounds it to zero.
+// when no byte arrived over what it saw. The bytes still to come are the caller's, read
+// from the freshest progress — the pace's own last sample serves the rate alone, and the
+// fold can leave it a step behind [LAW:one-source-of-truth]. It is never negative (the
+// bytes are short of the total by construction) and `remainingText` never rounds it to
+// zero.
 
 export interface Sample {
   // Milliseconds on the caller's clock; only differences are read.
@@ -53,12 +56,12 @@ export type Estimate = { readonly kind: "estimating" } | { readonly kind: "remai
 
 const ESTIMATING: Estimate = { kind: "estimating" };
 
-export const estimate = (pace: Pace, totalBytes: number): Estimate => {
+export const estimate = (pace: Pace, remainingBytes: number): Estimate => {
   const spanMs = pace.at - pace.since;
   if (spanMs < SPEAK_MS) return ESTIMATING;
   const rate = pace.ema / weight(spanMs);
   if (rate <= 0) return ESTIMATING;
-  return { kind: "remaining", seconds: (totalBytes - pace.bytes) / rate / 1000 };
+  return { kind: "remaining", seconds: remainingBytes / rate / 1000 };
 };
 
 // The estimate as the status line says it: coarse on purpose, since the number is a guess,

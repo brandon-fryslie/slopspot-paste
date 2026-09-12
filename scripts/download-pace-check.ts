@@ -22,6 +22,8 @@ const TOTAL = 240_000_000;
 const MB_PER_S = 1_000_000;
 
 const seconds = (e: Estimate): number => (e.kind === "remaining" ? e.seconds : Number.NaN);
+// The estimate for the bytes the pace's last sample leaves to come.
+const left = (pace: Pace): Estimate => estimate(pace, TOTAL - pace.bytes);
 const near = (a: number, b: number, tolerance: number): boolean => Math.abs(a - b) <= tolerance;
 const run = (samples: ReadonlyArray<Sample>): Pace => {
   const [first, ...rest] = samples;
@@ -36,16 +38,19 @@ const steady = (from: Sample, rate: number, spanS: number): Sample[] =>
 console.log("estimate: a steady link");
 {
   const first: Sample = { at: 1_000, bytes: 0 };
-  assert("one sample: estimating", estimate(begin(first), TOTAL).kind === "estimating");
+  assert("one sample: estimating", left(begin(first)).kind === "estimating");
   const short = run([first, ...steady(first, MB_PER_S, 1)]);
-  assert("a second of samples: still estimating (the least span is 1.5 s)", estimate(short, TOTAL).kind === "estimating");
+  assert("a second of samples: still estimating (the least span is 1.5 s)", left(short).kind === "estimating");
   const steadied = run([first, ...steady(first, MB_PER_S, 10)]);
   // 10 s at 1 MB/s: 10 MB down, 230 MB to go at 1 MB/s = 230 s. The average is exact on a
   // constant rate, bias correction included.
-  assert("ten seconds at 1 MB/s: 230 s left", near(seconds(estimate(steadied, TOTAL)), 230, 0.01));
-  assert("the readout: about 4 min left", remainingText(estimate(steadied, TOTAL)) === "about 4 min left");
+  assert("ten seconds at 1 MB/s: 230 s left", near(seconds(left(steadied)), 230, 0.01));
+  assert("the readout: about 4 min left", remainingText(left(steadied)) === "about 4 min left");
   const twice = run([first, ...steady(first, 2 * MB_PER_S, 10)]);
-  assert("twice the rate: half the time", near(seconds(estimate(twice, TOTAL)), (TOTAL - 20_000_000) / (2 * MB_PER_S), 0.01));
+  assert("twice the rate: half the time", near(seconds(left(twice)), (TOTAL - 20_000_000) / (2 * MB_PER_S), 0.01));
+  // The bytes to come are the caller's: a fresher reading than the pace's last sample
+  // shortens the estimate at the same rate.
+  assert("fresher bytes than the pace kept: the same rate over fewer bytes", near(seconds(estimate(steadied, TOTAL - 10_050_000)), 229.95, 0.01));
 }
 
 console.log("estimate: a stall widens it, a burst converges it");
@@ -55,19 +60,19 @@ console.log("estimate: a stall widens it, a burst converges it");
   const stalled = record(before, { at: 30_000, bytes: 10_010_000 });
   // 20 s for 10 KB: the stall's 0.5 KB/s carries all but e^(-20/3) of the average, so the
   // 1 MB/s before it is a rounding error and the 230 s left become tens of hours.
-  assert("a 20 s stall for 10 KB widens the estimate past a hundred times", seconds(estimate(stalled, TOTAL)) > 100 * seconds(estimate(before, TOTAL)));
-  assert("the readout widens with it, in hours", /^about \d\d h left$/.test(remainingText(estimate(stalled, TOTAL))));
+  assert("a 20 s stall for 10 KB widens the estimate past a hundred times", seconds(left(stalled)) > 100 * seconds(left(before)));
+  assert("the readout widens with it, in hours", /^about \d\d h left$/.test(remainingText(left(stalled))));
   const recovered = run([first, ...steady(first, MB_PER_S, 10), { at: 30_000, bytes: 10_010_000 }, ...steady({ at: 30_000, bytes: 10_010_000 }, MB_PER_S, 15)]);
   // 15 s of steady link after the stall: the stall's weight has decayed to e^-5 of what it
   // was, and the estimate is within a few percent of the true 215 s.
-  assert("fifteen steady seconds later the estimate has converged", near(seconds(estimate(recovered, TOTAL)), (TOTAL - 25_010_000) / MB_PER_S, 8));
+  assert("fifteen steady seconds later the estimate has converged", near(seconds(left(recovered)), (TOTAL - 25_010_000) / MB_PER_S, 8));
   const burst = run([first, ...steady(first, MB_PER_S, 10), ...steady({ at: 10_000, bytes: 10_000_000 }, 5 * MB_PER_S, 1)]);
   // One second at 5 MB/s after ten at 1 MB/s: the estimate falls, but not to the burst's
   // own 45 s — the average remembers the slower link.
-  const burstS = seconds(estimate(burst, TOTAL));
+  const burstS = seconds(left(burst));
   assert("a one-second burst lowers the estimate without adopting its rate", burstS < 225 && burstS > 60);
   const sustained = run([first, ...steady(first, MB_PER_S, 10), ...steady({ at: 10_000, bytes: 10_000_000 }, 5 * MB_PER_S, 15)]);
-  assert("a sustained burst converges on its rate", near(seconds(estimate(sustained, TOTAL)), (TOTAL - 85_000_000) / (5 * MB_PER_S), 1));
+  assert("a sustained burst converges on its rate", near(seconds(left(sustained)), (TOTAL - 85_000_000) / (5 * MB_PER_S), 1));
 }
 
 console.log("record: samples fold, the estimate never runs backwards");
@@ -78,9 +83,10 @@ console.log("record: samples fold, the estimate never runs backwards");
   const later = record(kept, { at: 500, bytes: 500_000 });
   assert("the next kept sample counts the folded bytes from the last kept one", later.at === 500 && later.bytes === 500_000);
   const noBytes = run([first, { at: 2_000, bytes: 0 }]);
-  assert("a span with no bytes: estimating, not infinity", estimate(noBytes, TOTAL).kind === "estimating");
-  const done = run([first, ...steady(first, MB_PER_S, 240)]);
-  assert("the last byte short of the total: a few seconds, never zero or negative", seconds(estimate(record(done, { at: 240_250, bytes: TOTAL - 1 }), TOTAL)) > 0 && remainingText(estimate(record(done, { at: 240_250, bytes: TOTAL - 1 }), TOTAL)) === "a few seconds left");
+  assert("a span with no bytes: estimating, not infinity", left(noBytes).kind === "estimating");
+  // 239 s of the link, then the sample that climbs to one byte short of the total.
+  const done = record(run([first, ...steady(first, MB_PER_S, 239)]), { at: 240_000, bytes: TOTAL - 1 });
+  assert("the last byte short of the total: a few seconds, never zero or negative", seconds(left(done)) > 0 && remainingText(left(done)) === "a few seconds left");
 }
 
 console.log("remainingText: the words for every span");

@@ -555,7 +555,7 @@ const neuralText = (neural: NeuralPhase, home: Home): string => {
     case "downloading": {
       const { loadedBytes, totalBytes } = neural.progress;
       // The percentage floors: short of the last byte is short of 100.
-      return `downloading the voice · ${Math.floor((100 * loadedBytes) / totalBytes)}% · ${Math.round(loadedBytes / 1_000_000)} of ${megabytes(totalBytes)} · ${remainingText(estimate(neural.pace, totalBytes))}`;
+      return `downloading the voice · ${Math.floor((100 * loadedBytes) / totalBytes)}% · ${Math.round(loadedBytes / 1_000_000)} of ${megabytes(totalBytes)} · ${remainingText(estimate(neural.pace, totalBytes - loadedBytes))}`;
     }
     case "warming":
       return "warming up the voice…";
