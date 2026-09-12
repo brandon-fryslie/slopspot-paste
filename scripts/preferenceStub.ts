@@ -4,7 +4,7 @@
 // itself (run-checks.ts discovers `*-check.ts`), so it is shared rather than copied
 // [LAW:one-source-of-truth].
 
-import type { PreferenceStore } from "../src/listenConsent";
+import type { PreferenceStore } from "../src/preferenceStore";
 
 export const memoryPreferences = (): PreferenceStore & { readonly keys: () => string[] } => {
   const held = new Map<string, string>();

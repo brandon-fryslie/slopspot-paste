@@ -56,8 +56,15 @@
 // cannot happen — `audio` for a unit never requested, `failed{duplicate-unit}`, `refused` for
 // a synthesize or cancel — is a scheduler bug and throws.
 //
+// THE VOICES ARE STATE. Which model voice speaks each role is a value the reader can change
+// mid-listen (voiceChoice.ts), so the scheduler holds the map it synthesizes with and takes
+// a new one as an event. A rendition is of one text in one voice: a change voids every
+// unit the changed voice spoke or was asked to speak — audio dropped, request withdrawn,
+// record and failure forgotten — and the plan asks for them again in the new voice, the
+// unit under the cursor first, from its start [LAW:one-source-of-truth].
+//
 // WHAT WAKES IT. Worker messages, the player's `onState` (every discontinuity and every
-// unit boundary the clock crosses) and nothing else: no timer, no polling. The driver owns
+// unit boundary the clock crosses), the reader's voices and nothing else: no timer, no polling. The driver owns
 // the ordering — events are processed to completion one at a time, in arrival order, and a
 // report the player raises while a command is being performed waits its turn — so the plan
 // never runs on a state a command it just issued has already moved
@@ -103,6 +110,8 @@ export type Holding =
   | { readonly kind: "failed"; readonly reason: FailureReason; readonly frames: VoidFrames };
 
 export interface SchedulerState {
+  // Which model voice each role is synthesized in: every request reads it here.
+  readonly voices: VoiceMap;
   readonly holdings: ReadonlyArray<Holding>;
   readonly manifest: Manifest;
 }
@@ -111,7 +120,8 @@ const ABSENT: Holding = { kind: "absent" };
 const REQUESTED: Holding = { kind: "requested" };
 const CANCELLING: Holding = { kind: "cancelling" };
 
-export const initialState = (script: ReadonlyArray<SynthesisUnit>): SchedulerState => ({
+export const initialState = (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap): SchedulerState => ({
+  voices,
   holdings: script.map(() => ABSENT),
   manifest: emptyManifest(script),
 });
@@ -120,7 +130,9 @@ export const initialState = (script: ReadonlyArray<SynthesisUnit>): SchedulerSta
 
 export type Event =
   | { readonly kind: "worker"; readonly message: FromWorker }
-  | { readonly kind: "player"; readonly state: PlayerState };
+  | { readonly kind: "player"; readonly state: PlayerState }
+  // The reader's voices changed: the map every request reads from now on.
+  | { readonly kind: "voices"; readonly voices: VoiceMap };
 
 export type Command =
   | { readonly kind: "worker"; readonly message: ToWorker }
@@ -150,6 +162,7 @@ const withHolding = (state: SchedulerState, unit: number, holding: Holding): Sch
 // [LAW:one-source-of-truth] A failed unit has no audio, so it has no record: an earlier
 // rendition's measurement is voided with the holding, never left for the timeline to count.
 const failed = (state: SchedulerState, unit: number, reason: FailureReason, frames: VoidFrames): SchedulerState => ({
+  ...state,
   holdings: state.holdings.with(unit, { kind: "failed", reason, frames }),
   manifest: { ...state.manifest, units: state.manifest.units.with(unit, undefined) },
 });
@@ -157,10 +170,15 @@ const failed = (state: SchedulerState, unit: number, reason: FailureReason, fram
 const unexpected = (message: FromWorker, holding: Holding): Error =>
   new Error(`scheduler: ${message.kind} for a unit that is ${holding.kind}`);
 
+// The page's other requests on the same port — a voice preview — take ids below zero
+// (synthesisProtocol.ts): their messages are another conversation, not a unit of ours.
+const foreign = (message: FromWorker): boolean => "unitId" in message && message.unitId < 0;
+
 // [LAW:dataflow-not-control-flow] One row per (message, holding) the protocol allows; every
 // other pair is a violation and throws. `cancelling` accepts any terminal as "over" — the
 // cancel raced a `done` or a `failed` already on the wire — and the unit is absent again.
 const apply = (state: SchedulerState, message: FromWorker): Plan => {
+  if (foreign(message)) return { state, commands: [] };
   switch (message.kind) {
     case "audio": {
       const holding = holdingOf(state, message.unitId);
@@ -262,7 +280,7 @@ const reach = (holdings: ReadonlyArray<Holding>, at: Position): Reach => {
 // the cursor is, what to cancel, drop and request. Idempotent — a second plan over its own
 // result issues nothing — and it returns the very same state object when nothing changed,
 // which is how the driver knows whether to notify.
-const plan = (voices: VoiceMap, state: SchedulerState, player: PlayerState): Plan => {
+const plan = (state: SchedulerState, player: PlayerState): Plan => {
   const commands: Command[] = [];
   let holdings: Holding[] | null = null;
   const set = (unit: number, holding: Holding): void => {
@@ -331,16 +349,73 @@ const plan = (voices: VoiceMap, state: SchedulerState, player: PlayerState): Pla
   if (inFlight !== -1) evict(inFlight);
   const unit = state.manifest.script[next];
   if (unit === undefined) throw new RangeError(`scheduler: no script unit ${next}`);
-  commands.push(toWorker({ kind: "synthesize", unitId: next, text: unitText(unit), voice: voices[unit.utterance.voice] }));
+  commands.push(toWorker({ kind: "synthesize", unitId: next, text: unitText(unit), voice: state.voices[unit.utterance.voice] }));
   set(next, REQUESTED);
   return finish();
 };
 
+// ── the reader's voices ────────────────────────────────────────────────────────────────
+
+// How the unit under the cursor is restarted, by the player's own state: the player will
+// not drop the unit it is cueing, so a speaking player is held before the drops and set
+// going again after the seek; a paused one has its held place moved; an idle one has no
+// cursor. `changed` says whether that unit's voice is among the changed.
+const restart = (player: PlayerState, changed: (unit: number) => boolean): { before: Command[]; after: Command[] } => {
+  const none = { before: [], after: [] };
+  if (player.kind === "idle" || !changed(player.at.unitIndex)) return none;
+  const seek = toPlayer({ kind: "seek", to: { unitIndex: player.at.unitIndex, offsetMs: 0 } });
+  switch (player.kind) {
+    case "paused":
+      return { before: [], after: [seek] };
+    case "speaking":
+      return { before: [toPlayer({ kind: "pause" })], after: [seek, toPlayer({ kind: "play" })] };
+  }
+};
+
+// [LAW:one-source-of-truth] A rendition is of one text in one voice, so every unit whose
+// voice changed is forgotten as if never made: its audio leaves the player, its request is
+// withdrawn, its record is voided and its failure with it — a failure was that voice's,
+// and the new voice gets its own try. Units of unchanged voices are untouched. The plan
+// that follows asks for the forgotten units again, the one under the cursor first.
+const revoice = (state: SchedulerState, voices: VoiceMap, player: PlayerState): Plan => {
+  const changed = (unit: number): boolean => {
+    const said = state.manifest.script[unit];
+    if (said === undefined) throw new RangeError(`scheduler: no script unit ${unit}`);
+    return state.voices[said.utterance.voice] !== voices[said.utterance.voice];
+  };
+  const commands: Command[] = [];
+  const holdings = state.holdings.map((holding, unit): Holding => {
+    if (!changed(unit)) return holding;
+    switch (holding.kind) {
+      case "held":
+        commands.push(toPlayer({ kind: "drop", unit }));
+        return ABSENT;
+      case "requested":
+        commands.push(toWorker({ kind: "cancel", unitId: unit }), toPlayer({ kind: "drop", unit }));
+        return CANCELLING;
+      case "failed":
+        if (holding.frames === "player") commands.push(toPlayer({ kind: "drop", unit }));
+        return ABSENT;
+      case "absent":
+      case "cancelling":
+        return holding;
+    }
+  });
+  const units = state.manifest.units.map((record, unit) => (changed(unit) ? undefined : record));
+  const { before, after } = restart(player, changed);
+  return {
+    state: { voices, holdings, manifest: { ...state.manifest, units } },
+    commands: [...before, ...commands, ...after],
+  };
+};
+
 // [LAW:single-enforcer] The one function that changes the scheduler's state: what the
-// worker said is applied, then the plan is redrawn against where the player is now.
-export const step = (voices: VoiceMap, state: SchedulerState, event: Event, player: PlayerState): Plan => {
-  const applied = event.kind === "worker" ? apply(state, event.message) : { state, commands: [] };
-  const planned = plan(voices, applied.state, player);
+// worker said, or the reader's new voices, is applied, then the plan is redrawn against
+// where the player is now.
+export const step = (state: SchedulerState, event: Event, player: PlayerState): Plan => {
+  const applied =
+    event.kind === "worker" ? apply(state, event.message) : event.kind === "voices" ? revoice(state, event.voices, player) : { state, commands: [] };
+  const planned = plan(applied.state, player);
   return { state: planned.state, commands: [...applied.commands, ...planned.commands] };
 };
 
@@ -369,6 +444,8 @@ export interface SchedulerConfig {
 
 export interface Scheduler {
   readonly send: (control: Control) => void;
+  // The reader's voices from now on: the units of a changed voice are made again in it.
+  readonly voices: (voices: VoiceMap) => void;
   readonly view: () => SchedulerView;
   // Ends the listen: stops the player, withdraws the request in flight, stops listening to
   // the worker. Call it before the worker is disposed, so the worker's cancellations land
@@ -378,7 +455,7 @@ export interface Scheduler {
 
 export const createScheduler = (config: SchedulerConfig): Scheduler => {
   // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch`.
-  let state = initialState(config.script);
+  let state = initialState(config.script, config.voices);
   const queue: Event[] = [];
   let draining = false;
 
@@ -398,7 +475,7 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
     try {
       for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
         const before = state;
-        const planned = step(config.voices, state, next, player.state());
+        const planned = step(state, next, player.state());
         state = planned.state;
         for (const command of planned.commands) perform(command);
         if (state !== before || next.kind === "player") config.onChange(view());
@@ -412,6 +489,7 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
 
   return {
     send: (control) => player.send(control),
+    voices: (voices) => dispatch({ kind: "voices", voices }),
     view,
     dispose: () => {
       // Stopping empties the window, which is what cancels and drops everything.

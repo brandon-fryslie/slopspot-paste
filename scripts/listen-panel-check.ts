@@ -36,7 +36,7 @@ import type { Mark } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
-import { DEFAULT_VOICES, type SynthesisUnit } from "../src/speechScript";
+import type { SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S } from "../src/unitPlayer";
