@@ -10,10 +10,9 @@
 // per-device yes: kept in the page's storage, reversible from the same hover, and read from
 // storage every time it is needed rather than copied into memory [LAW:one-source-of-truth].
 //
-// [LAW:single-enforcer] The metered-connection rule lives in modelAssets.downloadNeedsTap
-// and is read here, nowhere else: a remembered yes still asks on save-data or cellular. So
-// the reader's consent is one value with two doors — the tap, and this standing yes — and
-// the exception applies to the standing one only, in the one function that grants it.
+// [LAW:single-enforcer] The metered-connection rule lives in modelAssets.downloadNeedsTap;
+// `standingConsent` is the one place a standing yes is granted under it, so a remembered
+// yes still asks on save-data or cellular. The tap, the other door, is never subject to it.
 //
 // [LAW:effects-at-boundaries] Storage is a parameter of the two edges below, so
 // scripts/listen-consent-check.ts drives them over an in-memory store; the page hands them
@@ -33,13 +32,26 @@ export interface PreferenceStore {
 export const PREFERENCE_KEY = "listen.download";
 const REMEMBERED = "always";
 
-export const readPreference = (store: PreferenceStore): boolean => store.getItem(PREFERENCE_KEY) === REMEMBERED;
+// [LAW:no-silent-failure] exception: a browser that refuses site storage throws on the
+// store itself, and reads as "ask" — the preference is a convenience, and a refused store
+// must not take Listen down with it (the editor's draft storage makes the same trade).
+export const readPreference = (store: PreferenceStore): boolean => {
+  try {
+    return store.getItem(PREFERENCE_KEY) === REMEMBERED;
+  } catch {
+    return false;
+  }
+};
 
 // Unchecking removes the key rather than writing "never": the absence IS "ask", and a store
 // that never held the key and one the reader cleared read the same [LAW:one-type-per-behavior].
 export const writePreference = (store: PreferenceStore, remembered: boolean): void => {
-  if (remembered) store.setItem(PREFERENCE_KEY, REMEMBERED);
-  else store.removeItem(PREFERENCE_KEY);
+  try {
+    if (remembered) store.setItem(PREFERENCE_KEY, REMEMBERED);
+    else store.removeItem(PREFERENCE_KEY);
+  } catch {
+    /* storage refused — the preference is not kept; the visit's consent is unaffected */
+  }
 };
 
 // [LAW:types-are-the-program] What the visit grants before any tap: nothing, or a download.

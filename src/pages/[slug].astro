@@ -769,88 +769,85 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
       };
       const utterances = JSON.parse(payloadEl.textContent ?? "[]") as Utterance[];
 
-      // [LAW:parse-dont-validate] The tool is revealed when the voice MAY work — the page
+      // [LAW:parse-dont-validate] The tool is offered when the voice MAY work — the page
       // has WebGPU; its real answer (adapter, 16-bit floats, a device) is the worker's
-      // probe, and comes only after the tap that spawns it. A page without WebGPU shows no
-      // Listen at all.
+      // probe. A page without WebGPU builds no Listen at all: no panel, no worker, no tap.
       const listenOffered = navigator.gpu !== undefined;
       document.body.classList.toggle("speech-ready", listenOffered);
-
-      // The page's part of the read-along: the painter marks the card, the sentence and the
-      // word; the follower keeps whatever it marked in view, from this window's geometry.
-      // The motion preference is read per reveal, not sampled once at wiring time — a
-      // reader who changes the setting mid-session is honoured on the next passage rather
-      // than at the next reload [LAW:no-ambient-temporal-coupling].
-      const painter = createPainter(document);
-      const follower = createFollower({
-        button: control<HTMLButtonElement>(".speech-follow"),
-        gestures: window,
-        view: {
-          viewportHeight: () => window.innerHeight,
-          rectOf: (el) => el.getBoundingClientRect(),
-          reveal: (el) =>
-            el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }),
-          scrollbarAt: (x, y) => x >= document.documentElement.clientWidth || y >= document.documentElement.clientHeight,
-        },
-      });
-      const panel = createListenPanel({
-        controls: {
-          play: control<HTMLButtonElement>(".speech-play"),
-          stop: control<HTMLButtonElement>(".speech-stop"),
-          status: control<HTMLElement>(".speech-now"),
-          progress: control<HTMLProgressElement>(".speech-progress"),
-          mark: {
-            root: markEl,
-            button: markPart<HTMLButtonElement>(".listen-mark-button"),
-            sentence: markPart<HTMLElement>(".listen-mark-sentence"),
-            ask: markPart<HTMLElement>(".listen-mark-ask"),
-            yes: markPart<HTMLButtonElement>(".listen-mark-yes"),
-            remember: markPart<HTMLInputElement>(".listen-mark-remember input"),
-          },
-        },
-        utterances,
-        voices: DEFAULT_VOICES,
-        spawn: spawnSynthesisWorker,
-        // [LAW:one-source-of-truth] The store the worker's loader writes, listed here under the
-        // same keys; and the browser's own keep request, a Window-only API, so it is the
-        // page's to ask (every browser with WebGPU has it).
-        home: () => readResidency(opfs, allModelAssets(MODEL_ASSETS)),
-        keep: () => askToKeep(() => navigator.storage.persist()),
-        // The device's remembered preference, in this origin's storage; and the connection
-        // reading only Chromium exposes, absent elsewhere.
-        preference: {
-          read: () => readPreference(window.localStorage),
-          write: (remembered) => writePreference(window.localStorage, remembered),
-        },
-        connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
-        Device: AudioContext,
-        frames: {
-          request: (callback) => window.requestAnimationFrame(callback),
-          cancel: (handle) => window.cancelAnimationFrame(handle),
-        },
-        onPosition: (at) => follower.cursor(painter.paint(at)),
-      });
-
-      // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not release
-      // the model the worker holds on the GPU, nor close the audio device, on its own. The
-      // teardown is owned here, explicitly: the page that started both releases both.
-      window.addEventListener("pagehide", () => {
-        panel.dispose();
-        follower.dispose();
-      });
-      // A page restored from the back-forward cache comes back through the same door it
-      // left by: the panel that was disposed wakes, probes again, and gives the standing
-      // consent again, as at mount.
-      window.addEventListener("pageshow", (event) => {
-        if (event.persisted) panel.wake();
-      });
-
-      // A tap on the page's prose listens from there; readAlong.tapMark says which taps are
-      // that and which are the page's own controls, links and selections. The reader is
-      // looking where the voice is about to be, so the page follows again. The tap is
-      // Listen's second door, so it opens with the tool [LAW:one-source-of-truth]: a page
-      // that offers no Listen has no tap that starts a voice behind the reader's back.
       if (listenOffered) {
+
+        // The page's part of the read-along: the painter marks the card, the sentence and the
+        // word; the follower keeps whatever it marked in view, from this window's geometry.
+        // The motion preference is read per reveal, not sampled once at wiring time — a
+        // reader who changes the setting mid-session is honoured on the next passage rather
+        // than at the next reload [LAW:no-ambient-temporal-coupling].
+        const painter = createPainter(document);
+        const follower = createFollower({
+          button: control<HTMLButtonElement>(".speech-follow"),
+          gestures: window,
+          view: {
+            viewportHeight: () => window.innerHeight,
+            rectOf: (el) => el.getBoundingClientRect(),
+            reveal: (el) =>
+              el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }),
+            scrollbarAt: (x, y) => x >= document.documentElement.clientWidth || y >= document.documentElement.clientHeight,
+          },
+        });
+        const panel = createListenPanel({
+          controls: {
+            play: control<HTMLButtonElement>(".speech-play"),
+            stop: control<HTMLButtonElement>(".speech-stop"),
+            status: control<HTMLElement>(".speech-now"),
+            progress: control<HTMLProgressElement>(".speech-progress"),
+            mark: {
+              root: markEl,
+              button: markPart<HTMLButtonElement>(".listen-mark-button"),
+              sentence: markPart<HTMLElement>(".listen-mark-sentence"),
+              ask: markPart<HTMLElement>(".listen-mark-ask"),
+              yes: markPart<HTMLButtonElement>(".listen-mark-yes"),
+              remember: markPart<HTMLInputElement>(".listen-mark-remember input"),
+            },
+          },
+          utterances,
+          voices: DEFAULT_VOICES,
+          spawn: spawnSynthesisWorker,
+          // [LAW:one-source-of-truth] The store the worker's loader writes, listed here under the
+          // same keys; and the browser's own keep request, a Window-only API, so it is the
+          // page's to ask (every browser with WebGPU has it).
+          home: () => readResidency(opfs, allModelAssets(MODEL_ASSETS)),
+          keep: () => askToKeep(() => navigator.storage.persist()),
+          // The device's remembered preference, in this origin's storage; and the connection
+          // reading only Chromium exposes, absent elsewhere.
+          preference: {
+            read: () => readPreference(window.localStorage),
+            write: (remembered) => writePreference(window.localStorage, remembered),
+          },
+          connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
+          Device: AudioContext,
+          frames: {
+            request: (callback) => window.requestAnimationFrame(callback),
+            cancel: (handle) => window.cancelAnimationFrame(handle),
+          },
+          onPosition: (at) => follower.cursor(painter.paint(at)),
+        });
+
+        // [LAW:no-ambient-temporal-coupling] A navigation away from the page does not release
+        // the model the worker holds on the GPU, nor close the audio device, on its own. The
+        // teardown is owned here, explicitly: the page that started both releases both.
+        window.addEventListener("pagehide", () => {
+          panel.dispose();
+          follower.dispose();
+        });
+        // A page restored from the back-forward cache comes back through the same door it
+        // left by: the panel that was disposed wakes, probes again, and gives the standing
+        // consent again, as at mount.
+        window.addEventListener("pageshow", (event) => {
+          if (event.persisted) panel.wake();
+        });
+
+        // A tap on the page's prose listens from there; readAlong.tapMark says which taps
+        // are that and which are the page's own controls, links and selections. The reader
+        // is looking where the voice is about to be, so the page follows again.
         const caretAt = caretSource(document);
         document.addEventListener("click", (event) => {
           const mark = tapMark(document, caretAt, utterances, event);

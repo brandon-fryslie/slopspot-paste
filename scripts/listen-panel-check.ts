@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { PREFERENCE_KEY, readPreference, writePreference, type PreferenceStore } from "../src/listenConsent";
+import { readPreference, writePreference, type PreferenceStore } from "../src/listenConsent";
 import {
   createListenPanel,
   DOWNLOAD_BYTES,
@@ -192,6 +192,8 @@ console.log("step: the way to audio");
   assert("a crash on stage while idle: released, the place the top", effects(crashedOnStage) === "release terminate,home" && held(crashedOnStage.state) === "0:0");
   const fellPlaying = step(playing.state, { kind: "worker-error", message: "boom" });
   assert("a crash while playing keeps the reported place for the retry", held(fellPlaying.state) === "1:0" && shown(fellPlaying.state) === "Retry | stop(off) | The voice failed: boom");
+  const fellRewoken = [wake("none"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, fellPlaying.state);
+  assert("a crash while playing, then a wake: the voice comes back standing at the place, not speaking — the tap's yes went with its device", held(fellRewoken) === "1:0" && effects(step(fellRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "");
   throws("a view after the crash is a violation: the released performer's last view never reaches step", () => step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }));
   const respawned = step(fellPlaying.state, tapPlay);
   assert("Retry after a crash spawns a fresh worker and probes, the place still held", effects(respawned) === "unlock,spawn" && held(respawned.state) === "1:0" && shown(respawned.state).startsWith("Listen(off)"));
@@ -296,6 +298,8 @@ console.log("readout: every form the mark can take, and the question its hover a
   assert("the voice on stage and idle is ready", markForm(onStage).kind === "ready");
 
   const ask = (state: PanelState, visit: Visit = ASKING): string | null => readout(state, TOTAL, visit).ask;
+  const promised = step(step(idle, wake("download")).state, home(ABSENT)).state;
+  assert("a held consent through the probe is a voice on its way: warming to the eye, nothing to ask", markForm(promised).kind === "warming" && ask(promised) === null);
   assert("download needed: the hover asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
   assert("a store that cannot keep the voice: the hover asks for the whole model", ask(forms.unavailable) === `Download speech model? · ${MB}`);
   assert("remembered on a metered connection: the hover says why it asks anyway", ask(forms.download, { remembered: true, metered: true }) === "Download speech model? · 239 MB · asking because this connection is metered");
@@ -692,7 +696,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   const panel = mount(r);
   await ableAbsent(r);
   r.check(true);
-  assert("checking the box writes the preference, and the voice loads with no tap and no device", r.store.getItem(PREFERENCE_KEY) === "always" && r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE && r.shownMark() === "warming | no ask | yes hidden | remember on");
+  assert("checking the box writes the preference, and the voice loads with no tap and no device", readPreference(r.store) && r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE && r.shownMark() === "warming | no ask | yes hidden | remember on");
   r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   r.emit({ kind: "script", id: SCRIPT_ID, units });
@@ -706,7 +710,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
 
   const next = rig({ remembered: true });
   const nextPanel = mount(next);
-  assert("a later visit with the preference: the probe first, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "checking | no ask | yes hidden | remember on" && next.sent.length === 0);
+  assert("a later visit with the preference: the probe first, the mark already on its way, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "warming | no ask | yes hidden | remember on" && next.sent.length === 0);
   next.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   assert("supported: load is sent with no tap, the browser asked to keep, no device opened", next.said() === "load" && next.counts.keepAsked === 1 && next.devices().length === 0 && next.line() === PREPARING_LINE);
   next.answer.home(ABSENT);

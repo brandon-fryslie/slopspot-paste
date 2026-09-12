@@ -37,16 +37,17 @@
 // `none` (the worker waits in `supported`), `download` (fetch and warm the voice, then stand
 // ready — the hover's yes, or the device's remembered preference through listenConsent.ts),
 // `play` (fetch, warm, and speak from `from` — a Play tap, or a tap on a word, which is Play
-// with a place: a `seek` to a Mark). A later word only raises it; nothing lowers it short of
-// a dispose. The tap is also the reader's gesture, the one moment a browser lets audio start
-// [LAW:no-ambient-temporal-coupling]: every gesture yields an `unlock` effect on its own
-// stack, which opens the audio device if it is not yet open and resumes it there, so the
-// context is running long before the model is warm and the first unit — scheduled from a
-// worker message many seconds later — sounds. A voice that arrives on a standing consent is
-// built on a device opened outside any gesture; the reader's first Play resumes it through
-// the unit player, on the tap's stack. Costs, stated once: every reader with WebGPU spends
-// the worker bundle on the probe; a download in flight cannot be cancelled (the protocol
-// has no message for it).
+// with a place: a `seek` to a Mark). A later word only raises it; a crash lowers `play` to
+// `download` — the device the tap unlocked went with the worker, and a wake is never a yes
+// to speak — and a dispose forgets it. The tap is also the reader's gesture, the one moment
+// a browser lets audio start [LAW:no-ambient-temporal-coupling]: every gesture yields an
+// `unlock` effect on its own stack, which opens the audio device if it is not yet open and
+// resumes it there, so the context is running long before the model is warm and the first
+// unit — scheduled from a worker message many seconds later — sounds. A voice that arrives
+// on a standing consent is built on a device opened outside any gesture; the reader's first
+// Play resumes it through the unit player, on the tap's stack. Costs, stated once: every
+// reader with WebGPU spends the worker bundle on the probe; a download in flight cannot be
+// cancelled (the protocol has no message for it).
 //
 // THE MARK. Beside the dock's launcher, one always-visible icon says where the voice is —
 // on this device, a download away and how large, downloading and how far, warming,
@@ -356,14 +357,14 @@ const placeOf = (view: NeuralView): Mark => {
   return at.kind === "idle" ? TOP : markOf(at.at);
 };
 
-// The voice leaves the stage, or never reached it: the phase it fell to, the place and the
-// consent kept for the retry, and the release of everything that had been built. A voice
-// that fell mid-word comes back speaking there; one that fell idle comes back idle.
+// The voice leaves the stage, or never reached it: the phase it fell to, the place kept for
+// the retry, the consent it keeps, and the release of everything that had been built. The
+// yes to the weights outlives the crash; the yes to speak does not, since the device that
+// tap unlocked is released here — a Retry tap gives it again on its own stack, and a voice
+// that fell mid-word then comes back speaking there, while a wake brings it back standing.
+const outlives = (consent: Consent): Consent => (consent === "none" ? "none" : "download");
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const entered =
-    state.kind === "provisioning"
-      ? enter(neural, state.from, state.consent)
-      : enter(neural, placeOf(state.view), state.view.player.kind === "idle" ? "download" : "play");
+  const entered = state.kind === "provisioning" ? enter(neural, state.from, outlives(state.consent)) : enter(neural, placeOf(state.view), "download");
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -603,7 +604,8 @@ export const markForm = (state: PanelState): MarkForm => {
     case "idle":
     case "probing":
     case "supported":
-      return homeForm(state.home);
+      // A held consent through the probe is a voice on its way: the ask would be answered.
+      return state.consent === "none" ? homeForm(state.home) : { kind: "warming" };
     case "preparing":
     case "warming":
     case "scripting":
