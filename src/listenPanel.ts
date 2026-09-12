@@ -65,10 +65,21 @@
 // unrepresentable [LAW:no-silent-failure].
 //
 // WHAT THE PANEL MIRRORS. The `neural` arm carries the scheduler's view — player position,
-// manifest, holdings — as delivered by its onChange; the panel never computes a second
-// opinion of it [LAW:one-source-of-truth]. The read-along cursor is derived from the
-// performer's live `state()` on every animation frame while speaking: within an utterance
-// the position moves with no event.
+// manifest, holdings — as delivered by its onChange, and the voice a preview is sounding as
+// delivered by the previewer's; the panel never computes a second opinion of either
+// [LAW:one-source-of-truth]. The read-along cursor is derived from the performer's live
+// `state()` on every animation frame while speaking: within an utterance the position
+// moves with no event.
+//
+// THE VOICES. Which voice speaks for the reader and which for Claude is the device's pick
+// (voiceChoice.ts): read from storage at every render, like the download preference, and
+// never copied into the state. The map the performer is built with is derived from it at
+// the build, and a change while the voice is on stage is one event that becomes one effect
+// — the performer is told the new map, and the scheduler remakes the units of the changed
+// voice, the one under the cursor first. A voice is chosen by ear: a preview is offered
+// exactly while the voice is on stage (the model warm, the port able to synthesize) and
+// withheld with the reason before; a preview's tap pauses the reading, since a phrase over
+// the passage would be noise, and is the gesture that opens the preview's own device.
 //
 // [LAW:no-ambient-temporal-coupling] Events run to completion in arrival order, as in the
 // scheduler: an effect's synchronous consequence (the performer's first view) is queued
@@ -79,7 +90,7 @@
 
 import { begin, estimate, record, remainingText, type Pace } from "./downloadPace";
 import { standingConsent, type StandingConsent } from "./listenConsent";
-import { MODEL_ASSETS, allModelAssets, downloadNeedsTap, type ConnectionReading } from "./modelAssets";
+import { MODEL_ASSETS, allModelAssets, downloadNeedsTap, type ConnectionReading, type VoiceId } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
@@ -92,6 +103,9 @@ import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
+import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
+import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
+import { createPreviewer, type Previewer } from "./voicePreview";
 
 // ── state ──────────────────────────────────────────────────────────────────────────────
 
@@ -147,8 +161,9 @@ export type PanelState =
       readonly keeping: Keeping | null;
       readonly consent: Consents;
     }
-  // The voice on stage; the view is the scheduler's, the consent kept for a fall.
-  | { readonly kind: "neural"; readonly view: NeuralView; readonly consent: Consents };
+  // The voice on stage; the view is the scheduler's, the consent kept for a fall, and
+  // `sounding` the voice a preview is saying its phrase in, when one is.
+  | { readonly kind: "neural"; readonly view: NeuralView; readonly consent: Consents; readonly sounding: VoiceId | null };
 
 export type Tap = "play" | "stop";
 
@@ -170,6 +185,13 @@ export type PanelEvent =
   | { readonly kind: "home"; readonly residency: Residency }
   | { readonly kind: "keeping"; readonly keeping: Keeping }
   | { readonly kind: "view"; readonly view: NeuralView }
+  // The reader tapped a voice's preview: it is heard out, over a paused reading.
+  | { readonly kind: "preview"; readonly voice: VoiceId }
+  // The previewer's word on which voice is sounding, or that none is.
+  | { readonly kind: "sounding"; readonly voice: VoiceId | null }
+  // The device's pick changed: the map the voice on stage speaks with from now on. A voice
+  // on its way reads the pick at its build, so it has nothing to do here.
+  | { readonly kind: "voices"; readonly voices: VoiceMap }
   // The page is done with the panel: everything it built is released.
   | { readonly kind: "dispose" };
 
@@ -185,7 +207,13 @@ export type Effect =
   | { readonly kind: "script" }
   | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit> }
   | { readonly kind: "perform"; readonly event: PerformerEvent }
-  // Releases the performer, the device and the worker; how the worker ends is the value: a
+  // The previewer says its phrase in the voice; on the tap's stack, which opens its device.
+  | { readonly kind: "preview"; readonly voice: VoiceId }
+  // The previewer is silenced.
+  | { readonly kind: "hush" }
+  // The performer is told the reader's voices.
+  | { readonly kind: "revoice"; readonly voices: VoiceMap }
+  // Releases the performer, the previewer, the device and the worker; how the worker ends is the value: a
   // dead worker is terminated, since nothing can be sent to it, a live one is asked to
   // dispose so the model is released first.
   | { readonly kind: "release"; readonly worker: "terminate" | "dispose" };
@@ -220,6 +248,10 @@ const violation = (state: PanelState, what: string): Error =>
 // The verbs a tap can send: a seek is never a tap's.
 type Verb = Exclude<PerformerEvent, { kind: "seek" }>["kind"];
 const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
+// A phrase and the reading never sound together: a preview pauses the reading (`preview`),
+// and a tap on the transport hushes the phrase — always, since a hush on a silent
+// previewer is its own no-op [LAW:dataflow-not-control-flow].
+const HUSH: Effect = { kind: "hush" };
 
 // The phases in which a `progress`, `ready` or `load-failed` may arrive.
 const loading = (neural: NeuralPhase): boolean =>
@@ -273,7 +305,7 @@ const tap = (state: PanelState, control: Tap): Step => {
   switch (state.kind) {
     case "neural": {
       const verb: Verb = control === "stop" ? "stop" : state.view.player.kind === "speaking" ? "pause" : "play";
-      return { state, effects: [perform({ kind: verb })] };
+      return { state, effects: [HUSH, perform({ kind: verb })] };
     }
     case "provisioning":
       // Stop is disabled by `readout` here; a tap that reaches it anyway changes nothing.
@@ -286,7 +318,7 @@ const tap = (state: PanelState, control: Tap): Step => {
 const seek = (state: PanelState, to: Mark): Step => {
   switch (state.kind) {
     case "neural":
-      return { state, effects: [perform({ kind: "seek", to })] };
+      return { state, effects: [HUSH, perform({ kind: "seek", to })] };
     case "provisioning": {
       const kicked = gesture(state, "play");
       return { state: { ...kicked.state, from: to }, effects: kicked.effects };
@@ -361,7 +393,9 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
     case "done":
     case "cancelled":
     case "failed":
-      // The scheduler's messages, on the port the panel also hears. Not ours to act on.
+    case "refused":
+      // The performers' messages, on the port the panel also hears; the scheduler and the
+      // previewer each judge a refusal of their own request. Not ours to act on.
       return stay(state);
     default:
       throw violation(state, message.kind);
@@ -395,6 +429,22 @@ const home = (state: PanelState, residency: Residency): Step =>
 const keeping = (state: PanelState, answer: Keeping): Step =>
   state.kind === "provisioning" ? stay({ ...state, keeping: answer }) : stay(state);
 
+// A preview is offered only with the voice on stage; the readout disables it before, and a
+// tap that reaches here anyway changes nothing. The reading is paused first — a pause on
+// a paused or idle performer is the player's own no-op — so the phrase is heard alone.
+const preview = (state: PanelState, voice: VoiceId): Step =>
+  state.kind === "neural" ? { state, effects: [perform({ kind: "pause" }), { kind: "preview", voice }] } : stay(state);
+
+// The previewer speaks only while the voice is on stage: it is built with the performer
+// and released with it, so its word anywhere else is a bug.
+const sounding = (state: PanelState, voice: VoiceId | null): Step => {
+  if (state.kind !== "neural") throw violation(state, "a preview");
+  return stay({ ...state, sounding: voice });
+};
+
+const voices = (state: PanelState, map: VoiceMap): Step =>
+  state.kind === "neural" ? { state, effects: [{ kind: "revoice", voices: map }] } : stay(state);
+
 export const step = (state: PanelState, event: PanelEvent): Step => {
   switch (event.kind) {
     case "tap":
@@ -413,6 +463,12 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       return home(state, event.residency);
     case "keeping":
       return keeping(state, event.keeping);
+    case "preview":
+      return preview(state, event.voice);
+    case "sounding":
+      return sounding(state, event.voice);
+    case "voices":
+      return voices(state, event.voices);
     case "dispose": {
       const started = start();
       return { state: started.state, effects: [{ kind: "release", worker: "dispose" }, ...started.effects] };
@@ -423,7 +479,7 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       // The performer's first view: the voice takes the stage, and is sent to the place the
       // tap named when a tap is what brought it — a download alone leaves it standing ready.
       return {
-        state: { kind: "neural", view: event.view, consent: state.consent },
+        state: { kind: "neural", view: event.view, consent: state.consent, sounding: null },
         effects: granted(state) === "play" ? [perform({ kind: "seek", to: state.from })] : [],
       };
     }
@@ -454,13 +510,15 @@ export type MarkForm =
 export interface Visit {
   readonly remembered: boolean;
   readonly metered: boolean;
+  // The device's voice pick, read from storage at every render like `remembered`.
+  readonly pick: VoicePick;
 }
 
 // What the panel shows: the two buttons' shape, the status sentence, the download when
-// there is one (under way, or where a failure stopped it), and the mark — its form, the
+// there is one (under way, or where a failure stopped it), the mark — its form, the
 // question its hover asks when a download stands between the reader and the voice, and the
-// preference's box. A pure projection of the state and the visit, so the check reads it
-// directly.
+// preference's box — and the voice picker. A pure projection of the state and the visit,
+// so the check reads it directly.
 export interface Readout {
   readonly play: { readonly label: string; readonly enabled: boolean };
   readonly stop: { readonly enabled: boolean };
@@ -469,6 +527,7 @@ export interface Readout {
   readonly mark: MarkForm;
   readonly ask: string | null;
   readonly remembered: boolean;
+  readonly voices: VoicesReadout;
 }
 
 export const DOWNLOAD_BYTES = allModelAssets(MODEL_ASSETS).reduce((sum, asset) => sum + asset.bytes, 0);
@@ -666,13 +725,42 @@ const askText = (state: PanelState, form: MarkForm, visit: Visit): string | null
   return [`Download speech model? · ${megabytes(bytes)}`, ...why].join("");
 };
 
+// [LAW:dataflow-not-control-flow] Total over every phase: a preview is offered exactly with
+// the voice on stage, and withheld before with the reason — the one honest sentence for a
+// device that can never run the voice, and one for every other way of not being there yet.
+const previewOffer = (state: PanelState): PreviewOffer => {
+  if (state.kind === "neural") return { kind: "offered" };
+  switch (state.neural.kind) {
+    case "unsupported":
+      return { kind: "withheld", why: "This device can't run the voice, so there is nothing to hear." };
+    case "idle":
+    case "probing":
+    case "supported":
+    case "preparing":
+    case "downloading":
+    case "warming":
+    case "scripting":
+    case "load-failed":
+    case "crashed":
+      return { kind: "withheld", why: "Previews play once the voice is ready on this device." };
+  }
+};
+
+const voicesReadout = (state: PanelState, pick: VoicePick): VoicesReadout => ({
+  picked: pick,
+  preview: previewOffer(state),
+  sounding: state.kind === "neural" ? state.sounding : null,
+  reset: !samePick(pick, DEFAULT_PICK),
+});
+
 // `total` is the page's utterance count: the "of N" every position reads.
 export const readout = (state: PanelState, total: number, visit: Visit): Readout => {
   const mark = markForm(state);
   const ask = askText(state, mark, visit);
   const { remembered } = visit;
+  const voices = voicesReadout(state, visit.pick);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player), status: neuralStatus(state.view, total), progress: null, mark, ask, remembered };
+    return { ...transport(state.view.player), status: neuralStatus(state.view, total), progress: null, mark, ask, remembered, voices };
   }
   const { neural } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -688,6 +776,7 @@ export const readout = (state: PanelState, total: number, visit: Visit): Readout
     mark,
     ask,
     remembered,
+    voices,
   };
 };
 
@@ -718,12 +807,20 @@ export interface MarkControls {
   readonly remember: HTMLInputElement;
 }
 
+// The voice picker's markup: the button in the transport that opens and closes it, and the
+// empty block the rows are built into (voicePicker.ts).
+export interface VoiceControls {
+  readonly toggle: HTMLButtonElement;
+  readonly picker: HTMLElement;
+}
+
 export interface ListenControls {
   readonly play: HTMLButtonElement;
   readonly stop: HTMLButtonElement;
   readonly status: HTMLElement;
   readonly progress: HTMLProgressElement;
   readonly mark: MarkControls;
+  readonly voices: VoiceControls;
 }
 
 // The animation-frame seam, so the check fires frames by hand.
@@ -735,7 +832,6 @@ export interface FrameLoop {
 export interface ListenPanelConfig {
   readonly controls: ListenControls;
   readonly utterances: ReadonlyArray<Utterance>;
-  readonly voices: VoiceMap;
   readonly spawn: () => SynthesisPort;
   // The store's word on the model, and the browser's on keeping it: modelResidency's two
   // edges over the real store and navigator.storage.persist in the page, stubs in the check.
@@ -746,6 +842,9 @@ export interface ListenPanelConfig {
   // check. And the connection reading the metered rule judges: navigator.connection, which
   // only Chromium exposes; absent is honestly "unknown".
   readonly preference: { readonly read: () => boolean; readonly write: (remembered: boolean) => void };
+  // The device's voice pick, read at every render and at the build, written by the picker:
+  // voiceChoice's two edges over window.localStorage in the page, over a Map in the check.
+  readonly pick: { readonly read: () => VoicePick; readonly write: (pick: VoicePick) => void };
   readonly connection: () => ConnectionReading | undefined;
   // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
   // first gesture or the first build, whichever comes first; closed with the worker.
@@ -783,7 +882,8 @@ const handOff = (mark: MarkControls, hiding: ReadonlyArray<Element>): void => {
 
 // [LAW:dataflow-not-control-flow] Every attribute written on every render, only the values
 // vary: no path leaves a stale form, a stale sentence or a stale ring behind.
-const render = (controls: ListenControls, shown: Readout): void => {
+const render = (controls: ListenControls, picker: { readonly render: (shown: VoicesReadout) => void }, shown: Readout): void => {
+  picker.render(shown.voices);
   controls.play.textContent = shown.play.label;
   controls.play.disabled = !shown.play.enabled;
   controls.stop.disabled = !shown.stop.enabled;
@@ -840,6 +940,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   let unsubscribe: () => void = unheard;
   let unsubscribeErrors: () => void = unheard;
   let neural: NeuralPerformer | null = null;
+  let previewer: Previewer | null = null;
   const portOf = (): SynthesisPort => {
     if (port === null) throw new Error("listen panel: no worker to send to");
     return port;
@@ -851,6 +952,10 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const performer = (): NeuralPerformer => {
     if (neural === null) throw new Error("listen panel: no performer to drive");
     return neural;
+  };
+  const previewerOf = (): Previewer => {
+    if (previewer === null) throw new Error("listen panel: no previewer to drive");
+    return previewer;
   };
   // [LAW:no-ambient-temporal-coupling] One ask of each kind in flight, owned here: a new ask
   // supersedes the old, and only the current ask's answer is dispatched. The order two
@@ -915,22 +1020,35 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
           device: device(),
           script: effect.units,
           utterances,
-          voices: config.voices,
+          voices: voiceMapOf(config.pick.read()),
           onChange: (view) => dispatch({ kind: "view", view }),
         });
         neural = built;
+        previewer = createPreviewer({ port: portOf(), Device: config.Device, onChange: (voice) => dispatch({ kind: "sounding", voice }) });
         dispatch({ kind: "view", view: built.view() });
         return;
       }
       case "perform":
         performer().send(effect.event);
         return;
+      case "preview":
+        previewerOf().say(effect.voice);
+        return;
+      case "hush":
+        previewerOf().hush();
+        return;
+      case "revoice":
+        performer().voices(effect.voices);
+        return;
       case "release": {
         // A worker can die before the performer exists (the bundle failed to load) or
-        // after; either way what exists is released: the performer, then the worker, then
-        // the device the performer borrowed.
+        // after; either way what exists is released: the previewer and the performer, then
+        // the worker, then the device the performer borrowed.
         const releasing = neural;
+        const hushing = previewer;
         neural = null;
+        previewer = null;
+        hushing?.dispose();
         releasing?.dispose();
         unsubscribe();
         unsubscribeErrors();
@@ -947,9 +1065,23 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     }
   };
 
-  // The visit as it is now: the preference from storage, the connection from the browser.
-  const visit = (): Visit => ({ remembered: config.preference.read(), metered: downloadNeedsTap(config.connection()) });
-  const show = (): void => render(controls, readout(state, utterances.length, visit()));
+  // The picker's rows, built once into the page's empty block; a pick is written to the
+  // device and the map derived from what the device then holds — the same read the
+  // readout makes — so the voice on stage and the rows can never disagree
+  // [LAW:one-source-of-truth].
+  const repick = (pick: VoicePick): void => {
+    config.pick.write(pick);
+    dispatch({ kind: "voices", voices: voiceMapOf(config.pick.read()) });
+  };
+  const picker = mountVoicePicker(controls.voices.picker, {
+    pick: (role: PickedVoice, voice: VoiceId) => repick({ ...config.pick.read(), [role]: voice }),
+    preview: (voice) => dispatch({ kind: "preview", voice }),
+    reset: () => repick(DEFAULT_PICK),
+  });
+
+  // The visit as it is now: the preferences from storage, the connection from the browser.
+  const visit = (): Visit => ({ remembered: config.preference.read(), metered: downloadNeedsTap(config.connection()), pick: config.pick.read() });
+  const show = (): void => render(controls, picker, readout(state, utterances.length, visit()));
 
   const run = (event: PanelEvent): void => {
     const planned = step(state, event);
@@ -995,6 +1127,16 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   show();
   controls.play.addEventListener("click", () => dispatch({ kind: "tap", control: "play" }));
   controls.stop.addEventListener("click", () => dispatch({ kind: "tap", control: "stop" }));
+
+  // Whether the picker is open is a fact of the markup alone, owned here, as the hover's
+  // pin is: the machine has no state for it [LAW:one-source-of-truth].
+  const { voices: voiceControls } = controls;
+  const open = (shown: boolean): void => {
+    voiceControls.picker.hidden = !shown;
+    voiceControls.toggle.setAttribute("aria-expanded", String(shown));
+  };
+  open(false);
+  voiceControls.toggle.addEventListener("click", () => open(voiceControls.picker.hidden));
 
   // The hover: shown by hover in CSS, the sighted reader's affordance, and pinned here —
   // for the touch reader's tap and the keyboard reader's focus, and told to assistive

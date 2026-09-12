@@ -66,15 +66,10 @@ export const unitText = ({ utterance, start, end, text }: SynthesisUnit): UnitTe
   source: utterance.text.slice(start, end),
 });
 
-// Which model voice speaks each role. A VALUE the reader picks; changing it re-derives
-// every rendition rather than re-deploying an asset.
+// Which model voice speaks each role. A VALUE the reader picks (voiceChoice.ts derives it
+// from the pick kept on the device); changing it re-derives every rendition rather than
+// re-deploying an asset.
 export type VoiceMap = Readonly<Record<Voice, VoiceId>>;
-
-// Which role the six hosted voices speak. A VALUE, per the epic: the reader's pick by ear
-// replaces it without touching an asset. Until that pick, the spike's word-accuracy
-// ranking chooses — the voices Whisper transcribed with zero errors take the roles that
-// say the most.
-export const DEFAULT_VOICES: VoiceMap = { user: "alba", assistant: "javert", system: "eponine", narrator: "azelma" };
 
 // ── text preparation ────────────────────────────────────────────────────────────────
 //
