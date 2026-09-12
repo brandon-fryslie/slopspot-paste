@@ -242,20 +242,29 @@ console.log("step: consent is the only door to the weights");
 
   const unsupported = step(woken.state, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-adapter" } } }));
   assert("unsupported at mount: the reason, Play off, the worker released", effects(unsupported) === "release terminate" && shown(unsupported.state) === "Listen(off) | stop(off) | This device can't run the voice: no graphics adapter is available");
-  assert("neither a yes nor a wake nor a tap does anything to an unsupported device: no gesture is even spent", [yes, wake("download"), tapPlay].every((event) => step(unsupported.state, event).state === unsupported.state && effects(step(unsupported.state, event)) === ""));
+  assert("neither a yes nor a wake nor a tap does anything to an unsupported device: no gesture is even spent", [yes, wake("download"), tapPlay].every((event) => shown(step(unsupported.state, event).state) === shown(unsupported.state) && effects(step(unsupported.state, event)) === ""));
   assert("a word on an unsupported device keeps its place, as everywhere, and starts nothing", effects(step(unsupported.state, seekTo(1))) === "" && held(step(unsupported.state, seekTo(1)).state) === "1:0" && shown(step(unsupported.state, seekTo(1)).state) === shown(unsupported.state));
 
   // The consent outlives a crash — the retry is the same listen — and dies with a dispose.
   const crashedStanding = step(step(standing.state, progress(1, 2)).state, { kind: "worker-error", message: "x" });
   assert("a crash while a remembered download runs: Retry, the consent kept", shown(crashedStanding.state) === "Retry | stop(off) | The voice failed: x");
-  const rewoken = step(crashedStanding.state, wake("none"));
-  assert("a wake after the crash spawns again with nothing new", effects(rewoken) === "spawn");
-  assert("and the kept consent loads on the probe's answer", effects(step(rewoken.state, supported)) === "load");
+  const rewoken = step(crashedStanding.state, wake("download"));
+  assert("a wake after the crash, the yes still standing, spawns again", effects(rewoken) === "spawn");
+  assert("and the standing yes loads on the probe's answer", effects(step(rewoken.state, supported)) === "load");
+  const withdrawn = step(step(crashedStanding.state, wake("none")).state, supported);
+  assert("a wake with the yes withdrawn — the box unchecked, the connection metered — probes and waits", effects(withdrawn) === "" && shown(withdrawn.state) === IDLE_LINE);
   const idleOnStage = step(standingReady.state, { kind: "worker-error", message: "x" });
   const idleRetried = [tapPlay, supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
   assert("a crash on stage while idle, then Retry: the tap is the consent, the voice arrives and speaks", effects(step(idleRetried, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform seek 0:0");
   const idleRewoken = [wake("download"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
   assert("a crash on stage while idle, then a wake: the voice comes back standing ready, not speaking", effects(step(idleRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "");
+  // A failed load is retried on the consent still held: the standing yes while it stands, the
+  // reader's own yes whatever the box says.
+  const loadFailed = worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
+  const failedStanding = step(standing.state, loadFailed);
+  assert("a remembered download fails, then the box is unchecked: the wake withdraws the yes, nothing is sent again", effects(step(failedStanding.state, wake("none"))) === "" && shown(step(failedStanding.state, wake("none")).state) === shown(failedStanding.state));
+  assert("a wake with the yes still standing retries the failed load", effects(step(failedStanding.state, wake("download"))) === "load");
+  assert("the reader's own yes is not the box's to withdraw: a wake with nothing standing retries the load the hover's yes started", effects(step(step(said.state, loadFailed).state, wake("none"))) === "load");
   const disposed = step(standing.state, { kind: "dispose" });
   const disposedWoken = step(step(disposed.state, wake("none")).state, supported);
   assert("a dispose forgets the consent: the next wake probes and waits", effects(disposedWoken) === "" && shown(disposedWoken.state) === IDLE_LINE);
@@ -711,6 +720,9 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   next.answer.home(ABSENT);
   await Promise.resolve();
   assert("the store's late word does not put a question over a download in flight", next.shownMark() === "warming | no ask | yes hidden | remember on");
+  next.emit({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
+  next.check(false);
+  assert("the download fails and the reader unchecks the box: the preference is gone, nothing is sent again, the failure stays on the line", next.store.keys().length === 0 && next.said() === "load" && next.line() === "Retry | stop(off) | The voice could not load: network error fetching u: offline" && next.shownMark() === "failed | no ask | yes hidden | remember off");
   nextPanel.dispose();
 }
 

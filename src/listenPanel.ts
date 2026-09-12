@@ -122,6 +122,17 @@ export type Consent = "none" | "download" | "play";
 const CONSENT_ORDER: Readonly<Record<Consent, number>> = { none: 0, download: 1, play: 2 };
 const raise = (held: Consent, given: Consent): Consent => (CONSENT_ORDER[given] > CONSENT_ORDER[held] ? given : held);
 
+// The consent held is two words: `given` by the reader's own hand this visit — a tap, the
+// hover's yes — which only rises; and `standing`, what the visit grants without a tap,
+// replaced by each wake's reading, so an unchecked box withdraws what it alone granted and
+// the reader's own yes survives it [LAW:one-source-of-truth]. The voice acts on the higher.
+export interface Consents {
+  readonly given: Consent;
+  readonly standing: StandingConsent;
+}
+const NO_CONSENT: Consents = { given: "none", standing: "none" };
+const granted = ({ consent }: PanelState): Consent => raise(consent.given, consent.standing);
+
 export type PanelState =
   // The voice on its way, and the place it starts from when it arrives: the top until the
   // reader taps a word. `keeping` is the browser's answer to keeping the bytes, once asked.
@@ -131,10 +142,10 @@ export type PanelState =
       readonly from: Mark;
       readonly home: Home;
       readonly keeping: Keeping | null;
-      readonly consent: Consent;
+      readonly consent: Consents;
     }
-  // The voice on stage; the view is the scheduler's.
-  | { readonly kind: "neural"; readonly view: NeuralView };
+  // The voice on stage; the view is the scheduler's, the consent kept for a fall.
+  | { readonly kind: "neural"; readonly view: NeuralView; readonly consent: Consents };
 
 export type Tap = "play" | "stop";
 
@@ -187,16 +198,16 @@ const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
 // Every entry to the start: the voice in the given phase, the place and the consent kept,
 // and the store asked afresh what it holds.
-const enter = (neural: NeuralPhase, from: Mark, consent: Consent): Step => ({
+const enter = (neural: NeuralPhase, from: Mark, consent: Consents): Step => ({
   state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null, consent },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP, "none").state;
+export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP, NO_CONSENT).state;
 // The panel's first step: the state, and the read of the store that fills its `home`. The
 // worker is not spawned here but by the `wake` that follows, so a dispose — which returns
 // here — spawns nothing on a page that is going away.
-export const start = (): Step => enter(NEURAL_IDLE, TOP, "none");
+export const start = (): Step => enter(NEURAL_IDLE, TOP, NO_CONSENT);
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
 const violation = (state: PanelState, what: string): Error =>
@@ -223,27 +234,25 @@ const load = (state: Provisioning): ProvisioningStep => ({
 });
 
 // What a word from the reader does to the voice on its way, once the consent it carries is
-// raised into the state: spawns the worker when there is none, sends the load when the
-// worker is able and a yes is held, retries a failed load, and otherwise only holds the
-// word for the phase that will act on it — a `capability` reads the consent, a first view
-// reads it again. A device that cannot run the voice is left as it is.
-const kick = (state: Provisioning, given: Consent): ProvisioningStep => {
-  const held: Provisioning = { ...state, consent: raise(state.consent, given) };
+// held in the state: spawns the worker when there is none, sends the load when the worker
+// is able and a yes is held, retries a failed load, and otherwise only holds the word for
+// the phase that will act on it — a `capability` reads the consent, a first view reads it
+// again. A device that cannot run the voice is left as it is.
+const kick = (state: Provisioning): ProvisioningStep => {
   switch (state.neural.kind) {
     case "idle":
     case "crashed":
-      return { state: { ...held, neural: { kind: "probing" } }, effects: [{ kind: "spawn" }] };
+      return { state: { ...state, neural: { kind: "probing" } }, effects: [{ kind: "spawn" }] };
     case "supported":
     case "load-failed":
-      return held.consent === "none" ? { state: held, effects: [] } : load(held);
+      return granted(state) === "none" ? { state, effects: [] } : load(state);
     case "unsupported":
-      return { state, effects: [] };
     case "probing":
     case "preparing":
     case "downloading":
     case "warming":
     case "scripting":
-      return { state: held, effects: [] };
+      return { state, effects: [] };
   }
 };
 
@@ -251,7 +260,7 @@ const kick = (state: Provisioning, given: Consent): ProvisioningStep => {
 // to unlock for a device that cannot run the voice.
 const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
   if (state.neural.kind === "unsupported") return { state, effects: [] };
-  const kicked = kick(state, given);
+  const kicked = kick({ ...state, consent: { ...state.consent, given: raise(state.consent.given, given) } });
   return { state: kicked.state, effects: [{ kind: "unlock" }, ...kicked.effects] };
 };
 
@@ -281,9 +290,12 @@ const seek = (state: PanelState, to: Mark): Step => {
 };
 
 // The hover's yes, and the page's wake: the same kick, with and without a gesture. A voice
-// on stage has nothing left to consent to.
+// on stage has nothing left to consent to, and keeps the visit's standing word for a fall.
 const yes = (state: PanelState): Step => (state.kind === "provisioning" ? gesture(state, "download") : stay(state));
-const wake = (state: PanelState, consent: StandingConsent): Step => (state.kind === "provisioning" ? kick(state, consent) : stay(state));
+const wake = (state: PanelState, standing: StandingConsent): Step => {
+  const told: PanelState = { ...state, consent: { ...state.consent, standing } };
+  return told.kind === "provisioning" ? kick(told) : stay(told);
+};
 
 const provision = (state: Provisioning, message: FromWorker): Step => {
   const { neural } = state;
@@ -295,7 +307,7 @@ const provision = (state: Provisioning, message: FromWorker): Step => {
       // fetched on the probe alone.
       return message.support.kind !== "supported"
         ? phase({ kind: "unsupported", reason: message.support.reason }, [{ kind: "release", worker: "terminate" }])
-        : state.consent === "none"
+        : granted(state) === "none"
           ? phase({ kind: "supported" })
           : load(state);
     case "progress":
@@ -362,9 +374,9 @@ const placeOf = (view: NeuralView): Mark => {
 // yes to the weights outlives the crash; the yes to speak does not, since the device that
 // tap unlocked is released here — a Retry tap gives it again on its own stack, and a voice
 // that fell mid-word then comes back speaking there, while a wake brings it back standing.
-const outlives = (consent: Consent): Consent => (consent === "none" ? "none" : "download");
+const outlives = (consent: Consents): Consents => ({ ...consent, given: consent.given === "none" ? "none" : "download" });
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const entered = state.kind === "provisioning" ? enter(neural, state.from, outlives(state.consent)) : enter(neural, placeOf(state.view), "download");
+  const entered = enter(neural, state.kind === "provisioning" ? state.from : placeOf(state.view), outlives(state.consent));
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -403,8 +415,8 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       // The performer's first view: the voice takes the stage, and is sent to the place the
       // tap named when a tap is what brought it — a download alone leaves it standing ready.
       return {
-        state: { kind: "neural", view: event.view },
-        effects: state.consent === "play" ? [perform({ kind: "seek", to: state.from })] : [],
+        state: { kind: "neural", view: event.view, consent: state.consent },
+        effects: granted(state) === "play" ? [perform({ kind: "seek", to: state.from })] : [],
       };
     }
   }
@@ -605,7 +617,7 @@ export const markForm = (state: PanelState): MarkForm => {
     case "probing":
     case "supported":
       // A held consent through the probe is a voice on its way: the ask would be answered.
-      return state.consent === "none" ? homeForm(state.home) : { kind: "warming" };
+      return granted(state) === "none" ? homeForm(state.home) : { kind: "warming" };
     case "preparing":
     case "warming":
     case "scripting":
@@ -650,7 +662,7 @@ export const readout = (state: PanelState, total: number, visit: Visit): Readout
   const retry = neural.kind === "load-failed" || neural.kind === "crashed";
   const fragments = [neuralText(neural, state.home), ...(state.keeping === null ? [] : [keepingText(state.keeping)])];
   return {
-    play: { label: retry ? "Retry" : "Listen", enabled: retry || (neural.kind !== "unsupported" && state.consent !== "play") },
+    play: { label: retry ? "Retry" : "Listen", enabled: retry || (neural.kind !== "unsupported" && granted(state) !== "play") },
     stop: { enabled: false },
     status: sentence(fragments.join(" · ")),
     progress: neural.kind === "downloading" ? neural.progress : null,
