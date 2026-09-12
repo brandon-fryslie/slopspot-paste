@@ -1,25 +1,22 @@
-// [LAW:effects-at-boundaries] The Web Worker entry: the one file that binds the protocol
-// handler to a real runtime and a real message port. It has no logic of its own — every
-// decision is synthesisHandler's, every effect pocketTtsRuntime's — so there is nothing here
-// for a check to drive; scripts/synthesis-worker-check.ts drives the handler with a stub
-// runtime, and a real browser drives this file (see the ticket's acceptance).
+// The Web Worker entry, and nothing but a door: synthesisWorkerMain.ts is the program.
 //
 // Vite bundles this module as a worker when the page constructs it via
 // `new Worker(new URL("./synthesisWorker.ts", import.meta.url), { type: "module" })` —
 // synthesisClient.ts is the one place that does so [LAW:single-enforcer].
 //
-// `postMessage` uses the options form so the same call type-checks against the DOM lib the
-// rest of `src` compiles under and runs on the worker global at runtime.
-
-import { browserAssetIo } from "./modelAssetLoader";
-import { pocketTtsRuntime } from "./pocketTtsRuntime";
-import { createSynthesisHandler } from "./synthesisHandler";
-import type { ToWorker } from "./synthesisProtocol";
-
-const handler = createSynthesisHandler({
-  runtime: pocketTtsRuntime(browserAssetIo()),
-  post: (message, transfer) => self.postMessage(message, { transfer: [...transfer] }),
-  now: () => performance.now(),
-});
-
-self.onmessage = (event: MessageEvent<ToWorker>): void => handler.receive(event.data);
+// [LAW:no-ambient-temporal-coupling] WebKit does not put a module worker's entry script in
+// the module map, so any chunk that imports the entry by URL makes WebKit evaluate the entry
+// a SECOND time. Rollup hoists code shared between the entry's static graph and the lazily
+// imported jax-js backend chunks into the entry chunk, and those chunks import it back — so
+// in Safari a program written at this top level ran twice: two handlers, two probes, two
+// `capability` messages on one port (slopspot-read-along-a35.d1y). The dynamic import is the
+// mechanism, not a style: it forces a chunk boundary, so this entry's static graph is empty,
+// nothing can be hoisted into it, and nothing imports it. A second evaluation of this file
+// resolves the same already-evaluated module and creates nothing. A static `import` would
+// merge the program back into this chunk. scripts/verify-worker-entry.ts asserts the shape
+// of the built entry after every build.
+//
+// [LAW:no-silent-failure] A rejection inside a worker never reaches the page's Worker
+// `error` event on its own; `reportError` raises it as one, so a main module that fails to
+// load is a crashed worker to the panel, not a probe that never answers.
+import("./synthesisWorkerMain").catch((error: unknown) => self.reportError(error));

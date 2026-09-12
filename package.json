@@ -9,6 +9,7 @@
     "pretypecheck": "wrangler types",
     "dev": "astro dev",
     "build": "astro build",
+    "postbuild": "tsx scripts/verify-worker-entry.ts",
     "preview": "wrangler dev --config dist/server/wrangler.json",
     "deploy": "npm run test && npm run build && wrangler deploy --config dist/server/wrangler.json",
     "typecheck": "astro check && npm run typecheck:scripts",
