@@ -74,7 +74,7 @@ const chars = (unitIndex: number): number => {
 const mark = (utterance: number, char = 0): Mark => ({ utterance, char });
 const legsOf = (timeline: Timeline): string => timeline.legs.map((leg) => `${leg.utterance}:${leg.charStart}-${leg.charEnd}${leg.kind === "measured" ? "m" : "e"}`).join();
 
-// ── the stand-in's clock: every leg a guess ───────────────────────────────────────────
+// ── before any performer exists: every leg a guess ────────────────────────────────────
 
 console.log("timelineOfUtterances: one leg per passage, the whole thing an estimate");
 {
