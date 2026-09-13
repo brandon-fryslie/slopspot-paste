@@ -438,7 +438,6 @@ const MARKUP = `<!DOCTYPE html><body>
   <div class="speech-voices" hidden></div>
   <div class="listen-mark" data-state="checking">
     <button class="listen-mark-button" type="button" aria-expanded="false" aria-label="Listen"><span class="listen-mark-glyph"></span></button>
-    <p class="listen-mark-hover listen-mark-sentence"></p>
     <div class="listen-mini" data-face="progress" hidden>
       <div class="listen-mini-face" data-face="consent" hidden>
         <p class="listen-mini-ask"></p>
@@ -464,7 +463,6 @@ const MARKUP = `<!DOCTYPE html><body>
 interface MarkRig {
   readonly root: HTMLElement;
   readonly button: HTMLButtonElement;
-  readonly sentence: HTMLElement;
 }
 
 type MiniRig = ListenControls["mini"];
@@ -620,7 +618,6 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const mark: MarkRig = {
     root: el(".listen-mark"),
     button: el(".listen-mark-button"),
-    sentence: el(".listen-mark-sentence"),
   };
   const remember = el<HTMLInputElement>(".speech-remember input");
   const mini: MiniRig = {
@@ -797,7 +794,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   const panel = mount(r);
 
   assert("mounted: the worker is spawned to probe, the store asked, nothing sent, no device, the mark checking", r.line() === MOUNT_LINE && r.counts.homeAsked === 1 && r.counts.keepAsked === 0 && r.counts.spawned === 1 && r.sent.length === 0 && r.devices().length === 0 && r.shownMark() === MOUNT_MARK);
-  assert("the mark is named for assistive tech by the status line", r.mark.button.getAttribute("aria-label") === "Listen: Checking this device for the voice…" && r.mark.sentence.textContent === "Checking this device for the voice…");
+  assert("the mark is named for assistive tech by the status line", r.mark.button.getAttribute("aria-label") === "Listen: Checking this device for the voice…");
   r.play.click();
   const device = r.devices()[0];
   if (device === undefined) throw new Error("the tap did not open a device");

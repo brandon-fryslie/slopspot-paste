@@ -687,10 +687,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     */}
     {/*
       The Listen mark: the always-visible icon beside the launcher that says where the
-      voice is, and whose hover asks "Download speech model?" when a download is what
-      stands between the reader and a voice. Inert markup: listenPanel.ts writes its form
-      (`data-state`), its sentence, the question and the preference's box on every state
-      change, so nothing here carries a sentence of its own [LAW:one-source-of-truth]. The
+      voice is, and whose tap folds the mini-player beside it in and out. Inert markup:
+      listenPanel.ts writes its form (`data-state`) and its label on every state change,
+      so nothing here carries a sentence of its own [LAW:one-source-of-truth]. The
       glyph is the Listen tool's, so the menu item and the mark can never draw the voice
       two ways. Present exactly when the Listen panel is, and shown by CSS only once the
       page has WebGPU (`speech-ready`), like the panel's menu item.
@@ -701,7 +700,6 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           aria-controls="listen-mini" aria-label="Listen">
           <span class="listen-mark-glyph" set:html={TOOL.listen.icon} />
         </button>
-        <p class="listen-mark-hover listen-mark-sentence" id="listen-mark-hover"></p>
         {/*
           The mini-player (slopspot-read-along-a35.djn): one element beside the mark, four
           faces of which exactly one shows — the question with its two answers, the voice on
@@ -862,7 +860,6 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             mark: {
               root: markEl,
               button: markPart<HTMLButtonElement>(".listen-mark-button"),
-              sentence: markPart<HTMLElement>(".listen-mark-sentence"),
             },
             voices: { toggle: control<HTMLButtonElement>(".speech-voices-toggle"), picker: voicesEl },
             mini: {
