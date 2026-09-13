@@ -3292,6 +3292,84 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .speech-stop[disabled]:hover,
 .speech-play[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
 
+/* ─── Voice choice (slopspot-read-along-a35.7) ─────────────────────────────
+   The picker under the transport, opened by the Voices pill: a row per picked role (You,
+   Claude) listing the hosted voices by name with a preview beside each. Every row and
+   option is built by voicePicker.ts from the manifest, so nothing here names a voice; the
+   stylesheet only draws the attributes the panel writes — `data-sounding` on the preview
+   that is speaking, `disabled` on previews withheld before the voice is warm, `hidden` on
+   the note that says why [LAW:one-source-of-truth]. */
+.speech-voices {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  justify-items: start;
+}
+.speech-voices[hidden] { display: none; }
+.speech-voices-toggle[aria-expanded="true"] { color: var(--fg); border-color: var(--accent); }
+/* A row is a fieldset so the radios are grouped for assistive tech; its chrome is removed
+   and the legend takes the muted mono voice of the panel's other labels. */
+.voice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.voice-role {
+  width: 100%;
+  padding: 0;
+  margin-bottom: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+.voice-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.voice-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.voice-radio { margin: 0; accent-color: var(--accent); }
+/* The preview is a small pill of its own: lit while its voice is sounding, dimmed while
+   previews are withheld. Same dimming as the transport's disabled buttons, so the row
+   never shifts as the voice arrives. */
+.voice-preview {
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.voice-preview:hover { color: var(--fg); border-color: var(--accent); }
+.voice-preview[data-sounding="true"] { color: var(--accent); border-color: var(--accent); }
+.voice-preview[disabled] { opacity: 0.45; cursor: default; }
+.voice-preview[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
+.voice-note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+.voice-note[hidden] { display: none; }
+.voice-reset[disabled] { opacity: 0.45; cursor: default; }
+.voice-reset[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
+
 /* ─── The Listen mark (slopspot-read-along-a35.a4l) ────────────────────────
    One always-visible icon beside the dock's launcher, in the launcher's own row, that says
    where the voice is. Its whole appearance is a projection of `data-state` on its root —

@@ -2,7 +2,8 @@
 // an in-memory store, and the one decision that reads it with the metered rule.
 // Run: `tsx scripts/listen-consent-check.ts`.
 
-import { PREFERENCE_KEY, readPreference, standingConsent, writePreference, type PreferenceStore } from "../src/listenConsent";
+import { PREFERENCE_KEY, readPreference, standingConsent, writePreference } from "../src/listenConsent";
+import type { PreferenceStore } from "../src/preferenceStore";
 import { memoryPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {

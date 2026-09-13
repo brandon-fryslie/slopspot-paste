@@ -19,13 +19,7 @@
 // window.localStorage.
 
 import { downloadNeedsTap, type ConnectionReading } from "./modelAssets";
-
-// The exact surface of Web Storage the preference needs.
-export interface PreferenceStore {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
+import type { PreferenceStore } from "./preferenceStore";
 
 // One key, one value: the preference is either remembered or absent. A value other than
 // the one written is not a preference this build wrote, and reads as absent.

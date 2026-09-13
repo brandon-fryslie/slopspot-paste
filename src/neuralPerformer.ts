@@ -113,6 +113,8 @@ export interface NeuralPerformerConfig {
 
 export interface NeuralPerformer extends Performer {
   readonly view: () => NeuralView;
+  // The reader's voices from now on; the scheduler remakes the units of a changed voice.
+  readonly voices: (voices: VoiceMap) => void;
 }
 
 export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerformer => {
@@ -138,6 +140,7 @@ export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerf
 
   return {
     send,
+    voices: scheduler.voices,
     state: () => spotOf(view()),
     view,
     dispose: () => {

@@ -26,8 +26,11 @@
 //  - `cancel` is idempotent: a cancel for a unit that already has its terminal message is
 //    the ordinary race of asynchronous messaging (the page cancels as `done` is in flight)
 //    and produces nothing.
-//  - `unitId` is the page's to choose; a unit is in flight from its `synthesize` until it is
-//    cancelled or has its terminal message. Two requests for one id in flight at once is a
+//  - `unitId` is the page's to choose, and the page's two requesters share the port: the
+//    script's units are 0 to N-1, the scheduler's; a voice preview takes an id below zero
+//    (voicePreview.ts), so each requester knows a message for the other's unit by its sign
+//    alone. A unit is in flight from its `synthesize` until it is cancelled or has its
+//    terminal message. Two requests for one id in flight at once is a
 //    page bug and the second is refused as `failed{duplicate-unit}`; a request after a cancel
 //    for the same id queues behind the cancelled job, whose terminal is posted first.
 //  - A message legal only in a phase the worker is not in is answered with `refused`, which

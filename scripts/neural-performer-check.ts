@@ -11,7 +11,8 @@ import { createNeuralPerformer, passages, positionOf, spotOf, utteranceTable, ty
 import type { Mark, PerformerState } from "../src/performer";
 import type { Utterance } from "../src/speech";
 import { addUnit, emptyManifest, type UnitReport } from "../src/speechManifest";
-import { DEFAULT_VOICES, type SynthesisUnit } from "../src/speechScript";
+import type { SynthesisUnit } from "../src/speechScript";
+import { DEFAULT_VOICES } from "../src/voiceChoice";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, openDevice } from "../src/unitPlayer";

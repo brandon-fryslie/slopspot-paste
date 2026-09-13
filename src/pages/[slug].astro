@@ -509,7 +509,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             <button class="mono-pill speech-follow" type="button" hidden>Follow</button>
             <progress class="speech-progress" hidden></progress>
             <p class="speech-now" aria-live="polite"></p>
+            <button class="mono-pill speech-voices-toggle" type="button" aria-expanded="false" aria-controls="speech-voices">Voices</button>
           </div>
+          {/* The voice picker's rows are built here by voicePicker.ts from the manifest's
+              voices, so the markup carries no name it would have to keep in step with. */}
+          <div class="speech-voices" id="speech-voices" hidden></div>
           <pre class="speech-payload" hidden aria-hidden="true">{JSON.stringify(utterances)}</pre>
         </section>
       )}
@@ -743,20 +747,21 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { MODEL_ASSETS, allModelAssets, type ConnectionReading } from "../modelAssets";
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
-    import { DEFAULT_VOICES } from "../speechScript";
+    import { readPick, writePick } from "../voiceChoice";
     import { caretSource, createPainter, tapMark } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
     import type { Utterance } from "../speech";
 
     const controls = document.querySelector(".speech-controls");
+    const voicesEl = document.querySelector<HTMLElement>(".speech-voices");
     const payloadEl = document.querySelector(".speech-payload");
     const markEl = document.querySelector<HTMLElement>(".listen-mark");
 
     // A page with no speakable prose renders none of these, so their joint absence is the
     // normal empty case. One without the others is a broken template invariant, and the
     // panel below would otherwise wire a button to nothing [LAW:no-silent-failure].
-    if (controls && payloadEl && markEl) {
+    if (controls && voicesEl && payloadEl && markEl) {
       const control = <T extends Element>(selector: string): T => {
         const el = controls.querySelector<T>(selector);
         if (!el) throw new Error(`listen: the speech panel is missing ${selector}`);
@@ -807,9 +812,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               yes: markPart<HTMLButtonElement>(".listen-mark-yes"),
               remember: markPart<HTMLInputElement>(".listen-mark-remember input"),
             },
+            voices: { toggle: control<HTMLButtonElement>(".speech-voices-toggle"), picker: voicesEl },
           },
           utterances,
-          voices: DEFAULT_VOICES,
           spawn: spawnSynthesisWorker,
           // [LAW:one-source-of-truth] The store the worker's loader writes, listed here under the
           // same keys; and the browser's own keep request, a Window-only API, so it is the
@@ -821,6 +826,12 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           preference: {
             read: () => readPreference(window.localStorage),
             write: (remembered) => writePreference(window.localStorage, remembered),
+          },
+          // The device's voice pick, in the same storage: read at every render, written by
+          // the picker.
+          pick: {
+            read: () => readPick(window.localStorage),
+            write: (pick) => writePick(window.localStorage, pick),
           },
           connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
           Device: AudioContext,

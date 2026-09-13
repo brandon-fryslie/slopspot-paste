@@ -120,7 +120,7 @@ const kinds = (state: SchedulerState): string => state.holdings.map((h) => h.kin
 const run = (state: SchedulerState, player: PlayerState, ...events: Event[]): { state: SchedulerState; commands: string[] } => {
   const commands: string[] = [];
   for (const event of events) {
-    const planned = step(VOICES, state, event, player);
+    const planned = step(state, event, player);
     state = planned.state;
     commands.push(...planned.commands.map(describeCommand));
   }
@@ -131,25 +131,25 @@ const run = (state: SchedulerState, player: PlayerState, ...events: Event[]): { 
 
 console.log("step: from idle to the first audio");
 {
-  const fresh = initialState(scriptOf(6));
-  const still = step(VOICES, fresh, reported(idle), idle);
+  const fresh = initialState(scriptOf(6), VOICES);
+  const still = step(fresh, reported(idle), idle);
   assert("idle: nothing requested, the state object is unchanged", still.commands.length === 0 && still.state === fresh);
 
   const played = run(fresh, speaking(0), reported(speaking(0)));
   assert("play with nothing held: the cursor unit is requested, nothing else", played.commands.join() === "synthesize 0" && kinds(played.state) === "raaaaa");
-  const message = step(VOICES, fresh, reported(speaking(0)), speaking(0)).commands[0];
+  const message = step(fresh, reported(speaking(0)), speaking(0)).commands[0];
   assert(
     "the request carries the unit's text and the voice for its role",
     message?.kind === "worker" && message.message.kind === "synthesize" && message.message.text.text === "Unit 0 says hello." && message.message.voice === "marius",
   );
 
-  const again = step(VOICES, played.state, reported(speaking(0)), speaking(0));
+  const again = step(played.state, reported(speaking(0)), speaking(0));
   assert("a second plan over the same position issues nothing and keeps the state object", again.commands.length === 0 && again.state === played.state);
 
   const streamed = run(played.state, speaking(0), audio(0, 0), audio(0, 1));
   assert("audio for the requested unit goes to the player as frames; the state object is unchanged", streamed.commands.join() === "frame 0#0,frame 0#1" && streamed.state === played.state);
-  throws("audio for a unit never requested", () => step(VOICES, played.state, audio(3, 0), speaking(0)));
-  throws("audio for a unit the worker never had", () => step(VOICES, played.state, audio(9, 0), speaking(0)));
+  throws("audio for a unit never requested", () => step(played.state, audio(3, 0), speaking(0)));
+  throws("audio for a unit the worker never had", () => step(played.state, audio(9, 0), speaking(0)));
 
   const first = run(played.state, speaking(0, 0, "audio"), done(0, 1500));
   assert("done: complete to the player, the unit held, the next requested", first.commands.join() === "complete 0,synthesize 1" && kinds(first.state) === "hraaaa");
@@ -168,7 +168,7 @@ console.log("step: from idle to the first audio");
 
 console.log("step: the time bound");
 {
-  const fresh = initialState(scriptOf(4));
+  const fresh = initialState(scriptOf(4), VOICES);
   const long = run(fresh, speaking(0), reported(speaking(0)), done(0, 20_000), done(1, 20_000));
   assert(`${LOOKAHEAD.ms / 1000} s held ahead stops requests under ${LOOKAHEAD.units} units`, long.commands.join() === "synthesize 0,complete 0,synthesize 1,complete 1" && kinds(long.state) === "hhaa");
   const spent = run(long.state, speaking(0, 15_000, "audio"), reported(speaking(0, 15_000, "audio")));
@@ -178,7 +178,7 @@ console.log("step: the time bound");
 console.log("step: seeks reprioritize");
 {
   // Cursor at 1: units 0..4 held, 5 in flight.
-  const fresh = initialState(scriptOf(20));
+  const fresh = initialState(scriptOf(20), VOICES);
   const listened = run(fresh, speaking(1, 0, "audio"), reported(speaking(1, 0, "audio")), done(1), done(2), done(3), done(4), reported(speaking(1, 500, "audio")));
   assert("setup: four held ahead of a cursor at 1, none in flight", kinds(listened.state).startsWith("ahhhha") && !listened.commands.includes("synthesize 5"));
   const inFlight = run(listened.state, speaking(2, 0, "audio"), reported(speaking(2, 0, "audio")));
@@ -199,7 +199,7 @@ console.log("step: seeks reprioritize");
   assert("done racing a cancel: absent, no complete, no record", racedDone.commands.length === 0 && kinds(racedDone.state)[5] === "a" && racedDone.state.manifest.units[5] === undefined);
   const racedFail = run(far.state, speaking(10), worker({ kind: "failed", unitId: 5, reason: { kind: "runtime", message: "x" } }));
   assert("failed racing a cancel: absent", racedFail.commands.length === 0 && kinds(racedFail.state)[5] === "a");
-  throws("cancelled for a unit that was not cancelled", () => step(VOICES, terminal.state, worker({ kind: "cancelled", unitId: 10 }), speaking(10)));
+  throws("cancelled for a unit that was not cancelled", () => step(terminal.state, worker({ kind: "cancelled", unitId: 10 }), speaking(10)));
 
   // Now 10 held, 11 in flight; the reader seeks back to 9, which is absent.
   const settled = run(terminal.state, speaking(10, 0, "audio"), done(10));
@@ -212,7 +212,7 @@ console.log("step: seeks reprioritize");
 
 console.log("step: the frontier and the contiguous run");
 {
-  const fresh = initialState(scriptOf(12));
+  const fresh = initialState(scriptOf(12), VOICES);
   // 0..3 held, 4 in flight with frames streaming, 6..9 held from an earlier listen: cursor back at 0.
   const four = run(fresh, speaking(0), reported(speaking(0)), done(0), done(1), done(2), done(3));
   const built = run(four.state, speaking(1, 0, "audio"), reported(speaking(1, 0, "audio")), audio(4, 0), audio(4, 1));
@@ -239,7 +239,7 @@ console.log("step: the frontier and the contiguous run");
 
 console.log("step: failure is skipped, not waited on");
 {
-  const fresh = initialState(scriptOf(4));
+  const fresh = initialState(scriptOf(4), VOICES);
   const going = run(fresh, speaking(0, 0, "audio"), reported(speaking(0)), done(0), done(1), audio(2, 0));
   assert("setup: 0, 1 held; 2 requested with a frame in the player", going.commands.join() === "synthesize 0,complete 0,synthesize 1,complete 1,synthesize 2,frame 2#0");
   const capped = run(going.state, speaking(0, 0, "audio"), worker({ kind: "failed", unitId: 2, reason: { kind: "frame-cap", frames: 1000 } }));
@@ -265,9 +265,9 @@ console.log("step: failure is skipped, not waited on");
   const failedBehindGap = run(staleState, speaking(0, 0, "audio"), worker({ kind: "failed", unitId: 2, reason: { kind: "runtime", message: "x" } }));
   assert("failed when not the frontier: frames dropped at once, the gap requested", failedBehindGap.commands.join() === "drop 2,synthesize 1");
 
-  throws("failed{duplicate-unit} is a scheduler bug", () => step(VOICES, going.state, worker({ kind: "failed", unitId: 2, reason: { kind: "duplicate-unit" } }), speaking(0)));
-  throws("a refused synthesize is a scheduler bug", () => step(VOICES, going.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: 2, text: unitText(unitOf(2, "")), voice: "alba" }, phase: "idle" }), speaking(0)));
-  throws("a refused cancel is a scheduler bug", () => step(VOICES, going.state, worker({ kind: "refused", request: { kind: "cancel", unitId: 2 }, phase: "idle" }), speaking(0)));
+  throws("failed{duplicate-unit} is a scheduler bug", () => step(going.state, worker({ kind: "failed", unitId: 2, reason: { kind: "duplicate-unit" } }), speaking(0)));
+  throws("a refused synthesize is a scheduler bug", () => step(going.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: 2, text: unitText(unitOf(2, "")), voice: "alba" }, phase: "idle" }), speaking(0)));
+  throws("a refused cancel is a scheduler bug", () => step(going.state, worker({ kind: "refused", request: { kind: "cancel", unitId: 2 }, phase: "idle" }), speaking(0)));
   const others = run(going.state, speaking(0), worker({ kind: "refused", request: { kind: "load" }, phase: "ready" }), worker({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 2 } }), worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } }));
   assert("the panel's messages pass by untouched", others.commands.length === 0 && others.state === going.state);
 }
@@ -275,7 +275,7 @@ console.log("step: failure is skipped, not waited on");
 console.log("step: a report the manifest rejects");
 {
   const script = [unitOf(0, "One two three."), unitOf(1, "Four five.")];
-  const fresh = initialState(script);
+  const fresh = initialState(script, VOICES);
   const started = run(fresh, speaking(0), reported(speaking(0)), audio(0, 0));
   const rejected = run(
     started.state,
@@ -289,7 +289,7 @@ console.log("step: a report the manifest rejects");
 
 console.log("step: paused, and re-synthesis");
 {
-  const fresh = initialState(scriptOf(5));
+  const fresh = initialState(scriptOf(5), VOICES);
   const held = run(fresh, paused(1), reported(paused(1)), done(1, 700));
   assert("paused synthesizes ahead exactly as speaking does", held.commands.join() === "synthesize 1,complete 1,synthesize 2");
   const away = run(held.state, speaking(4), reported(speaking(4)));
@@ -303,7 +303,126 @@ console.log("step: paused, and re-synthesis");
   assert("a re-synthesis that fails voids the first rendition's record", refailed.state.holdings[1]?.kind === "failed" && refailed.state.manifest.units[1] === undefined);
 }
 
+console.log("step: the reader's voices");
+{
+  // Even units are the assistant's, odd the user's. 0..3 held, 4 in flight, the cursor
+  // inside 1.
+  const fresh = initialState(scriptOf(6), VOICES);
+  const built = run(fresh, speaking(0), reported(speaking(0)), done(0), done(1), done(2), done(3));
+  const at1 = run(built.state, speaking(1, 0, "audio"), reported(speaking(1, 0, "audio")));
+  assert("setup: 0..3 held, 4 requested", kinds(at1.state) === "hhhhra");
+  const voices = (map: VoiceMap): Event => ({ kind: "voices", voices: map });
+  const userVoice: VoiceMap = { ...VOICES, user: "fantine" };
+
+  const same = run(at1.state, speaking(1, 300, "audio"), voices(VOICES));
+  assert("the same voices: nothing dropped, nothing asked, the very same state", same.commands.length === 0 && same.state === at1.state);
+
+  const mid = run(at1.state, speaking(1, 300, "audio"), voices(userVoice));
+  assert(
+    "the user's voice changes while unit 1 speaks: paused, the user's held units dropped, seeked to 1's start, played; then the in-flight assistant unit gives way and 1 is asked again",
+    mid.commands.join() === "pause,drop 1,drop 3,seek 1:0,play,cancel 4,drop 4,synthesize 1",
+  );
+  assert("state: the assistant's units untouched, the user's forgotten, 1 requested", kinds(mid.state) === "hrhaca" && mid.state.voices.user === "fantine");
+  assert("the user's records are voided, the assistant's kept", mid.state.manifest.units[1] === undefined && mid.state.manifest.units[3] === undefined && mid.state.manifest.units[0]?.durationMs === 1000 && mid.state.manifest.units[2]?.durationMs === 1000);
+  const asked = mid.state;
+  const request = step(at1.state, voices(userVoice), speaking(1, 300, "audio")).commands.at(-1);
+  assert("the new request is in the new voice", request?.kind === "worker" && request.message.kind === "synthesize" && request.message.unitId === 1 && request.message.voice === "fantine");
+  const settled = run(asked, speaking(1), worker({ kind: "cancelled", unitId: 4 }), done(1, 900));
+  assert("the cancel lands and the new rendition arrives: held with its record, the next user unit asked", settled.commands.join() === "complete 1,synthesize 3" && settled.state.manifest.units[1]?.durationMs === 900);
+
+  const other = run(at1.state, speaking(1, 300, "audio"), voices({ ...VOICES, assistant: "azelma" }));
+  assert(
+    "Claude's voice changes while the user's unit speaks: no restart; the assistant's held units dropped, the in-flight one cancelled, the next assistant unit asked in the new voice",
+    other.commands.join() === "drop 0,drop 2,cancel 4,drop 4,synthesize 2" && kinds(other.state) === "ahrhca",
+  );
+
+  const bothVoices: VoiceMap = { ...VOICES, user: "fantine", assistant: "azelma" };
+  const both = run(at1.state, speaking(1, 300, "audio"), voices(bothVoices));
+  assert(
+    "both voices change while unit 1 speaks: one pause, every held unit dropped, the in-flight one cancelled, one seek to 1's start and play, then 1 asked again",
+    both.commands.join() === "pause,drop 0,drop 1,drop 2,drop 3,cancel 4,drop 4,seek 1:0,play,synthesize 1" && kinds(both.state) === "araaca",
+  );
+  const bothAsked = step(at1.state, voices(bothVoices), speaking(1, 300, "audio")).commands.at(-1);
+  assert("unit 1 is asked in the new user voice", bothAsked?.kind === "worker" && bothAsked.message.kind === "synthesize" && bothAsked.message.unitId === 1 && bothAsked.message.voice === "fantine");
+  const bothCancelled = run(both.state, speaking(1), worker({ kind: "cancelled", unitId: 4 }));
+  const bothSettled = run(bothCancelled.state, speaking(1), done(1, 900));
+  const nextAsked = step(bothCancelled.state, done(1, 900), speaking(1)).commands.at(-1);
+  assert(
+    "the cancel lands and 1 arrives: held, and the next unit, Claude's, asked in the new assistant voice",
+    bothCancelled.commands.length === 0 && bothSettled.commands.join() === "complete 1,synthesize 2" && kinds(bothSettled.state) === "ahraaa" && nextAsked?.kind === "worker" && nextAsked.message.kind === "synthesize" && nextAsked.message.unitId === 2 && nextAsked.message.voice === "azelma",
+  );
+
+  const heldStill = run(at1.state, paused(1, 300), voices(userVoice));
+  assert("paused: the held place moves to the unit's start, with no pause and no play", heldStill.commands.join() === "drop 1,drop 3,seek 1:0,cancel 4,drop 4,synthesize 1");
+
+  const stopped = run(built.state, idle, voices(userVoice));
+  assert("idle: the changed units are forgotten with their records; the rest are dropped as always, their records kept", stopped.commands.join() === "drop 1,drop 3,drop 0,drop 2" && kinds(stopped.state) === "aaaaaa" && stopped.state.manifest.units[1] === undefined && stopped.state.manifest.units[0]?.durationMs === 1000);
+
+  const short = initialState(scriptOf(4), VOICES);
+  const going = run(short, speaking(0, 0, "audio"), reported(speaking(0)), done(0), done(1), audio(2, 0));
+  const capped = run(going.state, speaking(0, 0, "audio"), worker({ kind: "failed", unitId: 2, reason: { kind: "frame-cap", frames: 1000 } }));
+  assert("setup: 2 failed with its frames in the player, 3 in flight", kinds(capped.state) === "hhfr");
+  const retried = run(capped.state, speaking(0, 100, "audio"), voices({ ...VOICES, assistant: "azelma" }));
+  assert("a failed unit of the changed voice is forgotten with its frames: the new voice gets its own try", retried.commands.join() === "pause,drop 0,drop 2,seek 0:0,play,cancel 3,drop 3,synthesize 0" && kinds(retried.state) === "rhac");
+
+  const foreign = run(
+    at1.state,
+    speaking(1),
+    audio(-1, 0),
+    done(-1),
+    worker({ kind: "cancelled", unitId: -1 }),
+    worker({ kind: "failed", unitId: -1, reason: { kind: "runtime", message: "x" } }),
+    worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: unitText(unitOf(2, "")), voice: "alba" }, phase: "idle" }),
+    worker({ kind: "refused", request: { kind: "cancel", unitId: -1 }, phase: "idle" }),
+  );
+  assert("a voice preview's messages, ids below zero, pass by untouched — the refusals of its requests too", foreign.commands.length === 0 && foreign.state === at1.state);
+}
+
 // ── the driver, over the real player ──────────────────────────────────────────────────
+
+console.log("driver: a voice change mid-unit restarts it in the new voice, over the real player");
+{
+  const sent: ToWorker[] = [];
+  const listeners = new Set<(message: FromWorker) => void>();
+  const port: SynthesisPort = {
+    send: (message) => sent.push(message),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    errors: () => () => undefined,
+    dispose: () => undefined,
+    terminate: () => undefined,
+  };
+  const emit = (message: FromWorker): void => {
+    for (const listener of listeners) listener(message);
+  };
+  const said = (): string => sent.map((m) => (m.kind === "synthesize" ? `synthesize ${m.unitId} ${m.voice}` : m.kind === "cancel" ? `cancel ${m.unitId}` : m.kind)).join();
+  const scheduler = createScheduler({
+    port,
+    script: scriptOf(4),
+    voices: VOICES,
+    player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice) }),
+    onChange: () => undefined,
+  });
+  const device = StubDevice.instances.at(-1);
+  if (device === undefined) throw new Error("the scheduler did not build its player");
+  scheduler.send({ kind: "play" });
+  for (const unit of [0, 1, 2, 3]) {
+    emit({ kind: "audio", unitId: unit, frameIndex: 0, pcm: frame(unit, 0) });
+    emit({ kind: "done", unitId: unit, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  }
+  device.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
+  assert("setup: every unit held, the cursor inside the user's unit 1", describe(scheduler.view().player) === "speaking/audio@1:10.000" && scheduler.view().holdings.every((h) => h.kind === "held"));
+  scheduler.voices(VOICES);
+  assert("the same voices: nothing sent", said() === "synthesize 0 marius,synthesize 1 alba,synthesize 2 marius,synthesize 3 alba");
+  scheduler.voices({ ...VOICES, user: "fantine" });
+  assert("the user's voice changes: the player took the pause, the drops and the seek, and waits at 1's start for the new rendition", describe(scheduler.view().player) === "speaking/waiting@1:0.000" && said().endsWith("synthesize 1 fantine"));
+  assert("the user's units are gone from the view, the assistant's held", scheduler.view().holdings.map((h) => h.kind[0]).join("") === "hrha" && scheduler.view().manifest.units[1] === undefined && scheduler.view().manifest.units[0] !== undefined);
+  emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
+  assert("the new rendition's first frame plays from the unit's start", describe(scheduler.view().player) === "speaking/audio@1:0.000");
+  scheduler.dispose();
+}
 
 console.log("driver: a stub port, the real player, a hand-moved clock");
 {
