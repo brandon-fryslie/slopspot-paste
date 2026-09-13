@@ -70,7 +70,6 @@ const throws = (label: string, f: () => unknown): void => {
 const one: Utterance = { index: 1, anchor: "t1", voice: "user", text: "First sentence here. Second sentence here." };
 const two: Utterance = { index: 2, anchor: "t2", voice: "assistant", text: "A reply." };
 const utterances = [one, two];
-const TOTAL = utterances.length;
 const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, text: utterance.text.slice(start, end) });
 const units: SynthesisUnit[] = ((): SynthesisUnit[] => {
   const [a, b] = [{ ...one }, { ...two }];
@@ -388,7 +387,7 @@ console.log("readout: the voice picker, cold, warm and mid-listen");
   const speaking = step(onStage, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 0, offsetMs: 0 }, flow: "audio" }) }).state;
   const unsupported = step(probing, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } })).state;
   const voices = (state: PanelState, visit: Visit = ASKING): string => {
-    const v = readout(state, TOTAL, visit).voices;
+    const v = readout(state, utterances, visit).voices;
     return `${v.picked.user}/${v.picked.assistant} | ${v.preview.kind === "offered" ? "offered" : `withheld: ${v.preview.why}`} | ${v.sounding ?? "silent"} | reset ${v.reset ? "on" : "off"}`;
   };
   const COLD = "alba/javert | withheld: Previews play once the voice is ready on this device. | silent | reset off";
