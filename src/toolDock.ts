@@ -51,6 +51,16 @@ export const LAUNCHER_ICON = icon(
 );
 export const LAUNCHER_CLOSE_ICON = icon('<path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/>');
 
+// The mini-player's three controls beside the Listen mark: the same stroke style, so the
+// player and the dock read as one instrument. `play` and `pause` are both in the one
+// button's markup; its `data-does` shows the face a tap would perform.
+export const MINI_ICONS = {
+  back: icon('<path d="M6 4.5v11"/><path d="M15 4.5L8.5 10 15 15.5z"/>'),
+  play: icon('<path d="M6.5 4.2L15.5 10l-9 5.8z"/>'),
+  pause: icon('<path d="M6.5 4.5v11"/><path d="M13.5 4.5v11"/>'),
+  forward: icon('<path d="M14 4.5v11"/><path d="M5 4.5L11.5 10 5 15.5z"/>'),
+} as const;
+
 // [LAW:no-mode-explosion] The menu order is the reading order of the toolset, stated
 // once: comprehension aids first, then things you take away with you, then provenance.
 //
