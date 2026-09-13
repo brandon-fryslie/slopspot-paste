@@ -102,7 +102,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
-import { clockText, estimated, markAt, timeAt, timelineOfScript, timelineOfUtterances, turnMark, turnStarts, type Timeline } from "./timeline";
+import { clockText, estimated, markAt, skipTurn, timeAt, timelineOfScript, timelineOfUtterances, turnMark, turnStarts, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
 import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
@@ -265,6 +265,10 @@ export interface Step {
 
 // The one script the panel ever sends; a reply with another id is not ours.
 export const SCRIPT_ID = 1;
+// How far into a turn a back skip still means "the turn before" (timeline.skipTurn), in the
+// conversation's own milliseconds: about a word, chosen by ear — a music player's three
+// seconds felt long against turns this short.
+export const BACK_GRACE_MS = 1500;
 
 const IDLE: PerformerState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
@@ -958,12 +962,11 @@ export const listening = (state: PanelState): boolean => state.kind === "neural"
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
 // The mark's markup: the root carries the form (`data-state`) and the ring's fraction; the
-// button is what the reader hovers, focuses or taps, and its tap shows and hides the
-// mini-player; the hover holds the sentence alone.
+// button is what the reader taps to show and hide the mini-player, and its label carries
+// the sentence for assistive tech — the mini-player's face says the rest to the eye.
 export interface MarkControls {
   readonly root: HTMLElement;
   readonly button: HTMLButtonElement;
-  readonly sentence: HTMLElement;
 }
 
 // The mini-player's markup: one root beside the mark, its four faces, and the controls each
@@ -1119,9 +1122,8 @@ const render = (controls: ListenControls, picker: { readonly render: (shown: Voi
   const { mark, mini } = controls;
   mark.root.dataset.state = shown.mark.kind;
   mark.root.style.setProperty("--fraction", String(shown.mark.kind === "downloading" ? shown.mark.fraction : 0));
-  // The sentence names the mark for assistive tech, and is the hover's one line.
+  // The sentence names the mark for assistive tech.
   mark.button.setAttribute("aria-label", `Listen: ${shown.status}`);
-  mark.sentence.textContent = shown.status;
   renderMini(mini, shown.mini);
   const out = opened || active;
   mini.root.hidden = !out;
@@ -1429,7 +1431,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "nudge":
         return to(markAt(timeline(), timeAt(timeline(), placeNow()) + g.bySeconds * 1000));
       case "turn":
-        return to(turnMark(turns, placeNow(), g.by));
+        return to(skipTurn(turns, timeline(), placeNow(), g.by, BACK_GRACE_MS));
     }
   };
 
