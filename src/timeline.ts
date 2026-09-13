@@ -23,14 +23,14 @@
 // typed as one on every leg, so `estimated` below can say whether the time still to come is
 // measured or guessed, and the panel prints "about" over exactly the guesses
 // [LAW:no-silent-failure]. Before any unit is measured — the whole of the first listen,
-// and the entire life of a browser-voice stand-in — every leg is estimated at
+// and every moment before the voice is on stage — every leg is estimated at
 // DEFAULT_MS_PER_CHAR, which is the honest shape of "we have not heard any of this yet".
 //
-// [LAW:one-type-per-behavior] One Leg, two sources. The neural voice's timeline is built
-// over the speech script — one leg per synthesis unit, measured where the manifest has a
-// record — and the stand-in's over the page's utterances, one leg each, since a browser
-// synthesizer reports no durations at all. Everything downstream reads legs and cannot tell
-// which built them.
+// [LAW:one-type-per-behavior] One Leg, two sources. Once the neural voice is on stage its
+// timeline is built over the speech script — one leg per synthesis unit, measured where the
+// manifest has a record; before that, while the reader has a place but no performer yet,
+// it is built over the page's own utterances, one leg each, all of it a guess. Everything
+// downstream reads legs and cannot tell which built them.
 
 import type { Mark } from "./performer";
 import type { Utterance } from "./speech";
@@ -120,8 +120,8 @@ const build = (spans: ReadonlyArray<Span>): Timeline => {
   return { legs, totalMs: startMs };
 };
 
-// The stand-in's timeline: one leg per passage, none of it measured, because a browser
-// synthesizer reports no duration for anything it says.
+// The timeline before any performer exists: one leg per passage, none of it measured, since
+// nothing has spoken a word of it yet.
 export const timelineOfUtterances = (utterances: ReadonlyArray<Utterance>): Timeline =>
   build(utterances.map((utterance, index) => ({ utterance: index, charStart: 0, charEnd: utterance.text.length, measuredMs: undefined })));
 
@@ -164,9 +164,8 @@ export const timeAt = (timeline: Timeline, mark: Mark): number => {
 // The mark at a point on the clock, clamped to both ends — before the start is the start,
 // past the end is the last character of the last leg. Null only for a conversation with
 // nothing to say, which names no mark at all. The character is the point's share of the
-// leg, so the mark it hands back is a place in the text and not a unit index: whoever
-// receives it resolves it their own way — the neural voice to the word's own time, the
-// browser voice to the sentence from that character.
+// leg, so the mark it hands back is a place in the text and not a unit index: the neural
+// voice resolves it to the word's own time, once it is on stage to be asked.
 export const markAt = (timeline: Timeline, ms: number): Mark | null => {
   const leg = timeline.legs.findLast((candidate) => candidate.startMs <= ms) ?? timeline.legs[0];
   if (leg === undefined) return null;
