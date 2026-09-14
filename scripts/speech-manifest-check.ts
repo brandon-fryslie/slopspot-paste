@@ -183,14 +183,14 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
       const probes = [0, r.durationMs / 3, r.durationMs / 2, r.durationMs];
       return probes.every((ms) => {
         const word = wordUnder(r.alignment, ms);
-        return word === null ? r.alignment.kind !== "words" || ms < (r.alignment.words[0]?.startMs ?? Infinity) : r.alignment.kind === "words" && within({ charStart: r.unit.start, charEnd: r.unit.end }, word);
+        return word === null ? r.alignment.kind !== "words" || r.alignment.words.length === 0 : r.alignment.kind === "words" && within({ charStart: r.unit.start, charEnd: r.unit.end }, word);
       });
     });
     assert("wordUnder: a word is claimed only for a `words` alignment, inside the unit's span", cursorHonest);
     const measured = all.filter((r) => r.alignment.kind === "words" && r.alignment.words.length > 0);
     assert(
-      "for a measured unit the cursor is on a word by the time its last word has started",
-      measured.every((r) => wordUnder(r.alignment, r.durationMs) !== null),
+      "for a measured unit the cursor is on a word at every point of its audio, its first instant included",
+      measured.every((r) => [0, r.durationMs / 2, r.durationMs].every((ms) => wordUnder(r.alignment, ms) !== null)),
     );
 
     // The reverse: a character seeks to the start of the word holding it.
@@ -230,10 +230,11 @@ console.log("\nSpeech manifest — words, estimation and the cursor:");
     { charStart: 4, charEnd: 7, startMs: 400, endMs: 600 },
     { charStart: 8, charEnd: 9, startMs: 800, endMs: 800 },
   ];
-  assert("wordAt: before the first word has started there is no word", wordAt(words, 50) === undefined);
+  assert("wordAt: in the leading silence, before the first word has started, the cursor waits on the first word", wordAt(words, 50)?.charStart === 0 && wordAt(words, 0)?.charStart === 0);
   assert("wordAt: inside a word returns it", wordAt(words, 250)?.charStart === 0 && wordAt(words, 400)?.charStart === 4);
   assert("wordAt: in the silence between words the cursor stays on the word just said", wordAt(words, 700)?.charStart === 4);
   assert("wordAt: after the last word it stays on the last word", wordAt(words, 5000)?.charStart === 8);
+  assert("wordAt: a unit with no words has no word to stand on", wordAt([], 0) === undefined);
 }
 
 console.log("\nSpeech manifest — admission and rejection:");
