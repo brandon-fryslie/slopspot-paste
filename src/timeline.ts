@@ -190,18 +190,6 @@ export const turnMark = (turns: ReadonlyArray<Mark>, from: Mark, by: -1 | 1): Ma
   return (by < 0 ? turns.findLast((turn) => before(turn, from)) : turns.find((turn) => before(from, turn))) ?? null;
 };
 
-// A turn skip as a listener expects it. Forward is the next turn. Back is the turn before
-// while the voice is within `graceMs` of the current turn's start, and the current turn's
-// start once it is deeper in — a voice starts a turn within a word of the tap, so without
-// the grace a back tap would only ever restart what just began. At the first turn, still
-// within the grace, there is no turn before: the turn restarts.
-export const skipTurn = (turns: ReadonlyArray<Mark>, timeline: Timeline, from: Mark, by: -1 | 1, graceMs: number): Mark | null => {
-  const start = turnMark(turns, from, by);
-  if (by > 0 || start === null) return start;
-  const within = timeAt(timeline, from) - timeAt(timeline, start) < graceMs;
-  return within ? (turnMark(turns, start, -1) ?? start) : start;
-};
-
 // ── saying it ───────────────────────────────────────────────────────────────────────
 
 // A time on the clock, as a listener reads one: m:ss under an hour, h:mm:ss over it, and

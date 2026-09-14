@@ -17,7 +17,6 @@ import {
   DEFAULT_MS_PER_CHAR,
   estimated,
   markAt,
-  skipTurn,
   timeAt,
   timelineOfScript,
   timelineOfUtterances,
@@ -177,22 +176,6 @@ console.log("turnStarts and turnMark: the landmarks a skip lands on");
   assert("there is nothing before the first turn", turnMark(turns, mark(0, 0), -1) === null);
   assert("there is nothing after the last turn", turnMark(turns, mark(3, 2), 1) === null);
   assert("a conversation with no passages has no landmarks", turnStarts([]).length === 0);
-}
-
-console.log("skipTurn: back within a turn's first seconds is the turn before, deeper in it restarts the turn");
-{
-  const turns = turnStarts(utterances);
-  const line = timelineOfUtterances(utterances);
-  const grace = 3000;
-  // The first turn is 69 characters, 4554 ms at the default rate; its second passage begins at 2772 ms.
-  const at = (utterance: number, char: number): string => { const m = skipTurn(turns, line, mark(utterance, char), -1, grace); return m === null ? "null" : `${m.utterance}:${m.char}`; };
-  assert("within the grace of a turn's start, back is the turn before", at(2, 2) === "0:0" && at(3, 2) === "2:0");
-  assert("at a turn's own start, back is the turn before, as before", at(2, 0) === "0:0");
-  assert("deeper into a turn, back restarts it", at(1, 10) === "0:0");
-  assert("a turn shorter than the grace: back from its end is still the turn before", at(3, 24) === "2:0");
-  assert("within the grace of the FIRST turn there is no turn before: it restarts", at(0, 30) === "0:0" && at(1, 3) === "0:0");
-  assert("at the very top there is nowhere to go", at(0, 0) === "null");
-  assert("forward is untouched by the grace", skipTurn(turns, line, mark(0, 2), 1, grace)?.utterance === 2 && skipTurn(turns, line, mark(3, 2), 1, grace) === null);
 }
 
 // ── the edges ─────────────────────────────────────────────────────────────────────────
