@@ -53,13 +53,29 @@ export type PerformerState =
   | { readonly kind: "speaking"; readonly at: Spot }
   | { readonly kind: "paused"; readonly at: Spot };
 
-// The reader's four verbs. `seek` moves to a mark: a speaking or idle performer plays from
-// there, a paused one stays paused there — the reader asked to move, not to start.
+// [LAW:types-are-the-program] How fast the voice reads, as the closed set the transport
+// offers rather than a number: the strongest true theorem about a speed in this program is
+// that it is one of these seven, so no performer has a rate to check at its door and no
+// caller can name 40x. The ticket's 0.75x–2.5x, in the steps a reader recognises.
+export const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5] as const;
+export type Speed = (typeof SPEEDS)[number];
+export const NORMAL: Speed = 1;
+
+// One step along the list, stopping at its ends — where `stepSpeed` returns the speed it
+// was given, which is what disables the control that would have gone further.
+export const stepSpeed = (from: Speed, by: -1 | 1): Speed => SPEEDS[Math.min(Math.max(SPEEDS.indexOf(from) + by, 0), SPEEDS.length - 1)] ?? from;
+
+// The reader's five verbs. `seek` moves to a mark: a speaking or idle performer plays from
+// there, a paused one stays paused there — the reader asked to move, not to start. `rate`
+// is obeyed at once and never reported back: the speed is the transport's one value, held
+// by the panel across crashes and the whole download, and a performer that kept its own
+// copy would be a second clock for it [LAW:one-source-of-truth].
 export type PerformerEvent =
   | { readonly kind: "play" }
   | { readonly kind: "pause" }
   | { readonly kind: "stop" }
-  | { readonly kind: "seek"; readonly to: Mark };
+  | { readonly kind: "seek"; readonly to: Mark }
+  | { readonly kind: "rate"; readonly to: Speed };
 
 export interface Performer {
   readonly send: (event: PerformerEvent) => void;
