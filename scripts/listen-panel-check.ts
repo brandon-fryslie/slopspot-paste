@@ -382,6 +382,8 @@ console.log("readout: every form the mark can take, and the question its hover a
   // there before any performer exists and unaffected by consent or download state.
   assert("before any voice, standing at the top: no turn before it, one after it", around(idle) === "back(off) | forward | 1×");
   assert("standing at the second turn: back to the first, nothing after it", around(step(idle, seekTo(1)).state) === "back | forward(off) | 1×");
+  assert("a place partway into the second turn, before any voice: back to the gap before it, nothing after it", around(step(idle, seekTo(1, 5)).state) === "back | forward(off) | 1×");
+  assert("a place partway into the first passage, before any voice: the voice would begin it at the top, so no turn before it", around(step(idle, seekTo(0, 5)).state) === "back(off) | forward | 1×");
   assert("the same landmarks hold once the voice is on stage", around(onStage) === "back(off) | forward | 1×");
   assert("the speed label follows the state's own speed, and both ends disable their step", (() => {
     const slowest = step(onStage, { kind: "speed", by: -1 }).state;
@@ -888,6 +890,9 @@ console.log("createListenPanel: a tap on a word before the voice is warm is wher
   assert("a tap on a word while the probe runs opens the device, like Play, and holds the place", r.counts.spawned === 1 && device?.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…" && held(panel.state()) === "0:21");
   panel.send({ kind: "place", to: mark(1) });
   assert("a second tap while the voice is on its way moves the place, nothing else", r.counts.spawned === 1 && r.devices().length === 1 && held(panel.state()) === "1:0");
+  panel.send({ kind: "place", to: mark(1, 5) });
+  r.back.click();
+  assert("partway into the second turn, back before the voice arrives lands on the gap before that turn — the place the gap leads into — not the top", held(panel.state()) === "1:0");
   arrive(r);
   assert("the voice arrives at the tapped place: it asks for that unit and the cursor is there", r.said().endsWith("synthesize 2") && r.where() === "t2 0-8 of 1" && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
   r.emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });

@@ -362,16 +362,22 @@ export const pointAt = (timeline: Timeline, ms: number): Point | undefined => {
   return segment === undefined ? undefined : { atMs: ms, segment };
 };
 
-// The landmark a skip lands on: back, the start of the last one ending strictly before the
-// point's time; forward, the first one beginning strictly after the start of the point's
-// segment. [LAW:dataflow-not-control-flow] "Strictly" is the whole rule — a reader in a
-// turn goes back to the gap before it, one anywhere in that gap, from its start to its end,
-// goes back to the landmark before, and forward from anywhere in a segment passes over no
-// landmark that segment's end touches — with no case for any of them. Null at the ends,
-// where there is no such landmark: the transport shows the control disabled rather than
-// offering a jump that goes nowhere.
+// The landmark a skip lands on: back, the start of the last one beginning strictly before
+// the point's segment or ending strictly before the point's time; forward, the first one
+// beginning strictly after the point's segment begins. [LAW:dataflow-not-control-flow]
+// "Strictly" is the whole rule, with no case for any of these: a reader anywhere in a turn,
+// its first sample included, goes back to the gap before it; one anywhere in that gap goes
+// back to the landmark before; one past the top of the first passage goes back to the top;
+// and forward from anywhere in a segment passes over no landmark that segment's end
+// touches. A place on a guessed segment is at the segment's start, where the voice will
+// begin it, so it reads the same before the voice as the voice's own point does after.
+// Null at the ends, where there is no such landmark: the transport shows the control
+// disabled rather than offering a jump that goes nowhere.
 export const landmark = (marks: ReadonlyArray<Landmark>, at: Point, by: -1 | 1): number | null =>
-  (by < 0 ? marks.findLast((mark) => mark.endMs < at.atMs) : marks.find((mark) => mark.startMs > at.segment.startMs))?.startMs ?? null;
+  (by < 0
+    ? marks.findLast((mark) => mark.startMs < at.segment.startMs || mark.endMs < at.atMs)
+    : marks.find((mark) => mark.startMs > at.segment.startMs)
+  )?.startMs ?? null;
 
 // ── saying it ───────────────────────────────────────────────────────────────────────
 
