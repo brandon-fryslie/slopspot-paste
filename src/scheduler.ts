@@ -408,23 +408,34 @@ const plan = (state: SchedulerState, player: PlayerState): Plan => {
 
 // ── the reader's voices ────────────────────────────────────────────────────────────────
 
-// How the unit under the cursor is restarted, by the player's own state: the player will
-// not drop the unit it is cueing, so a speaking player is held before the drops and set
-// going again after the seek; a paused one has its held place moved; an idle one has no
-// cursor, and one in a gap is inside no unit — the gap sounds on, and the unit after it
-// is asked for afresh by the plan. `changed` says whether that unit's voice is among the
-// changed.
-const restart = (layout: ReadonlyArray<Slot>, player: PlayerState, changed: (unit: number) => boolean): { before: Command[]; after: Command[] } => {
+// How the player is carried through the drops, by its own state. A speaking player has
+// cued ahead as far as its audio runs — through a gap, into the speech after it — so any
+// unit it is dropping at or after the one the cursor needs may be the unit it is cueing,
+// which it refuses to drop, or audio already handed to the device in the old voice. So a
+// speaking player is held before the drops and set going after them: from the start of
+// the unit under the cursor when that unit's voice changed, else from the very sample it
+// was held at — in a gap, the gap sounds on and the unit after it waits for its new
+// rendition. A paused player has cued nothing, so only its held place moves, to the start
+// of a changed unit under it; an idle one has no cursor. `changed` says whether a unit's
+// voice is among the changed; `dropped` lists the units whose audio leaves the player.
+const restart = (
+  layout: ReadonlyArray<Slot>,
+  player: PlayerState,
+  changed: (unit: number) => boolean,
+  dropped: ReadonlyArray<number>,
+): { before: Command[]; after: Command[] } => {
   const none = { before: [], after: [] };
   if (player.kind === "idle") return none;
   const unit = spoken(layout, player.at);
-  if (unit === null || !changed(unit)) return none;
-  const seek = toPlayer({ kind: "seek", to: { segment: player.at.segment, offsetMs: 0 } });
+  const seek = unit !== null && changed(unit) ? [toPlayer({ kind: "seek", to: { segment: player.at.segment, offsetMs: 0 } })] : [];
   switch (player.kind) {
     case "paused":
-      return { before: [], after: [seek] };
-    case "speaking":
-      return { before: [toPlayer({ kind: "pause" })], after: [seek, toPlayer({ kind: "play" })] };
+      return { before: [], after: seek };
+    case "speaking": {
+      const from = needed(layout, player.at).unit;
+      if (seek.length === 0 && !dropped.some((gone) => gone >= from)) return none;
+      return { before: [toPlayer({ kind: "pause" })], after: [...seek, toPlayer({ kind: "play" })] };
+    }
   }
 };
 
@@ -460,7 +471,8 @@ const revoice = (state: SchedulerState, voices: VoiceMap, player: PlayerState): 
     }
   });
   const units = state.manifest.units.map((record, unit) => (changed(unit) ? undefined : record));
-  const { before, after } = restart(state.layout, player, changed);
+  const dropped = commands.flatMap((command) => (command.kind === "player" && command.event.kind === "drop" ? [command.event.unit] : []));
+  const { before, after } = restart(state.layout, player, changed, dropped);
   return {
     state: { ...state, voices, holdings, manifest: { ...state.manifest, units } },
     commands: [...before, ...commands, ...after],

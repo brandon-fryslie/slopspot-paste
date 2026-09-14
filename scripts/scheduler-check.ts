@@ -34,7 +34,9 @@
 //   cursor in the gap before a failed unit -> nothing yet: the gap sounds, the skip waits for the unit's slot
 //   cursor enters a failed last unit -> stop
 //   cursor in a gap               -> the window is measured from the unit the gap precedes
-//   voices change in a gap        -> no restart: the gap sounds on, the unit after it is asked again
+//   voices change, speaking       -> held before the drops of any unit at or after the one needed, set going after
+//   voices change in a gap        -> held, the unit after it dropped, played on from the same gap sample; asked again
+//   voices change, paused in a gap -> no pause, no seek: nothing is cued while paused
 //   paused                        -> same window as speaking
 //   re-synthesis after a drop     -> the manifest record is replaced
 //   driver: reports raised by its own commands are handled after them, in order
@@ -345,8 +347,8 @@ console.log("step: the reader's voices");
 
   const other = run(at1.state, speaking(1, 300, "audio"), voices({ ...VOICES, assistant: "azelma" }));
   assert(
-    "Claude's voice changes while the user's unit speaks: no restart; the assistant's held units dropped, the in-flight one cancelled, the next assistant unit asked in the new voice",
-    other.commands.join() === "drop 0,drop 2,cancel 4,drop 4,synthesize 2" && kinds(other.state) === "ahrhca",
+    "Claude's voice changes while the user's unit speaks: unit 2 ahead may be cued in the old voice, so held before the drops — the in-flight assistant unit's with them — and played on from the same sample, no seek; the next assistant unit asked in the new voice",
+    other.commands.join() === "pause,drop 0,drop 2,cancel 4,drop 4,play,synthesize 2" && kinds(other.state) === "ahrhca",
   );
 
   const bothVoices: VoiceMap = { ...VOICES, user: "fantine", assistant: "azelma" };
@@ -368,7 +370,9 @@ console.log("step: the reader's voices");
   const heldStill = run(at1.state, paused(1, 300), voices(userVoice));
   assert("paused: the held place moves to the unit's start, with no pause and no play", heldStill.commands.join() === `drop 1,drop 3,seek ${slotOf(1)}:0,cancel 4,drop 4,synthesize 1`);
   const gapVoice = run(at1.state, inGap(1), voices(userVoice));
-  assert("the user's voice changes while the gap before unit 1 sounds: no pause, no seek, no play — the gap sounds on; the user's units are forgotten and 1 asked again for the gap's end", gapVoice.commands.join() === "drop 1,drop 3,cancel 4,drop 4,synthesize 1" && kinds(gapVoice.state) === "hrhaca");
+  assert("the user's voice changes while the gap before unit 1 sounds: held before 1 is dropped, played on from the same gap sample with no seek; 1 asked again for the gap's end", gapVoice.commands.join() === "pause,drop 1,drop 3,play,cancel 4,drop 4,synthesize 1" && kinds(gapVoice.state) === "hrhaca");
+  const pausedGap = run(at1.state, { kind: "paused", at: { segment: gapBefore(1), offsetMs: 100 } }, voices(userVoice));
+  assert("paused in that gap: nothing is cued, so no pause, no seek, no play", pausedGap.commands.join() === "drop 1,drop 3,cancel 4,drop 4,synthesize 1");
 
   const stopped = run(built.state, idle, voices(userVoice));
   assert("idle: the changed units are forgotten with their records; the rest are dropped as always, their records kept", stopped.commands.join() === "drop 1,drop 3,drop 0,drop 2" && kinds(stopped.state) === "aaaaaa" && stopped.state.manifest.units[1] === undefined && stopped.state.manifest.units[0]?.durationMs === 1000);
@@ -436,6 +440,49 @@ console.log("driver: a voice change mid-unit restarts it in the new voice, over 
   assert("the user's units are gone from the view, the assistant's held", scheduler.view().holdings.map((h) => h.kind[0]).join("") === "hrha" && scheduler.view().manifest.units[1] === undefined && scheduler.view().manifest.units[0] !== undefined);
   emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
   assert("the new rendition's first frame plays from the unit's start", describe(scheduler.view().player) === `speaking/audio@${slotOf(1)}:0.000`);
+  scheduler.dispose();
+}
+
+console.log("driver: a voice change in the gap before a unit still streaming, over the real player");
+{
+  const sent: ToWorker[] = [];
+  const listeners = new Set<(message: FromWorker) => void>();
+  const port: SynthesisPort = {
+    send: (message) => sent.push(message),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    errors: () => () => undefined,
+    dispose: () => undefined,
+    terminate: () => undefined,
+  };
+  const emit = (message: FromWorker): void => {
+    for (const listener of listeners) listener(message);
+  };
+  const scheduler = createScheduler({
+    port,
+    script: scriptOf(4),
+    voices: VOICES,
+    player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice) }),
+    onChange: () => undefined,
+  });
+  const device = StubDevice.instances.at(-1);
+  if (device === undefined) throw new Error("the scheduler did not build its player");
+  scheduler.send({ kind: "play" });
+  emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  // Unit 1's first frame is cued behind the gap; the unit is still streaming, so the
+  // player's frontier is unit 1's slot — the unit it refuses to drop.
+  emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
+  device.advance(SCHEDULE_LEAD_S + FRAME_S + GAP_S / 2);
+  assert("setup: inside the gap before unit 1, unit 1 streaming", describe(scheduler.view().player).startsWith(`speaking/audio@${gapBefore(1)}:`) && scheduler.view().holdings[1]?.kind === "requested");
+  scheduler.voices({ ...VOICES, user: "fantine" });
+  assert("the user's voice changes: no throw, still in the gap, the streaming rendition cancelled", describe(scheduler.view().player).startsWith(`speaking/audio@${gapBefore(1)}:`) && sent.at(-1)?.kind === "cancel");
+  emit({ kind: "cancelled", unitId: 1 });
+  assert("the cancel lands: unit 1 asked in the new voice", sent.some((m) => m.kind === "synthesize" && m.unitId === 1 && m.voice === "fantine"));
+  device.advance(GAP_S);
+  assert("past the gap's end the old rendition is not heard: the player waits at unit 1's start", describe(scheduler.view().player) === `speaking/waiting@${slotOf(1)}:0.000`);
   scheduler.dispose();
 }
 

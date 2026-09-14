@@ -26,11 +26,13 @@ import {
   layoutOf,
   placeAt,
   placeIn,
+  pointAt,
   speechSegments,
   cursorAt,
   timeAt,
   timelineOfScript,
   timelineOfUtterances,
+  type Point,
   type Timeline,
 } from "../src/timeline";
 
@@ -232,22 +234,34 @@ console.log("landmarks and landmark: back and forward at every boundary");
   const marks = landmarks(line);
   const g1 = timeAt(line, mark(2)) - GAP_MS;
   const g2 = timeAt(line, mark(3)) - GAP_MS;
+  const at = (ms: number): Point => {
+    const point = pointAt(line, ms);
+    if (point === undefined) throw new Error("fixture: a timeline with nothing to say");
+    return point;
+  };
   assert("the top and each gap — one landmark per turn, not one per passage; the top a span of no length, a gap its whole self", marks.length === 3 && marks[0]?.startMs === 0 && marks[0].endMs === 0 && marks[1]?.startMs === g1 && marks[1].endMs === g1 + GAP_MS && marks[2]?.startMs === g2);
-  assert("mid-turn in the first turn, back is the top", landmark(marks, timeAt(line, mark(0, 30)), -1) === 0);
-  assert("mid-turn, forward is the gap before the next turn", landmark(marks, timeAt(line, mark(0, 30)), 1) === g1);
+  assert("mid-turn in the first turn, back is the top", landmark(marks, at(timeAt(line, mark(0, 30))), -1) === 0);
+  assert("mid-turn, forward is the gap before the next turn", landmark(marks, at(timeAt(line, mark(0, 30))), 1) === g1);
   // A `unit` alignment puts every mark at its leg's start, the gap's own end; the reader
   // in speech is a little past it.
-  assert("from speech in the second turn, back lands at the gap's start", landmark(marks, timeAt(line, mark(2, 4)) + 10, -1) === g1);
-  assert("from inside that gap, back again reaches the landmark before it: the double tap", landmark(marks, g1 + GAP_MS / 2, -1) === 0);
-  assert("standing exactly at a gap's start, back is the landmark before it", landmark(marks, g1, -1) === 0);
-  assert("standing exactly at a gap's start, forward is the next gap", landmark(marks, g1, 1) === g2);
-  assert("standing exactly at a gap's end, the gap is not yet behind: back is the landmark before it", landmark(marks, g1 + GAP_MS, -1) === 0);
-  assert("one step past a gap's end, the gap is behind: back is that gap", landmark(marks, g1 + GAP_MS + 1, -1) === g1);
-  assert("from inside a gap, forward is the gap after the turn it leads to", landmark(marks, g1 + GAP_MS / 2, 1) === g2);
-  assert("from inside the last turn, forward is nothing", landmark(marks, timeAt(line, mark(3, 5)), 1) === null);
-  assert("from the last turn, back is the gap before it, and back again the gap before that", landmark(marks, timeAt(line, mark(3, 5)) + 10, -1) === g2 && landmark(marks, g2, -1) === g1);
-  assert("at the top there is nothing before", landmark(marks, 0, -1) === null);
-  assert("a later passage of the same turn still belongs to that turn", landmark(marks, timeAt(line, mark(1, 3)), -1) === 0);
+  assert("from speech in the second turn, back lands at the gap's start", landmark(marks, at(timeAt(line, mark(2, 4)) + 10), -1) === g1);
+  assert("from inside that gap, back again reaches the landmark before it: the double tap", landmark(marks, at(g1 + GAP_MS / 2), -1) === 0);
+  assert("standing exactly at a gap's start, back is the landmark before it", landmark(marks, at(g1), -1) === 0);
+  assert("standing exactly at a gap's start, forward is the next gap", landmark(marks, at(g1), 1) === g2);
+  assert("standing exactly at a gap's end, the gap is not yet behind: back is the landmark before it", landmark(marks, at(g1 + GAP_MS), -1) === 0);
+  assert("one step past a gap's end, the gap is behind: back is that gap", landmark(marks, at(g1 + GAP_MS + 1), -1) === g1);
+  assert("from inside a gap, forward is the gap after the turn it leads to", landmark(marks, at(g1 + GAP_MS / 2), 1) === g2);
+  assert("from inside the last turn, forward is nothing", landmark(marks, at(timeAt(line, mark(3, 5))), 1) === null);
+  assert("from the last turn, back is the gap before it, and back again the gap before that", landmark(marks, at(timeAt(line, mark(3, 5)) + 10), -1) === g2 && landmark(marks, at(g2), -1) === g1);
+  assert("at the top there is nothing before", landmark(marks, at(0), -1) === null);
+  assert("a later passage of the same turn still belongs to that turn", landmark(marks, at(timeAt(line, mark(1, 3))), -1) === 0);
+    // A unit streaming past its guessed length holds the voice's clock at its segment's end,
+  // the very time the gap after it begins; the voice knows it is still in the speech.
+  const ending = line.segments.find((segment) => segment.content.kind === "speech" && segment.startMs + segment.ms === g1);
+  if (ending === undefined) throw new Error("fixture: no speech ends where the first gap begins");
+  assert("held at a speech segment's end, forward is the gap that end touches, not the gap after it", landmark(marks, { atMs: g1, segment: ending }, 1) === g1);
+  assert("held there, back is the landmark before the turn", landmark(marks, { atMs: g1, segment: ending }, -1) === 0);
+  assert("a bare time at a boundary is in the segment that begins there", at(g1).segment.content.kind === "silence" && at(g1 + GAP_MS).segment.content.kind === "speech");
   assert("a conversation with no passages has no landmarks", landmarks(timelineOfUtterances([])).length === 0);
   assert("the page's own clock has the same landmarks as the voice's, before anything is measured", (() => {
     const page = landmarks(timelineOfUtterances(utterances));

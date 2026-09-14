@@ -257,8 +257,8 @@ export const timeAt = (timeline: Timeline, place: Place): number => {
 };
 
 // The segment under a point on the clock, clamped to both ends: before the start is the
-// first segment, past the end is the last. Undefined only for a conversation with nothing
-// to say.
+// first segment, past the end is the last; at a boundary, the segment that begins there.
+// Undefined only for a conversation with nothing to say.
 const segmentAt = (timeline: Timeline, ms: number): Segment | undefined =>
   timeline.segments.findLast((segment) => segment.startMs <= ms) ?? timeline.segments[0];
 
@@ -346,14 +346,32 @@ export const landmarks = (timeline: Timeline): ReadonlyArray<Landmark> =>
     ...(segment.content.kind === "silence" ? [{ startMs: segment.startMs, endMs: segment.startMs + segment.ms }] : []),
   ]);
 
-// The landmark a skip lands on: the start of the last one ending strictly before the
-// point, or of the first one beginning strictly after it. [LAW:dataflow-not-control-flow]
-// "Strictly" is the whole rule — a reader in a turn goes back to the gap before it, one
-// anywhere in that gap, from its start to its end, goes back to the landmark before, with
-// no case for either. Null at the ends, where there is no such landmark: the transport
-// shows the control disabled rather than offering a jump that goes nowhere.
-export const landmark = (marks: ReadonlyArray<Landmark>, from: number, by: -1 | 1): number | null =>
-  (by < 0 ? marks.findLast((mark) => mark.endMs < from) : marks.find((mark) => mark.startMs > from))?.startMs ?? null;
+// [LAW:types-are-the-program] A point on the clock with the segment it is in. The time
+// alone does not name the segment at a boundary: a unit streaming past its guessed length
+// holds the clock at its segment's end, which is the very time the segment after it
+// begins. The voice knows which segment it is in; a time with no voice behind it is in the
+// segment that begins there.
+export interface Point {
+  readonly atMs: number;
+  readonly segment: Segment;
+}
+
+// The point a bare time names. Undefined only for a conversation with nothing to say.
+export const pointAt = (timeline: Timeline, ms: number): Point | undefined => {
+  const segment = segmentAt(timeline, ms);
+  return segment === undefined ? undefined : { atMs: ms, segment };
+};
+
+// The landmark a skip lands on: back, the start of the last one ending strictly before the
+// point's time; forward, the first one beginning strictly after the start of the point's
+// segment. [LAW:dataflow-not-control-flow] "Strictly" is the whole rule — a reader in a
+// turn goes back to the gap before it, one anywhere in that gap, from its start to its end,
+// goes back to the landmark before, and forward from anywhere in a segment passes over no
+// landmark that segment's end touches — with no case for any of them. Null at the ends,
+// where there is no such landmark: the transport shows the control disabled rather than
+// offering a jump that goes nowhere.
+export const landmark = (marks: ReadonlyArray<Landmark>, at: Point, by: -1 | 1): number | null =>
+  (by < 0 ? marks.findLast((mark) => mark.endMs < at.atMs) : marks.find((mark) => mark.startMs > at.segment.startMs))?.startMs ?? null;
 
 // ── saying it ───────────────────────────────────────────────────────────────────────
 

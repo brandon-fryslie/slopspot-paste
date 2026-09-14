@@ -108,7 +108,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
-import { clockText, cursorIn, estimated, landmark, landmarks, placeAt, placeIn, timeAt, timelineOfUtterances, type Cursor, type Timeline } from "./timeline";
+import { clockText, cursorIn, estimated, landmark, landmarks, placeAt, placeIn, pointAt, timeAt, timelineOfUtterances, type Cursor, type Point, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
 import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
@@ -795,15 +795,15 @@ const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Reado
 // [LAW:one-source-of-truth].
 export const timelineOf = (state: PanelState, page: Page): Timeline => (state.kind === "neural" ? state.view.timeline : page.timeline);
 
-// Where the transport stands, from the state alone: the performer's own time when it has
-// one, the time of the place held for a performer that does not exist yet. This is the
+// Where the transport stands, from the state alone: the performer's own point when it has
+// one, the point of the place held for a performer that does not exist yet. This is the
 // last REPORT — the driver reads the live clock for the cursor and the scrubber; a button's
 // shape needs only which side of a landmark the voice is on, and every landmark sits at a
 // unit boundary, which the player reports on crossing.
-const timeIn = (state: PanelState, line: Timeline): number => {
-  if (state.kind === "provisioning") return timeAt(line, state.from);
+const pointIn = (state: PanelState, line: Timeline): Point | undefined => {
+  if (state.kind === "provisioning") return pointAt(line, timeAt(line, state.from));
   const at = stateOf(state.view);
-  return at.kind === "idle" ? 0 : at.atMs;
+  return at.kind === "idle" ? pointAt(line, 0) : at;
 };
 
 // The scrubber and the times at a point on the clock. Takes the milliseconds rather than a
@@ -828,9 +828,9 @@ const clockAt = (timeline: Timeline, ms: number): Clock => {
 const around = (state: PanelState, page: Page): Pick<Readout, "skip" | "speed"> => {
   const line = timelineOf(state, page);
   const marks = landmarks(line);
-  const at = timeIn(state, line);
+  const at = pointIn(state, line);
   return {
-    skip: { back: landmark(marks, at, -1) !== null, forward: landmark(marks, at, 1) !== null },
+    skip: { back: at !== undefined && landmark(marks, at, -1) !== null, forward: at !== undefined && landmark(marks, at, 1) !== null },
     speed: {
       label: `${state.speed}×`,
       slower: stepSpeed(state.speed, -1) !== state.speed,
@@ -1263,10 +1263,11 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const stageState = (): NeuralState => (state.kind === "neural" ? performer().state() : IDLE);
   // Where the voice is now, as the one number every transport reading is in: the live
   // time while there is one, else the time of the place the state holds.
-  const timeNow = (): number => {
+  const pointNow = (): Point | undefined => {
     const now = stageState();
-    return now.kind === "idle" ? timeIn(state, timeline()) : now.atMs;
+    return now.kind === "idle" ? pointIn(state, timeline()) : now;
   };
+  const timeNow = (): number => pointNow()?.atMs ?? 0;
   // What the scrubber and the times show right now: the reader's drag while they are
   // dragging, the voice's own place otherwise.
   const clockNow = (): Clock => clockAt(timeline(), held ? Number(controls.scrub.value) : timeNow());
@@ -1458,8 +1459,10 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         return at(g.toMs);
       case "nudge":
         return at(timeNow() + g.bySeconds * 1000);
-      case "turn":
-        return at(landmark(landmarks(timeline()), timeNow(), g.by));
+      case "turn": {
+        const from = pointNow();
+        return at(from === undefined ? null : landmark(landmarks(timeline()), from, g.by));
+      }
     }
   };
 
