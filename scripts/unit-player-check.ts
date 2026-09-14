@@ -36,8 +36,8 @@
 //   rate      idle | paused          -> held for the next play; nothing reported
 //   rate      the rate already set   -> no-op
 //   a unit with a lead               -> its first frame cued the lead after the previous unit's end;
-//                                       position inside the lead reads as the previous unit past its end
-//   seek into a lead                 -> the rest of the lead, then the unit
+//                                       position inside the lead reads as that unit at a negative offset
+//   seek into a lead (negative)      -> the rest of the lead, then the unit
 //   frame arriving after the lead    -> plays at once: the gap lengthens, never shortens
 
 import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, extend, openDevice, openSchedule, positionAt } from "../src/unitPlayer";
@@ -272,7 +272,7 @@ console.log("player: seek");
   assert("seek while paused to the held position reports nothing", describe(player.state()) === "paused@2:0.000" && main.states.length === held);
 
   throws("seek to a unit past the script", () => player.send({ kind: "seek", to: { unitIndex: 4, offsetMs: 0 } }));
-  throws("seek to a negative offset", () => player.send({ kind: "seek", to: { unitIndex: 0, offsetMs: -1 } }));
+  throws("seek before a unit's lead, which is none here", () => player.send({ kind: "seek", to: { unitIndex: 0, offsetMs: -1 } }));
   throws("seek to a fractional unit", () => player.send({ kind: "seek", to: { unitIndex: 0.5, offsetMs: 0 } }));
 }
 
@@ -355,7 +355,7 @@ console.log("player: stop, and the end of the script");
 
 // ── the gap ───────────────────────────────────────────────────────────────────────────
 
-console.log("schedule: a lead is silence before a unit, spent by any overshoot, at the schedule's rate");
+console.log("schedule: a lead is silence before a unit, on that unit's clock, at the schedule's rate");
 {
   const store = new Map<number, UnitAudio>([
     [0, { frames: [frame(0, 0)], complete: true }],
@@ -366,16 +366,36 @@ console.log("schedule: a lead is silence before a unit, spent by any overshoot, 
   const gapped = extend(openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM), store, leads, MODEL_PCM);
   assert("the next unit's first frame is cued the lead after the previous unit's last sample, and its start recorded there", near(gapped.cues[1]?.when ?? NaN, 1 + FRAME_S + LEAD_S) && near(gapped.schedule.starts[1]?.time ?? NaN, 1 + FRAME_S + LEAD_S));
   const inside = positionAt(gapped.schedule, 1 + FRAME_S + 0.2, MODEL_PCM);
-  assert("inside the gap the position is the previous unit's, past its last sample: one arithmetic, no case for silence", inside.unit === 0 && inside.sample === FS + Math.round(0.2 * SR));
-  assert("at the gap's end the position is the next unit's first sample", positionAt(gapped.schedule, 1 + FRAME_S + LEAD_S, MODEL_PCM).unit === 1);
-  const into = extend(openSchedule({ unit: 0, sample: FS + Math.round(0.2 * SR) }, 1, MODEL_PCM), store, leads, MODEL_PCM);
-  assert("a seek into the gap plays the rest of it: the samples past the unit's end are lead already spent", into.cues[0]?.pcm === store.get(1)?.frames[0] && near(into.cues[0]?.when ?? NaN, 1 + LEAD_S - 0.2));
+  assert("inside the gap the position is the next unit's, at the negative sample of the lead still to run: one arithmetic, no case for silence", inside.unit === 1 && inside.sample === -Math.round(0.3 * SR));
+  assert("at the gap's end the position is the next unit's first sample", positionAt(gapped.schedule, 1 + FRAME_S + LEAD_S, MODEL_PCM).unit === 1 && positionAt(gapped.schedule, 1 + FRAME_S + LEAD_S, MODEL_PCM).sample === 0);
+  const into = extend(openSchedule({ unit: 1, sample: -Math.round(0.3 * SR) }, 1, MODEL_PCM), store, leads, MODEL_PCM);
+  assert("a seek into the gap plays the rest of it, then the unit: its first frame is cued the remaining lead after the anchor", into.cues[0]?.pcm === store.get(1)?.frames[0] && near(into.cues[0]?.when ?? NaN, 1 + 0.3) && positionAt(into.schedule, 1, MODEL_PCM).unit === 1);
   const past = extend(openSchedule({ unit: 0, sample: 10 * FS }, 1, MODEL_PCM), store, leads, MODEL_PCM);
-  assert("a seek past the whole gap starts the next unit at once", near(past.cues[0]?.when ?? NaN, 1));
+  assert("a seek past a unit's audio is at its end: the whole lead follows, then the next unit", near(past.cues[0]?.when ?? NaN, 1 + LEAD_S));
   const fast = extend(openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM, 2), store, leads, MODEL_PCM);
   assert("the lead runs at the schedule's rate: half the context time at 2x", near(fast.cues[1]?.when ?? NaN, 1 + FRAME_S / 2 + LEAD_S / 2));
   const direct = extend(openSchedule({ unit: 1, sample: 0 }, 1, MODEL_PCM), store, leads, MODEL_PCM);
   assert("a seek to a unit's own start is past its lead: no silence before it", near(direct.cues[0]?.when ?? NaN, 1));
+}
+
+console.log("player: a unit's last frame ending is the boundary, whatever the clock reads at that moment");
+{
+  const { player, device, reported } = harness([0, 500]);
+  player.send({ kind: "frame", unit: 0, frameIndex: 0, pcm: frame(0, 0) });
+  player.send({ kind: "complete", unit: 0 });
+  player.send({ kind: "frame", unit: 1, frameIndex: 0, pcm: frame(1, 0) });
+  player.send({ kind: "complete", unit: 1 });
+  player.send({ kind: "play" });
+  const last = device.sources[0];
+  if (last === undefined) throw new Error("fixture: nothing cued");
+  // The render thread's `ended` lands while the main thread's clock still reads 3 ms
+  // inside the frame: the two notices are unordered, and this is the losing order.
+  device.currentTime = last.endTime() - 0.003;
+  last.ended = true;
+  last.onended?.call(last, new Event("ended"));
+  assert("the ending itself carries the clock to the frame's end: the position is the next unit's lead, and the boundary is reported", describe(player.state()) === "speaking/audio@1:-500.000" && reported().at(-1) === "speaking/audio@1:-500.000");
+  device.advance(0.3);
+  assert("once the clock catches up and passes, the reading follows it", describe(player.state()) === "speaking/audio@1:-203.000");
 }
 
 console.log("player: a turn's first audio plays no earlier than the gap's end, and late audio lengthens the gap");
@@ -386,11 +406,11 @@ console.log("player: a turn's first audio plays no earlier than the gap's end, a
   player.send({ kind: "play" });
   const gapStart = SCHEDULE_LEAD_S + FRAME_S;
   device.advance(gapStart + 0.01);
-  assert("the unit ends into its gap with nothing delivered: waiting, the position read as unit 0 past its end", describe(player.state()) === "speaking/waiting@0:90.000" && device.live().length === 0);
+  assert("the unit ends into its gap with nothing delivered: waiting, the position read as unit 1 with the lead still to run", describe(player.state()) === "speaking/waiting@1:-490.000" && device.live().length === 0);
   device.advance(0.19);
   player.send({ kind: "frame", unit: 1, frameIndex: 0, pcm: frame(1, 0) });
   const early = device.sources.at(-1);
-  assert("a frame arriving inside the gap is cued at the gap's end, not when it arrived", near(early?.started?.when ?? NaN, gapStart + 0.5) && describe(player.state()) === "speaking/audio@0:280.000");
+  assert("a frame arriving inside the gap is cued at the gap's end, not when it arrived", near(early?.started?.when ?? NaN, gapStart + 0.5) && describe(player.state()) === "speaking/audio@1:-300.000");
   device.advance(0.31);
   assert("past the gap's end the position is the new unit's, counted from the gap's end", describe(player.state()) === "speaking/audio@1:10.000");
   player.send({ kind: "complete", unit: 1 });
@@ -398,7 +418,7 @@ console.log("player: a turn's first audio plays no earlier than the gap's end, a
   assert("a unit with no lead follows gaplessly, as before", near(device.sources.at(-1)?.started?.when ?? NaN, early?.endTime() ?? NaN));
   player.send({ kind: "complete", unit: 2 });
   device.advance(1);
-  assert("the run reported the gap as a wait, its relief, and the boundary on the first event after the clock crossed it — never a position that ran ahead of the audio", reported().join(" ") === "speaking/audio@0:0.000 speaking/waiting@0:90.000 speaking/audio@0:280.000 speaking/audio@1:10.000 speaking/audio@2:80.000 idle");
+  assert("the run reported the boundary into the gap as a wait for the new unit, its relief, and the next boundary — never a position that ran ahead of the audio", reported().join(" ") === "speaking/audio@0:0.000 speaking/waiting@1:-490.000 speaking/audio@1:-300.000 speaking/audio@2:80.000 idle");
 }
 {
   const { player, device } = harness([0, 500]);
@@ -422,11 +442,11 @@ console.log("player: a turn's first audio plays no earlier than the gap's end, a
   const gapStart = SCHEDULE_LEAD_S + FRAME_S;
   device.advance(gapStart + 0.2);
   player.send({ kind: "pause" });
-  assert("pausing inside the gap holds the place inside it", describe(player.state()) === "paused@0:280.000");
+  assert("pausing inside the gap holds the place inside it", describe(player.state()) === "paused@1:-300.000");
   player.send({ kind: "play" });
   assert("resuming plays the rest of the gap, then the unit", near(device.sources.at(-1)?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S + 0.3));
   player.send({ kind: "rate", to: 2 });
-  assert("a speed change inside the gap keeps the place and halves the rest of the gap", describe(player.state()) === "speaking/audio@0:280.000" && near(device.sources.at(-1)?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S + 0.15));
+  assert("a speed change inside the gap keeps the place and halves the rest of the gap", describe(player.state()) === "speaking/audio@1:-300.000" && near(device.sources.at(-1)?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S + 0.15));
 }
 
 console.log("player: the reported sequence");

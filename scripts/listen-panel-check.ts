@@ -36,7 +36,7 @@ import type { Mark, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
-import { timeAt, timelineOfScript } from "../src/timeline";
+import { speechLegs, timeAt, timelineOfScript } from "../src/timeline";
 import type { SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
@@ -94,11 +94,13 @@ const supported: PanelEvent = worker({ kind: "capability", support: { kind: "sup
 const ready: PanelEvent = worker({ kind: "ready", backend: "webgpu", modelVersion: "v" });
 const scriptBack: PanelEvent = worker({ kind: "script", id: SCRIPT_ID, units });
 
+const scriptLine = timelineOfScript(emptyManifest(units), table);
 const viewOf = (player: NeuralView["player"]): NeuralView => ({
   player,
   manifest: emptyManifest(units),
   holdings: units.map(() => ({ kind: "absent" })),
-  timeline: timelineOfScript(emptyManifest(units), table),
+  timeline: scriptLine,
+  units: speechLegs(scriptLine),
 });
 
 const effects = (s: ReturnType<typeof step>): string =>

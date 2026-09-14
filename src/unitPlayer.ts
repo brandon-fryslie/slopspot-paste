@@ -44,23 +44,31 @@
 // THE LEAD-IN. Each unit is built with the silence that precedes its audio — `leads`, in
 // milliseconds of media time, the gap between speakers that timeline.ts lays as a leg of
 // the conversation's clock and the neural performer hands here unchanged, so the audio and
-// the clock cannot disagree about it [LAW:single-enforcer]. The schedule crosses a unit's
-// end the way it always did and then advances its cursor by the next unit's lead before
-// cueing that unit's first frame: the first audio of a turn plays no earlier than the gap's
-// end, and a frame that arrives after the gap has run out plays when it arrives, which
-// lengthens the gap and never shortens it. Position inside a lead reads as the PREVIOUS
-// unit's, past its last sample — the gap is time on that unit's clock — so the reading is
-// one arithmetic rule with no case for silence, and a seek to such a position plays the
-// remainder of the lead: the samples past the unit's end are the part of the lead already
-// spent. The lead runs at the schedule's rate like every frame.
+// the clock cannot disagree about it [LAW:single-enforcer]. A unit's span of the clock
+// begins with its lead: the schedule crosses the previous unit's end the way it always did
+// and then advances its cursor by the lead before cueing the unit's first frame, so the
+// first audio of a turn plays no earlier than the gap's end, and a frame that arrives after
+// the gap has run out plays when it arrives, which lengthens the gap and never shortens it.
+// Position inside a lead reads as THAT unit's, at a negative sample — the time still to run
+// before its first — so the gap belongs to the unit it precedes on the clock as on the
+// timeline [LAW:types-are-the-program]: a position never names a unit that has finished,
+// and a seek to a negative sample plays the rest of the lead and then the unit. The lead
+// runs at the schedule's rate like every frame.
 //
 // UNIT BOUNDARIES ARE REPORTED. Every frame is its own source and the last frame of a unit
 // ends exactly at the boundary, so its `ended` event is the context's own notice that the
-// cursor has crossed into the next unit; `onState` fires there. This is not a second clock
-// — no timer is set — it is the one clock's event, and it is the tick the scheduler needs
-// to slide its window without polling [LAW:no-ambient-temporal-coupling]. Across a lead
-// the notice comes from the first frame that ends on the far side of it, one frame late,
-// which is nothing to a window three units wide.
+// cursor has crossed into the next unit — into its lead, where there is one; `onState`
+// fires there. This is not a second clock — no timer is set — it is the one clock's event,
+// and it is the tick the scheduler needs to slide its window without polling. The event
+// carries what it means: a source that has ended is a cue the clock has reached, and the
+// schedule keeps the furthest such end as `played`, so a reading of the position is the
+// later of `currentTime` and it. The main thread learns of the clock and of an ending by
+// two notices from the render thread that nothing orders, and a reading taken at the
+// `ended` of a unit's last frame from `currentTime` alone can still stand a few
+// milliseconds inside that frame — reporting the finished unit, missing the boundary, and
+// with a lead there is no next frame's ending to catch it for half a second, or ever when
+// the next unit never comes. `played` makes the boundary a fact the event established
+// rather than a race between two messengers [LAW:no-ambient-temporal-coupling].
 //
 // SPEED SHIFTS PITCH, AND THAT IS THE CHOSEN COST. A rate belongs to the schedule, not to a
 // source: every source in one schedule is started at the same `playbackRate`, and a change
@@ -169,9 +177,12 @@ export interface Sample {
   readonly sample: number;
 }
 
-// The context time at which sample 0 of a unit plays under the current schedule.
+// A unit's span under the current schedule: `since`, the context time its lead begins —
+// where the previous unit's audio ended, or the anchor for the unit played from — and
+// `time`, when its sample 0 plays, the lead later.
 export interface UnitStart {
   readonly unit: number;
+  readonly since: number;
   readonly time: number;
 }
 
@@ -202,21 +213,26 @@ export interface Cue {
   readonly skip: number;
 }
 
-export const openSchedule = (from: Sample, anchor: number, format: PcmFormat, rate: Speed = NORMAL): Schedule => ({
-  anchor,
-  cursor: anchor,
-  need: from,
-  rate,
-  starts: [{ unit: from.unit, time: anchor - from.sample / perSecond(format, rate) }],
-});
+// A schedule from a sample: from a negative one, the rest of the lead runs first and the
+// unit's audio is needed from its first sample.
+export const openSchedule = (from: Sample, anchor: number, format: PcmFormat, rate: Speed = NORMAL): Schedule => {
+  const time = anchor - from.sample / perSecond(format, rate);
+  return {
+    anchor,
+    cursor: Math.max(anchor, time),
+    need: { unit: from.unit, sample: Math.max(0, from.sample) },
+    rate,
+    starts: [{ unit: from.unit, since: anchor, time }],
+  };
+};
 
 // [LAW:effects-at-boundaries] Schedule every frame the store can supply at the cursor, as
 // data: the cues for the device and the schedule after them. The same three-way question
 // is asked per step — the frame is here, or the unit is still open, or the unit is closed
-// and the next begins at the cursor plus what is left of its lead — so a seek past a
-// unit's end resolves into the lead and then the following unit by the same rule that
-// carries ordinary playback across a boundary [LAW:dataflow-not-control-flow]. `leads` is
-// the silence before each unit in samples, indexed by unit.
+// and the next begins its lead at the cursor — so a seek at a unit's end resolves into the
+// lead and then the following unit by the same rule that carries ordinary playback across
+// a boundary [LAW:dataflow-not-control-flow]. `leads` is the silence before each unit in
+// samples, indexed by unit.
 export const extend = (
   schedule: Schedule,
   store: UnitStore,
@@ -242,12 +258,11 @@ export const extend = (
       continue;
     }
     if (!audio.complete) break;
-    // The samples the need already stood past the unit's end are lead already spent.
-    const spent = need.sample - audio.frames.length * frameSamples;
     need = { unit: need.unit + 1, sample: 0 };
     if (need.unit < unitCount) {
-      cursor += Math.max(0, (leads[need.unit] ?? 0) - spent) / perSec;
-      starts.push({ unit: need.unit, time: cursor });
+      const since = cursor;
+      cursor += (leads[need.unit] ?? 0) / perSec;
+      starts.push({ unit: need.unit, since, time: cursor });
     }
   }
   return { schedule: { ...schedule, cursor, need, starts }, cues };
@@ -255,11 +270,12 @@ export const extend = (
 
 // [LAW:one-source-of-truth] Where playback is at context time `time`, read off the
 // schedule: clamped to the audio actually scheduled, so before the anchor it is the
-// position played from and at or past the cursor it is exactly the next sample needed.
+// position played from and at or past the cursor it is exactly the next sample needed. The
+// unit is the last whose span has begun; inside its lead the sample is negative.
 export const positionAt = (schedule: Schedule, time: number, format: PcmFormat): Sample => {
   const t = Math.min(Math.max(time, schedule.anchor), schedule.cursor);
   let start = schedule.starts[0];
-  for (const candidate of schedule.starts) if (candidate.time <= t) start = candidate;
+  for (const candidate of schedule.starts) if (candidate.since <= t) start = candidate;
   return { unit: start.unit, sample: Math.round((t - start.time) * perSecond(format, schedule.rate)) };
 };
 
@@ -311,7 +327,9 @@ export interface UnitPlayer {
   readonly dispose: () => void;
 }
 
-type Speaking = { readonly kind: "speaking"; schedule: Schedule; readonly sources: Set<PcmSource> };
+// `played` is the context time the furthest ended source reached: a lower bound on the
+// clock the render thread's own `ended` notices have established.
+type Speaking = { readonly kind: "speaking"; schedule: Schedule; readonly sources: Set<PcmSource>; played: number };
 type Live = { readonly kind: "idle" } | { readonly kind: "paused"; readonly at: Sample } | Speaking;
 
 const sameSample = (a: Sample, b: Sample): boolean => a.unit === b.unit && a.sample === b.sample;
@@ -339,6 +357,10 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
 
   const toPosition = (at: Sample): Position => ({ unitIndex: at.unit, offsetMs: (at.sample / format.sampleRate) * 1000 });
   const flowOf = (speaking: Speaking): Flow => (speaking.sources.size > 0 ? "audio" : "waiting");
+  // [LAW:one-source-of-truth] The clock, as far as it is known to have run: `currentTime`,
+  // or the end of the last source the context reported ended, whichever is later.
+  const clock = (speaking: Speaking): number => Math.max(device.currentTime, speaking.played);
+  const where = (speaking: Speaking): Sample => positionAt(speaking.schedule, clock(speaking), format);
 
   const state = (): PlayerState => {
     switch (live.kind) {
@@ -347,7 +369,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
       case "paused":
         return { kind: "paused", at: toPosition(live.at) };
       case "speaking":
-        return { kind: "speaking", at: toPosition(positionAt(live.schedule, device.currentTime, format)), flow: flowOf(live) };
+        return { kind: "speaking", at: toPosition(where(live)), flow: flowOf(live) };
     }
   };
 
@@ -377,11 +399,14 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
       source.buffer = buffer;
       source.playbackRate.value = speaking.schedule.rate;
       source.connect(device.destination);
+      const end = cue.when + (cue.pcm.length - cue.skip) / perSecond(format, speaking.schedule.rate);
       // A source silenced by pause, stop or seek is no longer in its set: its late `ended`
       // reports on audio the player already abandoned and changes nothing.
       source.onended = () =>
         transition(() => {
-          if (speaking.sources.delete(source) && speaking.sources.size === 0) settle(speaking);
+          if (!speaking.sources.delete(source)) return;
+          speaking.played = Math.max(speaking.played, end);
+          if (speaking.sources.size === 0) settle(speaking);
         });
       speaking.sources.add(source);
       source.start(cue.when, cue.skip / format.sampleRate);
@@ -402,6 +427,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
       kind: "speaking",
       schedule: openSchedule(from, device.currentTime + SCHEDULE_LEAD_S, format, rate),
       sources: new Set(),
+      played: 0,
     };
     live = speaking;
     fill(speaking);
@@ -444,10 +470,13 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   const unitOf = (event: Extract<PlayerEvent, { unit: number }>): MutableUnitAudio =>
     store.get(unitIndex(event.unit, event.kind)) ?? { frames: [], complete: false };
 
+  // A seek may land anywhere from the start of the unit's lead on; earlier than that is no
+  // place in this unit [LAW:parse-dont-validate].
   const toSample = (to: Position): Sample => {
     const unit = unitIndex(to.unitIndex, "seek");
-    if (!Number.isFinite(to.offsetMs) || to.offsetMs < 0) {
-      throw new RangeError(`unit player: cannot seek to ${to.offsetMs} ms`);
+    const lead = config.leads[unit] ?? 0;
+    if (!Number.isFinite(to.offsetMs) || to.offsetMs < -lead) {
+      throw new RangeError(`unit player: cannot seek to ${to.offsetMs} ms of unit ${unit}, whose lead is ${lead} ms`);
     }
     return { unit, sample: Math.round((to.offsetMs * format.sampleRate) / 1000) };
   };
@@ -461,7 +490,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
         run(live.kind === "paused" ? live.at : { unit: 0, sample: 0 });
         return;
       case "pause":
-        if (live.kind === "speaking") hold(positionAt(live.schedule, device.currentTime, format));
+        if (live.kind === "speaking") hold(where(live));
         return;
       case "stop":
         if (live.kind === "idle") return;
@@ -476,7 +505,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
         // schedule would be re-opened for no audible reason [LAW:dataflow-not-control-flow].
         if (event.to === rate) return;
         rate = event.to;
-        if (live.kind === "speaking") begin(positionAt(live.schedule, device.currentTime, format));
+        if (live.kind === "speaking") begin(where(live));
         return;
       }
       case "seek": {

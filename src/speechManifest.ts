@@ -18,7 +18,7 @@
 //
 // WHY PRECISION IS A KIND. Only `words` is a measurement. `unit` says the model gave no
 // per-word signal; `estimated` carries times interpolated by character length, a guess
-// typed as one. `cursorAt` hands out a word for `words` alone and no word otherwise, so a
+// typed as one. `wordUnder` hands out a word for `words` alone and no word otherwise, so a
 // guess can never be painted as a measurement [LAW:no-silent-failure]. The other
 // direction, `offsetAt` — where in the audio a character of the text falls, for a reader
 // who taps a word — reads the estimate too: a seek that lands a word early is a better
@@ -200,11 +200,12 @@ export const addUnit = (manifest: Manifest, index: number, report: UnitReport): 
 
 // ── position math ───────────────────────────────────────────────────────────────────
 
-// Where playback is, in the pipeline's own coordinates: a unit and how far into its audio
-// — or past its end, into the silence that leads the next unit, since the player plays a
-// gap after a unit as time on that unit's clock. The player derives it from the audio
-// clock; the neural performer turns it into a time on the conversation's timeline, which
-// is what everything else reads.
+// Where playback is, in the pipeline's own coordinates: a unit and how far into its audio,
+// or how far before it — a negative offset is time still to run of the silence that leads
+// the unit, so the gap between speakers belongs to the unit it precedes, as the timeline
+// lays it and the player plays it. The player derives it from the audio clock; the neural
+// performer turns it into a time on the conversation's timeline, which is what everything
+// else reads.
 export interface Position {
   readonly unitIndex: number;
   readonly offsetMs: number;

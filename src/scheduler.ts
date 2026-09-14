@@ -362,11 +362,13 @@ const plan = (state: SchedulerState, player: PlayerState): Plan => {
 // How the unit under the cursor is restarted, by the player's own state: the player will
 // not drop the unit it is cueing, so a speaking player is held before the drops and set
 // going again after the seek; a paused one has its held place moved; an idle one has no
-// cursor. `changed` says whether that unit's voice is among the changed.
+// cursor. `changed` says whether that unit's voice is among the changed. The unit starts
+// over from its first sample — its audio is remade — but a cursor still in the silence
+// before it stays there: the gap is not the voice's.
 const restart = (player: PlayerState, changed: (unit: number) => boolean): { before: Command[]; after: Command[] } => {
   const none = { before: [], after: [] };
   if (player.kind === "idle" || !changed(player.at.unitIndex)) return none;
-  const seek = toPlayer({ kind: "seek", to: { unitIndex: player.at.unitIndex, offsetMs: 0 } });
+  const seek = toPlayer({ kind: "seek", to: { unitIndex: player.at.unitIndex, offsetMs: Math.min(player.at.offsetMs, 0) } });
   switch (player.kind) {
     case "paused":
       return { before: [], after: [seek] };

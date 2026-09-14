@@ -206,8 +206,9 @@ export const timelineOfScript = (manifest: Manifest, utteranceOf: ReadonlyArray<
 
 // The speech legs in order. For a script timeline this is indexed by unit, which is how
 // the neural performer turns its player's unit and offset into a time and back.
-export const speechLegs = (timeline: Timeline): ReadonlyArray<Leg & { readonly content: Speech }> =>
-  timeline.legs.flatMap((leg) => (leg.content.kind === "speech" ? [{ ...leg, content: leg.content }] : []));
+export type SpeechLeg = Leg & { readonly content: Speech };
+export const speechLegs = (timeline: Timeline): ReadonlyArray<SpeechLeg> =>
+  timeline.legs.filter((leg): leg is SpeechLeg => leg.content.kind === "speech");
 
 // [LAW:parse-dont-validate] Where a mark falls on the clock — the one door a Mark comes
 // through. Among the legs saying that utterance, the last that begins at or before the

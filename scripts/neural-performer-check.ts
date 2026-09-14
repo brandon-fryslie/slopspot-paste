@@ -5,7 +5,7 @@
 //
 // [LAW:behavior-not-structure] What is asserted is the contract the panel drives: which
 // unit a seek to a time starts and at what offset, what time the performer reports for a
-// player position — inside a unit, inside the gap after it — and that a script that is not
+// player position — inside a unit, inside the gap before it — and that a script that is not
 // this page's is refused. The real scheduler and the real unit player run underneath, over
 // the stub device and a stub port.
 
@@ -18,7 +18,7 @@ import { DEFAULT_VOICES } from "../src/voiceChoice";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, openDevice } from "../src/unitPlayer";
-import { GAP_MS, spotAt, timeAt, timelineOfScript } from "../src/timeline";
+import { GAP_MS, speechLegs, spotAt, timeAt, timelineOfScript } from "../src/timeline";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 
 const assert = (label: string, cond: boolean): void => {
@@ -80,30 +80,39 @@ console.log("timeOf and positionAt: the pipeline's unit and offset against the c
     return added.manifest;
   }, emptyManifest(script));
   const line = timelineOfScript(measured, table);
+  const units = speechLegs(line);
   assert("the fixture's clock is as described", line.totalMs === 4000 + GAP_MS && timeAt(line, { utterance: 2, char: 0 }) === 3000 + GAP_MS);
-  assert("a unit's offset is its leg's start plus the offset", timeOf(line, { unitIndex: 1, offsetMs: 250 }) === 1250 && timeOf(line, { unitIndex: 3, offsetMs: 0 }) === 3000 + GAP_MS);
-  assert("a position past a unit's end is the gap after it, on that unit's clock: one rule, no case for silence", timeOf(line, { unitIndex: 2, offsetMs: 1200 }) === 3200 && spotAt(line, 3200) === null);
-  throws("a unit the timeline has no leg for is a player built over another script", () => timeOf(line, { unitIndex: 9, offsetMs: 0 }));
+  assert("a unit's offset is its leg's start plus the offset", timeOf(units, { unitIndex: 1, offsetMs: 250 }) === 1250 && timeOf(units, { unitIndex: 3, offsetMs: 0 }) === 3000 + GAP_MS);
+  assert("a negative offset is the gap before the unit, on that unit's clock: one rule, no case for silence", timeOf(units, { unitIndex: 3, offsetMs: -300 }) === 3200 && spotAt(line, 3200) === null);
+  assert("an offset past the unit's leg reads as the leg's end: the clock never runs ahead of the timeline it is laid on", timeOf(units, { unitIndex: 2, offsetMs: 1200 }) === 3000);
+  throws("a unit the timeline has no leg for is a player built over another script", () => timeOf(units, { unitIndex: 9, offsetMs: 0 }));
   const pos = (ms: number): string => {
-    const p = positionAt(line, ms);
+    const p = positionAt(units, ms);
     return `${p.unitIndex}@${Math.round(p.offsetMs)}`;
   };
   assert("a time inside a unit is that unit and the offset", pos(1250) === "1@250" && pos(0) === "0@0");
-  assert("a time inside the gap is the previous unit past its end, which the player spends as lead", pos(3200) === "2@1200");
-  assert("the gap's end is the next unit's first sample; its start is the previous unit's last", pos(3000 + GAP_MS) === "3@0" && pos(3000) === "2@1000");
-  assert("before the start is the first unit's start; past the end is the last unit past its end", pos(-500) === "0@0" && pos(9000) === "3@5500");
-  assert("the two are inverse over every unit", [0, 1, 2, 3].every((unitIndex) => [0, 333, 999].every((offsetMs) => near(positionAt(line, timeOf(line, { unitIndex, offsetMs })).offsetMs, offsetMs))));
-  throws("a script with no units has nothing to seek", () => positionAt(timelineOfScript(emptyManifest([]), []), 0));
+  assert("a time inside the gap is the unit the gap precedes, at the lead still to run", pos(3200) === "3@-300");
+  assert("the gap's end is the next unit's first sample; its start is that unit's whole lead", pos(3000 + GAP_MS) === "3@0" && pos(3000) === `3@-${GAP_MS}`);
+  assert("before the start is the first unit's start; past the end is the last unit's end", pos(-500) === "0@0" && pos(9000) === "3@1000");
+  assert("the two are inverse over every unit, inside the audio and inside a lead", [0, 1, 2, 3].every((unitIndex) => [0, 333, 999].every((offsetMs) => near(positionAt(units, timeOf(units, { unitIndex, offsetMs })).offsetMs, offsetMs))) && near(positionAt(units, timeOf(units, { unitIndex: 3, offsetMs: -120 })).offsetMs, -120));
+  throws("a script with no units has nothing to seek", () => positionAt([], 0));
+  // Unit 2 unmeasured: a guess is not a place in audio nobody has heard.
+  const partly = timelineOfScript([0, 1, 3].reduce((manifest: Manifest, index) => {
+    const added = addUnit(manifest, index, { durationMs: 1000, alignment: { kind: "unit" } });
+    if (added.kind !== "added") throw new Error(`fixture: unit ${index} was ${added.kind}`);
+    return added.manifest;
+  }, emptyManifest(script)), table);
+  const guessed = speechLegs(partly)[2];
+  if (guessed === undefined || guessed.content.alignment !== null) throw new Error("fixture: unit 2 should be a guess");
+  assert("a time inside an unmeasured leg seeks its start, as a mark there resolves to it; the gap before the next unit is no guess and keeps its place", positionAt(speechLegs(partly), guessed.startMs + guessed.ms / 2).offsetMs === 0 && positionAt(speechLegs(partly), guessed.startMs + guessed.ms + 100).offsetMs === 100 - GAP_MS);
 }
 
 console.log("stateOf: the position in the conversation's time");
 {
-  const view = (player: NeuralView["player"], manifest: Manifest = emptyManifest(script)): NeuralView => ({
-    player,
-    manifest,
-    holdings: script.map(() => ({ kind: "absent" })),
-    timeline: timelineOfScript(manifest, table),
-  });
+  const view = (player: NeuralView["player"], manifest: Manifest = emptyManifest(script)): NeuralView => {
+    const timeline = timelineOfScript(manifest, table);
+    return { player, manifest, holdings: script.map(() => ({ kind: "absent" })), timeline, units: speechLegs(timeline) };
+  };
   assert("idle is idle", describe(stateOf(view({ kind: "idle" }))) === "idle");
   const unmeasured = view({ kind: "speaking", at: { unitIndex: 1, offsetMs: 0 }, flow: "waiting" });
   assert("a unit with no record yet is at its estimated leg's start", describe(stateOf(unmeasured)) === `speaking@${Math.round(timeAt(unmeasured.timeline, { utterance: 0, char: 21 }))}`);
@@ -164,13 +173,12 @@ console.log("createNeuralPerformer: over the real scheduler and player");
   performer.send({ kind: "seek", toMs: startOf(0, 25) });
   assert("seeking to the first utterance's second sentence holds at that unit's start", describe(performer.state()) === `paused@${Math.round(startOf(0, 21))}` && said().endsWith("cancel 3,synthesize 1"));
   performer.send({ kind: "seek", toMs: startOf(2) - GAP_MS / 2 });
-  assert("seeking into the gap before the second turn holds there: silence, nothing painted, the unit the gap follows is the one wanted", describe(performer.state()) === `paused@${Math.round(startOf(2) - GAP_MS / 2)}` && spotAt(performer.view().timeline, startOf(2) - GAP_MS / 2) === null && said().endsWith("synthesize 1,cancel 1,synthesize 2"));
+  assert("seeking into the gap before the second turn holds there: silence, nothing painted, the unit the gap precedes is the one wanted — the worker has not let go of it yet, so the request waits, and the unit behind, out of reach now, is withdrawn", describe(performer.state()) === `paused@${Math.round(startOf(2) - GAP_MS / 2)}` && spotAt(performer.view().timeline, startOf(2) - GAP_MS / 2) === null && said().endsWith("cancel 3,synthesize 1,cancel 1"));
+  emit({ kind: "cancelled", unitId: 3 });
+  assert("the worker lets go: the turn's unit is asked for", said().endsWith("cancel 1,synthesize 3"));
   emit({ kind: "cancelled", unitId: 1 });
   performer.send({ kind: "seek", toMs: startOf(2) });
-  assert("seeking to the turn's own start, past its gap, while the worker has not let go of that unit: the place moves, the request waits", describe(performer.state()) === `paused@${Math.round(startOf(2))}` && said().endsWith("cancel 1,synthesize 2"));
-  emit({ kind: "cancelled", unitId: 3 });
-  assert("the worker lets go: the unit in flight is cancelled and the turn's unit asked for in the same breath", said().endsWith("synthesize 2,cancel 2,synthesize 3"));
-  emit({ kind: "cancelled", unitId: 2 });
+  assert("seeking to the turn's own start, past its gap: the place moves and the request stands", describe(performer.state()) === `paused@${Math.round(startOf(2))}` && said().endsWith("cancel 1,synthesize 3"));
 
   performer.send({ kind: "play" });
   emit({ kind: "audio", unitId: 3, frameIndex: 0, pcm: frame(3, 0) });

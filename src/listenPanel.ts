@@ -766,9 +766,9 @@ const where = (utterance: number, total: number): string => `passage ${utterance
 const neuralStatus = (view: NeuralView, total: number): string => {
   const at = (ms: number): string => where(nameAt(view.timeline, ms).utterance, total);
   const unitAt = (unitIndex: number): string => {
-    const unit = view.manifest.script[unitIndex];
-    if (unit === undefined) throw new Error(`listen panel: unit ${unitIndex} of ${view.manifest.script.length}`);
-    return where(unit.utterance.index - 1, total);
+    const leg = view.units[unitIndex];
+    if (leg === undefined) throw new Error(`listen panel: unit ${unitIndex} of ${view.units.length}`);
+    return where(leg.content.utterance, total);
   };
   const skipped = view.holdings.flatMap((holding, i) =>
     holding.kind === "failed" ? [`${unitAt(i)} could not be synthesized: ${unitFailureText(holding.reason)}`] : [],
@@ -801,8 +801,8 @@ const timelineOf = (state: PanelState, utterances: ReadonlyArray<Utterance>): Ti
 // Where the transport stands, from the state alone: the performer's own time when it has
 // one, the time of the place held for a performer that does not exist yet. This is the
 // last REPORT — the driver reads the live clock for the cursor and the scrubber; a button's
-// shape needs only which side of a landmark the voice is on, and every landmark is a unit
-// boundary, which is reported.
+// shape needs only which side of a landmark the voice is on, and every landmark is the
+// start of a unit's span, which the player reports on crossing.
 const timeIn = (state: PanelState, line: Timeline): number => {
   if (state.kind === "provisioning") return timeAt(line, state.from);
   const at = stateOf(state.view);
