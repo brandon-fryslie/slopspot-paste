@@ -18,7 +18,6 @@ import { JSDOM } from "jsdom";
 import { readPreference, writePreference, type StandingConsent } from "../src/listenConsent";
 import {
   createListenPanel,
-  DOWNLOAD_BYTES,
   initialState,
   markForm,
   readout,
@@ -121,8 +120,10 @@ const around = (state: PanelState, visit: Visit = ASKING): string => {
 };
 // The place a voice on its way starts from, as "utterance:char"; a voice on stage has none.
 const held = (state: PanelState): string => (state.kind === "provisioning" ? `${state.from.utterance}:${state.from.char}` : "on stage");
-// Sizes round up to the megabyte, as the panel says them.
-const MB = `${Math.ceil(DOWNLOAD_BYTES / 1e6)} MB`;
+// The whole model, as the store that keeps nothing reports it; the panel rounds it up to
+// the megabyte.
+const WHOLE_MODEL = 238_500_001;
+const MB = "239 MB";
 // The start, before the store has answered: the driver asks it on every entry.
 const IDLE_LINE = "Listen | stop(off) | Looking for the voice on this device…";
 // The mount: the worker spawned at once to probe, with no consent yet, so Play still reads.
@@ -143,7 +144,7 @@ console.log("step: the way to audio");
   assert("idle: Play is the only enabled control, the store is being asked, and the place is the top", shown(idle) === IDLE_LINE && held(idle) === "0:0");
   assert("the store's word, resident: the voice is on this device, before any tap", shown(step(idle, home({ kind: "resident" })).state) === RESIDENT_LINE);
   assert("absent: the bytes still to download are named, not the whole model", shown(step(idle, home({ kind: "absent", bytesToDownload: 120_000_000 })).state) === "Listen | stop(off) | The voice downloads 120 MB once, then runs on this device");
-  assert("unavailable: the store's reason, and that each listen downloads the whole model", shown(step(idle, home({ kind: "unavailable", message: "private browsing" })).state) === `Listen | stop(off) | This browser can't keep the voice (private browsing); each listen downloads ${MB}`);
+  assert("unavailable: the store's reason, and that each listen downloads the whole model", shown(step(idle, home({ kind: "unavailable", message: "private browsing", bytesToDownload: WHOLE_MODEL })).state) === `Listen | stop(off) | This browser can't keep the voice (private browsing); each listen downloads ${MB}`);
   assert("the keep request's answer is not asked of an idle voice, but shown if it arrives: denied names the consequence", shown(step(idle, kept({ kind: "denied" })).state) === "Listen | stop(off) | Looking for the voice on this device… · this browser may drop the voice when space is short; the next listen would download it again");
   const probing = step(idle, tapPlay);
   assert("tap play from idle spends the gesture on the device and spawns the worker to probe; Play has nothing more to say", effects(probing) === "unlock,spawn" && shown(probing.state) === "Listen(off) | stop(off) | Checking this device for the voice…");
@@ -324,7 +325,7 @@ console.log("readout: every form the mark can take, and the question its hover a
     checking: probing,
     ready: step(able, home({ kind: "resident" })).state,
     download: step(able, home(ABSENT)).state,
-    unavailable: step(able, home({ kind: "unavailable", message: "private browsing" })).state,
+    unavailable: step(able, home({ kind: "unavailable", message: "private browsing", bytesToDownload: WHOLE_MODEL })).state,
     downloading,
     warming,
     speaking: at({ kind: "speaking", at: { unitIndex: 0, offsetMs: 0 }, flow: "audio" }),
@@ -350,8 +351,8 @@ console.log("readout: every form the mark can take, and the question its hover a
   };
   const promised = step(step(idle, wake("download")).state, home(ABSENT)).state;
   assert("a held consent through the probe: checking to the eye, as the sentence says, nothing to ask", markForm(promised).kind === "checking" && ask(promised) === null && shown(promised) === MOUNT_LINE);
-  assert("download needed: the hover asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
-  assert("a store that cannot keep the voice: the hover asks for the whole model", ask(forms.unavailable) === `Download speech model? · ${MB}`);
+  assert("download needed: the mini-player asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
+  assert("a store that cannot keep the voice: the mini-player asks for the whole model", ask(forms.unavailable) === `Download speech model? · ${MB}`);
   assert("remembered on a metered connection: the hover says why it asks anyway", ask(forms.download, { ...ASKING, remembered: true, metered: true }) === "Download speech model? · 239 MB · asking because this connection is metered");
   assert("remembered off a metered connection: no note", ask(forms.download, { ...ASKING, remembered: true, metered: false }) === "Download speech model? · 239 MB");
   assert("not remembered on a metered connection: no note — nothing is being overridden", ask(forms.download, { ...ASKING, remembered: false, metered: true }) === "Download speech model? · 239 MB");
@@ -517,9 +518,8 @@ interface Rig {
   // What the mark and the mini-player show: the form, whether the mini-player is out, its
   // face — the question, the fraction, the note, or what the play button does — and the box.
   readonly shownMark: () => string;
-  // The reader's hand on the panel: the box checked or cleared, a key pressed on the page.
+  // The reader's hand on the panel: the box checked or cleared.
   readonly check: (on: boolean) => void;
-  readonly press: (key: string) => void;
   // The devices opened since the rig was built, newest last: each gesture or build opens one.
   readonly devices: () => StubDevice[];
 }
@@ -639,9 +639,14 @@ const rig = (setup: VisitSetup = {}): Rig => {
     play: el(".listen-mini-play"),
     forward: el(".listen-mini-forward"),
   };
-  // The face as the DOM shows it, and what it says.
+  // The face as the DOM shows it — the one face not hidden — and what it says.
+  const shownFace = (): string => {
+    const [only, ...more] = Object.entries(mini.faces).filter(([, el]) => !el.hidden).map(([kind]) => kind);
+    if (only === undefined || more.length > 0) throw new Error(`fixture: faces shown ${[only, ...more].join()}`);
+    return only;
+  };
   const face = (): string => {
-    switch (mini.root.dataset.face) {
+    switch (shownFace()) {
       case "consent":
         return `ask ${mini.ask.textContent}`;
       case "progress":
@@ -651,7 +656,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
       case "controls":
         return `${mini.play.dataset.does}`;
       default:
-        throw new Error(`fixture: mini face ${mini.root.dataset.face}`);
+        throw new Error(`fixture: mini face ${shownFace()}`);
     }
   };
   const opened = StubDevice.instances.length;
@@ -716,17 +721,11 @@ const rig = (setup: VisitSetup = {}): Rig => {
       `back${back.disabled ? "(off)" : ""} | forward${forward.disabled ? "(off)" : ""} | ` +
       `slower${slower.disabled ? "(off)" : ""} ${speed.textContent} faster${faster.disabled ? "(off)" : ""} | ` +
       `${played.textContent}/${scrub.value} of ${scrub.max} · ${remaining.textContent}`,
-    shownMark: () => {
-      const shownFaces = Object.entries(mini.faces).filter(([, el]) => !el.hidden).map(([kind]) => kind);
-      if (shownFaces.length !== 1 || shownFaces[0] !== mini.root.dataset.face) throw new Error(`fixture: faces shown ${shownFaces.join()} under ${mini.root.dataset.face}`);
-      return `${mark.root.dataset.state} | ${mini.root.hidden ? "folded" : "out"} | ${face()} | remember ${remember.checked ? "on" : "off"}`;
-    },
+    shownMark: () =>
+      `${mark.root.dataset.state} | ${mini.root.hidden ? "folded" : "out"} | ${face()} | remember ${remember.checked ? "on" : "off"}`,
     check: (on) => {
       remember.checked = on;
       remember.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-    },
-    press: (key) => {
-      doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true }));
     },
     devices: () => StubDevice.instances.slice(opened),
   };
@@ -1042,6 +1041,8 @@ console.log("createListenPanel: the mini-player folds on the mark's tap, and sta
   assert("play from the mini-player: the voice speaks from the top, the face pause", r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.shownMark() === "speaking | out | pause | remember on");
   r.mark.button.click();
   assert("a tap on the mark while the voice speaks changes nothing the reader can see", out() && r.shownMark() === "speaking | out | pause | remember on");
+  r.mark.button.click();
+  assert("and a second tap is the same word, fold, not a flip back to out", out() && r.shownMark() === "speaking | out | pause | remember on");
   r.mini.play.click();
   assert("pause from the mini-player: the position kept, the face play, the mini-player out", r.line() === "Resume | stop | Paused · passage 1 of 2" && r.shownMark() === "paused | out | play | remember on");
   r.stop.click();

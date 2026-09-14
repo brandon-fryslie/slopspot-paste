@@ -3419,6 +3419,7 @@ body:has(.diff-aligned) main { max-width: 1400px; }
    page's bottom reserve (--reserve-tool-dock) stays one number. The mark rides the same
    row from the right, one launcher and one gap in from the corner. */
 .listen-mark { display: none; }
+.listen-mark { --mark-size: 34px; }
 body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   display: grid;
   position: absolute;
@@ -3428,7 +3429,6 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   place-items: center;
 }
 .listen-mark-button {
-  --mark-size: 34px;
   --mark-ring: var(--border);
   position: relative;
   display: grid;
@@ -3501,30 +3501,35 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
 /* ─── The mini-player (slopspot-read-along-a35.djn) ─────────────────────────
    One pill to the left of the mark, in the same row, holding whichever face the panel
    names: the question and its two answers, the voice on its way, a voice there is none of,
-   or the three controls. Its whole appearance is `data-face` on the root and `hidden` on
-   the faces, both written by listenPanel.ts on every render [LAW:one-source-of-truth]. The
-   mark's tap folds it; a voice with a place keeps it out. */
+   or the three controls. Its whole appearance is `hidden` on the root and on the faces,
+   written by listenPanel.ts on every render [LAW:one-source-of-truth]. The mark's tap folds
+   it; a voice with a place keeps it out.
+
+   It may be no wider than the room between the mark and the screen's left edge — the
+   dock's side inset on that side — so on a phone the question's two answers wrap onto a
+   second row and the pill grows upward from the launcher's row; a sentence too long for
+   the room is cut with an ellipsis rather than pushed off the screen. */
 .listen-mini {
   position: absolute;
   right: calc(100% + var(--dock-gap));
   bottom: 0;
-  display: grid;
-  align-items: center;
-  height: var(--dock-launcher-size);
+  width: max-content;
+  max-width: calc(100vw - var(--dock-corner-inset) - var(--dock-launcher-size) - var(--mark-size) - 2 * var(--dock-gap) - var(--dock-side-inset));
 }
 .listen-mini[hidden] { display: none; }
 .listen-mini-face {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  height: var(--dock-launcher-size);
-  padding: 0 10px;
+  gap: 4px 8px;
+  min-height: var(--dock-launcher-size);
+  box-sizing: border-box;
+  padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 22px;
   background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
   backdrop-filter: blur(14px);
   box-shadow: var(--dock-pill-shadow);
-  white-space: nowrap;
   font-size: 12px;
   color: var(--fg);
 }
@@ -3533,15 +3538,17 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
 .listen-mini-progress,
 .listen-mini-note {
   margin: 0;
-  max-width: 320px;
+  max-width: min(320px, 100%);
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
-.listen-mini-ask { color: var(--fg); font-weight: 600; }
+/* The question is the size; it wraps rather than lose it to an ellipsis. */
+.listen-mini-ask { color: var(--fg); font-weight: 600; white-space: normal; }
 .listen-mini-bar { width: 72px; height: 4px; accent-color: var(--accent); }
 .listen-mini-retry[hidden] { display: none; }
 .listen-mini-back,

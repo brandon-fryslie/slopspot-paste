@@ -304,7 +304,7 @@ console.log("residency:");
   assert("and prune removes only the stale key", (await pruneStaleAssets(store, both)).join() === `${MODEL_ASSET_PREFIX}weights-000000000000` && (await readResidency(store, both)).kind === "resident");
   assert("the pure derivation is the same answer over the same listing", JSON.stringify(residencyOf(await store.list(), both)) === JSON.stringify({ kind: "resident" }));
   store.fault = "SecurityError: private browsing";
-  assert("a store that cannot be listed: unavailable with its message", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "unavailable", message: "SecurityError: private browsing" }));
+  assert("a store that cannot be listed: unavailable with its message", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "unavailable", message: "SecurityError: private browsing", bytesToDownload: 4096 + SYNTH_BYTES }));
 
   assert("persist granted", (await askToKeep(async () => true)).kind === "granted");
   assert("persist denied", (await askToKeep(async () => false)).kind === "denied");
