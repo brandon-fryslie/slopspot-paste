@@ -108,7 +108,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
-import { clockText, cursorIn, estimated, landmark, landmarks, placeAt, placeIn, pointAt, timeAt, timelineOfUtterances, type Cursor, type Point, type Timeline } from "./timeline";
+import { clockText, cursorIn, estimated, landmark, landmarks, placeIn, pointAt, startAt, startIn, timeAt, timeOfStart, timelineOfUtterances, type Cursor, type Point, type Start, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
 import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
@@ -162,12 +162,12 @@ const granted = ({ consent }: PanelState): Consent => raise(consent.given, conse
 // across a crash and the whole download. A performer that held its own copy would lose it
 // at every one of those moments.
 export type PanelState =
-  // The voice on its way, and the place it starts from when it arrives: the top until the
-  // reader taps a word. `keeping` is the browser's answer to keeping the bytes, once asked.
+  // The voice on its way, and where it starts when it arrives: the top until the reader
+  // names somewhere else — a word, or a time that may fall in a gap. `keeping` is the browser's answer to keeping the bytes, once asked.
   | {
       readonly kind: "provisioning";
       readonly neural: NeuralPhase;
-      readonly from: Place;
+      readonly from: Start;
       readonly home: Home;
       readonly keeping: Keeping | null;
       readonly consent: Consents;
@@ -283,16 +283,17 @@ const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
 // Every entry to the start: the voice in the given phase, the place, the consent and the
 // speed kept, and the store asked afresh what it holds.
-const enter = (neural: NeuralPhase, from: Place, consent: Consents, speed: Speed): Step => ({
+const AT_TOP: Start = { kind: "speech", place: TOP };
+const enter = (neural: NeuralPhase, from: Start, consent: Consents, speed: Speed): Step => ({
   state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null, consent, speed },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(NEURAL_IDLE, TOP, NO_CONSENT, NORMAL).state;
+export const initialState = (): PanelState => enter(NEURAL_IDLE, AT_TOP, NO_CONSENT, NORMAL).state;
 // The panel's first step: the state, and the read of the store that fills its `home`. The
 // worker is not spawned here but by the `wake` that follows, so a dispose — which returns
 // here — spawns nothing on a page that is going away.
-export const start = (): Step => enter(NEURAL_IDLE, TOP, NO_CONSENT, NORMAL);
+export const start = (): Step => enter(NEURAL_IDLE, AT_TOP, NO_CONSENT, NORMAL);
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
 const violation = (state: PanelState, what: string): Error =>
@@ -378,10 +379,10 @@ export interface Page {
 }
 export const pageOf = (utterances: ReadonlyArray<Utterance>): Page => ({ utterances, timeline: timelineOfUtterances(utterances) });
 
-// The one place a target becomes a durable name: its place as given, or the name of the
-// place at its time on the timeline given. Null on a conversation with nothing to say,
-// which has no place to name.
-const nameOfTarget = (line: Timeline, to: Target): Place | null => (to.kind === "place" ? to.place : placeAt(line, to.ms));
+// The one place a target becomes a durable name: its place as given, or the start at its
+// time on the timeline given — in a gap, the gap itself. Null on a conversation with
+// nothing to say, which has nowhere to name.
+const nameOfTarget = (line: Timeline, to: Target): Start | null => (to.kind === "place" ? { kind: "speech", place: to.place } : startAt(line, to.ms));
 
 // A seek to a place: the voice on stage seeks to its time on the voice's own timeline;
 // the voice on its way is started as a Play tap starts it, and the place's name is kept
@@ -486,14 +487,13 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
   }
 };
 
-// Where the voice's view says it is, as the place a retry starts from. The last REPORT, not
+// Where the voice's view says it is, as the start a retry resumes from. The last REPORT, not
 // the live clock: the performer is about to be released, and a segment boundary is reported
 // one hop after the clock crosses it. Cost, stated once: a crash retry resumes from the
-// reported segment, at most one unit behind the ear. From inside a gap, the turn the gap
-// leads into.
-const placeOf = (view: NeuralView): Place => {
+// reported segment, at most one unit behind the ear. From inside a gap, that gap.
+const startOf = (view: NeuralView): Start => {
   const at = stateOf(view);
-  return at.kind === "idle" ? TOP : placeIn(view.timeline, at.segment, at.atMs);
+  return at.kind === "idle" ? AT_TOP : startIn(view.timeline, at.segment, at.atMs);
 };
 
 // The voice leaves the stage, or never reached it: the phase it fell to, the place kept for
@@ -503,7 +503,7 @@ const placeOf = (view: NeuralView): Place => {
 // that fell mid-word then comes back speaking there, while a wake brings it back standing.
 const outlives = (consent: Consents): Consents => ({ ...consent, given: consent.given === "none" ? "none" : "download" });
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const entered = enter(neural, state.kind === "provisioning" ? state.from : placeOf(state.view), outlives(state.consent), state.speed);
+  const entered = enter(neural, state.kind === "provisioning" ? state.from : startOf(state.view), outlives(state.consent), state.speed);
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -575,7 +575,7 @@ export const step = (state: PanelState, event: PanelEvent, page: Page): Step => 
         state: { kind: "neural", view: event.view, consent: state.consent, sounding: null, speed: state.speed },
         effects: [
           perform({ kind: "rate", to: state.speed }),
-          ...(granted(state) === "play" ? [perform({ kind: "seek", toMs: timeAt(event.view.timeline, state.from) })] : []),
+          ...(granted(state) === "play" ? [perform({ kind: "seek", toMs: timeOfStart(event.view.timeline, state.from) })] : []),
         ],
       };
     }
@@ -801,7 +801,7 @@ export const timelineOf = (state: PanelState, page: Page): Timeline => (state.ki
 // shape needs only which side of a landmark the voice is on, and every landmark sits at a
 // unit boundary, which the player reports on crossing.
 const pointIn = (state: PanelState, line: Timeline): Point | undefined => {
-  if (state.kind === "provisioning") return pointAt(line, timeAt(line, state.from));
+  if (state.kind === "provisioning") return pointAt(line, timeOfStart(line, state.from));
   const at = stateOf(state.view);
   return at.kind === "idle" ? pointAt(line, 0) : at;
 };

@@ -28,6 +28,8 @@ import {
   placeIn,
   pointAt,
   speechSegments,
+  startAt,
+  timeOfStart,
   cursorAt,
   timeAt,
   timelineOfScript,
@@ -267,6 +269,12 @@ console.log("landmarks and landmark: back and forward at every boundary");
   const opening = line.segments[0];
   if (opening === undefined) throw new Error("fixture: no first segment");
   assert("at the first passage's start there is nothing before, the voice's point or a place's", landmark(marks, { atMs: 0, segment: opening }, -1) === null);
+  const inGap = startAt(line, g1 + 100);
+  assert("a time inside a gap names the gap itself, by the turn it leads into and the offset into it", inGap?.kind === "silence" && inGap.before.utterance === mark(2).utterance && inGap.offsetMs === 100);
+  assert("that start falls back on the clock exactly where it was named", inGap !== null && timeOfStart(line, inGap) === g1 + 100);
+  const inSpeech = startAt(line, timeAt(line, mark(2, 4)));
+  assert("a time in speech names a place, and falls back at that place's time", inSpeech?.kind === "speech" && timeOfStart(line, inSpeech) === timeAt(line, mark(2, 4)));
+  throws("a gap named before a turn with no gap before it is a start from another page", () => timeOfStart(line, { kind: "silence", before: mark(1), offsetMs: 0 }));
   assert("a bare time at a boundary is in the segment that begins there", at(g1).segment.content.kind === "silence" && at(g1 + GAP_MS).segment.content.kind === "speech");
   assert("a conversation with no passages has no landmarks", landmarks(timelineOfUtterances([])).length === 0);
   assert("the page's own clock has the same landmarks as the voice's, before anything is measured", (() => {

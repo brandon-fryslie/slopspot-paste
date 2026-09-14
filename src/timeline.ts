@@ -244,16 +244,21 @@ export const speechSegments = (timeline: Timeline): ReadonlyArray<SpeechSegment>
 // with someone else's passage [LAW:no-silent-failure]. Zero on a conversation with nothing
 // to say.
 export const timeAt = (timeline: Timeline, place: Place): number => {
+  if (timeline.segments.length === 0) return 0;
+  const segment = speechOf(timeline, place);
+  return segment.startMs + (segment.content.alignment === null ? 0 : offsetAt(segment.content.alignment, place.char));
+};
+
+// The speech segment a place is in, by timeAt's rule; its throws are timeAt's.
+const speechOf = (timeline: Timeline, place: Place): SpeechSegment => {
   const saying = speechSegments(timeline).filter((segment) => segment.content.utterance === place.utterance);
   const first = saying[0];
   const last = saying.at(-1);
-  if (timeline.segments.length === 0) return 0;
   if (first === undefined || last === undefined) throw new RangeError(`timeline: nothing on this timeline says utterance ${place.utterance}`);
   if (!Number.isInteger(place.char) || place.char < 0 || place.char >= last.content.charEnd) {
     throw new RangeError(`timeline: no character ${place.char} of ${last.content.charEnd} in utterance ${place.utterance}`);
   }
-  const segment = saying.findLast((candidate) => candidate.content.charStart <= place.char) ?? first;
-  return segment.startMs + (segment.content.alignment === null ? 0 : offsetAt(segment.content.alignment, place.char));
+  return saying.findLast((candidate) => candidate.content.charStart <= place.char) ?? first;
 };
 
 // The segment under a point on the clock, clamped to both ends: before the start is the
@@ -299,6 +304,42 @@ export const placeIn = (timeline: Timeline, segment: Segment, ms: number): Place
   const next = speechFrom(timeline, segment.startMs + segment.ms);
   if (next === undefined) throw new RangeError("timeline: a silence segment with no speech after it");
   return placeInSpeech(next, next.startMs);
+};
+
+// [LAW:types-are-the-program] Where a voice starts, named so the name survives a change of
+// timeline: the page's clock before the voice arrives and the voice's own after it disagree
+// on every length, so a time names nothing across them. In speech, a place; in silence, the
+// gap before a turn, named by the place it leads into — silence has no text of its own —
+// and how far into the gap, which is GAP_MS on every timeline. A Place alone cannot name a
+// gap: a start kept as one moves every gap to the speech after it.
+export type Start =
+  | { readonly kind: "speech"; readonly place: Place }
+  | { readonly kind: "silence"; readonly before: Place; readonly offsetMs: number };
+
+// The start at a point in a segment.
+export const startIn = (timeline: Timeline, segment: Segment, ms: number): Start =>
+  isSpeech(segment)
+    ? { kind: "speech", place: placeInSpeech(segment, ms) }
+    : { kind: "silence", before: placeIn(timeline, segment, ms), offsetMs: Math.min(Math.max(ms - segment.startMs, 0), segment.ms) };
+
+// The start a time names on this timeline. Null only for a conversation with nothing to say.
+export const startAt = (timeline: Timeline, ms: number): Start | null => {
+  const segment = segmentAt(timeline, ms);
+  return segment === undefined ? null : startIn(timeline, segment, ms);
+};
+
+// Where a start falls on this timeline's clock: a place's time; for a gap, the silence
+// segment laid just before the speech its place is in, and the offset into it. A place
+// whose speech has no silence before it is a start named on another page, and throws
+// [LAW:no-silent-failure].
+export const timeOfStart = (timeline: Timeline, start: Start): number => {
+  if (start.kind === "speech") return timeAt(timeline, start.place);
+  const index = timeline.segments.indexOf(speechOf(timeline, start.before));
+  const gap = timeline.segments[index - 1];
+  if (gap === undefined || gap.content.kind !== "silence") {
+    throw new RangeError(`timeline: no gap before utterance ${start.before.utterance} at character ${start.before.char}`);
+  }
+  return gap.startMs + Math.min(start.offsetMs, gap.ms);
 };
 
 // What the read-along paints at a point on the clock: the utterance, the range of its text

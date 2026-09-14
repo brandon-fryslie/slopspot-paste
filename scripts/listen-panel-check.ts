@@ -134,7 +134,11 @@ const around = (state: PanelState, visit: Visit = ASKING): string => {
   return `back${r.skip.back ? "" : "(off)"} | forward${r.skip.forward ? "" : "(off)"} | ${r.speed.label}${r.speed.slower ? "" : " slower(off)"}${r.speed.faster ? "" : " faster(off)"}`;
 };
 // The place a voice on its way starts from, as "utterance:char"; a voice on stage has none.
-const held = (state: PanelState): string => (state.kind === "provisioning" ? `${state.from.utterance}:${state.from.char}` : "on stage");
+const held = (state: PanelState): string => {
+  if (state.kind !== "provisioning") return "on stage";
+  const { from } = state;
+  return from.kind === "speech" ? `${from.place.utterance}:${from.place.char}` : `gap before ${from.before.utterance}:${from.before.char}+${from.offsetMs}`;
+};
 // The whole model, as the store that keeps nothing reports it; the panel rounds it up to
 // the megabyte.
 const WHOLE_MODEL = 238_500_001;
@@ -881,6 +885,22 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   assert("dispose: the worker disposed (not terminated outright), unheard, the device closed, at the start", r.counts.disposed === 1 && r.counts.terminated === 1 && r.counts.listeners() === 0 && second?.calls.at(-1) === "close" && r.line() === IDLE_LINE);
 }
 
+console.log("createListenPanel: turn skips before the voice arrives step gap by gap, and the voice starts in the gap");
+{
+  const r = rig();
+  const panel = mount(r);
+  panel.send({ kind: "place", to: mark(1, 5) });
+  r.back.click();
+  assert("partway into the second turn, back lands on the gap before that turn, kept as the gap itself", held(panel.state()) === "gap before 1:0+0" && !r.back.disabled && r.forward.disabled);
+  r.back.click();
+  assert("back again from that gap reaches the top, and there is nothing before it", held(panel.state()) === "0:0" && r.back.disabled);
+  r.forward.click();
+  assert("forward from the top is that gap again, the last turn's gap, with nothing after it", held(panel.state()) === "gap before 1:0+0" && r.forward.disabled && !r.back.disabled);
+  arrive(r);
+  assert("the voice arrives in the gap, not at the turn after it: the gap sounds, nothing painted, the turn after it asked for", r.where() === "silent" && r.line() === "Pause | stop | Playing · passage 2 of 2" && r.said().endsWith("synthesize 2"));
+  panel.dispose();
+}
+
 console.log("createListenPanel: a tap on a word before the voice is warm is where it starts");
 {
   const r = rig();
@@ -890,9 +910,6 @@ console.log("createListenPanel: a tap on a word before the voice is warm is wher
   assert("a tap on a word while the probe runs opens the device, like Play, and holds the place", r.counts.spawned === 1 && device?.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…" && held(panel.state()) === "0:21");
   panel.send({ kind: "place", to: mark(1) });
   assert("a second tap while the voice is on its way moves the place, nothing else", r.counts.spawned === 1 && r.devices().length === 1 && held(panel.state()) === "1:0");
-  panel.send({ kind: "place", to: mark(1, 5) });
-  r.back.click();
-  assert("partway into the second turn, back before the voice arrives lands on the gap before that turn — the place the gap leads into — not the top", held(panel.state()) === "1:0");
   arrive(r);
   assert("the voice arrives at the tapped place: it asks for that unit and the cursor is there", r.said().endsWith("synthesize 2") && r.where() === "t2 0-8 of 1" && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
   r.emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });
