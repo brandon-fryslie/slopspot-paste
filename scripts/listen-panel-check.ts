@@ -352,7 +352,7 @@ console.log("readout: every form the mark can take, and the question its hover a
   const promised = step(step(idle, wake("download")).state, home(ABSENT)).state;
   assert("a held consent through the probe: checking to the eye, as the sentence says, nothing to ask", markForm(promised).kind === "checking" && ask(promised) === null && shown(promised) === MOUNT_LINE);
   assert("download needed: the mini-player asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
-  assert("a store that cannot keep the voice: the mini-player asks for the whole model", ask(forms.unavailable) === `Download speech model? · ${MB}`);
+  assert("a store that cannot keep the voice: the mini-player asks for the whole model, and says it will every listen", ask(forms.unavailable) === `Download speech model? · ${MB} · every listen, since this browser can't keep it`);
   assert("remembered on a metered connection: the hover says why it asks anyway", ask(forms.download, { ...ASKING, remembered: true, metered: true }) === "Download speech model? · 239 MB · asking because this connection is metered");
   assert("remembered off a metered connection: no note", ask(forms.download, { ...ASKING, remembered: true, metered: false }) === "Download speech model? · 239 MB");
   assert("not remembered on a metered connection: no note — nothing is being overridden", ask(forms.download, { ...ASKING, remembered: false, metered: true }) === "Download speech model? · 239 MB");
@@ -1065,10 +1065,27 @@ console.log("createListenPanel: the mini-player's Download keeps nothing, and it
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   r.emit({ kind: "script", id: SCRIPT_ID, units });
   assert("on stage and idle, folded: a download is not a listen", panel.state().kind === "neural" && r.shownMark() === "ready | folded | play | remember off");
+  r.mini.forward.focus();
   r.mini.forward.click();
   assert("next turn from the top: the voice speaks from the second turn, the page told to follow, the mini-player out, nothing ahead", r.seeks() === 1 && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2" && r.shownMark() === "speaking | out | pause | remember off" && r.mini.forward.disabled && !r.mini.back.disabled);
+  assert("the skip that reached the end was disabled under the keyboard's focus: focus is on the mark's button, not the body", r.doc.activeElement === r.mark.button);
   r.mini.back.click();
   assert("previous turn from a turn's start: the turn before it", r.seeks() === 2 && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.mini.back.disabled && !r.mini.forward.disabled);
+  panel.dispose();
+}
+
+console.log("createListenPanel: Retry after a download-only yes is the yes again, never a Play");
+{
+  const r = rig();
+  const panel = mount(r);
+  await ableAbsent(r);
+  r.mark.button.click();
+  r.mini.download.click();
+  r.fail("the worker bundle failed to load");
+  assert("the download the reader said yes to fails: the note and its retry", r.shownMark() === "failed | out | note retry | remember off");
+  r.mini.retry.click();
+  const retried = panel.state();
+  assert("Retry spawns again and the word stays download: the voice will not speak unasked when it lands", r.counts.spawned === 2 && retried.kind === "provisioning" && retried.consent.given === "download");
   panel.dispose();
 }
 
@@ -1097,6 +1114,8 @@ console.log("createListenPanel: a failed voice offers its retry on the mini-play
   assert("crashed: the note and its retry", r.shownMark() === "failed | out | note retry | remember off" && r.mini.note.textContent === "The voice failed: the worker bundle failed to load");
   r.mini.retry.click();
   assert("Retry from the mini-player: a worker is spawned again, the voice on its way", r.counts.spawned === 2 && r.shownMark() === "checking | out | progress ? | remember off");
+  const retriedState = panel.state();
+  assert("the crash lowered the reader's Play to download, and Retry keeps it there: a fresh voice, no unasked speech", retriedState.kind === "provisioning" && retriedState.consent.given === "download");
   r.emit({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } });
   assert("unsupported: the note alone, no retry to offer", r.shownMark() === "unsupported | out | note | remember off" && r.mini.note.textContent === "This device can't run the voice: this browser has no WebGPU");
   panel.dispose();

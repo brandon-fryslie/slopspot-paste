@@ -3417,17 +3417,25 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 
    Placement is absolute, not in flow: the dock's height stays the launcher's, so the
    page's bottom reserve (--reserve-tool-dock) stays one number. The mark rides the same
-   row from the right, one launcher and one gap in from the corner. */
+   row from the right, one launcher and one gap in from the corner, and spans left to the
+   dock's side inset: the button sits at its right end, and the span is the room the
+   mini-player may take, measured from the dock rather than the viewport (100vw counts a
+   classic scrollbar the dock does not have). The span is not a target: like the dock's
+   own strip, it lets taps through and only its controls take them. */
 .listen-mark { display: none; }
 .listen-mark { --mark-size: 34px; }
 body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   display: grid;
   position: absolute;
   bottom: 0;
+  left: var(--dock-side-inset);
   right: calc(var(--dock-corner-inset) + var(--dock-launcher-size) + var(--dock-gap));
   height: var(--dock-launcher-size);
-  place-items: center;
+  justify-items: end;
+  align-items: center;
+  pointer-events: none;
 }
+.listen-mark > * { pointer-events: auto; }
 .listen-mark-button {
   --mark-ring: var(--border);
   position: relative;
@@ -3505,16 +3513,15 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
    written by listenPanel.ts on every render [LAW:one-source-of-truth]. The mark's tap folds
    it; a voice with a place keeps it out.
 
-   It may be no wider than the room between the mark and the screen's left edge — the
-   dock's side inset on that side — so on a phone the question's two answers wrap onto a
-   second row and the pill grows upward from the launcher's row; a sentence too long for
-   the room is cut with an ellipsis rather than pushed off the screen. */
+   It may be no wider than the mark's span less the button and a gap, so on a phone the
+   question's two answers wrap onto a second row and the pill grows upward from the
+   launcher's row; every sentence wraps rather than losing its end off the screen. */
 .listen-mini {
   position: absolute;
-  right: calc(100% + var(--dock-gap));
+  right: calc(var(--mark-size) + var(--dock-gap));
   bottom: 0;
   width: max-content;
-  max-width: calc(100vw - var(--dock-corner-inset) - var(--dock-launcher-size) - var(--mark-size) - 2 * var(--dock-gap) - var(--dock-side-inset));
+  max-width: calc(100% - var(--mark-size) - var(--dock-gap));
 }
 .listen-mini[hidden] { display: none; }
 .listen-mini-face {
@@ -3538,17 +3545,13 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
 .listen-mini-progress,
 .listen-mini-note {
   margin: 0;
-  max-width: min(320px, 100%);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  max-width: min(360px, 100%);
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
-/* The question is the size; it wraps rather than lose it to an ellipsis. */
-.listen-mini-ask { color: var(--fg); font-weight: 600; white-space: normal; }
+.listen-mini-ask { color: var(--fg); font-weight: 600; }
 .listen-mini-bar { width: 72px; height: 4px; accent-color: var(--accent); }
 .listen-mini-retry[hidden] { display: none; }
 .listen-mini-back,
