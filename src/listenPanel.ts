@@ -35,7 +35,7 @@
 // CONSENT IS THE ONLY DOOR TO THE WEIGHTS. No byte of the model is fetched until the reader
 // has said yes, and `consent` is that yes as one ordered value [LAW:types-are-the-program]:
 // `none` (the worker waits in `supported`), `download` (fetch and warm the voice, then stand
-// ready — the hover's yes, or the device's remembered preference through listenConsent.ts),
+// ready — the mini-player's yes, or the device's remembered preference through listenConsent.ts),
 // `play` (fetch, warm, and speak from `from` — a Play tap, or a tap on a word, which is Play
 // with a place: a `seek` to a Mark). A later word only raises it; a crash lowers `play` to
 // `download` — the device the tap unlocked went with the worker, and a wake is never a yes
@@ -51,11 +51,11 @@
 //
 // THE MARK. Beside the dock's launcher, one always-visible icon says where the voice is —
 // on this device, a download away and how large, downloading and how far, warming,
-// speaking, paused, unsupported and why, or in a store that cannot keep it — and its hover
-// asks "Download speech model?" with the size when that is what stands between the reader
-// and a voice. The mark is a projection of the same state as the status line: its sentence
-// IS the status line, and its form is `markForm`, total over every phase, so a state with no
-// form cannot be added [LAW:one-source-of-truth] [LAW:types-are-the-program].
+// speaking, paused, unsupported and why, or in a store that cannot keep it — and the
+// mini-player beside it asks "Download speech model?" with the size when that is what stands
+// between the reader and a voice. The mark is a projection of the same state as the status
+// line: its sentence IS the status line, and its form is `markForm`, total over every phase,
+// so a state with no form cannot be added [LAW:one-source-of-truth] [LAW:types-are-the-program].
 //
 // THE WORKER'S OWN DEATH. A bundle that fails to load, an exception outside the protocol:
 // these arrive on the port's error channel, not as a message, and the panel answers with
@@ -90,7 +90,7 @@
 
 import { begin, estimate, record, remainingText, type Pace } from "./downloadPace";
 import { standingConsent, type StandingConsent } from "./listenConsent";
-import { MODEL_ASSETS, allModelAssets, downloadNeedsTap, type ConnectionReading, type VoiceId } from "./modelAssets";
+import { downloadNeedsTap, type ConnectionReading, type VoiceId } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
@@ -141,7 +141,7 @@ const CONSENT_ORDER: Readonly<Record<Consent, number>> = { none: 0, download: 1,
 const raise = (held: Consent, given: Consent): Consent => (CONSENT_ORDER[given] > CONSENT_ORDER[held] ? given : held);
 
 // The consent held is two words: `given` by the reader's own hand this visit — a tap, the
-// hover's yes — which only rises; and `standing`, what the visit grants without a tap,
+// mini-player's yes — which only rises; and `standing`, what the visit grants without a tap,
 // replaced by each wake's reading, so an unchecked box withdraws what it alone granted and
 // the reader's own yes survives it [LAW:one-source-of-truth]. The voice acts on the higher.
 export interface Consents {
@@ -211,7 +211,7 @@ export type PanelEvent =
   | { readonly kind: "seek"; readonly to: Mark }
   // One step along the speed list, in whichever direction.
   | { readonly kind: "speed"; readonly by: -1 | 1 }
-  // The hover's yes: a gesture that consents to the download and no more.
+  // The mini-player's yes: a gesture that consents to the download and no more.
   | { readonly kind: "yes" }
   // The page waking the panel with no gesture — at mount, on a restore from the back-forward
   // cache, when the preference changes: the worker is spawned to probe, and the visit's
@@ -377,7 +377,7 @@ const speed = (state: PanelState, by: -1 | 1): Step => {
   return { state: { ...state, speed: to }, effects: state.kind === "neural" ? [perform({ kind: "rate", to })] : [] };
 };
 
-// The hover's yes, and the page's wake: the same kick, with and without a gesture. A voice
+// The mini-player's yes, and the page's wake: the same kick, with and without a gesture. A voice
 // on stage has nothing left to consent to, and keeps the visit's standing word for a fall.
 const yes = (state: PanelState): Step => (state.kind === "provisioning" ? gesture(state, "download") : stay(state));
 const wake = (state: PanelState, standing: StandingConsent): Step => {
@@ -546,14 +546,15 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
 // ── the readout ────────────────────────────────────────────────────────────────────────
 
 // [LAW:types-are-the-program] The mark's forms: one for every place the voice can be, as
-// the reader sees them. `downloading` carries how far, for the ring; the sizes, reasons and
-// positions each form would name ride the sentence beside it (`Readout.status`), so the
-// form and the sentence are one state read twice, never two states kept in step.
+// the reader sees them. `downloading` carries how far, for the ring, and the two forms that
+// put a download to the reader carry its size, for the question; the reasons and positions
+// each form would name ride the sentence beside it (`Readout.status`), so the form and the
+// sentence are one state read twice, never two states kept in step.
 export type MarkForm =
   | { readonly kind: "checking" }
   | { readonly kind: "ready" }
-  | { readonly kind: "download" }
-  | { readonly kind: "unavailable" }
+  | { readonly kind: "download"; readonly bytes: number }
+  | { readonly kind: "unavailable"; readonly bytes: number }
   | { readonly kind: "downloading"; readonly fraction: number }
   | { readonly kind: "warming" }
   | { readonly kind: "speaking" }
@@ -571,11 +572,23 @@ export interface Visit {
   readonly pick: VoicePick;
 }
 
+// [LAW:types-are-the-program] The mini-player's faces: one element beside the mark, showing
+// exactly one of these. The question and its two answers while a download stands between
+// the reader and the voice; how far while the voice is on its way; after a failure, the
+// retry, when there is no voice to control; the three controls otherwise. The progress and
+// note faces show the status sentence itself (`Readout.status`), so they carry no copy of
+// it [LAW:one-source-of-truth]. `play` is what a tap does, so the one button's face follows
+// the voice.
+export type MiniFace =
+  | { readonly kind: "consent"; readonly ask: string }
+  | { readonly kind: "progress"; readonly fraction: number | null }
+  | { readonly kind: "note"; readonly retry: boolean }
+  | { readonly kind: "controls"; readonly play: "play" | "pause"; readonly back: boolean; readonly forward: boolean };
+
 // What the panel shows: the two buttons' shape, the status sentence, the download when
-// there is one (under way, or where a failure stopped it), the mark — its form, the
-// question its hover asks when a download stands between the reader and the voice, and the
-// preference's box — and the voice picker. A pure projection of the state and the visit,
-// so the check reads it directly.
+// there is one (under way, or where a failure stopped it), the mark's form, the
+// preference's box, the voice picker and the mini-player's face. A pure projection of the
+// state and the visit, so the check reads it directly.
 export interface Readout {
   readonly play: { readonly label: string; readonly enabled: boolean };
   readonly stop: { readonly enabled: boolean };
@@ -587,9 +600,9 @@ export interface Readout {
   readonly status: string;
   readonly progress: AssetProgress | null;
   readonly mark: MarkForm;
-  readonly ask: string | null;
   readonly remembered: boolean;
   readonly voices: VoicesReadout;
+  readonly mini: MiniFace;
 }
 
 // What the scrubber and the two times show. Separate from `Readout` because it has a
@@ -605,7 +618,6 @@ interface Clock {
   readonly remaining: string;
 }
 
-export const DOWNLOAD_BYTES = allModelAssets(MODEL_ASSETS).reduce((sum, asset) => sum + asset.bytes, 0);
 
 // One rounding rule: a size never understates (up to the megabyte) and progress never
 // overstates (down), so while the bytes are short of the total the downloaded figure is
@@ -665,7 +677,7 @@ const homeText = (home: Home): string => {
     case "absent":
       return `the voice downloads ${megabytes(home.bytesToDownload)} once, then runs on this device`;
     case "unavailable":
-      return `this browser can't keep the voice (${home.message}); each listen downloads ${megabytes(DOWNLOAD_BYTES)}`;
+      return `this browser can't keep the voice (${home.message}); each listen downloads ${megabytes(home.bytesToDownload)}`;
   }
 };
 
@@ -793,9 +805,9 @@ const homeForm = (home: Home): MarkForm => {
     case "resident":
       return { kind: "ready" };
     case "absent":
-      return { kind: "download" };
+      return { kind: "download", bytes: home.bytesToDownload };
     case "unavailable":
-      return { kind: "unavailable" };
+      return { kind: "unavailable", bytes: home.bytesToDownload };
   }
 };
 
@@ -829,19 +841,42 @@ export const markForm = (state: PanelState): MarkForm => {
   }
 };
 
-// The hover's question, when a download is what the reader is deciding: the size, and —
-// when the remembered yes is being overridden — why it asks anyway. The store that cannot
-// keep the voice asks for the whole model every time.
-const askText = (state: PanelState, form: MarkForm, visit: Visit): string | null => {
-  const bytes =
-    form.kind === "download" && state.kind === "provisioning" && state.home.kind === "absent"
-      ? state.home.bytesToDownload
-      : form.kind === "unavailable"
-        ? DOWNLOAD_BYTES
-        : null;
-  if (bytes === null) return null;
-  const why = visit.remembered && visit.metered ? [" · asking because this connection is metered"] : [];
-  return [`Download speech model? · ${megabytes(bytes)}`, ...why].join("");
+// The question, when a download is what the reader is deciding: the size, and what the
+// reader must know before answering — that a store which keeps nothing downloads it every
+// listen, and that a remembered yes is being overridden because the connection is metered
+// [LAW:no-silent-failure].
+const askText = (form: Extract<MarkForm, { kind: "download" | "unavailable" }>, visit: Visit): string => {
+  const why = [
+    ...(form.kind === "unavailable" ? [" · every listen, since this browser can't keep it"] : []),
+    ...(visit.remembered && visit.metered ? [" · asking because this connection is metered"] : []),
+  ];
+  return [`Download speech model? · ${megabytes(form.bytes)}`, ...why].join("");
+};
+
+// [LAW:dataflow-not-control-flow] Total over the mark's forms: the mini-player's face is
+// the form read once more, with the size and the skips it needs — never a second reading
+// of the state [LAW:one-source-of-truth].
+const miniFace = (form: MarkForm, skip: Readout["skip"], visit: Visit): MiniFace => {
+  const controls = (play: "play" | "pause"): MiniFace => ({ kind: "controls", play, ...skip });
+  switch (form.kind) {
+    case "download":
+    case "unavailable":
+      return { kind: "consent", ask: askText(form, visit) };
+    case "checking":
+    case "warming":
+      return { kind: "progress", fraction: null };
+    case "downloading":
+      return { kind: "progress", fraction: form.fraction };
+    case "unsupported":
+      return { kind: "note", retry: false };
+    case "failed":
+      return { kind: "note", retry: true };
+    case "ready":
+    case "paused":
+      return controls("play");
+    case "speaking":
+      return controls("pause");
+  }
 };
 
 // [LAW:dataflow-not-control-flow] Total over every phase: a preview is offered exactly with
@@ -878,12 +913,12 @@ const voicesReadout = (state: PanelState, pick: VoicePick): VoicesReadout => ({
 export const readout = (state: PanelState, utterances: ReadonlyArray<Utterance>, visit: Visit): Readout => {
   const total = utterances.length;
   const mark = markForm(state);
-  const ask = askText(state, mark, visit);
   const { remembered } = visit;
   const voices = voicesReadout(state, visit.pick);
   const rest = around(state, utterances);
+  const mini = miniFace(mark, rest.skip, visit);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total), progress: null, mark, ask, remembered, voices };
+    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total), progress: null, mark, remembered, voices, mini };
   }
   const { neural } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -898,9 +933,9 @@ export const readout = (state: PanelState, utterances: ReadonlyArray<Utterance>,
     status: sentence(fragments.join(" · ")),
     progress: neural.kind === "downloading" || neural.kind === "load-failed" ? neural.progress : null,
     mark,
-    ask,
     remembered,
     voices,
+    mini,
   };
 };
 
@@ -925,16 +960,29 @@ export const listening = (state: PanelState): boolean => state.kind === "neural"
 
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
-// The mark's markup: the root carries the form (`data-state`), the ring's fraction and
-// whether the hover is pinned open; the button is what the reader hovers, focuses or taps;
-// the hover holds the sentence, the question, the yes and the preference's box.
+// The mark's markup: the root carries the form (`data-state`) and the ring's fraction; the
+// button is what the reader taps to show and hide the mini-player, and its label carries
+// the sentence for assistive tech — the mini-player's face says the rest to the eye.
 export interface MarkControls {
   readonly root: HTMLElement;
   readonly button: HTMLButtonElement;
-  readonly sentence: HTMLElement;
+}
+
+// The mini-player's markup: one root beside the mark, its four faces, and the controls each
+// face holds. Every face is in the markup always; `render` shows the one the readout names.
+export interface MiniControls {
+  readonly root: HTMLElement;
+  readonly faces: { readonly [K in MiniFace["kind"]]: HTMLElement };
   readonly ask: HTMLElement;
-  readonly yes: HTMLButtonElement;
-  readonly remember: HTMLInputElement;
+  readonly download: HTMLButtonElement;
+  readonly always: HTMLButtonElement;
+  readonly progress: HTMLElement;
+  readonly bar: HTMLProgressElement;
+  readonly note: HTMLElement;
+  readonly retry: HTMLButtonElement;
+  readonly back: HTMLButtonElement;
+  readonly play: HTMLButtonElement;
+  readonly forward: HTMLButtonElement;
 }
 
 // The voice picker's markup: the button in the transport that opens and closes it, and the
@@ -957,8 +1005,11 @@ export interface ListenControls {
   readonly remaining: HTMLElement;
   readonly status: HTMLElement;
   readonly progress: HTMLProgressElement;
+  // The preference's box, in the panel: checked from storage at every render.
+  readonly remember: HTMLInputElement;
   readonly mark: MarkControls;
   readonly voices: VoiceControls;
+  readonly mini: MiniControls;
 }
 
 // The animation-frame seam, so the check fires frames by hand.
@@ -975,8 +1026,8 @@ export interface ListenPanelConfig {
   // edges over the real store and navigator.storage.persist in the page, stubs in the check.
   readonly home: () => Promise<Residency>;
   readonly keep: () => Promise<Keeping>;
-  // The device's remembered preference, read at every render and written by the hover's
-  // box: listenConsent's two edges over window.localStorage in the page, over a Map in the
+  // The device's remembered preference, read at every render and written by the panel's
+  // box and the mini-player's "Always Download": listenConsent's two edges over window.localStorage in the page, over a Map in the
   // check. And the connection reading the metered rule judges: navigator.connection, which
   // only Chromium exposes; absent is honestly "unknown".
   readonly preference: { readonly read: () => boolean; readonly write: (remembered: boolean) => void };
@@ -1015,11 +1066,14 @@ export interface ListenPanel {
   readonly dispose: () => void;
 }
 
-// Focus never rides a hidden element out to the body: an element about to hide hands the
-// focus it holds to the mark's button. The button's focusin pins the hover, so a close
-// orders the hand-off first [LAW:single-enforcer].
-const handOff = (mark: MarkControls, hiding: ReadonlyArray<Element>): void => {
-  if (hiding.some((element) => element === mark.root.ownerDocument.activeElement)) mark.button.focus();
+// Focus never rides a hidden or disabled element out to the body: the control that held
+// focus before the render — `held`, read before the render can move it — and was hidden
+// by it (its face swapped away, or the whole mini-player folded) or disabled by it (a skip
+// that reached the last turn) hands the focus to the mark's button, the one control that
+// outlives every render [LAW:single-enforcer].
+const handOff = (mark: MarkControls, mini: MiniControls, held: Element | null): void => {
+  if (held === null || !mini.root.contains(held)) return;
+  if (held.closest("[hidden]") !== null || held.matches(":disabled")) mark.button.focus();
 };
 
 // Writing text the element already has replaces its text node for nothing, and the clock
@@ -1028,9 +1082,30 @@ const setText = (el: Element, text: string): void => {
   if (el.textContent !== text) el.textContent = text;
 };
 
+// The mini-player: the face the readout names is shown and the other three hidden, and each
+// face's controls are written whether or not it is showing, so no face can carry a stale
+// word into its next showing. The progress and note faces show the status sentence; a bar
+// with no fraction is the indeterminate one.
+const renderMini = (mini: MiniControls, face: MiniFace, status: string): void => {
+  for (const [kind, el] of Object.entries(mini.faces)) el.hidden = kind !== face.kind;
+  setText(mini.ask, face.kind === "consent" ? face.ask : "");
+  setText(mini.progress, face.kind === "progress" ? status : "");
+  if (face.kind === "progress" && face.fraction !== null) mini.bar.value = face.fraction;
+  else mini.bar.removeAttribute("value");
+  setText(mini.note, face.kind === "note" ? status : "");
+  mini.retry.hidden = !(face.kind === "note" && face.retry);
+  const controls = face.kind === "controls" ? face : { play: "play" as const, back: false, forward: false };
+  mini.back.disabled = !controls.back;
+  mini.forward.disabled = !controls.forward;
+  mini.play.dataset.does = controls.play;
+  mini.play.setAttribute("aria-label", controls.play === "pause" ? "Pause" : "Play");
+};
+
 // [LAW:dataflow-not-control-flow] Every attribute written on every render, only the values
-// vary: no path leaves a stale form, a stale sentence or a stale ring behind.
-const render = (controls: ListenControls, picker: { readonly render: (shown: VoicesReadout) => void }, shown: Readout): void => {
+// vary: no path leaves a stale form, a stale sentence or a stale ring behind. Whether the
+// mini-player is `out` is the one input the readout does not carry: the driver's word,
+// from the reader's toggle and the voice's place.
+const render = (controls: ListenControls, picker: { readonly render: (shown: VoicesReadout) => void }, shown: Readout, out: boolean): void => {
   picker.render(shown.voices);
   controls.play.textContent = shown.play.label;
   controls.play.disabled = !shown.play.enabled;
@@ -1044,17 +1119,17 @@ const render = (controls: ListenControls, picker: { readonly render: (shown: Voi
   controls.progress.hidden = shown.progress === null;
   controls.progress.max = shown.progress?.totalBytes ?? 1;
   controls.progress.value = shown.progress?.loadedBytes ?? 0;
-  const { mark } = controls;
+  controls.remember.checked = shown.remembered;
+  const { mark, mini } = controls;
   mark.root.dataset.state = shown.mark.kind;
   mark.root.style.setProperty("--fraction", String(shown.mark.kind === "downloading" ? shown.mark.fraction : 0));
-  // The sentence names the mark for assistive tech, and is the hover's first line.
+  // The sentence names the mark for assistive tech.
   mark.button.setAttribute("aria-label", `Listen: ${shown.status}`);
-  mark.sentence.textContent = shown.status;
-  mark.ask.textContent = shown.ask ?? "";
-  mark.ask.hidden = shown.ask === null;
-  handOff(mark, shown.ask === null ? [mark.yes] : []);
-  mark.yes.hidden = shown.ask === null;
-  mark.remember.checked = shown.remembered;
+  const held = mini.root.ownerDocument.activeElement;
+  renderMini(mini, shown.mini, shown.status);
+  mini.root.hidden = !out;
+  mark.button.setAttribute("aria-expanded", String(out));
+  handOff(mark, mini, held);
 };
 
 // The scrubber and the times. `held` is the reader's thumb: while they drag, the input's
@@ -1285,7 +1360,15 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   // The visit as it is now: the preferences from storage, the connection from the browser.
   const visit = (): Visit => ({ remembered: config.preference.read(), metered: downloadNeedsTap(config.connection()), pick: config.pick.read() });
-  const show = (): void => render(controls, picker, readout(state, utterances, visit()));
+  // Whether the reader has the mini-player out: a fact of the markup alone, owned here and
+  // flipped only by the mark's tap; the machine has no state for it, as it has none for the
+  // picker's fold [LAW:one-source-of-truth]. A voice with a place keeps the player out
+  // whatever the toggle says — a listen never hides its controls — so a tap while the voice
+  // is on stage changes nothing the reader can see, and its word is kept for when the
+  // listen ends.
+  let opened = false;
+  const out = (): boolean => opened || listening(state);
+  const show = (): void => render(controls, picker, readout(state, utterances, visit()), out());
 
   const run = (event: PanelEvent): void => {
     const planned = step(state, event);
@@ -1366,6 +1449,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   for (const effect of start().effects) performEffect(effect);
   show();
   paintClock();
+  // Every tap on the panel and on the mini-player is a gesture the machine already had; the
+  // mini-player's Retry and play are the panel's Play by another glyph.
   const taps: ReadonlyArray<readonly [HTMLElement, Gesture]> = [
     [controls.play, { kind: "tap", control: "play" }],
     [controls.stop, { kind: "tap", control: "stop" }],
@@ -1373,6 +1458,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     [controls.forward, { kind: "turn", by: 1 }],
     [controls.slower, { kind: "speed", by: -1 }],
     [controls.faster, { kind: "speed", by: 1 }],
+    [controls.mini.play, { kind: "tap", control: "play" }],
+    [controls.mini.back, { kind: "turn", by: -1 }],
+    [controls.mini.forward, { kind: "turn", by: 1 }],
   ];
   for (const [button, g] of taps) button.addEventListener("click", () => send(g));
   // A drag is two facts, and the input reports them separately: `input` is the thumb
@@ -1389,8 +1477,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     send({ kind: "scrub", toMs: Number(controls.scrub.value) });
   });
 
-  // Whether the picker is open is a fact of the markup alone, owned here, as the hover's
-  // pin is: the machine has no state for it [LAW:one-source-of-truth].
+  // Whether the picker is open is a fact of the markup alone, owned here, as the
+  // mini-player's fold is: the machine has no state for it [LAW:one-source-of-truth].
   const { voices: voiceControls } = controls;
   const open = (shown: boolean): void => {
     voiceControls.picker.hidden = !shown;
@@ -1399,47 +1487,41 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   open(false);
   voiceControls.toggle.addEventListener("click", () => open(voiceControls.picker.hidden));
 
-  // The hover: shown by hover in CSS, the sighted reader's affordance, and pinned here —
-  // for the touch reader's tap and the keyboard reader's focus, and told to assistive
-  // tech as one fact — until a tap outside, focus leaving, or Escape. A tap pins rather
-  // than toggles: most browsers focus the button before the click, so a toggle would close
-  // what the focus just opened. Whether it is pinned is a fact of the markup alone, owned
-  // here: the machine has no state for it [LAW:one-source-of-truth].
-  const { mark } = controls;
-  const pin = (open: boolean): void => {
-    handOff(mark, open ? [] : [mark.yes, mark.remember]);
-    mark.root.dataset.open = String(open);
-    mark.button.setAttribute("aria-expanded", String(open));
-  };
-  pin(false);
-  mark.button.addEventListener("click", () => pin(true));
-  mark.yes.addEventListener("click", () => dispatch({ kind: "yes" }));
+  // The mark's tap is the mini-player's toggle over what the reader SEES: a tap on a
+  // player that is out asks to fold it, whether the reader's toggle or the voice's place
+  // put it out. So a tap while the voice is on stage is always the word "fold", and a
+  // second tap the same word — never a hidden flip the reader cannot see.
+  const { mark, mini } = controls;
+  mark.button.addEventListener("click", () => {
+    opened = !out();
+    show();
+  });
+  // The two answers to the question are the same yes on the tap's own stack — a metered
+  // connection withholds only a STANDING yes, never the reader's own hand — and "always"
+  // keeps it on the device first, so the box in the panel reads checked on the render this
+  // yes causes.
+  mini.download.addEventListener("click", () => dispatch({ kind: "yes" }));
+  mini.always.addEventListener("click", () => {
+    config.preference.write(true);
+    dispatch({ kind: "yes" });
+  });
+  // Retry is the yes again, not a Play: a reader who only ever answered the download
+  // question must not hear the voice start when the retried download lands. The consent
+  // only rises, so a Play that a failed load left standing is kept; after a crash, which
+  // lowered it, the retried voice stands ready and waits for the reader's Play.
+  mini.retry.addEventListener("click", () => dispatch({ kind: "yes" }));
   // Checking the box is the yes for this visit too, subject to the same rule as any
   // standing consent; unchecking only stops asking on the reader's behalf.
-  mark.remember.addEventListener("change", () => {
-    config.preference.write(mark.remember.checked);
+  controls.remember.addEventListener("change", () => {
+    config.preference.write(controls.remember.checked);
     wakeUp();
-  });
-  const doc = mark.root.ownerDocument;
-  doc.addEventListener("click", (event) => {
-    if (event.composedPath().includes(mark.root)) return;
-    pin(false);
-  });
-  // Every focus on the page sets the pin: inside the mark it is open, anywhere else it is
-  // not [LAW:dataflow-not-control-flow].
-  doc.addEventListener("focusin", (event) => pin(event.composedPath().includes(mark.root)));
-  doc.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") pin(false);
   });
   wakeUp();
 
   return {
     send,
-    // The page's door back in: the hover closed as at mount, then the wake.
-    wake: () => {
-      pin(false);
-      wakeUp();
-    },
+    // The page's door back in: the wake, as at mount.
+    wake: wakeUp,
     state: () => state,
     // One more event through the same machine: the idle state disarms the frame loop,
     // clears the position, and the controls say what the state says, so a page back from

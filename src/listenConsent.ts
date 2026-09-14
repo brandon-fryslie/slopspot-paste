@@ -6,8 +6,9 @@
 // into its own events.
 //
 // WHY A PREFERENCE, NOT A TAP. A first listen is a 239 MB download away, and a reader who
-// listens often should not be asked every visit. "Remember this" on the mark's hover is a
-// per-device yes: kept in the page's storage, reversible from the same hover, and read from
+// listens often should not be asked every visit. "Always download" — the Listen panel's box,
+// the mini-player's second answer — is a per-device yes: kept in the page's storage,
+// reversible from the same box, and read from
 // storage every time it is needed rather than copied into memory [LAW:one-source-of-truth].
 //
 // [LAW:single-enforcer] The metered-connection rule lives in modelAssets.downloadNeedsTap;

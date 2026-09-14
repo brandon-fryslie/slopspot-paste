@@ -24,6 +24,7 @@ import {
   panelDomId,
   requiresAttr,
   type ToolId,
+  MINI_ICONS,
 } from "../toolDock";
 // [LAW:one-source-of-truth] The dock's contract classes are interpolated from the same
 // constant `resolveDock` reads, so the markup and the module cannot spell a region
@@ -526,6 +527,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             <progress class="speech-progress" hidden></progress>
             <p class="speech-now" aria-live="polite"></p>
             <button class="mono-pill speech-voices-toggle" type="button" aria-expanded="false" aria-controls="speech-voices">Voices</button>
+            <label class="speech-remember">
+              <input type="checkbox" />
+              <span>Always download the voice on this device</span>
+            </label>
           </div>
           {/* The voice picker's rows are built here by voicePicker.ts from the manifest's
               voices, so the markup carries no name it would have to keep in step with. */}
@@ -682,28 +687,49 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     */}
     {/*
       The Listen mark: the always-visible icon beside the launcher that says where the
-      voice is, and whose hover asks "Download speech model?" when a download is what
-      stands between the reader and a voice. Inert markup: listenPanel.ts writes its form
-      (`data-state`), its sentence, the question and the preference's box on every state
-      change, so nothing here carries a sentence of its own [LAW:one-source-of-truth]. The
+      voice is, and whose tap folds the mini-player beside it in and out. Inert markup:
+      listenPanel.ts writes its form (`data-state`) and its label on every state change,
+      so nothing here carries a sentence of its own [LAW:one-source-of-truth]. The
       glyph is the Listen tool's, so the menu item and the mark can never draw the voice
       two ways. Present exactly when the Listen panel is, and shown by CSS only once the
       page has WebGPU (`speech-ready`), like the panel's menu item.
     */}
     {present.listen && (
-      <div class="listen-mark" data-state="checking" data-open="false">
+      <div class="listen-mark" data-state="checking">
         <button class="listen-mark-button" type="button" aria-expanded="false"
-          aria-controls="listen-mark-hover" aria-label="Listen">
+          aria-controls="listen-mini" aria-label="Listen">
           <span class="listen-mark-glyph" set:html={TOOL.listen.icon} />
         </button>
-        <div class="listen-mark-hover" id="listen-mark-hover" role="group" aria-label="Listen">
-          <p class="listen-mark-sentence"></p>
-          <p class="listen-mark-ask" hidden></p>
-          <button class="mono-pill listen-mark-yes" type="button" hidden>Download</button>
-          <label class="listen-mark-remember">
-            <input type="checkbox" />
-            <span>Always download it on this device</span>
-          </label>
+        {/*
+          The mini-player (slopspot-read-along-a35.djn): one element beside the mark, four
+          faces of which exactly one shows — the question with its two answers, the voice on
+          its way, a voice there is none of, the three controls. Inert markup, like the mark:
+          listenPanel.ts writes every face on every state change and shows the one the
+          state names; the mark's tap folds it in and out, and a voice with a place keeps it
+          out [LAW:one-source-of-truth]. The glyphs are the dock's own (toolDock.ts).
+        */}
+        <div class="listen-mini" id="listen-mini" role="group" aria-label="Listen" hidden>
+          <div class="listen-mini-face" data-face="consent" hidden>
+            <p class="listen-mini-ask"></p>
+            <button class="mono-pill listen-mini-download" type="button">Download</button>
+            <button class="mono-pill listen-mini-always" type="button">Always Download</button>
+          </div>
+          <div class="listen-mini-face" data-face="progress" hidden>
+            <p class="listen-mini-progress"></p>
+            <progress class="listen-mini-bar" max="1"></progress>
+          </div>
+          <div class="listen-mini-face" data-face="note" hidden>
+            <p class="listen-mini-note"></p>
+            <button class="mono-pill listen-mini-retry" type="button" hidden>Retry</button>
+          </div>
+          <div class="listen-mini-face" data-face="controls" hidden>
+            <button class="listen-mini-back" type="button" aria-label="Previous turn" title="Previous turn" disabled set:html={MINI_ICONS.back} />
+            <button class="listen-mini-play" type="button" aria-label="Play" data-does="play">
+              <span class="listen-mini-glyph" data-glyph="play" set:html={MINI_ICONS.play} />
+              <span class="listen-mini-glyph" data-glyph="pause" set:html={MINI_ICONS.pause} />
+            </button>
+            <button class="listen-mini-forward" type="button" aria-label="Next turn" title="Next turn" disabled set:html={MINI_ICONS.forward} />
+          </div>
         </div>
       </div>
     )}
@@ -830,15 +856,31 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             remaining: control<HTMLElement>(".speech-left"),
             status: control<HTMLElement>(".speech-now"),
             progress: control<HTMLProgressElement>(".speech-progress"),
+            remember: control<HTMLInputElement>(".speech-remember input"),
             mark: {
               root: markEl,
               button: markPart<HTMLButtonElement>(".listen-mark-button"),
-              sentence: markPart<HTMLElement>(".listen-mark-sentence"),
-              ask: markPart<HTMLElement>(".listen-mark-ask"),
-              yes: markPart<HTMLButtonElement>(".listen-mark-yes"),
-              remember: markPart<HTMLInputElement>(".listen-mark-remember input"),
             },
             voices: { toggle: control<HTMLButtonElement>(".speech-voices-toggle"), picker: voicesEl },
+            mini: {
+              root: markPart<HTMLElement>(".listen-mini"),
+              faces: {
+                consent: markPart<HTMLElement>('.listen-mini-face[data-face="consent"]'),
+                progress: markPart<HTMLElement>('.listen-mini-face[data-face="progress"]'),
+                note: markPart<HTMLElement>('.listen-mini-face[data-face="note"]'),
+                controls: markPart<HTMLElement>('.listen-mini-face[data-face="controls"]'),
+              },
+              ask: markPart<HTMLElement>(".listen-mini-ask"),
+              download: markPart<HTMLButtonElement>(".listen-mini-download"),
+              always: markPart<HTMLButtonElement>(".listen-mini-always"),
+              progress: markPart<HTMLElement>(".listen-mini-progress"),
+              bar: markPart<HTMLProgressElement>(".listen-mini-bar"),
+              note: markPart<HTMLElement>(".listen-mini-note"),
+              retry: markPart<HTMLButtonElement>(".listen-mini-retry"),
+              back: markPart<HTMLButtonElement>(".listen-mini-back"),
+              play: markPart<HTMLButtonElement>(".listen-mini-play"),
+              forward: markPart<HTMLButtonElement>(".listen-mini-forward"),
+            },
           },
           utterances,
           spawn: spawnSynthesisWorker,

@@ -31,18 +31,21 @@ import { type ModelAsset, assetKey } from "./modelAssets";
 // carries the bytes still to download, because a store may hold some assets and not others
 // (an interrupted first listen, an evicted weights file beside its voices): a number, never
 // a bool. `unavailable` is the store that cannot be opened at all — private browsing, quota,
-// no origin-private file system — with the browser's own reason.
+// no origin-private file system — with the browser's own reason and, since it keeps
+// nothing, the whole model as the bytes every listen downloads [LAW:one-source-of-truth].
 export type Residency =
   | { readonly kind: "resident" }
   | { readonly kind: "absent"; readonly bytesToDownload: number }
-  | { readonly kind: "unavailable"; readonly message: string };
+  | { readonly kind: "unavailable"; readonly message: string; readonly bytesToDownload: number };
+
+const wholeModel = (assets: readonly ModelAsset[]): number => assets.reduce((sum, asset) => sum + asset.bytes, 0);
 
 // The pure derivation: an asset is held when the listing has its key at its size. Entries
 // the manifest does not name — a stale build's, another tool's — are simply not asked about;
 // the loader prunes the stale ones before its next write.
 export const residencyOf = (listing: ReadonlyArray<StoreEntry>, assets: readonly ModelAsset[]): Residency => {
   const held = new Map(listing.map((entry) => [entry.name, entry.size]));
-  const bytesToDownload = assets.filter((asset) => held.get(assetKey(asset)) !== asset.bytes).reduce((sum, asset) => sum + asset.bytes, 0);
+  const bytesToDownload = wholeModel(assets.filter((asset) => held.get(assetKey(asset)) !== asset.bytes));
   return bytesToDownload === 0 ? { kind: "resident" } : { kind: "absent", bytesToDownload };
 };
 
@@ -56,7 +59,7 @@ export const readResidency = async (
   try {
     return residencyOf(await store.list(), assets);
   } catch (e) {
-    return { kind: "unavailable", message: e instanceof Error ? e.message : String(e) };
+    return { kind: "unavailable", message: e instanceof Error ? e.message : String(e), bytesToDownload: wholeModel(assets) };
   }
 };
 

@@ -3417,18 +3417,26 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 
    Placement is absolute, not in flow: the dock's height stays the launcher's, so the
    page's bottom reserve (--reserve-tool-dock) stays one number. The mark rides the same
-   row from the right, one launcher and one gap in from the corner. */
+   row from the right, one launcher and one gap in from the corner, and spans left to the
+   dock's side inset: the button sits at its right end, and the span is the room the
+   mini-player may take, measured from the dock rather than the viewport (100vw counts a
+   classic scrollbar the dock does not have). The span is not a target: like the dock's
+   own strip, it lets taps through and only its controls take them. */
 .listen-mark { display: none; }
+.listen-mark { --mark-size: 34px; }
 body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   display: grid;
   position: absolute;
   bottom: 0;
+  left: var(--dock-side-inset);
   right: calc(var(--dock-corner-inset) + var(--dock-launcher-size) + var(--dock-gap));
   height: var(--dock-launcher-size);
-  place-items: center;
+  justify-items: end;
+  align-items: center;
+  pointer-events: none;
 }
+.listen-mark > * { pointer-events: auto; }
 .listen-mark-button {
-  --mark-size: 34px;
   --mark-ring: var(--border);
   position: relative;
   display: grid;
@@ -3495,36 +3503,88 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
 @keyframes listen-mark-turn { to { --mark-turn: 1turn; } }
 @keyframes listen-mark-breathe { 50% { opacity: 0.3; } }
 
-/* The hover: a small card above the mark, shown while the mark is hovered, or pinned by
-   listenPanel.ts (`data-open`: a tap, or keyboard focus within the mark). The question,
-   the yes and the box are all in the markup always; listenPanel.ts hides the question and
-   the yes outside the download-needed state, and the box shows the preference. */
-.listen-mark-hover {
-  display: none;
+.speech-remember { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); cursor: pointer; }
+.speech-remember input { margin: 0; accent-color: var(--accent); }
+
+/* ─── The mini-player (slopspot-read-along-a35.djn) ─────────────────────────
+   One pill to the left of the mark, in the same row, holding whichever face the panel
+   names: the question and its two answers, the voice on its way, a voice there is none of,
+   or the three controls. Its whole appearance is `hidden` on the root and on the faces,
+   written by listenPanel.ts on every render [LAW:one-source-of-truth]. The mark's tap folds
+   it; a voice with a place keeps it out.
+
+   It may be no wider than the mark's span less the button and a gap, so on a phone the
+   question's two answers wrap onto a second row and the pill grows upward from the
+   launcher's row; every sentence wraps rather than losing its end off the screen. */
+.listen-mini {
   position: absolute;
-  right: 0;
-  bottom: calc(100% - 2px);
-  width: 250px;
-  padding: 10px 12px;
+  right: calc(var(--mark-size) + var(--dock-gap));
+  bottom: 0;
+  width: max-content;
+  max-width: calc(100% - var(--mark-size) - var(--dock-gap));
+}
+.listen-mini[hidden] { display: none; }
+.listen-mini-face {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: var(--dock-launcher-size);
+  box-sizing: border-box;
+  padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 22px;
   background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
   backdrop-filter: blur(14px);
   box-shadow: var(--dock-pill-shadow);
   font-size: 12px;
   color: var(--fg);
 }
-.listen-mark:hover .listen-mark-hover,
-.listen-mark[data-open="true"] .listen-mark-hover { display: grid; gap: 8px; }
-.listen-mark-sentence,
-.listen-mark-ask { margin: 0; }
-.listen-mark-sentence { color: var(--fg-muted); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em; }
-.listen-mark-ask { font-weight: 600; }
-.listen-mark-ask[hidden],
-.listen-mark-yes[hidden] { display: none; }
-.listen-mark-yes { justify-self: start; }
-.listen-mark-remember { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); cursor: pointer; }
-.listen-mark-remember input { margin: 0; accent-color: var(--accent); }
+.listen-mini-face[hidden] { display: none; }
+.listen-mini-ask,
+.listen-mini-progress,
+.listen-mini-note {
+  margin: 0;
+  max-width: min(360px, 100%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+.listen-mini-ask { color: var(--fg); font-weight: 600; }
+.listen-mini-bar { width: 72px; height: 4px; accent-color: var(--accent); }
+.listen-mini-retry[hidden] { display: none; }
+.listen-mini-back,
+.listen-mini-play,
+.listen-mini-forward {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  appearance: none;
+}
+.listen-mini-back svg,
+.listen-mini-forward svg,
+.listen-mini-glyph svg { width: 18px; height: 18px; }
+.listen-mini-play { color: var(--accent); }
+.listen-mini-back:hover,
+.listen-mini-play:hover,
+.listen-mini-forward:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.listen-mini-back[disabled],
+.listen-mini-forward[disabled] { opacity: 0.35; cursor: default; background: transparent; }
+.listen-mini-back:focus-visible,
+.listen-mini-play:focus-visible,
+.listen-mini-forward:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The one button's two glyphs: `data-does` on the button names the one that shows. */
+.listen-mini-glyph { display: none; place-items: center; }
+.listen-mini-play[data-does="play"] .listen-mini-glyph[data-glyph="play"],
+.listen-mini-play[data-does="pause"] .listen-mini-glyph[data-glyph="pause"] { display: grid; }
 /* Stilled at the same (0,2,1) the animating rules carry, later in the file: the ring's
    fraction and the badge still say everything the motion said. */
 @media (prefers-reduced-motion: reduce) {

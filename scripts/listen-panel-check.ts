@@ -18,7 +18,6 @@ import { JSDOM } from "jsdom";
 import { readPreference, writePreference, type StandingConsent } from "../src/listenConsent";
 import {
   createListenPanel,
-  DOWNLOAD_BYTES,
   initialState,
   markForm,
   readout,
@@ -27,6 +26,7 @@ import {
   type MarkForm,
   type PanelEvent,
   type PanelState,
+  type ListenControls,
   type Visit,
 } from "../src/listenPanel";
 import type { ConnectionReading } from "../src/modelAssets";
@@ -120,8 +120,10 @@ const around = (state: PanelState, visit: Visit = ASKING): string => {
 };
 // The place a voice on its way starts from, as "utterance:char"; a voice on stage has none.
 const held = (state: PanelState): string => (state.kind === "provisioning" ? `${state.from.utterance}:${state.from.char}` : "on stage");
-// Sizes round up to the megabyte, as the panel says them.
-const MB = `${Math.ceil(DOWNLOAD_BYTES / 1e6)} MB`;
+// The whole model, as the store that keeps nothing reports it; the panel rounds it up to
+// the megabyte.
+const WHOLE_MODEL = 238_500_001;
+const MB = "239 MB";
 // The start, before the store has answered: the driver asks it on every entry.
 const IDLE_LINE = "Listen | stop(off) | Looking for the voice on this device…";
 // The mount: the worker spawned at once to probe, with no consent yet, so Play still reads.
@@ -142,7 +144,7 @@ console.log("step: the way to audio");
   assert("idle: Play is the only enabled control, the store is being asked, and the place is the top", shown(idle) === IDLE_LINE && held(idle) === "0:0");
   assert("the store's word, resident: the voice is on this device, before any tap", shown(step(idle, home({ kind: "resident" })).state) === RESIDENT_LINE);
   assert("absent: the bytes still to download are named, not the whole model", shown(step(idle, home({ kind: "absent", bytesToDownload: 120_000_000 })).state) === "Listen | stop(off) | The voice downloads 120 MB once, then runs on this device");
-  assert("unavailable: the store's reason, and that each listen downloads the whole model", shown(step(idle, home({ kind: "unavailable", message: "private browsing" })).state) === `Listen | stop(off) | This browser can't keep the voice (private browsing); each listen downloads ${MB}`);
+  assert("unavailable: the store's reason, and that each listen downloads the whole model", shown(step(idle, home({ kind: "unavailable", message: "private browsing", bytesToDownload: WHOLE_MODEL })).state) === `Listen | stop(off) | This browser can't keep the voice (private browsing); each listen downloads ${MB}`);
   assert("the keep request's answer is not asked of an idle voice, but shown if it arrives: denied names the consequence", shown(step(idle, kept({ kind: "denied" })).state) === "Listen | stop(off) | Looking for the voice on this device… · this browser may drop the voice when space is short; the next listen would download it again");
   const probing = step(idle, tapPlay);
   assert("tap play from idle spends the gesture on the device and spawns the worker to probe; Play has nothing more to say", effects(probing) === "unlock,spawn" && shown(probing.state) === "Listen(off) | stop(off) | Checking this device for the voice…");
@@ -323,7 +325,7 @@ console.log("readout: every form the mark can take, and the question its hover a
     checking: probing,
     ready: step(able, home({ kind: "resident" })).state,
     download: step(able, home(ABSENT)).state,
-    unavailable: step(able, home({ kind: "unavailable", message: "private browsing" })).state,
+    unavailable: step(able, home({ kind: "unavailable", message: "private browsing", bytesToDownload: WHOLE_MODEL })).state,
     downloading,
     warming,
     speaking: at({ kind: "speaking", at: { unitIndex: 0, offsetMs: 0 }, flow: "audio" }),
@@ -343,11 +345,14 @@ console.log("readout: every form the mark can take, and the question its hover a
   assert("a crash is a failure", markForm(step(downloading, { kind: "worker-error", message: "x" }).state).kind === "failed");
   assert("the voice on stage and idle is ready", markForm(onStage).kind === "ready");
 
-  const ask = (state: PanelState, visit: Visit = ASKING): string | null => readout(state, utterances, visit).ask;
+  const ask = (state: PanelState, visit: Visit = ASKING): string | null => {
+    const { mini } = readout(state, utterances, visit);
+    return mini.kind === "consent" ? mini.ask : null;
+  };
   const promised = step(step(idle, wake("download")).state, home(ABSENT)).state;
   assert("a held consent through the probe: checking to the eye, as the sentence says, nothing to ask", markForm(promised).kind === "checking" && ask(promised) === null && shown(promised) === MOUNT_LINE);
-  assert("download needed: the hover asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
-  assert("a store that cannot keep the voice: the hover asks for the whole model", ask(forms.unavailable) === `Download speech model? · ${MB}`);
+  assert("download needed: the mini-player asks, with the size", ask(forms.download) === "Download speech model? · 239 MB");
+  assert("a store that cannot keep the voice: the mini-player asks for the whole model, and says it will every listen", ask(forms.unavailable) === `Download speech model? · ${MB} · every listen, since this browser can't keep it`);
   assert("remembered on a metered connection: the hover says why it asks anyway", ask(forms.download, { ...ASKING, remembered: true, metered: true }) === "Download speech model? · 239 MB · asking because this connection is metered");
   assert("remembered off a metered connection: no note", ask(forms.download, { ...ASKING, remembered: true, metered: false }) === "Download speech model? · 239 MB");
   assert("not remembered on a metered connection: no note — nothing is being overridden", ask(forms.download, { ...ASKING, remembered: false, metered: true }) === "Download speech model? · 239 MB");
@@ -429,26 +434,39 @@ const MARKUP = `<!DOCTYPE html><body>
     <progress class="speech-progress" hidden></progress>
     <p class="speech-now"></p>
     <button class="speech-voices-toggle" type="button" aria-expanded="false">Voices</button>
+    <label class="speech-remember"><input type="checkbox" /><span>Always download the voice on this device</span></label>
   </div>
   <div class="speech-voices" hidden></div>
-  <div class="listen-mark" data-state="checking" data-open="false">
+  <div class="listen-mark" data-state="checking">
     <button class="listen-mark-button" type="button" aria-expanded="false" aria-label="Listen"><span class="listen-mark-glyph"></span></button>
-    <div class="listen-mark-hover" role="group" aria-label="Listen">
-      <p class="listen-mark-sentence"></p>
-      <p class="listen-mark-ask" hidden></p>
-      <button class="listen-mark-yes" type="button" hidden>Download</button>
-      <label class="listen-mark-remember"><input type="checkbox" /><span>Always download it on this device</span></label>
+    <div class="listen-mini" data-face="progress" hidden>
+      <div class="listen-mini-face" data-face="consent" hidden>
+        <p class="listen-mini-ask"></p>
+        <button class="listen-mini-download" type="button">Download</button>
+        <button class="listen-mini-always" type="button">Always Download</button>
+      </div>
+      <div class="listen-mini-face" data-face="progress" hidden>
+        <p class="listen-mini-progress"></p>
+        <progress class="listen-mini-bar" max="1"></progress>
+      </div>
+      <div class="listen-mini-face" data-face="note" hidden>
+        <p class="listen-mini-note"></p>
+        <button class="listen-mini-retry" type="button" hidden>Retry</button>
+      </div>
+      <div class="listen-mini-face" data-face="controls" hidden>
+        <button class="listen-mini-back" type="button" disabled></button>
+        <button class="listen-mini-play" type="button" data-does="play"></button>
+        <button class="listen-mini-forward" type="button" disabled></button>
+      </div>
     </div>
   </div></body>`;
 
 interface MarkRig {
   readonly root: HTMLElement;
   readonly button: HTMLButtonElement;
-  readonly sentence: HTMLElement;
-  readonly ask: HTMLElement;
-  readonly yes: HTMLButtonElement;
-  readonly remember: HTMLInputElement;
 }
+
+type MiniRig = ListenControls["mini"];
 
 interface Rig {
   readonly play: HTMLButtonElement;
@@ -467,7 +485,10 @@ interface Rig {
   readonly seeks: () => number;
   readonly status: HTMLElement;
   readonly bar: HTMLProgressElement;
+  // The preference's box, in the panel.
+  readonly remember: HTMLInputElement;
   readonly mark: MarkRig;
+  readonly mini: MiniRig;
   // The voice picker's markup: the toggle in the transport and the block the rows are built into.
   readonly voices: { readonly toggle: HTMLButtonElement; readonly picker: HTMLElement };
   readonly doc: Document;
@@ -494,11 +515,11 @@ interface Rig {
   readonly where: () => string;
   readonly line: () => string;
   readonly transport: () => string;
-  // What the mark shows: its form, pinned or not, then the hover's question, yes and box.
+  // What the mark and the mini-player show: the form, whether the mini-player is out, its
+  // face — the question, the fraction, the note, or what the play button does — and the box.
   readonly shownMark: () => string;
-  // The reader's hand on the hover: the box checked or cleared, a key pressed on the page.
+  // The reader's hand on the panel: the box checked or cleared.
   readonly check: (on: boolean) => void;
-  readonly press: (key: string) => void;
   // The devices opened since the rig was built, newest last: each gesture or build opens one.
   readonly devices: () => StubDevice[];
 }
@@ -597,10 +618,46 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const mark: MarkRig = {
     root: el(".listen-mark"),
     button: el(".listen-mark-button"),
-    sentence: el(".listen-mark-sentence"),
-    ask: el(".listen-mark-ask"),
-    yes: el(".listen-mark-yes"),
-    remember: el(".listen-mark-remember input"),
+  };
+  const remember = el<HTMLInputElement>(".speech-remember input");
+  const mini: MiniRig = {
+    root: el(".listen-mini"),
+    faces: {
+      consent: el('.listen-mini-face[data-face="consent"]'),
+      progress: el('.listen-mini-face[data-face="progress"]'),
+      note: el('.listen-mini-face[data-face="note"]'),
+      controls: el('.listen-mini-face[data-face="controls"]'),
+    },
+    ask: el(".listen-mini-ask"),
+    download: el(".listen-mini-download"),
+    always: el(".listen-mini-always"),
+    progress: el(".listen-mini-progress"),
+    bar: el(".listen-mini-bar"),
+    note: el(".listen-mini-note"),
+    retry: el(".listen-mini-retry"),
+    back: el(".listen-mini-back"),
+    play: el(".listen-mini-play"),
+    forward: el(".listen-mini-forward"),
+  };
+  // The face as the DOM shows it — the one face not hidden — and what it says.
+  const shownFace = (): string => {
+    const [only, ...more] = Object.entries(mini.faces).filter(([, el]) => !el.hidden).map(([kind]) => kind);
+    if (only === undefined || more.length > 0) throw new Error(`fixture: faces shown ${[only, ...more].join()}`);
+    return only;
+  };
+  const face = (): string => {
+    switch (shownFace()) {
+      case "consent":
+        return `ask ${mini.ask.textContent}`;
+      case "progress":
+        return `progress ${mini.bar.getAttribute("value") ?? "?"}`;
+      case "note":
+        return `note${mini.retry.hidden ? "" : " retry"}`;
+      case "controls":
+        return `${mini.play.dataset.does}`;
+      default:
+        throw new Error(`fixture: mini face ${shownFace()}`);
+    }
   };
   const opened = StubDevice.instances.length;
   let seekCount = 0;
@@ -621,7 +678,9 @@ const rig = (setup: VisitSetup = {}): Rig => {
     seeks: () => seekCount,
     status,
     bar: el(".speech-progress"),
+    remember,
     mark,
+    mini,
     voices: { toggle: el(".speech-voices-toggle"), picker: el(".speech-voices") },
     now: 0,
     doc,
@@ -663,13 +722,10 @@ const rig = (setup: VisitSetup = {}): Rig => {
       `slower${slower.disabled ? "(off)" : ""} ${speed.textContent} faster${faster.disabled ? "(off)" : ""} | ` +
       `${played.textContent}/${scrub.value} of ${scrub.max} · ${remaining.textContent}`,
     shownMark: () =>
-      `${mark.root.dataset.state}${mark.root.dataset.open === "true" ? "(pinned)" : ""} | ${mark.ask.hidden ? "no ask" : mark.ask.textContent} | yes ${mark.yes.hidden ? "hidden" : "shown"} | remember ${mark.remember.checked ? "on" : "off"}`,
+      `${mark.root.dataset.state} | ${mini.root.hidden ? "folded" : "out"} | ${face()} | remember ${remember.checked ? "on" : "off"}`,
     check: (on) => {
-      mark.remember.checked = on;
-      mark.remember.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-    },
-    press: (key) => {
-      doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true }));
+      remember.checked = on;
+      remember.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
     },
     devices: () => StubDevice.instances.slice(opened),
   };
@@ -690,8 +746,10 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
       remaining: r.remaining,
       status: r.status,
       progress: r.bar,
+      remember: r.remember,
       mark: r.mark,
       voices: r.voices,
+      mini: r.mini,
     },
     utterances,
     spawn: () => {
@@ -725,8 +783,8 @@ const ableAbsent = async (r: Rig): Promise<void> => {
   await Promise.resolve();
 };
 
-const MOUNT_MARK = "checking | no ask | yes hidden | remember off";
-const ASK_MARK = "download | Download speech model? · 239 MB | yes shown | remember off";
+const MOUNT_MARK = "checking | folded | progress ? | remember off";
+const ASK_MARK = "download | folded | ask Download speech model? · 239 MB | remember off";
 const PREPARING_LINE = "Listen | stop(off) | Preparing the voice…";
 
 console.log("createListenPanel: the tap opens the device, the voice arrives and plays");
@@ -735,14 +793,14 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   const panel = mount(r);
 
   assert("mounted: the worker is spawned to probe, the store asked, nothing sent, no device, the mark checking", r.line() === MOUNT_LINE && r.counts.homeAsked === 1 && r.counts.keepAsked === 0 && r.counts.spawned === 1 && r.sent.length === 0 && r.devices().length === 0 && r.shownMark() === MOUNT_MARK);
-  assert("the mark is named for assistive tech by the status line", r.mark.button.getAttribute("aria-label") === "Listen: Checking this device for the voice…" && r.mark.sentence.textContent === "Checking this device for the voice…");
+  assert("the mark is named for assistive tech by the status line", r.mark.button.getAttribute("aria-label") === "Listen: Checking this device for the voice…");
   r.play.click();
   const device = r.devices()[0];
   if (device === undefined) throw new Error("the tap did not open a device");
   assert("click Play while the probe runs: no second worker, the button disables — the tap is the consent", r.counts.spawned === 1 && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
   assert("the audio device is opened AND resumed on the tap, before any worker message", r.devices().length === 1 && device.calls.join() === "resume" && r.sent.length === 0);
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
-  assert("supported with the tap held: load is sent", r.said() === "load" && r.shownMark() === "warming | no ask | yes hidden | remember off");
+  assert("supported with the tap held: load is sent", r.said() === "load" && r.shownMark() === "warming | folded | progress ? | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
   assert("downloading: the bar shows and carries the bytes, the mark's ring the fraction", !r.bar.hidden && r.bar.value === 50_000_000 && r.bar.max === 200_000_000 && r.line() === "Listen(off) | stop(off) | Downloading the voice · 25% · 50 of 200 MB · estimating time left…" && r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25");
   // The driver stamps each message with the clock's reading: 50 MB more in 5 s is 10 MB/s,
@@ -784,7 +842,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   panel.send({ kind: "mark", to: mark(0, 25) });
   assert("a tap on the first passage's second sentence: the voice seeks there and the cursor follows", r.where() === "t1 21-42 of 1" && r.line() === "Pause | stop | Playing · passage 1 of 2");
   r.stop.click();
-  assert("Stop: idle, the cursor cleared, Stop disabled, Play says Listen, the mark ready", r.line() === "Listen | stop(off) | Ready" && r.positions.at(-1) === null && r.frames.pending === 0 && r.shownMark() === "ready | no ask | yes hidden | remember off");
+  assert("Stop: idle, the cursor cleared, Stop disabled, Play says Listen, the mark ready", r.line() === "Listen | stop(off) | Ready" && r.positions.at(-1) === null && r.frames.pending === 0 && r.shownMark() === "ready | folded | play | remember off");
   r.play.click();
   assert("Play again starts from the top on the same worker and device: Stop let the audio go, so unit 0 is asked for again", r.counts.spawned === 1 && r.devices().length === 1 && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
 
@@ -854,7 +912,7 @@ console.log("createListenPanel: the store's word before the tap, the browser's a
   assert("supported with nothing said: the worker waits, nothing sent, the store's answer awaited", r.sent.length === 0 && r.line() === IDLE_LINE && r.shownMark() === MOUNT_MARK);
   r.answer.home({ kind: "resident" });
   await Promise.resolve();
-  assert("the store answers: the line says the voice is on this device, the mark ready, no download offered, still nothing sent", r.line() === RESIDENT_LINE && r.shownMark() === "ready | no ask | yes hidden | remember off" && r.sent.length === 0);
+  assert("the store answers: the line says the voice is on this device, the mark ready, no download offered, still nothing sent", r.line() === RESIDENT_LINE && r.shownMark() === "ready | folded | play | remember off" && r.sent.length === 0);
   r.play.click();
   assert("the tap on an able voice: load is sent and the browser is asked to keep the bytes, in that order", r.sent.map((m) => m.kind).join() === "load" && r.counts.keepAsked === 1 && r.line() === "Listen(off) | stop(off) | Preparing the voice…");
   r.answer.keep({ kind: "denied" });
@@ -878,15 +936,15 @@ console.log("createListenPanel: the hover's yes downloads the voice and leaves i
   const panel = mount(r);
   await ableAbsent(r);
   assert("download needed: the mark says so, the hover asks with the size and offers the yes and the box; nothing sent, no device", r.shownMark() === ASK_MARK && r.line() === ABSENT_LINE && r.sent.length === 0 && r.devices().length === 0 && r.mark.button.getAttribute("aria-label") === "Listen: The voice downloads 239 MB once, then runs on this device");
-  r.mark.yes.click();
+  r.mini.download.click();
   const device = r.devices()[0];
-  assert("yes: the device is opened and resumed on the click, load sent, the browser asked to keep; Play still reads, since a yes is not a Play", device?.calls.join() === "resume" && r.said() === "load" && r.counts.keepAsked === 1 && r.line() === PREPARING_LINE && r.shownMark() === "warming | no ask | yes hidden | remember off");
+  assert("yes: the device is opened and resumed on the click, load sent, the browser asked to keep; Play still reads, since a yes is not a Play", device?.calls.join() === "resume" && r.said() === "load" && r.counts.keepAsked === 1 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 60_000_000, totalBytes: 240_000_000 } });
-  assert("downloading: the ring fills, the question is gone", r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25" && r.mark.ask.hidden && r.mark.yes.hidden);
+  assert("downloading: the ring fills, the question is gone", r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25" && r.shownMark() === "downloading | folded | progress 0.25 | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 240_000_000, totalBytes: 240_000_000 } });
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   r.emit({ kind: "script", id: SCRIPT_ID, units });
-  assert("the voice arrives on the yes alone: on stage, Ready, nothing synthesized, no cursor, the mark ready", panel.state().kind === "neural" && r.said() === "load,script" && r.line() === "Listen | stop(off) | Ready" && r.shownMark() === "ready | no ask | yes hidden | remember off" && r.positions.every((at) => at === null) && r.frames.pending === 0);
+  assert("the voice arrives on the yes alone: on stage, Ready, nothing synthesized, no cursor, the mark ready", panel.state().kind === "neural" && r.said() === "load,script" && r.line() === "Listen | stop(off) | Ready" && r.shownMark() === "ready | folded | play | remember off" && r.positions.every((at) => at === null) && r.frames.pending === 0);
   r.play.click();
   assert("Play on the ready voice speaks from the top on the device the yes opened", r.devices().length === 1 && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
   panel.dispose();
@@ -898,7 +956,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   const panel = mount(r);
   await ableAbsent(r);
   r.check(true);
-  assert("checking the box writes the preference, and the voice loads with no tap and no device", readPreference(r.store) && r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE && r.shownMark() === "warming | no ask | yes hidden | remember on");
+  assert("checking the box writes the preference, and the voice loads with no tap and no device", readPreference(r.store) && r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember on");
   r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   r.emit({ kind: "script", id: SCRIPT_ID, units });
@@ -907,20 +965,20 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   r.play.click();
   assert("the first Play resumes that device on the tap and speaks", device?.calls.includes("resume") === true && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
   r.check(false);
-  assert("clearing the box removes the preference; the voice on stage is untouched", r.store.keys().length === 0 && r.shownMark() === "speaking | no ask | yes hidden | remember off" && r.counts.spawned === 1 && panel.state().kind === "neural");
+  assert("clearing the box removes the preference; the voice on stage is untouched", r.store.keys().length === 0 && r.shownMark() === "speaking | out | pause | remember off" && r.counts.spawned === 1 && panel.state().kind === "neural");
   panel.dispose();
 
   const next = rig({ storage: { remembered: true } });
   const nextPanel = mount(next);
-  assert("a later visit with the preference: the probe first, the mark checking with nothing to ask, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "checking | no ask | yes hidden | remember on" && next.sent.length === 0);
+  assert("a later visit with the preference: the probe first, the mark checking with nothing to ask, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "checking | folded | progress ? | remember on" && next.sent.length === 0);
   next.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   assert("supported: load is sent with no tap, the browser asked to keep, no device opened", next.said() === "load" && next.counts.keepAsked === 1 && next.devices().length === 0 && next.line() === PREPARING_LINE);
   next.answer.home(ABSENT);
   await Promise.resolve();
-  assert("the store's late word does not put a question over a download in flight", next.shownMark() === "warming | no ask | yes hidden | remember on");
+  assert("the store's late word does not put a question over a download in flight", next.shownMark() === "warming | folded | progress ? | remember on");
   next.emit({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
   next.check(false);
-  assert("the download fails and the reader unchecks the box: the preference is gone, nothing is sent again, the failure stays on the line", next.store.keys().length === 0 && next.said() === "load" && next.line() === "Retry | stop(off) | The voice could not load: network error fetching u: offline" && next.shownMark() === "failed | no ask | yes hidden | remember off");
+  assert("the download fails and the reader unchecks the box: the preference is gone, nothing is sent again, the failure stays on the line", next.store.keys().length === 0 && next.said() === "load" && next.line() === "Retry | stop(off) | The voice could not load: network error fetching u: offline" && next.shownMark() === "failed | folded | note retry | remember off");
   nextPanel.dispose();
 }
 
@@ -929,7 +987,7 @@ console.log("createListenPanel: on a metered connection the remembered yes still
   const r = rig({ storage: { remembered: true }, connection: { type: "cellular" } });
   const panel = mount(r);
   await ableAbsent(r);
-  assert("nothing loads; the hover asks and says why, the box still checked", r.sent.length === 0 && r.shownMark() === "download | Download speech model? · 239 MB · asking because this connection is metered | yes shown | remember on" && r.line() === ABSENT_LINE);
+  assert("nothing loads; the hover asks and says why, the box still checked", r.sent.length === 0 && r.shownMark() === "download | folded | ask Download speech model? · 239 MB · asking because this connection is metered | remember on" && r.line() === ABSENT_LINE);
   r.connection.reading = { type: "wifi" };
   panel.wake();
   assert("off the metered connection, the page's next wake gives the standing yes: load, no gesture", r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE);
@@ -938,7 +996,7 @@ console.log("createListenPanel: on a metered connection the remembered yes still
   const tapped = rig({ storage: { remembered: true }, connection: { saveData: true } });
   const tappedPanel = mount(tapped);
   await ableAbsent(tapped);
-  tapped.mark.yes.click();
+  tapped.mini.download.click();
   assert("with save-data on, the hover's yes is the reader's own: load on the click", tapped.said() === "load" && tapped.devices()[0]?.calls.join() === "resume");
   tappedPanel.dispose();
 }
@@ -948,61 +1006,118 @@ console.log("createListenPanel: a device that cannot run the voice says so at mo
   const r = rig();
   const panel = mount(r);
   r.emit({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } });
-  assert("unsupported: the mark, the reason on its sentence, Play off, the worker released", r.shownMark() === "unsupported | no ask | yes hidden | remember off" && r.line() === "Listen(off) | stop(off) | This device can't run the voice: this browser has no WebGPU" && r.counts.terminated === 1 && r.counts.listeners() === 0);
+  assert("unsupported: the mark, the reason on its sentence, Play off, the worker released", r.shownMark() === "unsupported | folded | note | remember off" && r.line() === "Listen(off) | stop(off) | This device can't run the voice: this browser has no WebGPU" && r.counts.terminated === 1 && r.counts.listeners() === 0);
   r.play.click();
-  r.mark.yes.click();
+  r.mini.download.click();
   r.check(true);
   panel.send({ kind: "mark", to: mark(1) });
   assert("no tap, yes, box or word spawns anything or opens a device on it", r.counts.spawned === 1 && r.devices().length === 0 && r.sent.length === 0 && r.line().startsWith("Listen(off)"));
   panel.dispose();
 }
 
-console.log("createListenPanel: the hover pins on a tap, and lets go on a tap outside or Escape");
+console.log("createListenPanel: the mini-player folds on the mark's tap, and stays out while the voice has a place");
 {
   const r = rig();
   const panel = mount(r);
-  const pinned = (): boolean => r.mark.root.dataset.open === "true" && r.mark.button.getAttribute("aria-expanded") === "true";
-  const unpinned = (): boolean => r.mark.root.dataset.open === "false" && r.mark.button.getAttribute("aria-expanded") === "false";
-  assert("closed at mount", unpinned());
+  const out = (): boolean => !r.mini.root.hidden && r.mark.button.getAttribute("aria-expanded") === "true";
+  const folded = (): boolean => r.mini.root.hidden && r.mark.button.getAttribute("aria-expanded") === "false";
+  assert("folded at mount", folded() && r.shownMark() === MOUNT_MARK);
   r.mark.button.click();
-  assert("a tap on the mark pins the hover open, for the touch reader", pinned() && r.shownMark().startsWith("checking(pinned)"));
+  assert("a tap on the mark brings the mini-player out, showing the voice on its way", out() && r.shownMark() === "checking | out | progress ? | remember off");
   r.mark.button.click();
-  assert("a second tap keeps it — a tap focuses the button first, and a toggle would close what the focus opened", pinned());
-  r.mark.sentence.click();
-  assert("a tap inside the hover leaves it pinned", pinned());
-  r.doc.body.click();
-  assert("a tap outside lets go", unpinned());
+  assert("a second tap folds it", folded());
+  await ableAbsent(r);
   r.mark.button.click();
-  r.press("Escape");
-  assert("Escape lets go", unpinned());
-  r.press("Enter");
-  assert("other keys do nothing", unpinned());
-  r.mark.button.focus();
-  assert("keyboard focus on the mark pins the hover, and says so to assistive tech", pinned());
-  r.mark.yes.hidden = false;
-  r.mark.yes.focus();
-  assert("focus moving inside the hover keeps it", pinned());
-  r.play.focus();
-  assert("focus leaving the mark lets go", unpinned());
+  assert("download needed: the question and its two answers, no controls", r.shownMark() === "download | out | ask Download speech model? · 239 MB | remember off" && r.mini.faces.controls.hidden && r.sent.length === 0);
+  r.mini.always.click();
+  assert("Always Download: the preference kept, the box in the panel checked, the load sent on the tap's device, the voice on its way", readPreference(r.store) && r.remember.checked && r.said() === "load" && r.devices().length === 1 && r.shownMark() === "warming | out | progress ? | remember on");
+  r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
+  assert("downloading: the fraction on the bar, the panel's sentence on the line", r.shownMark() === "downloading | out | progress 0.25 | remember on" && r.mini.progress.textContent === "Downloading the voice · 25% · 50 of 200 MB · estimating time left…");
+  r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
+  r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
+  r.emit({ kind: "script", id: SCRIPT_ID, units });
+  assert("the voice arrives on the yes alone: the controls, play, still out on the reader's word; a turn ahead, none behind", r.shownMark() === "ready | out | play | remember on" && r.mini.back.disabled && !r.mini.forward.disabled && r.mini.faces.consent.hidden);
+  r.mini.play.click();
+  assert("play from the mini-player: the voice speaks from the top, the face pause", r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.shownMark() === "speaking | out | pause | remember on");
+  r.mark.button.click();
+  assert("a tap on the mark while the voice speaks changes nothing the reader can see", out() && r.shownMark() === "speaking | out | pause | remember on");
+  r.mark.button.click();
+  assert("and a second tap is the same word, fold, not a flip back to out", out() && r.shownMark() === "speaking | out | pause | remember on");
+  r.mini.play.click();
+  assert("pause from the mini-player: the position kept, the face play, the mini-player out", r.line() === "Resume | stop | Paused · passage 1 of 2" && r.shownMark() === "paused | out | play | remember on");
+  r.stop.click();
+  assert("Stop: the voice has no place, and the reader's last word was to fold — so it folds", folded() && r.shownMark() === "ready | folded | play | remember on");
+  r.mark.button.click();
+  r.play.click();
+  r.stop.click();
+  assert("Stop with the reader's word 'out': it stays out", out() && r.shownMark() === "ready | out | play | remember on");
   panel.dispose();
 }
 
-console.log("createListenPanel: focus never rides a hidden element out to the body");
+console.log("createListenPanel: the mini-player's Download keeps nothing, and its skips move by turn");
 {
   const r = rig();
   const panel = mount(r);
   await ableAbsent(r);
-  r.mark.button.focus();
-  r.mark.yes.focus();
-  assert("the yes reached by keyboard holds focus in the pinned hover", r.doc.activeElement === r.mark.yes && r.mark.root.dataset.open === "true");
-  r.mark.yes.click();
-  assert("the yes activated: the load is sent, the yes hides, focus is on the mark's button, the hover still pinned", r.said() === "load" && r.mark.yes.hidden && r.doc.activeElement === r.mark.button && r.mark.root.dataset.open === "true");
-  r.press("Escape");
-  assert("Escape from the button closes the hover and leaves focus on the button", r.mark.root.dataset.open === "false" && r.doc.activeElement === r.mark.button);
-  r.mark.remember.focus();
-  assert("focus on the box pins the hover", r.doc.activeElement === r.mark.remember && r.mark.root.dataset.open === "true");
-  r.press("Escape");
-  assert("Escape with focus on the box: the hover closes and focus is on the mark's button", r.mark.root.dataset.open === "false" && r.doc.activeElement === r.mark.button);
+  r.mini.download.click();
+  assert("Download: the load sent on the tap, no preference kept, the box clear", r.said() === "load" && !readPreference(r.store) && !r.remember.checked && r.devices().length === 1);
+  r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
+  r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
+  r.emit({ kind: "script", id: SCRIPT_ID, units });
+  assert("on stage and idle, folded: a download is not a listen", panel.state().kind === "neural" && r.shownMark() === "ready | folded | play | remember off");
+  r.mini.forward.focus();
+  r.mini.forward.click();
+  assert("next turn from the top: the voice speaks from the second turn, the page told to follow, the mini-player out, nothing ahead", r.seeks() === 1 && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2" && r.shownMark() === "speaking | out | pause | remember off" && r.mini.forward.disabled && !r.mini.back.disabled);
+  assert("the skip that reached the end was disabled under the keyboard's focus: focus is on the mark's button, not the body", r.doc.activeElement === r.mark.button);
+  r.mini.back.click();
+  assert("previous turn from a turn's start: the turn before it", r.seeks() === 2 && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.mini.back.disabled && !r.mini.forward.disabled);
+  panel.dispose();
+}
+
+console.log("createListenPanel: Retry after a download-only yes is the yes again, never a Play");
+{
+  const r = rig();
+  const panel = mount(r);
+  await ableAbsent(r);
+  r.mark.button.click();
+  r.mini.download.click();
+  r.fail("the worker bundle failed to load");
+  assert("the download the reader said yes to fails: the note and its retry", r.shownMark() === "failed | out | note retry | remember off");
+  r.mini.retry.click();
+  const retried = panel.state();
+  assert("Retry spawns again and the word stays download: the voice will not speak unasked when it lands", r.counts.spawned === 2 && retried.kind === "provisioning" && retried.consent.given === "download");
+  panel.dispose();
+}
+
+console.log("createListenPanel: focus never rides a hidden face out to the body");
+{
+  const r = rig();
+  const panel = mount(r);
+  await ableAbsent(r);
+  r.mark.button.click();
+  r.mini.download.focus();
+  assert("the answer reached by keyboard holds focus", r.doc.activeElement === r.mini.download);
+  r.mini.download.click();
+  assert("the answer taken: its face hides, the load is sent, focus is on the mark's button", r.said() === "load" && r.mini.faces.consent.hidden && r.doc.activeElement === r.mark.button);
+  r.mark.button.click();
+  assert("folded from the button: focus stays on it", r.mini.root.hidden && r.doc.activeElement === r.mark.button);
+  panel.dispose();
+}
+
+console.log("createListenPanel: a failed voice offers its retry on the mini-player, and an unsupported one nothing");
+{
+  const r = rig();
+  const panel = mount(r);
+  r.mark.button.click();
+  r.play.click();
+  r.fail("the worker bundle failed to load");
+  assert("crashed: the note and its retry", r.shownMark() === "failed | out | note retry | remember off" && r.mini.note.textContent === "The voice failed: the worker bundle failed to load");
+  r.mini.retry.click();
+  assert("Retry from the mini-player: a worker is spawned again, the voice on its way", r.counts.spawned === 2 && r.shownMark() === "checking | out | progress ? | remember off");
+  const retriedState = panel.state();
+  assert("the crash lowered the reader's Play to download, and Retry keeps it there: a fresh voice, no unasked speech", retriedState.kind === "provisioning" && retriedState.consent.given === "download");
+  r.emit({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } });
+  assert("unsupported: the note alone, no retry to offer", r.shownMark() === "unsupported | out | note | remember off" && r.mini.note.textContent === "This device can't run the voice: this browser has no WebGPU");
   panel.dispose();
 }
 
@@ -1014,7 +1129,7 @@ console.log("createListenPanel: a page back from the cache wakes the panel it di
   assert("disposed: the worker released, at the start", r.counts.disposed === 1 && r.counts.listeners() === 0 && r.line() === IDLE_LINE);
   r.mark.button.click();
   panel.wake();
-  assert("wake: a worker is spawned to probe again, the store asked again, the hover closed as at mount", r.counts.spawned === 2 && r.counts.listeners() === 2 && r.line() === MOUNT_LINE && r.counts.homeAsked === 2 && r.mark.root.dataset.open === "false");
+  assert("wake: a worker is spawned to probe again, the store asked again, the mini-player as the reader left it", r.counts.spawned === 2 && r.counts.listeners() === 2 && r.line() === MOUNT_LINE && r.counts.homeAsked === 2 && !r.mini.root.hidden);
   panel.dispose();
 }
 
