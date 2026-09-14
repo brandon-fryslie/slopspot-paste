@@ -3,7 +3,7 @@
 // the text a point on the page is. One sentence, no "and" hiding a second job: this module
 // translates between utterance-text coordinates and the rendered card, both ways. It
 // decides nothing about WHAT is said (speech.ts), WHERE playback is (the performers) or
-// WHICH cursor to paint (speechManifest.cursorAt) — it is handed an utterance, its
+// WHICH cursor to paint (timeline.spotAt) — it is handed an utterance, its
 // turn-mates and a cursor, and paints; it is handed a caret, and names a mark.
 //
 // WHY A WORD MAP EXISTS AT ALL. An utterance is derived from the stored dialogue with the

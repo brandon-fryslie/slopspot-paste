@@ -2,9 +2,9 @@
 // behind the seam the panel drives. One sentence, no "and": this module answers the
 // performer's verbs and reports the performer's position for the neural pipeline. It
 // decides nothing about what to synthesize (scheduler.ts), plays nothing itself
-// (unitPlayer.ts) and paints nothing; it translates between the page's coordinates — an
-// utterance index, a span of the utterance's text — and the pipeline's — a unit index, an
-// offset into the unit's audio.
+// (unitPlayer.ts) and paints nothing; it translates between the conversation's clock — a
+// time on the timeline — and the pipeline's — a unit index, an offset into the unit's
+// audio.
 //
 // [LAW:parse-dont-validate] The translation rests on one table, `utteranceOf`, built once
 // at the door from the page's utterances and the worker's script: for each unit, the index
@@ -16,28 +16,43 @@
 // rather than seeked through by a table that lies [LAW:no-silent-failure].
 //
 // [LAW:one-source-of-truth] The position is the unit player's, read from the audio clock on
-// every call; the cursor is the manifest's when the unit has a record and the unit's own
-// span with no word while it is still being synthesized. A seek to a mark is the same
-// table read the other way — `positionOf`: the unit of that utterance holding the
-// character, and the time its word begins when the unit has a record, its start when it
-// does not. The table is delivered with every view, so a reader of the view (the panel's
-// status line, naming a failed unit's passage) needs no second copy.
+// every call, and the timeline is built from the scheduler's manifest — one speech leg per
+// unit, in unit order, with the gap between speakers laid as a silence leg of the
+// timeline's own between them — so the two conversions below are one array read in each
+// direction over `units`, the speech legs by unit. The gap is the timeline's, not any
+// unit's: a player position is always inside a unit's audio and reads as a time inside
+// that unit's leg; a time inside a gap seeks to the first sample of the unit that follows
+// the gap, the same rule `markAt` names a place in silence by. Two caps keep the clock
+// honest: the player's offset reads no further than the unit's leg, since while a unit
+// streams its leg is still the estimate the clock is laid on; and a seek lands no further
+// into a leg than has been heard — its length when measured, its start when a guess — the
+// rule `timeAt` applies to a mark, stated once there and once here [LAW:single-enforcer].
+// The timeline and its unit legs are delivered with every view, cut once per manifest, so
+// a reader of the view — the panel's cursor, its scrubber, its status line — never builds a
+// second one and the per-frame read is one array index.
+//
+// The player does not yet sound the gap: it plays units back to back, so at a change of
+// speaker the clock steps over the silence leg the moment the next unit's audio begins.
+// Sounding the gap is the player's work to come, as a stretch of the schedule in its own
+// right — never as a lead owned by the unit after it.
 //
 // [LAW:no-ambient-temporal-coupling] A disposed performer says nothing more: the view the
 // released scheduler raises from its own dispose never reaches the caller.
 
-import { charIn, type Mark, type Performer, type PerformerEvent, type PerformerState, type Spot } from "./performer";
+import type { Performer, PerformerEvent } from "./performer";
 import { createScheduler, type SchedulerView } from "./scheduler";
 import type { Utterance } from "./speech";
-import { cursorAt, offsetAt, unitSpan, type Manifest, type Position } from "./speechManifest";
+import type { Position } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
+import { speechLegs, timelineOfScript, type SpeechLeg, type Timeline } from "./timeline";
 import { createUnitPlayer, type OpenDevice } from "./unitPlayer";
 
-// The scheduler's view with the table attached: for each unit of the script, the index
-// of the page utterance it says.
+// The scheduler's view with the conversation's clock attached, built over its manifest,
+// and the clock's speech legs by unit: the one table both conversions read.
 export interface NeuralView extends SchedulerView {
-  readonly utteranceOf: ReadonlyArray<number>;
+  readonly timeline: Timeline;
+  readonly units: ReadonlyArray<SpeechLeg>;
 }
 
 // Passages are utterances: the script holds each utterance by reference across its
@@ -68,36 +83,49 @@ export const utteranceTable = (utterances: ReadonlyArray<Utterance>, script: Rea
   });
 };
 
-// Where the neural voice is, in the page's coordinates: nothing while idle; otherwise the
-// utterance under the player and the cursor to paint — the manifest's when the unit has a
-// record, the unit's whole span and no word while it is still being synthesized.
-export const spotOf = (view: NeuralView): PerformerState => {
-  const { player } = view;
-  if (player.kind === "idle") return { kind: "idle" };
-  const { unitIndex, offsetMs } = player.at;
-  const unit = view.manifest.script[unitIndex];
-  const utterance = view.utteranceOf[unitIndex];
-  if (unit === undefined || utterance === undefined) {
-    throw new Error(`neural performer: the player is at unit ${unitIndex} of ${view.manifest.script.length}`);
-  }
-  const record = view.manifest.units[unitIndex];
-  const at: Spot = { utterance, ...(record === undefined ? { segment: unitSpan(unit), word: null } : cursorAt(record, offsetMs)) };
-  return { kind: player.kind, at };
+// The leg a pipeline position is in. A unit the timeline has no leg for is a player built
+// over another script and throws [LAW:no-silent-failure].
+const legOf = (units: ReadonlyArray<SpeechLeg>, at: Position): SpeechLeg => {
+  const leg = units[at.unitIndex];
+  if (leg === undefined) throw new RangeError(`neural performer: the player is at unit ${at.unitIndex} of ${units.length}`);
+  return leg;
 };
 
-// The pipeline position a mark seeks to: among the units that say the mark's utterance
-// (contiguous, and never empty — every utterance has one), the last whose text begins at
-// or before the character, else the first; and within it, the time the word holding the
-// character begins when the unit is recorded, its start when it is not. A mark naming an
-// utterance the page does not have is a caller bug and throws [LAW:no-silent-failure].
-export const positionOf = (manifest: Manifest, utteranceOf: ReadonlyArray<number>, mark: Mark): Position => {
-  const saying = manifest.script.flatMap((unit, unitIndex) => (utteranceOf[unitIndex] === mark.utterance ? [{ unit, unitIndex }] : []));
-  const first = saying[0];
-  if (first === undefined) throw new RangeError(`neural performer: cannot seek to utterance ${mark.utterance}`);
-  const char = charIn(first.unit.utterance.text, mark);
-  const { unitIndex } = saying.findLast(({ unit }) => unit.start <= char) ?? first;
-  const record = manifest.units[unitIndex];
-  return { unitIndex, offsetMs: record === undefined ? 0 : offsetAt(record, char) };
+// Where an offset into a leg falls on the conversation's clock: the leg's start plus the
+// offset, read no further than the leg — a unit streaming past its guessed length holds
+// the clock at the leg's end until its record recuts the timeline.
+const timeIn = (leg: SpeechLeg, offsetMs: number): number => leg.startMs + Math.min(offsetMs, leg.ms);
+
+// Where the pipeline's position falls on the conversation's clock.
+export const timeOf = (units: ReadonlyArray<SpeechLeg>, at: Position): number => timeIn(legOf(units, at), at.offsetMs);
+
+// The pipeline position a time seeks to: the first unit whose leg has not ended by then —
+// inside a unit, that unit; inside a gap, the unit the gap precedes, at its first sample —
+// and the time past that leg's start, never below zero and no further into the leg than
+// has been heard. Before the top is the first unit's start; past the end is the last
+// unit's end; a timeline with no legs has no unit to seek and throws.
+export const positionAt = (units: ReadonlyArray<SpeechLeg>, ms: number): Position => {
+  const found = units.findIndex((leg) => leg.startMs + leg.ms > ms);
+  const unitIndex = found < 0 ? units.length - 1 : found;
+  const leg = units[unitIndex];
+  if (leg === undefined) throw new RangeError("neural performer: nothing to seek in a script with no units");
+  const heard = leg.content.alignment === null ? 0 : leg.ms;
+  return { unitIndex, offsetMs: Math.min(Math.max(ms - leg.startMs, 0), heard) };
+};
+
+// [LAW:types-are-the-program] The performer's state with the leg the voice is in, which
+// the player's unit index names outright. A time alone is a lossy projection of it: read
+// back through the timeline it names a neighbour while a unit streams past its guessed
+// length, and costs a scan over every leg for what an index already said.
+export type NeuralState = { readonly kind: "idle" } | { readonly kind: "speaking" | "paused"; readonly atMs: number; readonly leg: SpeechLeg };
+
+// Where the neural voice is, on the conversation's clock and in which leg: nothing while
+// idle.
+export const stateOf = (view: NeuralView): NeuralState => {
+  const { player } = view;
+  if (player.kind === "idle") return { kind: "idle" };
+  const leg = legOf(view.units, player.at);
+  return { kind: player.kind, atMs: timeIn(leg, player.at.offsetMs), leg };
 };
 
 export interface NeuralPerformerConfig {
@@ -112,6 +140,7 @@ export interface NeuralPerformerConfig {
 }
 
 export interface NeuralPerformer extends Performer {
+  readonly state: () => NeuralState;
   readonly view: () => NeuralView;
   // The reader's voices from now on; the scheduler remakes the units of a changed voice.
   readonly voices: (voices: VoiceMap) => void;
@@ -119,7 +148,17 @@ export interface NeuralPerformer extends Performer {
 
 export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerformer => {
   const utteranceOf = utteranceTable(config.utterances, config.script);
-  const withTable = (view: SchedulerView): NeuralView => ({ ...view, utteranceOf });
+  // [LAW:one-source-of-truth] The clock is a projection of the manifest, rebuilt exactly
+  // when the manifest is replaced — the scheduler replaces it on every record — and read
+  // back otherwise: one owner, one key.
+  let clock: { readonly manifest: SchedulerView["manifest"]; readonly timeline: Timeline; readonly units: ReadonlyArray<SpeechLeg> } | null = null;
+  const withClock = (view: SchedulerView): NeuralView => {
+    if (clock === null || clock.manifest !== view.manifest) {
+      const timeline = timelineOfScript(view.manifest, utteranceOf);
+      clock = { manifest: view.manifest, timeline, units: speechLegs(timeline) };
+    }
+    return { ...view, timeline: clock.timeline, units: clock.units };
+  };
   // [LAW:no-shared-mutable-globals] The performer's one lifecycle fact, owned here.
   let disposed = false;
 
@@ -129,19 +168,19 @@ export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerf
     voices: config.voices,
     player: (playerConfig) => createUnitPlayer({ ...playerConfig, device: config.device }),
     onChange: (view) => {
-      if (!disposed) config.onChange(withTable(view));
+      if (!disposed) config.onChange(withClock(view));
     },
   });
 
-  const view = (): NeuralView => withTable(scheduler.view());
+  const view = (): NeuralView => withClock(scheduler.view());
 
   const send = (event: PerformerEvent): void =>
-    scheduler.send(event.kind === "seek" ? { kind: "seek", to: positionOf(scheduler.view().manifest, utteranceOf, event.to) } : event);
+    scheduler.send(event.kind === "seek" ? { kind: "seek", to: positionAt(view().units, event.toMs) } : event);
 
   return {
     send,
     voices: scheduler.voices,
-    state: () => spotOf(view()),
+    state: () => stateOf(view()),
     view,
     dispose: () => {
       disposed = true;

@@ -18,7 +18,7 @@
 //
 // WHY PRECISION IS A KIND. Only `words` is a measurement. `unit` says the model gave no
 // per-word signal; `estimated` carries times interpolated by character length, a guess
-// typed as one. `cursorAt` hands out a word for `words` alone and no word otherwise, so a
+// typed as one. `wordUnder` hands out a word for `words` alone and no word otherwise, so a
 // guess can never be painted as a measurement [LAW:no-silent-failure]. The other
 // direction, `offsetAt` — where in the audio a character of the text falls, for a reader
 // who taps a word — reads the estimate too: a seek that lands a word early is a better
@@ -200,8 +200,9 @@ export const addUnit = (manifest: Manifest, index: number, report: UnitReport): 
 
 // ── position math ───────────────────────────────────────────────────────────────────
 
-// Where playback is: a unit and how far into its audio. The player derives it from the
-// audio clock; everything else reads it.
+// Where playback is, in the pipeline's own coordinates: a unit and how far into its audio.
+// The player derives it from the audio clock; the neural performer turns it into a time on
+// the conversation's timeline, which is what everything else reads.
 export interface Position {
   readonly unitIndex: number;
   readonly offsetMs: number;
@@ -218,25 +219,25 @@ export const wordAt = (words: ReadonlyArray<WordTime>, offsetMs: number): WordTi
   words.findLast((word) => word.startMs <= offsetMs);
 
 // What to highlight at a position, in utterance-text coordinates: the segment the voice
-// is inside — the unit's own span — and the word it is on, or null when no word may be
-// claimed: an alignment that is not a measurement, or a position before the first word
-// has begun [LAW:types-are-the-program]. The two are the two tiers the page paints.
+// is inside and the word it is on, or null when no word may be claimed: an alignment
+// that is not a measurement, or a position before the first word has begun
+// [LAW:types-are-the-program]. The two are the two tiers the page paints; the timeline
+// supplies the segment (its leg's characters) and asks `wordUnder` for the word.
 export interface Cursor {
   readonly segment: WordSpan;
   readonly word: WordSpan | null;
 }
 
-export const unitSpan = (unit: SynthesisUnit): WordSpan => ({ charStart: unit.start, charEnd: unit.end });
-
-export const cursorAt = (record: ManifestUnit, offsetMs: number): Cursor => {
-  const segment = unitSpan(record.unit);
-  if (record.alignment.kind !== "words") return { segment, word: null };
-  const word = wordAt(record.alignment.words, offsetMs);
-  return { segment, word: word === undefined ? null : { charStart: word.charStart, charEnd: word.charEnd } };
+// The word under a point in a unit's audio, when the alignment is a measurement; null for
+// an estimate or a unit with no word times, so a guess is never painted as a measurement.
+export const wordUnder = (alignment: Alignment, offsetMs: number): WordSpan | null => {
+  if (alignment.kind !== "words") return null;
+  const word = wordAt(alignment.words, offsetMs);
+  return word === undefined ? null : { charStart: word.charStart, charEnd: word.charEnd };
 };
 
 // The reverse: how far into the unit's audio the word holding `char` (or the last word
 // begun before it) starts — the offset a tap on that character seeks to. Zero before the
 // first word, and zero for a `unit` alignment, which has no word times at all.
-export const offsetAt = (record: ManifestUnit, char: number): number =>
-  record.alignment.kind === "unit" ? 0 : (record.alignment.words.findLast((word) => word.charStart <= char)?.startMs ?? 0);
+export const offsetAt = (alignment: Alignment, char: number): number =>
+  alignment.kind === "unit" ? 0 : (alignment.words.findLast((word) => word.charStart <= char)?.startMs ?? 0);
