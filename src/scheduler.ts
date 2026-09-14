@@ -444,9 +444,11 @@ export interface SchedulerConfig {
   readonly port: SynthesisPort;
   readonly script: ReadonlyArray<SynthesisUnit>;
   readonly voices: VoiceMap;
-  // Builds the player over the device the caller chooses; the scheduler supplies the unit
-  // count and the report callback, so the two can never disagree about the script.
-  readonly player: (config: Pick<UnitPlayerConfig, "unitCount" | "onState">) => UnitPlayer;
+  // Builds the player over the device and the lead-in silences the caller chooses — both
+  // the neural performer's, built over the same script as this scheduler's holdings — and
+  // the report callback the scheduler supplies. A unit the player was not built for is
+  // refused at its door, per delivery, never played as another [LAW:no-silent-failure].
+  readonly player: (config: Pick<UnitPlayerConfig, "onState">) => UnitPlayer;
   // Called after every event that changed what is held or where the player is.
   readonly onChange: (view: SchedulerView) => void;
 }
@@ -468,7 +470,7 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
   const queue: Event[] = [];
   let draining = false;
 
-  const player = config.player({ unitCount: config.script.length, onState: (reported) => dispatch({ kind: "player", state: reported }) });
+  const player = config.player({ onState: (reported) => dispatch({ kind: "player", state: reported }) });
 
   const view = (): SchedulerView => ({ player: player.state(), manifest: state.manifest, holdings: state.holdings });
 

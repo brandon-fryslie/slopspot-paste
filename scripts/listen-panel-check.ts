@@ -23,7 +23,7 @@ import {
   markForm,
   readout,
   SCRIPT_ID,
-  step,
+  step as stepOn,
   type MarkForm,
   type PanelEvent,
   type PanelState,
@@ -37,6 +37,7 @@ import type { Mark, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
+import { timeAt, timelineOfScript } from "../src/timeline";
 import type { SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
@@ -77,6 +78,8 @@ const units: SynthesisUnit[] = ((): SynthesisUnit[] => {
   return [unit(a, 0, 20), unit(a, 21, 42), unit(b, 0, 8)];
 })();
 const table = utteranceTable(utterances, units);
+// The pure step over this page: every state's answer to every event.
+const step = (state: PanelState, event: PanelEvent): ReturnType<typeof stepOn> => stepOn(state, event, utterances);
 
 // Worker messages arrive at the check's own time: zero unless a case reads the pace.
 const worker = (message: FromWorker, at = 0): PanelEvent => ({ kind: "worker", message, at });
@@ -85,7 +88,9 @@ const tapStop: PanelEvent = { kind: "tap", control: "stop" };
 const progress = (loadedBytes: number, totalBytes: number, at = 0): PanelEvent => worker({ kind: "progress", progress: { loadedBytes, totalBytes } }, at);
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 const mark = (utterance: number, char = 0): Mark => ({ utterance, char });
-const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to: mark(utterance, char) });
+const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to: { kind: "mark", mark: mark(utterance, char) } });
+// Where a mark falls on the voice's clock before anything is measured, as the effect prints it.
+const atMs = (utterance: number, char = 0): string => `${Math.round(timeAt(timelineOfScript(emptyManifest(units), table), mark(utterance, char)))}ms`;
 const supported: PanelEvent = worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
 const ready: PanelEvent = worker({ kind: "ready", backend: "webgpu", modelVersion: "v" });
 const scriptBack: PanelEvent = worker({ kind: "script", id: SCRIPT_ID, units });
@@ -94,14 +99,14 @@ const viewOf = (player: NeuralView["player"]): NeuralView => ({
   player,
   manifest: emptyManifest(units),
   holdings: units.map(() => ({ kind: "absent" })),
-  utteranceOf: table,
+  timeline: timelineOfScript(emptyManifest(units), table),
 });
 
 const effects = (s: ReturnType<typeof step>): string =>
   s.effects
     .map((e) =>
       e.kind === "perform"
-        ? `perform ${e.event.kind}${e.event.kind === "seek" ? ` ${e.event.to.utterance}:${e.event.to.char}` : ""}`
+        ? `perform ${e.event.kind}${e.event.kind === "seek" ? ` ${Math.round(e.event.toMs)}ms` : ""}`
         : e.kind === "release"
           ? `release ${e.worker}`
           : e.kind,
@@ -184,8 +189,8 @@ console.log("step: the way to audio");
   throws("a script reply with another id is not ours", () => step(scripting.state, worker({ kind: "script", id: 7, units })));
 
   const listening = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("the performer's first view puts the voice on stage and sends it to the top: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "perform rate,perform seek 0:0" && shown(listening.state) === "Listen | stop(off) | Ready");
-  assert("a seek on stage hushes any preview, then seeks the voice", effects(step(listening.state, seekTo(1, 3))) === "hush,perform seek 1:3");
+  assert("the performer's first view puts the voice on stage and sends it to the top: the tap was the consent", listening.state.kind === "neural" && effects(listening) === "perform rate,perform seek 0ms" && shown(listening.state) === "Listen | stop(off) | Ready");
+  assert("a seek on stage hushes any preview, then seeks the voice to the mark's time: an unmeasured passage's start", effects(step(listening.state, seekTo(1, 3))) === `hush,perform seek ${atMs(1)}`);
 
   // Speed is the panel's own value, not a performer's: set before any performer exists,
   // obeyed by the one that arrives, and outliving a crash and a teardown.
@@ -221,7 +226,7 @@ console.log("step: the way to audio");
   const arriving = [supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, tappedTwice.state);
   assert("the place is held through the whole way to audio", held(arriving) === "0:21");
   const arrivedAtPlace = step(arriving, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("the voice arriving after a tap is sent to the tapped place", effects(arrivedAtPlace) === "perform rate,perform seek 0:21" && arrivedAtPlace.state.kind === "neural");
+  assert("the voice arriving after a tap is sent to the tapped place", effects(arrivedAtPlace) === `perform rate,perform seek ${atMs(0, 21)}` && arrivedAtPlace.state.kind === "neural");
 
   const crashed = step(downloading.state, { kind: "worker-error", message: "the worker bundle failed to load" });
   assert("a worker error while downloading: crashed, everything released, Play reads Retry", effects(crashed) === "release terminate,home" && shown(crashed.state) === "Retry | stop(off) | The voice failed: the worker bundle failed to load");
@@ -270,7 +275,7 @@ console.log("step: consent is the only door to the weights");
   const standingReady = step(arrivedReady, { kind: "view", view: viewOf({ kind: "idle" }) });
   assert("a voice that arrives on a download alone takes the stage and stands ready: no seek, nothing spoken", standingReady.state.kind === "neural" && effects(standingReady) === "perform rate" && shown(standingReady.state) === "Listen | stop(off) | Ready");
   const arrivedSpeaking = [progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, raised.state);
-  assert("a voice that arrives after the consent was raised is sent to its place", effects(step(arrivedSpeaking, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0:0");
+  assert("a voice that arrives after the consent was raised is sent to its place", effects(step(arrivedSpeaking, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0ms");
 
   const yesFirst = step(idle, yes);
   assert("the hover's yes before the probe: the gesture spent and the worker spawned", effects(yesFirst) === "unlock,spawn" && shown(yesFirst.state) === MOUNT_LINE);
@@ -292,7 +297,7 @@ console.log("step: consent is the only door to the weights");
   assert("a wake with the yes withdrawn — the box unchecked, the connection metered — probes and waits", effects(withdrawn) === "" && shown(withdrawn.state) === IDLE_LINE);
   const idleOnStage = step(standingReady.state, { kind: "worker-error", message: "x" });
   const idleRetried = [tapPlay, supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
-  assert("a crash on stage while idle, then Retry: the tap is the consent, the voice arrives and speaks", effects(step(idleRetried, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0:0");
+  assert("a crash on stage while idle, then Retry: the tap is the consent, the voice arrives and speaks", effects(step(idleRetried, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0ms");
   const idleRewoken = [wake("download"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
   assert("a crash on stage while idle, then a wake: the voice comes back standing ready, not speaking", effects(step(idleRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate");
   // A failed load is retried on the consent still held: the standing yes while it stands, the
@@ -831,7 +836,11 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   device.advance(SCHEDULE_LEAD_S + 2 * FRAME_S + 0.01);
   assert("crossing into unit 1: still passage 1, the cursor on unit 1's span", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.where() === "t1 21-42 of 1");
   device.advance(FRAME_S);
-  assert("crossing into unit 2: passage 2, another turn, its own span", r.line() === "Pause | stop | Playing · passage 2 of 2" && r.where() === "t2 0-8 of 1");
+  r.frames.tick();
+  assert("unit 1 ends into the gap before the second turn: on the next frame nothing is painted", r.where() === "silent" && r.frames.pending === 1);
+  device.advance(0.5);
+  r.frames.tick();
+  assert("crossing into unit 2 past the gap: another turn, its own span", r.where() === "t2 0-8 of 1");
   const before = r.positions.length;
   r.frames.tick();
   assert("a frame with the cursor unmoved reports nothing new", r.positions.length === before && r.frames.pending === 1);
@@ -885,8 +894,8 @@ console.log("createListenPanel: the transport skips turns and steps the speed, a
   assert("mounting and arriving named no place: nothing has asked to follow yet", r.seeks() === 0);
 
   r.forward.click();
-  assert("forward skips to the second turn, and the page is told to follow", r.where() === "t2 0-8 of 1" && r.seeks() === 1);
-  assert("standing at the last turn: forward has nothing left, back does", r.forward.disabled && !r.back.disabled);
+  assert("forward lands at the start of the gap before the second turn — silence, nothing painted — and the page is told to follow", r.where() === "silent" && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2" && r.seeks() === 1);
+  assert("standing at the last gap: forward has nothing left, back does", r.forward.disabled && !r.back.disabled);
 
   r.back.click();
   assert("back returns to the first turn, and follows again", r.where() === "t1 0-20 of 1" && r.seeks() === 2);
@@ -1160,7 +1169,7 @@ console.log("createListenPanel: a crash mid-passage keeps the place, and Retry r
   r.devices()[0]?.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
   assert("playing the second unit of passage 1", r.where() === "t1 21-42 of 1");
   r.fail("boom");
-  assert("the crash keeps the reported place: passage 1's second unit", r.devices()[0]?.calls.at(-1) === "close" && held(panel.state()) === "0:21" && r.line() === "Retry | stop(off) | The voice failed: boom");
+  assert("the crash keeps the reported place by name: the character under the clock in passage 1's second unit", r.devices()[0]?.calls.at(-1) === "close" && held(panel.state()) === "0:23" && r.line() === "Retry | stop(off) | The voice failed: boom");
   r.play.click();
   arrive(r);
   assert("Retry: the voice arrives back where it fell, on a fresh device", r.devices().length === 2 && r.said().endsWith("synthesize 1") && r.where() === "t1 21-42 of 1");

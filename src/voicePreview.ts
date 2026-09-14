@@ -161,7 +161,7 @@ export const createPreviewer = (config: PreviewerConfig): Previewer => {
   const playerOf = (unitId: number): UnitPlayer => {
     const held = players.get(unitId);
     if (held !== undefined) return held;
-    const built = createUnitPlayer({ device: device(), unitCount: 1, onState: (reported) => dispatch({ kind: "player", unitId, state: reported }) });
+    const built = createUnitPlayer({ device: device(), leads: [0], onState: (reported) => dispatch({ kind: "player", unitId, state: reported }) });
     players.set(unitId, built);
     return built;
   };
