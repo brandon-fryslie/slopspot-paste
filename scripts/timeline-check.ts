@@ -171,6 +171,21 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
     const spot = cursorAt(worded, 150);
     return spot?.utterance === 0 && spot.range.charStart === 0 && spot.range.charEnd === 20 && spot.word?.charStart === 6 && spot.word.charEnd === 14;
   })());
+
+  // A measured unit whose voice draws breath before its first word and trails off after its
+  // last (slopspot-read-along-a35.iey). Painted frame by frame, no frame may fall back to
+  // the whole sentence group: a word-less cursor on a measured unit is that fallback.
+  const breathing = addUnit(emptyManifest(script), 0, {
+    durationMs: 600,
+    alignment: { kind: "words", times: [{ startMs: 180, endMs: 260 }, { startMs: 260, endMs: 380 }, { startMs: 380, endMs: 440 }] },
+  });
+  if (breathing.kind !== "added") throw new Error("fixture: the breathing words report was rejected");
+  const breathed = timelineOfScript(breathing.manifest, utteranceOf);
+  const frames = Array.from({ length: Math.floor(600 / 16) + 1 }, (_, i) => i * 16);
+  const cursors = frames.map((ms) => cursorAt(breathed, ms));
+  assert("a measured unit with leading and trailing silence paints a word on every frame, never the whole unit alone", cursors.every((spot) => spot !== null && spot.word !== null));
+  assert("through the leading silence the cursor waits on the first word", cursors.slice(0, 12).every((spot) => spot?.word?.charStart === 0 && spot.word.charEnd === 5));
+  assert("through the trailing silence the cursor holds the last word", cursors.slice(28).every((spot) => spot?.word?.charStart === 15 && spot.word.charEnd === 20));
 }
 
 // ── what a time names and paints ──────────────────────────────────────────────────────

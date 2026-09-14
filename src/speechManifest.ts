@@ -200,13 +200,16 @@ export const addUnit = (manifest: Manifest, index: number, report: UnitReport): 
 
 // ── the cursor ──────────────────────────────────────────────────────────────────────
 
-// The last word that has started by `offsetMs`: a read-along cursor stays on the word
-// just said through the silence before the next, and there is none before the first word
-// has begun. `endMs` is data for whoever wants the gap itself. A scan, not a search: a
-// unit holds at most MAX_UNIT_TOKENS tokens, so this is a few dozen comparisons per
-// animation frame at the very most.
+// The word a read-along cursor stands on at `offsetMs`: the last word that has started,
+// so it stays on the word just said through the silence before the next and after the
+// last; and through the unit's leading silence, the word about to be said. Every offset of
+// a unit with words is on one of them, so a measured unit never falls back to painting its
+// whole sentence group between frames; only a unit with no words at all has none. `endMs`
+// is data for whoever wants the gap itself. A scan, not a search: a unit holds at most
+// MAX_UNIT_TOKENS tokens, so this is a few dozen comparisons per animation frame at the
+// very most.
 export const wordAt = (words: ReadonlyArray<WordTime>, offsetMs: number): WordTime | undefined =>
-  words.findLast((word) => word.startMs <= offsetMs);
+  words.findLast((word) => word.startMs <= offsetMs) ?? words[0];
 
 // The word under a point in a unit's audio, in utterance-text coordinates, when the
 // alignment is a measurement; null for an estimate or a unit with no word times, so a guess
