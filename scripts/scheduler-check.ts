@@ -402,7 +402,7 @@ console.log("driver: a voice change mid-unit restarts it in the new voice, over 
     port,
     script: scriptOf(4),
     voices: VOICES,
-    player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice) }),
+    player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice), leads: scriptOf(4).map(() => 0) }),
     onChange: () => undefined,
   });
   const device = StubDevice.instances.at(-1);
@@ -449,7 +449,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
     port,
     script,
     voices: VOICES,
-    player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice) }),
+    player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice), leads: script.map(() => 0) }),
     onChange: (view) => views.push(view),
   });
   const device = StubDevice.instances.at(-1);

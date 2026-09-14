@@ -65,11 +65,16 @@
 // unrepresentable [LAW:no-silent-failure].
 //
 // WHAT THE PANEL MIRRORS. The `neural` arm carries the scheduler's view — player position,
-// manifest, holdings — as delivered by its onChange, and the voice a preview is sounding as
-// delivered by the previewer's; the panel never computes a second opinion of either
-// [LAW:one-source-of-truth]. The read-along cursor is derived from the performer's live
-// `state()` on every animation frame while speaking: within an utterance the position
-// moves with no event.
+// manifest, holdings, and the conversation's timeline built over them — as delivered by
+// its onChange, and the voice a preview is sounding as delivered by the previewer's; the
+// panel never computes a second opinion of either [LAW:one-source-of-truth]. Position is
+// one number, a time on that timeline, read live from the performer on every animation
+// frame while speaking; the read-along cursor, the scrubber, the status line's passage
+// and the turn skips are each that number put to the timeline, so a time inside the gap
+// between speakers paints nothing, shows on the scrubber, and names the passage about to
+// begin, with no second shape of position anywhere. A Mark — the word a tap named, the
+// place kept for a voice on its way — is the durable NAME of a place, resolved to a time
+// on the timeline of the moment it is used.
 //
 // THE VOICES. Which voice speaks for the reader and which for Claude is the device's pick
 // (voiceChoice.ts): read from storage at every render, like the download preference, and
@@ -93,8 +98,8 @@ import { standingConsent, type StandingConsent } from "./listenConsent";
 import { downloadNeedsTap, type ConnectionReading, type VoiceId } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
-import { createNeuralPerformer, spotOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
-import { markOf, NORMAL, stepSpeed, TOP, type Mark, type PerformerEvent, type PerformerState, type Speed, type Spot } from "./performer";
+import { createNeuralPerformer, stateOf, type NeuralPerformer, type NeuralView } from "./neuralPerformer";
+import { NORMAL, stepSpeed, TOP, type Mark, type PerformerEvent, type PerformerState, type Speed } from "./performer";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
@@ -102,7 +107,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
-import { clockText, estimated, markAt, timeAt, timelineOfScript, timelineOfUtterances, turnMark, turnStarts, type Timeline } from "./timeline";
+import { clockText, estimated, landmark, landmarks, markAt, spotAt, timeAt, timelineOfUtterances, type Spot, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
 import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
@@ -178,8 +183,8 @@ export type Tap = "play" | "stop";
 // closed set of values rather than a method each: the two buttons, a tap on a word, the
 // scrubber, the ten-second nudges, the turn skips, the speed steps. A key press is one of
 // these (shortcuts.ts) and so is a click, so nothing downstream can tell which door a
-// gesture came through. The three that name a place in TIME are resolved to a Mark by the
-// driver, where the timeline is: a scrubber never names a unit index.
+// gesture came through. The four that move are resolved to a `Target` by the driver,
+// where the timeline is: a scrubber never names a unit index.
 export type Gesture =
   | { readonly kind: "tap"; readonly control: Tap }
   | { readonly kind: "mark"; readonly to: Mark }
@@ -204,11 +209,17 @@ const moves = (gesture: Gesture): boolean => {
   }
 };
 
+// A place the reader asked for: by its durable name — the word a tap landed on, kept as
+// it was named so it resolves to that word's own time on whatever timeline is current when
+// it is used — or by a time on the timeline showing at the moment of the ask, which is
+// what the scrubber, a nudge and a turn skip name, and the only way to name the start of a
+// gap [LAW:types-are-the-program].
+export type Target = { readonly kind: "mark"; readonly mark: Mark } | { readonly kind: "time"; readonly ms: number };
+
 export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
-  // The reader named a place — a tap on a word, the scrubber, a nudge, a turn skip — and
-  // the driver resolved it to the one coordinate the performer stands in.
-  | { readonly kind: "seek"; readonly to: Mark }
+  // The reader named a place — a tap on a word, the scrubber, a nudge, a turn skip.
+  | { readonly kind: "seek"; readonly to: Target }
   // One step along the speed list, in whichever direction.
   | { readonly kind: "speed"; readonly by: -1 | 1 }
   // The mini-player's yes: a gesture that consents to the download and no more.
@@ -354,15 +365,27 @@ const tap = (state: PanelState, control: Tap): Step => {
   }
 };
 
-// A tap on a place: the voice on stage seeks there; the voice on its way is started as a
-// Play tap starts it, and the place is kept for its arrival.
-const seek = (state: PanelState, to: Mark): Step => {
+// [LAW:single-enforcer] The one resolution of a target to a time, on the timeline given.
+const timeOfTarget = (line: Timeline, to: Target): number => (to.kind === "mark" ? timeAt(line, to.mark) : to.ms);
+
+// The one place a target becomes a durable name: its mark as given, or the name of the
+// place at its time on the timeline given. Null on a conversation with nothing to say,
+// which has no place to name.
+const nameOfTarget = (line: Timeline, to: Target): Mark | null => (to.kind === "mark" ? to.mark : markAt(line, to.ms));
+
+// A seek to a place: the voice on stage seeks to its time on the voice's own timeline;
+// the voice on its way is started as a Play tap starts it, and the place's name is kept
+// for its arrival, when it resolves to a time on the timeline the voice brings.
+const seek = (state: PanelState, to: Target, utterances: ReadonlyArray<Utterance>): Step => {
   switch (state.kind) {
     case "neural":
-      return { state, effects: [HUSH, perform({ kind: "seek", to })] };
+      return { state, effects: [HUSH, perform({ kind: "seek", toMs: timeOfTarget(state.view.timeline, to) })] };
     case "provisioning": {
+      // A conversation with nothing to say has nowhere to keep: the gesture names nothing.
+      const from = nameOfTarget(timelineOfUtterances(utterances), to);
+      if (from === null) return stay(state);
       const kicked = gesture(state, "play");
-      return { state: { ...kicked.state, from: to }, effects: kicked.effects };
+      return { state: { ...kicked.state, from }, effects: kicked.effects };
     }
   }
 };
@@ -453,13 +476,22 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
   }
 };
 
+// The name of the place at a time on a timeline that has one: a voice that is somewhere
+// is on a conversation with something to say.
+const nameAt = (line: Timeline, ms: number): Mark => {
+  const named = markAt(line, ms);
+  if (named === null) throw new Error("listen panel: the voice is somewhere on a conversation with nothing to say");
+  return named;
+};
+
 // Where the voice's view says it is, as the mark a retry starts from. The last REPORT, not
 // the live clock: the performer is about to be released, and a unit boundary is reported
 // one hop after the clock crosses it. Cost, stated once: a crash retry resumes from the
-// reported unit, at most one unit behind the ear.
+// reported unit, at most one unit behind the ear. A voice that fell inside a gap names the
+// turn the gap was leading to.
 const placeOf = (view: NeuralView): Mark => {
-  const at = spotOf(view);
-  return at.kind === "idle" ? TOP : markOf(at.at);
+  const at = stateOf(view);
+  return at.kind === "idle" ? TOP : nameAt(view.timeline, at.atMs);
 };
 
 // The voice leaves the stage, or never reached it: the phase it fell to, the place kept for
@@ -496,12 +528,14 @@ const sounding = (state: PanelState, voice: VoiceId | null): Step => {
 const voices = (state: PanelState, map: VoiceMap): Step =>
   state.kind === "neural" ? { state, effects: [{ kind: "revoice", voices: map }] } : stay(state);
 
-export const step = (state: PanelState, event: PanelEvent): Step => {
+// `utterances` is the page's own list, read for its timeline when a place named by time
+// before the voice arrives has to be kept by name.
+export const step = (state: PanelState, event: PanelEvent, utterances: ReadonlyArray<Utterance>): Step => {
   switch (event.kind) {
     case "tap":
       return tap(state, event.control);
     case "seek":
-      return seek(state, event.to);
+      return seek(state, event.to, utterances);
     case "speed":
       return speed(state, event.by);
     case "yes":
@@ -533,11 +567,14 @@ export const step = (state: PanelState, event: PanelEvent): Step => {
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
       // The performer's first view: the voice takes the stage at the reader's speed, sent
       // unconditionally so it never speaks a syllable at a speed it left behind, and to the
-      // place the tap named when a tap is what brought it — a download alone leaves it
-      // standing ready.
+      // place the tap named when a tap is what brought it — resolved now, on the timeline
+      // the voice brings — a download alone leaves it standing ready.
       return {
         state: { kind: "neural", view: event.view, consent: state.consent, sounding: null, speed: state.speed },
-        effects: [perform({ kind: "rate", to: state.speed }), ...(granted(state) === "play" ? [perform({ kind: "seek", to: state.from })] : [])],
+        effects: [
+          perform({ kind: "rate", to: state.speed }),
+          ...(granted(state) === "play" ? [perform({ kind: "seek", toMs: timeAt(event.view.timeline, state.from) })] : []),
+        ],
       };
     }
   }
@@ -725,24 +762,27 @@ const sentence = (fragment: string): string => fragment.charAt(0).toUpperCase() 
 
 const where = (utterance: number, total: number): string => `passage ${utterance + 1} of ${total}`;
 
+// The passage at a time: the one being said, or in a gap, the one about to be.
 const neuralStatus = (view: NeuralView, total: number): string => {
-  const at = (unitIndex: number): string => {
-    const utterance = view.utteranceOf[unitIndex];
-    if (utterance === undefined) throw new Error(`listen panel: unit ${unitIndex} of ${view.utteranceOf.length}`);
-    return where(utterance, total);
+  const at = (ms: number): string => where(nameAt(view.timeline, ms).utterance, total);
+  const unitAt = (unitIndex: number): string => {
+    const unit = view.manifest.script[unitIndex];
+    if (unit === undefined) throw new Error(`listen panel: unit ${unitIndex} of ${view.manifest.script.length}`);
+    return where(unit.utterance.index - 1, total);
   };
   const skipped = view.holdings.flatMap((holding, i) =>
-    holding.kind === "failed" ? [`${at(i)} could not be synthesized: ${unitFailureText(holding.reason)}`] : [],
+    holding.kind === "failed" ? [`${unitAt(i)} could not be synthesized: ${unitFailureText(holding.reason)}`] : [],
   );
+  const state = stateOf(view);
   const { player } = view;
   const now =
-    player.kind === "idle"
+    state.kind === "idle"
       ? "Ready"
-      : player.kind === "paused"
-        ? `Paused · ${at(player.at.unitIndex)}`
-        : player.flow === "audio"
-          ? `Playing · ${at(player.at.unitIndex)}`
-          : `Synthesizing ahead… · ${at(player.at.unitIndex)}`;
+      : state.kind === "paused"
+        ? `Paused · ${at(state.atMs)}`
+        : player.kind === "speaking" && player.flow === "waiting"
+          ? `Synthesizing ahead… · ${at(state.atMs)}`
+          : `Playing · ${at(state.atMs)}`;
   return [now, ...skipped].join(" · ");
 };
 
@@ -752,17 +792,22 @@ const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Reado
   stop: { enabled: state.kind !== "idle" },
 });
 
-// Where the transport stands, from the state alone: the performer's own place when it has
-// one, the place held for a performer that does not exist yet. This is the last REPORT —
-// the driver reads the live clock for the cursor and the scrubber; a button's shape needs
-// only the passage, which no report can be stale about, since every passage boundary is one.
-const placeIn = (state: PanelState): Mark => (state.kind === "neural" ? placeOf(state.view) : state.from);
-
-// The timeline the state implies: the script's, measured as far as the worker has got, once
-// the neural voice is on stage; the page's own passages, every leg an estimate, before that
+// The timeline the state implies: the voice's own, measured as far as the worker has got,
+// once it is on stage; the page's own passages, every leg an estimate, before that
 // [LAW:one-type-per-behavior].
 const timelineOf = (state: PanelState, utterances: ReadonlyArray<Utterance>): Timeline =>
-  state.kind === "neural" ? timelineOfScript(state.view.manifest, state.view.utteranceOf) : timelineOfUtterances(utterances);
+  state.kind === "neural" ? state.view.timeline : timelineOfUtterances(utterances);
+
+// Where the transport stands, from the state alone: the performer's own time when it has
+// one, the time of the place held for a performer that does not exist yet. This is the
+// last REPORT — the driver reads the live clock for the cursor and the scrubber; a button's
+// shape needs only which side of a landmark the voice is on, and every landmark is a unit
+// boundary, which is reported.
+const timeIn = (state: PanelState, line: Timeline): number => {
+  if (state.kind === "provisioning") return timeAt(line, state.from);
+  const at = stateOf(state.view);
+  return at.kind === "idle" ? 0 : at.atMs;
+};
 
 // The scrubber and the times at a point on the clock. Takes the milliseconds rather than a
 // mark because the reader dragging the scrubber is at a time that is not yet anybody's
@@ -784,10 +829,11 @@ const clockAt = (timeline: Timeline, ms: number): Clock => {
 // The controls that read the conversation rather than the voice: which turn skips are there
 // to take, and which way the speed list still runs.
 const around = (state: PanelState, utterances: ReadonlyArray<Utterance>): Pick<Readout, "skip" | "speed"> => {
-  const turns = turnStarts(utterances);
-  const at = placeIn(state);
+  const line = timelineOf(state, utterances);
+  const marks = landmarks(line);
+  const at = timeIn(state, line);
   return {
-    skip: { back: turnMark(turns, at, -1) !== null, forward: turnMark(turns, at, 1) !== null },
+    skip: { back: landmark(marks, at, -1) !== null, forward: landmark(marks, at, 1) !== null },
     speed: {
       label: `${state.speed}×`,
       slower: stepSpeed(state.speed, -1) !== state.speed,
@@ -941,8 +987,8 @@ export const readout = (state: PanelState, utterances: ReadonlyArray<Utterance>,
 
 // ── the cursor ─────────────────────────────────────────────────────────────────────────
 
-// Where the read-along is, from the performer's spot: the utterance, every utterance of
-// its turn, and the cursor to paint.
+// Where the read-along is, from the spot under the voice's time: the utterance, every
+// utterance of its turn, and the cursor to paint.
 export const readAlongAt = (spot: Spot, utterances: ReadonlyArray<Utterance>): ReadAlongAt => {
   const utterance = utterances[spot.utterance];
   if (utterance === undefined) throw new Error(`listen panel: the performer is at utterance ${spot.utterance} of ${utterances.length}`);
@@ -1211,44 +1257,30 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // written only by its two listeners. It is not a second position: it is the one fact
   // nobody else holds — that the reader is asking for a place they have not committed to.
   let held = false;
-  // The timeline the current state implies, rebuilt when the state changes rather than on
-  // every frame: a long paste is thousands of legs, and re-deriving the whole clock sixty
-  // times a second would cost more than the thumb it moves. A cache with one owner and one
-  // key — the state object it was built from, which every change replaces, so the two can
-  // never disagree about which clock this is [LAW:one-source-of-truth].
-  let clockFor: PanelState = state;
-  let clockLine: Timeline = timelineOf(state, utterances);
-  const timeline = (): Timeline => {
-    if (clockFor !== state) {
-      clockLine = timelineOf(state, utterances);
-      clockFor = state;
-    }
-    return clockLine;
-  };
-  // The turn landmarks: a fact of the page's utterance list, read once for the panel's
-  // whole life rather than with each skip.
-  const turns = turnStarts(utterances);
+  // The page's own timeline, a fact of its utterance list, built once for the panel's
+  // whole life; the voice's timeline travels with its view, built once per view. The
+  // timeline of the moment is whichever the state implies [LAW:one-source-of-truth].
+  const pageLine = timelineOfUtterances(utterances);
+  const timeline = (): Timeline => (state.kind === "neural" ? state.view.timeline : pageLine);
 
-  // Read live from the performer, not from the state's snapshot: within an utterance the
-  // span moves with no event.
+  // Read live from the performer, not from the state's snapshot: the clock moves with no
+  // event.
   const stageState = (): PerformerState => (state.kind === "neural" ? performer().state() : IDLE);
-  // Where the voice is now, as the one coordinate every transport reading is in: the live
-  // spot while there is one, else the place the state holds.
-  const placeNow = (): Mark => {
+  // Where the voice is now, as the one number every transport reading is in: the live
+  // time while there is one, else the time of the place the state holds.
+  const timeNow = (): number => {
     const now = stageState();
-    return now.kind === "idle" ? placeIn(state) : markOf(now.at);
+    return now.kind === "idle" ? timeIn(state, timeline()) : now.atMs;
   };
   // What the scrubber and the times show right now: the reader's drag while they are
   // dragging, the voice's own place otherwise.
-  const clockNow = (): Clock => {
-    const line = timeline();
-    return clockAt(line, held ? Number(controls.scrub.value) : timeAt(line, placeNow()));
-  };
+  const clockNow = (): Clock => clockAt(timeline(), held ? Number(controls.scrub.value) : timeNow());
   const paintClock = (): void => renderClock(controls, clockNow(), held);
 
   const emitPosition = (): void => {
     const now = stageState();
-    const at = now.kind === "idle" ? null : readAlongAt(now.at, utterances);
+    const spot = now.kind === "idle" ? null : spotAt(timeline(), now.atMs);
+    const at = spot === null ? null : readAlongAt(spot, utterances);
     if (samePlace(at, shown)) return;
     shown = at;
     config.onPosition(at);
@@ -1371,7 +1403,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const show = (): void => render(controls, picker, readout(state, utterances, visit()), out());
 
   const run = (event: PanelEvent): void => {
-    const planned = step(state, event);
+    const planned = step(state, event, utterances);
     state = planned.state;
     for (const effect of planned.effects) performEffect(effect);
     show();
@@ -1411,30 +1443,28 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const wakeUp = (): void => dispatch({ kind: "wake", consent: standingConsent(config.preference.read(), config.connection()) });
 
   // [LAW:dataflow-not-control-flow] Every gesture becomes the one event the machine already
-  // had — a tap, a seek to a mark, a speed step — so nothing below the panel knows a
+  // had — a tap, a seek to a target, a speed step — so nothing below the panel knows a
   // scrubber exists. The three gestures that name a TIME are resolved here, where the
-  // timeline is: a scrubber position becomes a Mark, never a unit index, and the neural
-  // voice on stage refines it its own way, to the word's own measured time.
+  // timeline of the moment is; a tap on a word keeps the word's name.
   //
-  // Null is the honest answer to a gesture that names nowhere: no turn before the first,
-  // none after the last, no mark at all in a conversation with nothing to say. The control
-  // that would send it is disabled by `readout`, so only a key can reach this, and the
-  // reader hears what they already hear.
+  // Null is the honest answer to a gesture that names nowhere: no landmark before the top,
+  // none after the last gap. The control that would send it is disabled by `readout`, so
+  // only a key can reach this, and the reader hears what they already hear.
   const resolve = (g: Gesture): PanelEvent | null => {
-    const to = (mark: Mark | null): PanelEvent | null => (mark === null ? null : { kind: "seek", to: mark });
+    const at = (ms: number | null): PanelEvent | null => (ms === null ? null : { kind: "seek", to: { kind: "time", ms } });
     switch (g.kind) {
       case "tap":
         return { kind: "tap", control: g.control };
       case "speed":
         return { kind: "speed", by: g.by };
       case "mark":
-        return { kind: "seek", to: g.to };
+        return { kind: "seek", to: { kind: "mark", mark: g.to } };
       case "scrub":
-        return to(markAt(timeline(), g.toMs));
+        return at(g.toMs);
       case "nudge":
-        return to(markAt(timeline(), timeAt(timeline(), placeNow()) + g.bySeconds * 1000));
+        return at(timeNow() + g.bySeconds * 1000);
       case "turn":
-        return to(turnMark(turns, placeNow(), g.by));
+        return at(landmark(landmarks(timeline()), timeNow(), g.by));
     }
   };
 

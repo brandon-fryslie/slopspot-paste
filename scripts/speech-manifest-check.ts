@@ -23,10 +23,10 @@ import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance } from "../src/speech";
 import {
   addUnit,
-  cursorAt,
   emptyManifest,
   estimateTimes,
   offsetAt,
+  wordUnder,
   wordAt,
   wordsOf,
   type Manifest,
@@ -175,32 +175,30 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
     // The conversation's clock over these same records is timeline.ts's, and is checked
     // there (scripts/timeline-check.ts) against this fixture's own durations.
 
-    // The cursor: the segment is the unit's own span at every offset; a word only from a
-    // measured alignment, and then inside the segment.
+    // The word under a time: only from a measured alignment, and then inside the unit's
+    // span (the segment itself is the timeline's leg, checked in timeline-check.ts).
     const within = (outer: { charStart: number; charEnd: number }, inner: { charStart: number; charEnd: number }): boolean =>
       outer.charStart <= inner.charStart && inner.charEnd <= outer.charEnd;
     const cursorHonest = all.every((r) => {
       const probes = [0, r.durationMs / 3, r.durationMs / 2, r.durationMs];
       return probes.every((ms) => {
-        const c = cursorAt(r, ms);
-        const segmentIsUnit = c.segment.charStart === r.unit.start && c.segment.charEnd === r.unit.end;
-        const wordHonest = c.word === null ? r.alignment.kind !== "words" || ms < (r.alignment.words[0]?.startMs ?? Infinity) : r.alignment.kind === "words" && within(c.segment, c.word);
-        return segmentIsUnit && wordHonest;
+        const word = wordUnder(r.alignment, ms);
+        return word === null ? r.alignment.kind !== "words" || ms < (r.alignment.words[0]?.startMs ?? Infinity) : r.alignment.kind === "words" && within({ charStart: r.unit.start, charEnd: r.unit.end }, word);
       });
     });
-    assert("cursorAt: the segment is always the unit's span; a word is claimed only for a `words` alignment, inside the segment", cursorHonest);
+    assert("wordUnder: a word is claimed only for a `words` alignment, inside the unit's span", cursorHonest);
     const measured = all.filter((r) => r.alignment.kind === "words" && r.alignment.words.length > 0);
     assert(
       "for a measured unit the cursor is on a word by the time its last word has started",
-      measured.every((r) => cursorAt(r, r.durationMs).word !== null),
+      measured.every((r) => wordUnder(r.alignment, r.durationMs) !== null),
     );
 
     // The reverse: a character seeks to the start of the word holding it.
     const offsetsHonest = all.every((r) => {
-      const beforeUnit = offsetAt(r, r.unit.start - 1) === 0;
-      if (r.alignment.kind === "unit") return beforeUnit && [r.unit.start, r.unit.end - 1].every((ch) => offsetAt(r, ch) === 0);
+      const beforeUnit = offsetAt(r.alignment, r.unit.start - 1) === 0;
+      if (r.alignment.kind === "unit") return beforeUnit && [r.unit.start, r.unit.end - 1].every((ch) => offsetAt(r.alignment, ch) === 0);
       const { words } = r.alignment;
-      return beforeUnit && words.every((w) => offsetAt(r, w.charStart) === w.startMs && offsetAt(r, w.charEnd - 1) === w.startMs);
+      return beforeUnit && words.every((w) => offsetAt(r.alignment, w.charStart) === w.startMs && offsetAt(r.alignment, w.charEnd - 1) === w.startMs);
     });
     assert("offsetAt: a word's first and last character seek to its start; before the unit, and for a `unit` alignment anywhere, zero", offsetsHonest);
 
@@ -291,35 +289,30 @@ console.log("\nSpeech manifest — admission and rejection:");
 
   const r1 = m3.units[1];
   assert(
-    "the cursor on an `estimated` unit is its span at every offset, never a word",
-    r1 !== undefined &&
-      r1.alignment.kind === "estimated" &&
-      [0, dur(1) / 2, dur(1)].every((ms) => {
-        const c = cursorAt(r1, ms);
-        return c.word === null && c.segment.charStart === r1.unit.start && c.segment.charEnd === r1.unit.end;
-      }),
+    "the cursor on an `estimated` unit is never a word",
+    r1 !== undefined && r1.alignment.kind === "estimated" && [0, dur(1) / 2, dur(1)].every((ms) => wordUnder(r1.alignment, ms) === null),
   );
   assert(
     "offsetAt on an `estimated` unit reads the estimate: a tap on its second word seeks to that word's estimated start, not zero",
     r1 !== undefined &&
       r1.alignment.kind === "estimated" &&
-      r1.alignment.words.every((w) => offsetAt(r1, w.charStart) === w.startMs) &&
+      r1.alignment.words.every((w) => offsetAt(r1.alignment, w.charStart) === w.startMs) &&
       (r1.alignment.words[1]?.startMs ?? 0) > 0,
   );
   const r0 = m3.units[0];
   assert(
-    "the cursor on a `words` unit is the utterance's own word at that time, inside the unit's segment",
+    "the cursor on a `words` unit is the utterance's own word at that time",
     r0 !== undefined &&
       (() => {
-        const c = cursorAt(r0, 250);
-        return c.word !== null && r0.unit.utterance.text.slice(c.word.charStart, c.word.charEnd) === "two" && c.segment.charStart === r0.unit.start && c.segment.charEnd === r0.unit.end;
+        const word = wordUnder(r0.alignment, 250);
+        return word !== null && r0.unit.utterance.text.slice(word.charStart, word.charEnd) === "two";
       })(),
   );
   assert(
     "offsetAt on a `words` unit: 'two' (chars 4-6) seeks to 200 ms, 'One' to 0, 'three.' to 500",
-    r0 !== undefined && offsetAt(r0, 4) === 200 && offsetAt(r0, 6) === 200 && offsetAt(r0, 0) === 0 && offsetAt(r0, 8) === 500,
+    r0 !== undefined && offsetAt(r0.alignment, 4) === 200 && offsetAt(r0.alignment, 6) === 200 && offsetAt(r0.alignment, 0) === 0 && offsetAt(r0.alignment, 8) === 500,
   );
   const r2 = m3.units[2];
-  assert("offsetAt on a `unit` alignment is zero everywhere: nothing finer to seek to", r2 !== undefined && r2.alignment.kind === "unit" && [0, 2, 3].every((ch) => offsetAt(r2, ch) === 0));
+  assert("offsetAt on a `unit` alignment is zero everywhere: nothing finer to seek to", r2 !== undefined && r2.alignment.kind === "unit" && [0, 2, 3].every((ch) => offsetAt(r2.alignment, ch) === 0));
 
 }

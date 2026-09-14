@@ -41,11 +41,26 @@
 // first; and the unit the schedule is about to play cannot be dropped. Every violation is
 // a RangeError at the delivery, not a silent skip [LAW:no-silent-failure].
 //
+// THE LEAD-IN. Each unit is built with the silence that precedes its audio — `leads`, in
+// milliseconds of media time, the gap between speakers that timeline.ts lays as a leg of
+// the conversation's clock and the neural performer hands here unchanged, so the audio and
+// the clock cannot disagree about it [LAW:single-enforcer]. The schedule crosses a unit's
+// end the way it always did and then advances its cursor by the next unit's lead before
+// cueing that unit's first frame: the first audio of a turn plays no earlier than the gap's
+// end, and a frame that arrives after the gap has run out plays when it arrives, which
+// lengthens the gap and never shortens it. Position inside a lead reads as the PREVIOUS
+// unit's, past its last sample — the gap is time on that unit's clock — so the reading is
+// one arithmetic rule with no case for silence, and a seek to such a position plays the
+// remainder of the lead: the samples past the unit's end are the part of the lead already
+// spent. The lead runs at the schedule's rate like every frame.
+//
 // UNIT BOUNDARIES ARE REPORTED. Every frame is its own source and the last frame of a unit
 // ends exactly at the boundary, so its `ended` event is the context's own notice that the
 // cursor has crossed into the next unit; `onState` fires there. This is not a second clock
 // — no timer is set — it is the one clock's event, and it is the tick the scheduler needs
-// to slide its window without polling [LAW:no-ambient-temporal-coupling].
+// to slide its window without polling [LAW:no-ambient-temporal-coupling]. Across a lead
+// the notice comes from the first frame that ends on the far side of it, one frame late,
+// which is nothing to a window three units wide.
 //
 // SPEED SHIFTS PITCH, AND THAT IS THE CHOSEN COST. A rate belongs to the schedule, not to a
 // source: every source in one schedule is started at the same `playbackRate`, and a change
@@ -198,16 +213,18 @@ export const openSchedule = (from: Sample, anchor: number, format: PcmFormat, ra
 // [LAW:effects-at-boundaries] Schedule every frame the store can supply at the cursor, as
 // data: the cues for the device and the schedule after them. The same three-way question
 // is asked per step — the frame is here, or the unit is still open, or the unit is closed
-// and the next begins at the cursor — so a seek past a unit's end resolves to the start of
-// the following unit by the same rule that carries ordinary playback across a boundary
-// [LAW:dataflow-not-control-flow].
+// and the next begins at the cursor plus what is left of its lead — so a seek past a
+// unit's end resolves into the lead and then the following unit by the same rule that
+// carries ordinary playback across a boundary [LAW:dataflow-not-control-flow]. `leads` is
+// the silence before each unit in samples, indexed by unit.
 export const extend = (
   schedule: Schedule,
   store: UnitStore,
-  unitCount: number,
+  leads: ReadonlyArray<number>,
   format: PcmFormat,
 ): { readonly schedule: Schedule; readonly cues: ReadonlyArray<Cue> } => {
   const { frameSamples } = format;
+  const unitCount = leads.length;
   const perSec = perSecond(format, schedule.rate);
   const cues: Cue[] = [];
   const starts: [UnitStart, ...UnitStart[]] = [...schedule.starts];
@@ -225,8 +242,13 @@ export const extend = (
       continue;
     }
     if (!audio.complete) break;
+    // The samples the need already stood past the unit's end are lead already spent.
+    const spent = need.sample - audio.frames.length * frameSamples;
     need = { unit: need.unit + 1, sample: 0 };
-    if (need.unit < unitCount) starts.push({ unit: need.unit, time: cursor });
+    if (need.unit < unitCount) {
+      cursor += Math.max(0, (leads[need.unit] ?? 0) - spent) / perSec;
+      starts.push({ unit: need.unit, time: cursor });
+    }
   }
   return { schedule: { ...schedule, cursor, need, starts }, cues };
 };
@@ -270,7 +292,9 @@ export type PlayerEvent =
 export interface UnitPlayerConfig {
   // The device the player plays on, borrowed from the owner that opened it.
   readonly device: OpenDevice;
-  readonly unitCount: number;
+  // The silence before each unit's audio, in milliseconds of media time, indexed by unit:
+  // the script's unit count is this list's length.
+  readonly leads: ReadonlyArray<number>;
   // Called after every discontinuity — play, pause, stop, seek, starvation and its relief,
   // the end of the last unit — and after every unit boundary the clock crosses, which is
   // the scheduler's cue to synthesize further ahead. Continuous motion within a unit is
@@ -300,8 +324,11 @@ interface MutableUnitAudio {
 const IDLE: Live = { kind: "idle" };
 
 export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
-  const { unitCount, onState } = config;
+  const { onState } = config;
   const { device, format } = config.device;
+  const unitCount = config.leads.length;
+  // The leads in the schedule's own unit, samples of media time, converted once.
+  const leads = config.leads.map((ms) => Math.round((ms * format.sampleRate) / 1000));
   // [LAW:no-shared-mutable-globals] Owned here; both written only through `send`. The rate
   // outlives every schedule — a seek, a pause, a starvation and the units themselves all
   // open new schedules at whatever speed the reader last chose, which is what makes speed
@@ -362,7 +389,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   };
 
   const fill = (speaking: Speaking): void => {
-    const { schedule, cues } = extend(speaking.schedule, store, unitCount, format);
+    const { schedule, cues } = extend(speaking.schedule, store, leads, format);
     speaking.schedule = schedule;
     perform(speaking, cues);
     settle(speaking);

@@ -35,6 +35,10 @@
 //   rate      speaking               -> re-anchored at the clock's sample, new sources at it
 //   rate      idle | paused          -> held for the next play; nothing reported
 //   rate      the rate already set   -> no-op
+//   a unit with a lead               -> its first frame cued the lead after the previous unit's end;
+//                                       position inside the lead reads as the previous unit past its end
+//   seek into a lead                 -> the rest of the lead, then the unit
+//   frame arriving after the lead    -> plays at once: the gap lengthens, never shortens
 
 import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, extend, openDevice, openSchedule, positionAt } from "../src/unitPlayer";
 import type { DeviceFactory, PlayerState, UnitAudio } from "../src/unitPlayer";
@@ -78,11 +82,12 @@ console.log("schedule: pure planning");
 {
   const store = new Map<number, UnitAudio>();
   const opened = openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM);
-  const empty = extend(opened, store, 3, MODEL_PCM);
+  const none3 = [0, 0, 0];
+  const empty = extend(opened, store, none3, MODEL_PCM);
   assert("an empty store schedules nothing and leaves the need unchanged", empty.cues.length === 0 && empty.schedule.need.unit === 0 && empty.schedule.cursor === 1);
   store.set(0, { frames: [frame(0, 0), frame(0, 1)], complete: true });
   store.set(1, { frames: [frame(1, 0)], complete: false });
-  const crossed = extend(opened, store, 3, MODEL_PCM);
+  const crossed = extend(opened, store, none3, MODEL_PCM);
   assert("frames of two units are cued back to back across the boundary", crossed.cues.length === 3 && crossed.cues.every((c, i) => near(c.when, 1 + i * FRAME_S) && c.skip === 0));
   assert("the next unit's start is the previous unit's last sample end", crossed.schedule.starts.length === 2 && near(crossed.schedule.starts[1]?.time ?? NaN, 1 + 2 * FRAME_S));
   assert("the need stops at the open unit's next frame", crossed.schedule.need.unit === 1 && crossed.schedule.need.sample === FS);
@@ -90,19 +95,21 @@ console.log("schedule: pure planning");
   assert("position at the cursor is exactly the needed sample", positionAt(crossed.schedule, crossed.schedule.cursor, MODEL_PCM).unit === 1 && positionAt(crossed.schedule, crossed.schedule.cursor, MODEL_PCM).sample === FS);
   const mid = positionAt(crossed.schedule, 1 + 2 * FRAME_S + 0.01, MODEL_PCM);
   assert("position inside the second unit counts from its own start", mid.unit === 1 && mid.sample === 240);
-  const midFrame = extend(openSchedule({ unit: 0, sample: 2400 }, 1, MODEL_PCM), store, 3, MODEL_PCM);
+  const midFrame = extend(openSchedule({ unit: 0, sample: 2400 }, 1, MODEL_PCM), store, none3, MODEL_PCM);
   assert("a mid-frame start cues the holding frame with the exact sample skip", midFrame.cues[0]?.skip === 480 && near(midFrame.cues[0]?.when ?? NaN, 1) && near(midFrame.cues[1]?.when ?? NaN, 1 + (FS - 480) / SR));
-  const beyond = extend(openSchedule({ unit: 0, sample: 10 * FS }, 1, MODEL_PCM), store, 3, MODEL_PCM);
+  const beyond = extend(openSchedule({ unit: 0, sample: 10 * FS }, 1, MODEL_PCM), store, none3, MODEL_PCM);
   assert("a start past a closed unit's end resolves to the next unit's first sample", beyond.cues[0]?.pcm === store.get(1)?.frames[0] && beyond.cues[0]?.skip === 0 && positionAt(beyond.schedule, 1, MODEL_PCM).unit === 1);
-  const finished = extend(openSchedule({ unit: 1, sample: 0 }, 1, MODEL_PCM), new Map([[1, { frames: [frame(1, 0)], complete: true }]]), 2, MODEL_PCM);
+  const finished = extend(openSchedule({ unit: 1, sample: 0 }, 1, MODEL_PCM), new Map([[1, { frames: [frame(1, 0)], complete: true }]]), [0, 0], MODEL_PCM);
   assert("the last unit's end leaves the need one past the end and no start for it", finished.schedule.need.unit === 2 && finished.schedule.starts.length === 1);
 }
 
 // ── the player ────────────────────────────────────────────────────────────────────────
 
-const harness = (unitCount: number) => {
+// A player over `count` units with no lead before any of them, or over the leads given.
+const harness = (units: number | ReadonlyArray<number>) => {
   const states: PlayerState[] = [];
-  const player = createUnitPlayer({ device: openDevice(StubDevice), unitCount, onState: (state) => states.push(state) });
+  const leads = typeof units === "number" ? Array.from({ length: units }, () => 0) : units;
+  const player = createUnitPlayer({ device: openDevice(StubDevice), leads, onState: (state) => states.push(state) });
   const device = StubDevice.instances.at(-1);
   if (device === undefined) throw new Error("the player did not construct its device");
   return { player, device, states, reported: () => states.map(describe) };
@@ -163,7 +170,7 @@ console.log("schedule: a rate is context seconds per sample, both ways");
     [1, { frames: [frame(1, 0)], complete: true }],
   ]);
   const RATE = 1.25;
-  const fast = extend(openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM, RATE), store, 2, MODEL_PCM);
+  const fast = extend(openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM, RATE), store, [0, 0], MODEL_PCM);
   assert("a frame at 1.25x occupies four fifths of the context time it would at 1x", near(fast.cues[1]?.when ?? NaN, 1 + FRAME_S / RATE));
   assert("and the unit that follows begins that much sooner", near(fast.schedule.starts[1]?.time ?? NaN, 1 + (2 * FRAME_S) / RATE));
   const at = positionAt(fast.schedule, 1 + FRAME_S / RATE, MODEL_PCM);
@@ -344,6 +351,82 @@ console.log("player: stop, and the end of the script");
   const { player, device, states } = harness(0);
   player.send({ kind: "play" });
   assert("an empty script: play leaves the player idle and the context suspended, nothing reported", player.state().kind === "idle" && device.calls.at(-1) === "suspend" && states.length === 0);
+}
+
+// ── the gap ───────────────────────────────────────────────────────────────────────────
+
+console.log("schedule: a lead is silence before a unit, spent by any overshoot, at the schedule's rate");
+{
+  const store = new Map<number, UnitAudio>([
+    [0, { frames: [frame(0, 0)], complete: true }],
+    [1, { frames: [frame(1, 0)], complete: true }],
+  ]);
+  const LEAD_S = 0.5;
+  const leads = [0, Math.round(LEAD_S * SR)];
+  const gapped = extend(openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM), store, leads, MODEL_PCM);
+  assert("the next unit's first frame is cued the lead after the previous unit's last sample, and its start recorded there", near(gapped.cues[1]?.when ?? NaN, 1 + FRAME_S + LEAD_S) && near(gapped.schedule.starts[1]?.time ?? NaN, 1 + FRAME_S + LEAD_S));
+  const inside = positionAt(gapped.schedule, 1 + FRAME_S + 0.2, MODEL_PCM);
+  assert("inside the gap the position is the previous unit's, past its last sample: one arithmetic, no case for silence", inside.unit === 0 && inside.sample === FS + Math.round(0.2 * SR));
+  assert("at the gap's end the position is the next unit's first sample", positionAt(gapped.schedule, 1 + FRAME_S + LEAD_S, MODEL_PCM).unit === 1);
+  const into = extend(openSchedule({ unit: 0, sample: FS + Math.round(0.2 * SR) }, 1, MODEL_PCM), store, leads, MODEL_PCM);
+  assert("a seek into the gap plays the rest of it: the samples past the unit's end are lead already spent", into.cues[0]?.pcm === store.get(1)?.frames[0] && near(into.cues[0]?.when ?? NaN, 1 + LEAD_S - 0.2));
+  const past = extend(openSchedule({ unit: 0, sample: 10 * FS }, 1, MODEL_PCM), store, leads, MODEL_PCM);
+  assert("a seek past the whole gap starts the next unit at once", near(past.cues[0]?.when ?? NaN, 1));
+  const fast = extend(openSchedule({ unit: 0, sample: 0 }, 1, MODEL_PCM, 2), store, leads, MODEL_PCM);
+  assert("the lead runs at the schedule's rate: half the context time at 2x", near(fast.cues[1]?.when ?? NaN, 1 + FRAME_S / 2 + LEAD_S / 2));
+  const direct = extend(openSchedule({ unit: 1, sample: 0 }, 1, MODEL_PCM), store, leads, MODEL_PCM);
+  assert("a seek to a unit's own start is past its lead: no silence before it", near(direct.cues[0]?.when ?? NaN, 1));
+}
+
+console.log("player: a turn's first audio plays no earlier than the gap's end, and late audio lengthens the gap");
+{
+  const { player, device, reported } = harness([0, 500, 0]);
+  player.send({ kind: "frame", unit: 0, frameIndex: 0, pcm: frame(0, 0) });
+  player.send({ kind: "complete", unit: 0 });
+  player.send({ kind: "play" });
+  const gapStart = SCHEDULE_LEAD_S + FRAME_S;
+  device.advance(gapStart + 0.01);
+  assert("the unit ends into its gap with nothing delivered: waiting, the position read as unit 0 past its end", describe(player.state()) === "speaking/waiting@0:90.000" && device.live().length === 0);
+  device.advance(0.19);
+  player.send({ kind: "frame", unit: 1, frameIndex: 0, pcm: frame(1, 0) });
+  const early = device.sources.at(-1);
+  assert("a frame arriving inside the gap is cued at the gap's end, not when it arrived", near(early?.started?.when ?? NaN, gapStart + 0.5) && describe(player.state()) === "speaking/audio@0:280.000");
+  device.advance(0.31);
+  assert("past the gap's end the position is the new unit's, counted from the gap's end", describe(player.state()) === "speaking/audio@1:10.000");
+  player.send({ kind: "complete", unit: 1 });
+  player.send({ kind: "frame", unit: 2, frameIndex: 0, pcm: frame(2, 0) });
+  assert("a unit with no lead follows gaplessly, as before", near(device.sources.at(-1)?.started?.when ?? NaN, early?.endTime() ?? NaN));
+  player.send({ kind: "complete", unit: 2 });
+  device.advance(1);
+  assert("the run reported the gap as a wait, its relief, and the boundary on the first event after the clock crossed it — never a position that ran ahead of the audio", reported().join(" ") === "speaking/audio@0:0.000 speaking/waiting@0:90.000 speaking/audio@0:280.000 speaking/audio@1:10.000 speaking/audio@2:80.000 idle");
+}
+{
+  const { player, device } = harness([0, 500]);
+  player.send({ kind: "frame", unit: 0, frameIndex: 0, pcm: frame(0, 0) });
+  player.send({ kind: "complete", unit: 0 });
+  player.send({ kind: "play" });
+  const gapStart = SCHEDULE_LEAD_S + FRAME_S;
+  device.advance(gapStart + 0.7);
+  assert("the gap runs out with nothing delivered: the position holds at the gap's end, the next unit's first sample, never running into audio nobody has heard", describe(player.state()) === "speaking/waiting@1:0.000");
+  player.send({ kind: "frame", unit: 1, frameIndex: 0, pcm: frame(1, 0) });
+  const late = device.sources.at(-1);
+  assert("late audio plays when it arrives, the gap lengthened by the wait and never shortened", near(late?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S) && describe(player.state()) === "speaking/audio@1:0.000");
+}
+{
+  const { player, device } = harness([0, 500]);
+  player.send({ kind: "frame", unit: 0, frameIndex: 0, pcm: frame(0, 0) });
+  player.send({ kind: "complete", unit: 0 });
+  player.send({ kind: "frame", unit: 1, frameIndex: 0, pcm: frame(1, 0) });
+  player.send({ kind: "complete", unit: 1 });
+  player.send({ kind: "play" });
+  const gapStart = SCHEDULE_LEAD_S + FRAME_S;
+  device.advance(gapStart + 0.2);
+  player.send({ kind: "pause" });
+  assert("pausing inside the gap holds the place inside it", describe(player.state()) === "paused@0:280.000");
+  player.send({ kind: "play" });
+  assert("resuming plays the rest of the gap, then the unit", near(device.sources.at(-1)?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S + 0.3));
+  player.send({ kind: "rate", to: 2 });
+  assert("a speed change inside the gap keeps the place and halves the rest of the gap", describe(player.state()) === "speaking/audio@0:280.000" && near(device.sources.at(-1)?.started?.when ?? NaN, device.currentTime + SCHEDULE_LEAD_S + 0.15));
 }
 
 console.log("player: the reported sequence");
