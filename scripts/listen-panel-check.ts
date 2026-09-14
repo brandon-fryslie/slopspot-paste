@@ -33,15 +33,15 @@ import {
 import type { ConnectionReading } from "../src/modelAssets";
 import { utteranceTable, type NeuralView } from "../src/neuralPerformer";
 import type { Keeping, Residency } from "../src/modelResidency";
-import type { Mark, Speed } from "../src/performer";
+import type { Place, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
-import { speechLegs, timeAt, timelineOfScript } from "../src/timeline";
+import { speechSegments, timeAt, timelineOfScript } from "../src/timeline";
 import type { SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
-import { SCHEDULE_LEAD_S } from "../src/unitPlayer";
+import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { DEFAULT_PICK, readPick, writePick } from "../src/voiceChoice";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 import { memoryPreferences } from "./preferenceStub";
@@ -88,8 +88,8 @@ const tapPlay: PanelEvent = { kind: "tap", control: "play" };
 const tapStop: PanelEvent = { kind: "tap", control: "stop" };
 const progress = (loadedBytes: number, totalBytes: number, at = 0): PanelEvent => worker({ kind: "progress", progress: { loadedBytes, totalBytes } }, at);
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
-const mark = (utterance: number, char = 0): Mark => ({ utterance, char });
-const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to: { kind: "mark", mark: mark(utterance, char) } });
+const mark = (utterance: number, char = 0): Place => ({ utterance, char });
+const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to: { kind: "place", place: mark(utterance, char) } });
 // Where a mark falls on the voice's clock before anything is measured, as the effect prints it.
 const atMs = (utterance: number, char = 0): string => `${Math.round(timeAt(timelineOfScript(emptyManifest(units), table), mark(utterance, char)))}ms`;
 const supported: PanelEvent = worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
@@ -102,7 +102,13 @@ const viewOf = (player: NeuralView["player"]): NeuralView => ({
   manifest: emptyManifest(units),
   holdings: units.map(() => ({ kind: "absent" })),
   timeline: scriptLine,
-  units: speechLegs(scriptLine),
+  units: speechSegments(scriptLine),
+});
+// The player's position at a unit: the segment of the layout that unit's slot is — unit 2
+// sits past the gap, at segment 3.
+const inUnit = (unit: number, offsetMs = 0): SegmentOffset => ({
+  segment: [0, 1, 3][unit] ?? -1,
+  offsetMs,
 });
 
 const effects = (s: ReturnType<typeof step>): string =>
@@ -215,14 +221,16 @@ console.log("step: the way to audio");
   assert("a crash keeps the reader's speed, not the panel's default", crashedFast.state.speed === 1.25);
   const disposedFast = step(fasterOnStage.state, { kind: "dispose" });
   assert("a teardown is not the reader changing their mind: the speed survives it", disposedFast.state.speed === 1.25);
-  const playing = step(listening.state, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "audio" }) });
+  const playing = step(listening.state, { kind: "view", view: viewOf({ kind: "speaking", at: inUnit(2), flow: "audio" }) });
   assert("tap play while speaking hushes any preview, then pauses", effects(step(playing.state, tapPlay)) === "hush,perform pause");
   assert("tap stop while speaking hushes any preview, then stops", effects(step(playing.state, tapStop)) === "hush,perform stop");
   const failedHolding: NeuralView["holdings"][number] = { kind: "failed", reason: { kind: "frame-cap", frames: 500 }, frames: "none" };
   const holdings: NeuralView["holdings"] = units.map((_, i): NeuralView["holdings"][number] => (i === 1 ? failedHolding : { kind: "absent" }));
-  const withFailure = { ...viewOf({ kind: "speaking", at: { unitIndex: 2, offsetMs: 0 }, flow: "audio" }), holdings };
-  const overrun = viewOf({ kind: "speaking", at: { unitIndex: 1, offsetMs: (speechLegs(scriptLine)[1]?.ms ?? 0) + 5000 }, flow: "audio" });
-  assert("a unit streaming past its guessed length is still its own passage: the status reads the leg, not the clock", shown(step(playing.state, { kind: "view", view: overrun }).state) === "Pause | stop | Playing · passage 1 of 2");
+  const withFailure = { ...viewOf({ kind: "speaking", at: inUnit(2), flow: "audio" }), holdings };
+  const overrun = viewOf({ kind: "speaking", at: inUnit(1, (speechSegments(scriptLine)[1]?.ms ?? 0) + 5000), flow: "audio" });
+  assert("a unit streaming past its guessed length is still its own passage: the status reads the segment, not the clock", shown(step(playing.state, { kind: "view", view: overrun }).state) === "Pause | stop | Playing · passage 1 of 2");
+  const inGap = viewOf({ kind: "speaking", at: { segment: 2, offsetMs: 100 }, flow: "audio" });
+  assert("inside the gap between turns the status names the passage the gap leads into", shown(step(playing.state, { kind: "view", view: inGap }).state) === "Pause | stop | Playing · passage 2 of 2");
   assert("a failed unit is named by its passage and its reason, after the player's own line", shown(step(playing.state, { kind: "view", view: withFailure }).state) === "Pause | stop | Playing · passage 2 of 2 · passage 1 of 2 could not be synthesized: the model looped for 500 frames without finishing");
 
   // A tap on the page: the place is kept for the voice's arrival.
@@ -339,8 +347,8 @@ console.log("readout: every form the mark can take, and the question its hover a
     unavailable: step(able, home({ kind: "unavailable", message: "private browsing", bytesToDownload: WHOLE_MODEL })).state,
     downloading,
     warming,
-    speaking: at({ kind: "speaking", at: { unitIndex: 0, offsetMs: 0 }, flow: "audio" }),
-    paused: at({ kind: "paused", at: { unitIndex: 0, offsetMs: 0 } }),
+    speaking: at({ kind: "speaking", at: inUnit(0), flow: "audio" }),
+    paused: at({ kind: "paused", at: inUnit(0) }),
     unsupported: step(probing, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } })).state,
     failed: step(warming, worker({ kind: "load-failed", failure: { kind: "integrity", key: "k", expected: "a", actual: "b" } })).state,
   };
@@ -400,7 +408,7 @@ console.log("readout: the voice picker, cold, warm and mid-listen");
   const idle = initialState();
   const probing = step(idle, wake("none")).state;
   const onStage = step(step(step(step(step(step(probing, supported).state, yes).state, progress(1, 1)).state, ready).state, scriptBack).state, { kind: "view", view: viewOf({ kind: "idle" }) }).state;
-  const speaking = step(onStage, { kind: "view", view: viewOf({ kind: "speaking", at: { unitIndex: 0, offsetMs: 0 }, flow: "audio" }) }).state;
+  const speaking = step(onStage, { kind: "view", view: viewOf({ kind: "speaking", at: inUnit(0), flow: "audio" }) }).state;
   const unsupported = step(probing, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } })).state;
   const voices = (state: PanelState, visit: Visit = ASKING): string => {
     const v = readout(state, page, visit).voices;
@@ -723,7 +731,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
       const at = positions.at(-1);
       return at === null || at === undefined
         ? "silent"
-        : `${at.utterance.anchor} ${at.segment.charStart}-${at.segment.charEnd}${at.word === null ? "" : `/${at.word.charStart}-${at.word.charEnd}`} of ${at.turn.length}`;
+        : `${at.utterance.anchor} ${at.range.charStart}-${at.range.charEnd}${at.word === null ? "" : `/${at.word.charStart}-${at.word.charEnd}`} of ${at.turn.length}`;
     },
     line: () => `${play.textContent}${play.disabled ? "(off)" : ""} | stop${stop.disabled ? "(off)" : ""} | ${status.textContent}`,
     // The turn skips, the speed and the scrubber's own reading: what the DOM shows, not the
@@ -842,7 +850,10 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   assert("crossing into unit 1: still passage 1, the cursor on unit 1's span", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.where() === "t1 21-42 of 1");
   device.advance(FRAME_S);
   r.frames.tick();
-  assert("crossing into unit 2: another turn, its own span — the clock steps over the gap, which the player does not yet sound", r.where() === "t2 0-8 of 1" && r.frames.pending === 1);
+  assert("crossing into the gap before the second turn: the player sounds it — nothing painted, the status names the turn the gap leads into, the loop still running", r.where() === "silent" && r.line() === "Pause | stop | Playing · passage 2 of 2" && r.frames.pending === 1);
+  device.advance(0.5);
+  r.frames.tick();
+  assert("the gap's end: unit 2 begins, another turn, its own span", r.where() === "t2 0-8 of 1" && r.frames.pending === 1);
   const before = r.positions.length;
   r.frames.tick();
   assert("a frame with the cursor unmoved reports nothing new", r.positions.length === before && r.frames.pending === 1);
@@ -851,7 +862,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   assert("Pause: paused, the loop is off, the label says Resume, the mark paused", r.line() === "Resume | stop | Paused · passage 2 of 2" && r.frames.pending === 0 && r.mark.root.dataset.state === "paused");
   r.play.click();
   assert("Resume: speaking again, the loop is back", r.play.textContent === "Pause" && r.frames.pending === 1);
-  panel.send({ kind: "mark", to: mark(0, 25) });
+  panel.send({ kind: "place", to: mark(0, 25) });
   assert("a tap on the first passage's second sentence: the voice seeks there and the cursor follows", r.where() === "t1 21-42 of 1" && r.line() === "Pause | stop | Playing · passage 1 of 2");
   r.stop.click();
   assert("Stop: idle, the cursor cleared, Stop disabled, Play says Listen, the mark ready", r.line() === "Listen | stop(off) | Ready" && r.positions.at(-1) === null && r.frames.pending === 0 && r.shownMark() === "ready | folded | play | remember off");
@@ -872,10 +883,10 @@ console.log("createListenPanel: a tap on a word before the voice is warm is wher
 {
   const r = rig();
   const panel = mount(r);
-  panel.send({ kind: "mark", to: mark(0, 21) });
+  panel.send({ kind: "place", to: mark(0, 21) });
   const device = r.devices()[0];
   assert("a tap on a word while the probe runs opens the device, like Play, and holds the place", r.counts.spawned === 1 && device?.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…" && held(panel.state()) === "0:21");
-  panel.send({ kind: "mark", to: mark(1) });
+  panel.send({ kind: "place", to: mark(1) });
   assert("a second tap while the voice is on its way moves the place, nothing else", r.counts.spawned === 1 && r.devices().length === 1 && held(panel.state()) === "1:0");
   arrive(r);
   assert("the voice arrives at the tapped place: it asks for that unit and the cursor is there", r.said().endsWith("synthesize 2") && r.where() === "t2 0-8 of 1" && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2");
@@ -896,7 +907,7 @@ console.log("createListenPanel: the transport skips turns and steps the speed, a
   assert("mounting and arriving named no place: nothing has asked to follow yet", r.seeks() === 0);
 
   r.forward.click();
-  assert("forward lands at the gap before the second turn, which seeks the turn's own start, and the page is told to follow", r.where() === "t2 0-8 of 1" && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2" && r.seeks() === 1);
+  assert("forward lands in the gap before the second turn: the gap sounds, nothing is painted, the status names the turn the gap leads into, and the page is told to follow", r.where() === "silent" && r.line() === "Pause | stop | Playing · passage 2 of 2" && r.seeks() === 1);
   assert("standing at the last gap: forward has nothing left, back does", r.forward.disabled && !r.back.disabled);
 
   r.back.click();
@@ -1022,7 +1033,7 @@ console.log("createListenPanel: a device that cannot run the voice says so at mo
   r.play.click();
   r.mini.download.click();
   r.check(true);
-  panel.send({ kind: "mark", to: mark(1) });
+  panel.send({ kind: "place", to: mark(1) });
   assert("no tap, yes, box or word spawns anything or opens a device on it", r.counts.spawned === 1 && r.devices().length === 0 && r.sent.length === 0 && r.line().startsWith("Listen(off)"));
   panel.dispose();
 }
@@ -1079,7 +1090,7 @@ console.log("createListenPanel: the mini-player's Download keeps nothing, and it
   assert("on stage and idle, folded: a download is not a listen", panel.state().kind === "neural" && r.shownMark() === "ready | folded | play | remember off");
   r.mini.forward.focus();
   r.mini.forward.click();
-  assert("next turn from the top: the voice speaks from the second turn, the page told to follow, the mini-player out, nothing ahead", r.seeks() === 1 && r.line() === "Pause | stop | Synthesizing ahead… · passage 2 of 2" && r.shownMark() === "speaking | out | pause | remember off" && r.mini.forward.disabled && !r.mini.back.disabled);
+  assert("next turn from the top: the voice sounds the gap before the second turn, the page told to follow, the mini-player out, nothing ahead", r.seeks() === 1 && r.line() === "Pause | stop | Playing · passage 2 of 2" && r.shownMark() === "speaking | out | pause | remember off" && r.mini.forward.disabled && !r.mini.back.disabled);
   assert("the skip that reached the end was disabled under the keyboard's focus: focus is on the mark's button, not the body", r.doc.activeElement === r.mark.button);
   r.mini.back.click();
   assert("previous turn from a turn's start: the turn before it", r.seeks() === 2 && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.mini.back.disabled && !r.mini.forward.disabled);

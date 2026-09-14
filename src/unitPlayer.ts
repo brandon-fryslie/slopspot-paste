@@ -1,17 +1,30 @@
-// [LAW:decomposition] The unit player: it plays the synthesis worker's PCM frames through
-// Web Audio, gapless across units, and answers where playback is. One sentence, no "and":
-// this module turns delivered frames into scheduled audio on the context clock. It does not
-// decide which units to synthesize or when (the scheduler, q35.wuv), it does not know the
+// [LAW:decomposition] The unit player: it plays the timeline's segments — the synthesis
+// worker's PCM frames for the speech, silence for the gaps — through Web Audio as one
+// sequence on the context clock, and answers where playback is. One sentence, no "and":
+// this module turns a layout and delivered frames into scheduled audio. It does not decide
+// which units to synthesize or when (the scheduler, q35.wuv), it does not know the
 // manifest or paint a cursor (the panel, q35.9), and it never touches the worker protocol —
 // the scheduler translates `audio`/`done` messages into the deliveries below, so this
 // module is driven in its check by a stub device and a hand-built frame stream
 // [LAW:composability].
 //
+// THE SEQUENCE IS THE TIMELINE'S LAYOUT. The player is built over the layout timeline.ts
+// lays the clock on — speech slots naming units, silence slots of their own length,
+// between speakers — and plays the slots in order, so the slot the player is in and the
+// segment the clock is in are one index [LAW:one-source-of-truth]. A silence slot belongs
+// to no unit: it is cued as silence of its own length at the schedule's rate like every
+// slot, its `ended` event marks its end like every other boundary, and a position inside it
+// is an offset into that slot, never an offset of any unit. Audio for the speech after a
+// gap starts no earlier than the gap's end, because that is where the schedule puts it;
+// audio that arrives later starts when it arrives, at the sample the schedule ran dry at —
+// which is the starvation rule below, unchanged — so a late unit lengthens the gap and
+// nothing ever shortens it [LAW:dataflow-not-control-flow].
+//
 // WHY BUFFER SOURCES, NOT AN AUDIOWORKLET RING. The ticket's deciding question is whether a
 // seek within a unit must be sample-accurate; both mechanisms can be, so the choice falls
 // to what each costs. One AudioBufferSourceNode per 80 ms frame, each started at an exact
 // context time, makes position a pure reading of `context.currentTime` against the times
-// the units were scheduled to begin — no sample counter inside a worklet, no message port
+// the slots were scheduled to begin — no sample counter inside a worklet, no message port
 // carrying it back late, no second clock [LAW:one-source-of-truth]. A seek is
 // `start(when, offset)` on the frame that holds the target sample, which the context
 // honours to the sample. And there is no second module to bundle as a worklet processor.
@@ -24,8 +37,8 @@
 // requestAnimationFrame, no counter. While speaking, position is derived on every read;
 // while paused, the state holds the sample it stopped at and the context is suspended, so
 // the state's own shape says which representation is authoritative and the two can never
-// disagree [LAW:no-ambient-temporal-coupling]. A unit boundary is gapless because the next
-// unit's first frame is scheduled at exactly the previous unit's last sample end, as soon
+// disagree [LAW:no-ambient-temporal-coupling]. A slot boundary is gapless because the next
+// slot's first frame is scheduled at exactly the previous slot's last sample end, as soon
 // as it is delivered, while the current one is still playing.
 //
 // STARVATION. When playback reaches the end of everything delivered, the schedule simply
@@ -38,35 +51,36 @@
 // THE DELIVERY CONTRACT, stated here so the scheduler reads the same sentence: a unit's
 // frames arrive in order from frameIndex 0, each exactly `frameSamples` long; `complete`
 // closes a unit that has at least one frame, once; re-synthesizing a unit requires `drop`
-// first; and the unit the schedule is about to play cannot be dropped. Every violation is
-// a RangeError at the delivery, not a silent skip [LAW:no-silent-failure].
+// first; and the unit whose slot the schedule is about to play cannot be dropped. Every
+// violation is a RangeError at the delivery, not a silent skip [LAW:no-silent-failure].
 //
-// UNIT BOUNDARIES ARE REPORTED. Every frame is its own source and the last frame of a unit
-// ends exactly at the boundary, so its `ended` event is the context's own notice that the
-// cursor has crossed into the next unit; `onState` fires there. This is not a second clock
-// — no timer is set — it is the one clock's event, and it is the tick the scheduler needs
-// to slide its window without polling [LAW:no-ambient-temporal-coupling].
+// SLOT BOUNDARIES ARE REPORTED. Every frame is its own source and the last frame of a slot
+// ends exactly at the boundary — a silence slot is one frame of its whole length — so its
+// `ended` event is the context's own notice that the cursor has crossed into the next slot;
+// `onState` fires there. This is not a second clock — no timer is set — it is the one
+// clock's event, and it is the tick the scheduler needs to slide its window without
+// polling [LAW:no-ambient-temporal-coupling].
 //
 // SPEED SHIFTS PITCH, AND THAT IS THE CHOSEN COST. A rate belongs to the schedule, not to a
 // source: every source in one schedule is started at the same `playbackRate`, and a change
 // re-anchors the schedule at the sample under the clock, exactly as a seek does. That keeps
-// position a pure reading of `context.currentTime` against the times units were scheduled to
+// position a pure reading of `context.currentTime` against the times slots were scheduled to
 // begin — the one clock this module exists to preserve [LAW:one-source-of-truth]. The
 // alternative the ticket weighed, a pitch-preserving time-stretch in an AudioWorklet, cannot
 // keep it: a stretcher's output is its own sample counter behind a message port, which is a
-// second clock reporting late, and every reading here — the cursor, the scrubber, the unit
+// second clock reporting late, and every reading here — the cursor, the scrubber, the slot
 // boundary the scheduler slides its window on — would have to come from it instead. So the
 // resampling shift is accepted and stated: at 1.25x the voice is a little brighter, at 2.5x
-// it is plainly higher.
+// it is plainly higher. A gap at 2x is a quarter of a second, like every other segment.
 //
 // Not here, deliberately: the word cursor (the panel samples `state().at` on its paint
-// clock and asks the manifest — a boundary timer in this module would be a second clock),
+// clock and asks the timeline — a boundary timer in this module would be a second clock),
 // the lookahead window and memory bound (the scheduler decides what to `drop`), and a fade
 // on seek and pause (a cut mid-sample can click; the UX epic owns the ramp).
 
 import { MODEL_ASSETS } from "./modelAssets";
 import { NORMAL, type Speed } from "./performer";
-import type { Position } from "./speechManifest";
+import type { Slot } from "./timeline";
 
 // ── the PCM the player speaks ──────────────────────────────────────────────────────────
 
@@ -146,31 +160,44 @@ export interface UnitAudio {
 // `durationMs` the worker reports for it.
 export type UnitStore = ReadonlyMap<number, UnitAudio>;
 
+// [LAW:one-type-per-behavior] What a slot plays, in the store's own shape: a speech slot
+// plays what has been delivered of its unit, in frames of `frameSamples`; a silence slot
+// plays one frame of zeros, its whole length, complete from the start. The schedule walks
+// both by one rule; only these two readings know which is which. A zero-length silence
+// would be a frame no sample can fall in: `createUnitPlayer` refuses such a layout at its
+// door, so it never reaches here.
+export const silenceSamples = (slot: Extract<Slot, { kind: "silence" }>, format: PcmFormat): number =>
+  Math.round((slot.ms * format.sampleRate) / 1000);
+const audioOf = (slot: Slot, store: UnitStore, format: PcmFormat): UnitAudio | undefined =>
+  slot.kind === "silence" ? { frames: [new Float32Array(new ArrayBuffer(4 * silenceSamples(slot, format)))], complete: true } : store.get(slot.span);
+const frameSamplesOf = (slot: Slot, format: PcmFormat): number => (slot.kind === "silence" ? silenceSamples(slot, format) : format.frameSamples);
+
 // ── the schedule: pure ─────────────────────────────────────────────────────────────────
 
-// A position in samples: integers, so every comparison below is exact.
+// A position in samples: a slot of the layout and a sample into it, integers, so every
+// comparison below is exact.
 export interface Sample {
-  readonly unit: number;
+  readonly slot: number;
   readonly sample: number;
 }
 
-// The context time at which sample 0 of a unit plays under the current schedule.
-export interface UnitStart {
-  readonly unit: number;
+// The context time at which sample 0 of a slot plays under the current schedule.
+export interface SlotStart {
+  readonly slot: number;
   readonly time: number;
 }
 
 // Everything scheduled since the last anchor. `cursor` is the context time the next
 // scheduled sample would play — the end of the audio the context holds. `need` is that
-// sample: the next one to schedule, or `unit === unitCount`, one past the end, when the
-// last unit has been scheduled to its last sample. `starts` always holds the anchored unit
+// sample: the next one to schedule, or `slot === layout.length`, one past the end, when the
+// last slot has been scheduled to its last sample. `starts` always holds the anchored slot
 // first, so a position lookup is total. `rate` is the speed every source in this schedule
 // was started at, which is what makes context seconds and samples convertible both ways; a
 // change of speed opens a new schedule rather than mixing two rates under one set of times.
 export interface Schedule {
   readonly anchor: number;
   readonly cursor: number;
-  readonly starts: readonly [UnitStart, ...UnitStart[]];
+  readonly starts: readonly [SlotStart, ...SlotStart[]];
   readonly need: Sample;
   readonly rate: Speed;
 }
@@ -180,7 +207,8 @@ export interface Schedule {
 // applied to the cursor and forgotten on the position, or the other way about.
 const perSecond = (format: PcmFormat, rate: Speed): number => format.sampleRate * rate;
 
-// One frame to hand the device: play `pcm` at `when`, skipping its first `skip` samples.
+// One frame to hand the device: play `pcm`, whatever its length, at `when`, skipping its
+// first `skip` samples.
 export interface Cue {
   readonly pcm: Float32Array<ArrayBuffer>;
   readonly when: number;
@@ -192,41 +220,42 @@ export const openSchedule = (from: Sample, anchor: number, format: PcmFormat, ra
   cursor: anchor,
   need: from,
   rate,
-  starts: [{ unit: from.unit, time: anchor - from.sample / perSecond(format, rate) }],
+  starts: [{ slot: from.slot, time: anchor - from.sample / perSecond(format, rate) }],
 });
 
-// [LAW:effects-at-boundaries] Schedule every frame the store can supply at the cursor, as
-// data: the cues for the device and the schedule after them. The same three-way question
-// is asked per step — the frame is here, or the unit is still open, or the unit is closed
-// and the next begins at the cursor — so a seek past a unit's end resolves to the start of
-// the following unit by the same rule that carries ordinary playback across a boundary
-// [LAW:dataflow-not-control-flow].
+// [LAW:effects-at-boundaries] Schedule every frame the layout and the store can supply at
+// the cursor, as data: the cues for the device and the schedule after them. The same
+// three-way question is asked per step — the frame is here, or the slot is still open, or
+// the slot is closed and the next begins at the cursor — so a seek past a unit's end
+// resolves to the start of the following slot by the same rule that carries ordinary
+// playback across a boundary, and a silence slot, one frame long and closed from the
+// start, is walked by the very same steps [LAW:dataflow-not-control-flow].
 export const extend = (
   schedule: Schedule,
   store: UnitStore,
-  unitCount: number,
+  layout: ReadonlyArray<Slot>,
   format: PcmFormat,
 ): { readonly schedule: Schedule; readonly cues: ReadonlyArray<Cue> } => {
-  const { frameSamples } = format;
   const perSec = perSecond(format, schedule.rate);
   const cues: Cue[] = [];
-  const starts: [UnitStart, ...UnitStart[]] = [...schedule.starts];
+  const starts: [SlotStart, ...SlotStart[]] = [...schedule.starts];
   let { cursor, need } = schedule;
-  while (need.unit < unitCount) {
-    const audio = store.get(need.unit);
+  for (let slot = layout[need.slot]; slot !== undefined; slot = layout[need.slot]) {
+    const audio = audioOf(slot, store, format);
     if (audio === undefined) break;
+    const frameSamples = frameSamplesOf(slot, format);
     const frame = Math.floor(need.sample / frameSamples);
     const pcm = audio.frames[frame];
     if (pcm !== undefined) {
       const skip = need.sample - frame * frameSamples;
       cues.push({ pcm, when: cursor, skip });
       cursor += (frameSamples - skip) / perSec;
-      need = { unit: need.unit, sample: (frame + 1) * frameSamples };
+      need = { slot: need.slot, sample: (frame + 1) * frameSamples };
       continue;
     }
     if (!audio.complete) break;
-    need = { unit: need.unit + 1, sample: 0 };
-    if (need.unit < unitCount) starts.push({ unit: need.unit, time: cursor });
+    need = { slot: need.slot + 1, sample: 0 };
+    if (need.slot < layout.length) starts.push({ slot: need.slot, time: cursor });
   }
   return { schedule: { ...schedule, cursor, need, starts }, cues };
 };
@@ -238,21 +267,30 @@ export const positionAt = (schedule: Schedule, time: number, format: PcmFormat):
   const t = Math.min(Math.max(time, schedule.anchor), schedule.cursor);
   let start = schedule.starts[0];
   for (const candidate of schedule.starts) if (candidate.time <= t) start = candidate;
-  return { unit: start.unit, sample: Math.round((t - start.time) * perSecond(format, schedule.rate)) };
+  return { slot: start.slot, sample: Math.round((t - start.time) * perSecond(format, schedule.rate)) };
 };
 
 // ── the player ─────────────────────────────────────────────────────────────────────────
 
-// [LAW:types-are-the-program] The performer's three kinds (performer.ts), as the panel
-// reads them; `at` is a manifest Position, derived from the clock on every
-// read while speaking. `flow` says whether the context holds audio or playback has caught
-// up with delivery and is waiting for the sample at `at`.
+// [LAW:types-are-the-program] Where playback is, in the player's own coordinates: a
+// segment of the layout — the timeline's segment of the same index — and how far into it.
+// Inside a gap it is an offset into that silence segment, of no unit; the neural
+// performer turns it into a time on the conversation's timeline, which is what everything
+// else reads. The offset is never negative: a slot begins at its own sample zero.
+export interface SegmentOffset {
+  readonly segment: number;
+  readonly offsetMs: number;
+}
+
+// The performer's three kinds (performer.ts), as the panel reads them; `at` is derived
+// from the clock on every read while speaking. `flow` says whether the context holds
+// audio or playback has caught up with delivery and is waiting for the sample at `at`.
 export type Flow = "audio" | "waiting";
 
 export type PlayerState =
   | { readonly kind: "idle" }
-  | { readonly kind: "speaking"; readonly at: Position; readonly flow: Flow }
-  | { readonly kind: "paused"; readonly at: Position };
+  | { readonly kind: "speaking"; readonly at: SegmentOffset; readonly flow: Flow }
+  | { readonly kind: "paused"; readonly at: SegmentOffset };
 
 // Everything that moves the player, as data, from its two speakers: the reader's controls
 // and the scheduler's deliveries. One closed set, one `send`, one place effects happen
@@ -261,7 +299,7 @@ export type PlayerEvent =
   | { readonly kind: "play" }
   | { readonly kind: "pause" }
   | { readonly kind: "stop" }
-  | { readonly kind: "seek"; readonly to: Position }
+  | { readonly kind: "seek"; readonly to: SegmentOffset }
   | { readonly kind: "rate"; readonly to: Speed }
   | { readonly kind: "frame"; readonly unit: number; readonly frameIndex: number; readonly pcm: Float32Array<ArrayBuffer> }
   | { readonly kind: "complete"; readonly unit: number }
@@ -270,10 +308,12 @@ export type PlayerEvent =
 export interface UnitPlayerConfig {
   // The device the player plays on, borrowed from the owner that opened it.
   readonly device: OpenDevice;
-  readonly unitCount: number;
+  // The timeline's layout: the sequence the player plays, slot for slot. A speech slot's
+  // span is the unit whose frames it plays; the units are numbered by these spans.
+  readonly layout: ReadonlyArray<Slot>;
   // Called after every discontinuity — play, pause, stop, seek, starvation and its relief,
-  // the end of the last unit — and after every unit boundary the clock crosses, which is
-  // the scheduler's cue to synthesize further ahead. Continuous motion within a unit is
+  // the end of the last slot — and after every slot boundary the clock crosses, which is
+  // the scheduler's cue to synthesize further ahead. Continuous motion within a slot is
   // read with `state()`.
   readonly onState: (state: PlayerState) => void;
 }
@@ -290,7 +330,7 @@ export interface UnitPlayer {
 type Speaking = { readonly kind: "speaking"; schedule: Schedule; readonly sources: Set<PcmSource> };
 type Live = { readonly kind: "idle" } | { readonly kind: "paused"; readonly at: Sample } | Speaking;
 
-const sameSample = (a: Sample, b: Sample): boolean => a.unit === b.unit && a.sample === b.sample;
+const sameSample = (a: Sample, b: Sample): boolean => a.slot === b.slot && a.sample === b.sample;
 
 interface MutableUnitAudio {
   readonly frames: Float32Array<ArrayBuffer>[];
@@ -299,9 +339,27 @@ interface MutableUnitAudio {
 
 const IDLE: Live = { kind: "idle" };
 
+// [LAW:parse-dont-validate] The layout, admitted once: every speech slot names a unit in
+// order from zero — which is what lets a delivery's unit index find its slot — and every
+// silence has a length a sample can fall in. `layoutOf` builds nothing else; a layout that
+// is not its work is refused here rather than played wrongly [LAW:no-silent-failure].
+const slotsOfUnits = (layout: ReadonlyArray<Slot>): ReadonlyArray<number> => {
+  const slots: number[] = [];
+  layout.forEach((slot, index) => {
+    if (slot.kind === "silence") {
+      if (!(slot.ms > 0)) throw new RangeError(`unit player: slot ${index} is a silence of ${slot.ms} ms`);
+      return;
+    }
+    if (slot.span !== slots.length) throw new RangeError(`unit player: slot ${index} names unit ${slot.span}, expected ${slots.length}`);
+    slots.push(index);
+  });
+  return slots;
+};
+
 export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
-  const { unitCount, onState } = config;
+  const { layout, onState } = config;
   const { device, format } = config.device;
+  const slotOfUnit = slotsOfUnits(layout);
   // [LAW:no-shared-mutable-globals] Owned here; both written only through `send`. The rate
   // outlives every schedule — a seek, a pause, a starvation and the units themselves all
   // open new schedules at whatever speed the reader last chose, which is what makes speed
@@ -310,7 +368,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   let live: Live = IDLE;
   let rate: Speed = NORMAL;
 
-  const toPosition = (at: Sample): Position => ({ unitIndex: at.unit, offsetMs: (at.sample / format.sampleRate) * 1000 });
+  const toOffset = (at: Sample): SegmentOffset => ({ segment: at.slot, offsetMs: (at.sample / format.sampleRate) * 1000 });
   const flowOf = (speaking: Speaking): Flow => (speaking.sources.size > 0 ? "audio" : "waiting");
 
   const state = (): PlayerState => {
@@ -318,9 +376,9 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
       case "idle":
         return { kind: "idle" };
       case "paused":
-        return { kind: "paused", at: toPosition(live.at) };
+        return { kind: "paused", at: toOffset(live.at) };
       case "speaking":
-        return { kind: "speaking", at: toPosition(positionAt(live.schedule, device.currentTime, format)), flow: flowOf(live) };
+        return { kind: "speaking", at: toOffset(positionAt(live.schedule, device.currentTime, format)), flow: flowOf(live) };
     }
   };
 
@@ -333,10 +391,10 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
     speaking.sources.clear();
   };
 
-  // Finished and silent — the last unit scheduled to its end and every source ended — is
+  // Finished and silent — the last slot scheduled to its end and every source ended — is
   // idle; the context is released until the next play.
   const settle = (speaking: Speaking): void => {
-    if (speaking.sources.size === 0 && speaking.schedule.need.unit === unitCount) {
+    if (speaking.sources.size === 0 && speaking.schedule.need.slot === layout.length) {
       live = IDLE;
       void device.suspend();
     }
@@ -344,7 +402,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
 
   const perform = (speaking: Speaking, cues: ReadonlyArray<Cue>): void => {
     for (const cue of cues) {
-      const buffer = device.createBuffer(1, format.frameSamples, format.sampleRate);
+      const buffer = device.createBuffer(1, cue.pcm.length, format.sampleRate);
       buffer.copyToChannel(cue.pcm, 0);
       const source = device.createBufferSource();
       source.buffer = buffer;
@@ -362,7 +420,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   };
 
   const fill = (speaking: Speaking): void => {
-    const { schedule, cues } = extend(speaking.schedule, store, unitCount, format);
+    const { schedule, cues } = extend(speaking.schedule, store, layout, format);
     speaking.schedule = schedule;
     perform(speaking, cues);
     settle(speaking);
@@ -403,11 +461,11 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
 
   // ── admission: the delivery contract, enforced at the door [LAW:parse-dont-validate] ──
 
-  // [LAW:single-enforcer] What a unit index is, decided once for deliveries and seeks alike:
-  // an integer within the script. `by` names the event for the error.
+  // [LAW:single-enforcer] What a unit index is, decided once for every delivery: an
+  // integer within the script. `by` names the event for the error.
   const unitIndex = (index: number, by: string): number => {
-    if (!Number.isInteger(index) || index < 0 || index >= unitCount) {
-      throw new RangeError(`unit player: ${by} names unit ${index} of ${unitCount}`);
+    if (!Number.isInteger(index) || index < 0 || index >= slotOfUnit.length) {
+      throw new RangeError(`unit player: ${by} names unit ${index} of ${slotOfUnit.length}`);
     }
     return index;
   };
@@ -417,12 +475,15 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
   const unitOf = (event: Extract<PlayerEvent, { unit: number }>): MutableUnitAudio =>
     store.get(unitIndex(event.unit, event.kind)) ?? { frames: [], complete: false };
 
-  const toSample = (to: Position): Sample => {
-    const unit = unitIndex(to.unitIndex, "seek");
+  // A seek names a segment of the layout, speech or silence, and an offset into it.
+  const toSample = (to: SegmentOffset): Sample => {
+    if (!Number.isInteger(to.segment) || to.segment < 0 || to.segment >= layout.length) {
+      throw new RangeError(`unit player: seek names segment ${to.segment} of ${layout.length}`);
+    }
     if (!Number.isFinite(to.offsetMs) || to.offsetMs < 0) {
       throw new RangeError(`unit player: cannot seek to ${to.offsetMs} ms`);
     }
-    return { unit, sample: Math.round((to.offsetMs * format.sampleRate) / 1000) };
+    return { slot: to.segment, sample: Math.round((to.offsetMs * format.sampleRate) / 1000) };
   };
 
   const apply = (event: PlayerEvent): void => {
@@ -431,7 +492,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
         // Already speaking is a true no-op; resuming keeps the held position, starting
         // from idle begins at the top.
         if (live.kind === "speaking") return;
-        run(live.kind === "paused" ? live.at : { unit: 0, sample: 0 });
+        run(live.kind === "paused" ? live.at : { slot: 0, sample: 0 });
         return;
       case "pause":
         if (live.kind === "speaking") hold(positionAt(live.schedule, device.currentTime, format));
@@ -491,7 +552,7 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
       }
       case "drop":
         unitOf(event);
-        if (live.kind === "speaking" && live.schedule.need.unit === event.unit) {
+        if (live.kind === "speaking" && live.schedule.need.slot === slotOfUnit[event.unit]) {
           throw new RangeError(`unit player: unit ${event.unit} is being played and cannot be dropped`);
         }
         store.delete(event.unit);
@@ -501,13 +562,13 @@ export const createUnitPlayer = (config: UnitPlayerConfig): UnitPlayer => {
 
   // [LAW:single-enforcer] Every change runs through here: the state is reported exactly
   // when the player moved to a different schedule, hold or idle, or its discrete reading —
-  // the flow, the unit under the cursor — differs from the last report; never for a
+  // the flow, the segment under the cursor — differs from the last report; never for a
   // redundant event, a delivery that merely extended the schedule, or a source ending
-  // mid-unit. The reading is compared against the last REPORT rather than the moment before
-  // the change because the source whose `ended` carries the player across a unit boundary
-  // fires after the clock has already crossed it [LAW:one-source-of-truth].
+  // mid-segment. The reading is compared against the last REPORT rather than the moment
+  // before the change because the source whose `ended` carries the player across a segment
+  // boundary fires after the clock has already crossed it [LAW:one-source-of-truth].
   let reported: PlayerState = { kind: "idle" };
-  const discrete = (s: PlayerState): string => (s.kind === "speaking" ? `${s.kind} ${s.flow} ${s.at.unitIndex}` : s.kind);
+  const discrete = (s: PlayerState): string => (s.kind === "speaking" ? `${s.kind} ${s.flow} ${s.at.segment}` : s.kind);
   const transition = (change: () => void): void => {
     const before = live;
     change();

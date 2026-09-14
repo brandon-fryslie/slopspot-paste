@@ -7,19 +7,19 @@
 // conversation's timeline (timeline.ts). The panel reads it — on every frame while
 // speaking, through `state()` — and derives everything it paints from the timeline at that
 // time; it never keeps a copy of its own, and there is no second shape of position for it
-// to handle. A `Mark` is the durable NAME of a place — an utterance and a character in its
-// text, what a tap on a word and a share link carry — and it is resolved to a time by the
-// timeline at the moment it is used, never held as the position.
+// to handle. A `Place` is the durable NAME of a point in the text — an utterance and a
+// character in it, what a tap on a word and a share link carry — and it is resolved to a
+// time by the timeline at the moment it is used, never held as the position.
 
 // A point in the page's text: an index into the page's utterance list, and a character
 // offset into that utterance's text.
-export interface Mark {
+export interface Place {
   readonly utterance: number;
   readonly char: number;
 }
 
 // The top of the conversation: where a performer stands before anyone has asked for a place.
-export const TOP: Mark = { utterance: 0, char: 0 };
+export const TOP: Place = { utterance: 0, char: 0 };
 
 // [LAW:types-are-the-program] `atMs` exists only while there is somewhere to be: an idle
 // performer holding a stale position is not expressible.

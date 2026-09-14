@@ -37,7 +37,7 @@
 // `none` (the worker waits in `supported`), `download` (fetch and warm the voice, then stand
 // ready — the mini-player's yes, or the device's remembered preference through listenConsent.ts),
 // `play` (fetch, warm, and speak from `from` — a Play tap, or a tap on a word, which is Play
-// with a place: a `seek` to a Mark). A later word only raises it; a crash lowers `play` to
+// with a place: a `seek` to a Place). A later word only raises it; a crash lowers `play` to
 // `download` — the device the tap unlocked went with the worker, and a wake is never a yes
 // to speak — and a dispose forgets it. The tap is also the reader's gesture, the one moment
 // a browser lets audio start [LAW:no-ambient-temporal-coupling]: a gesture on an able device
@@ -68,13 +68,14 @@
 // manifest, holdings, and the conversation's timeline built over them — as delivered by
 // its onChange, and the voice a preview is sounding as delivered by the previewer's; the
 // panel never computes a second opinion of either [LAW:one-source-of-truth]. Position is
-// the performer's state — the leg the voice is in and its time on that timeline — read
+// the performer's state — the segment the voice is in and its time on that timeline — read
 // live on every animation frame while speaking; the read-along cursor, the status line's
-// passage and a crash's retry place read the leg, and the scrubber and the turn skips the
-// time, so a time inside the gap between speakers paints nothing, shows on the scrubber,
-// and names the passage about to begin, with no second shape of position anywhere. A
-// Mark — the word a tap named, the place kept for a voice on its way — is the durable
-// NAME of a place, resolved to a time on the timeline of the moment it is used.
+// passage and a crash's retry place read the segment, and the scrubber and the turn skips
+// the time, so a time inside the gap between speakers paints nothing, shows on the
+// scrubber, and names the passage about to begin, with no second shape of position
+// anywhere. A Place — the word a tap named, the point kept for a voice on its way — is the
+// durable NAME of a point in the text, resolved to a time on the timeline of the moment it
+// is used.
 //
 // THE VOICES. Which voice speaks for the reader and which for Claude is the device's pick
 // (voiceChoice.ts): read from storage at every render, like the download preference, and
@@ -99,7 +100,7 @@ import { downloadNeedsTap, type ConnectionReading, type VoiceId } from "./modelA
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, stateOf, type NeuralPerformer, type NeuralState, type NeuralView } from "./neuralPerformer";
-import { NORMAL, stepSpeed, TOP, type Mark, type PerformerEvent, type PerformerState, type Speed } from "./performer";
+import { NORMAL, stepSpeed, TOP, type Place, type PerformerEvent, type PerformerState, type Speed } from "./performer";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
@@ -107,7 +108,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
-import { clockText, estimated, landmark, landmarks, markAt, markIn, spotIn, timeAt, timelineOfUtterances, type Spot, type Timeline } from "./timeline";
+import { clockText, cursorIn, estimated, landmark, landmarks, placeAt, placeIn, timeAt, timelineOfUtterances, type Cursor, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
 import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
@@ -166,7 +167,7 @@ export type PanelState =
   | {
       readonly kind: "provisioning";
       readonly neural: NeuralPhase;
-      readonly from: Mark;
+      readonly from: Place;
       readonly home: Home;
       readonly keeping: Keeping | null;
       readonly consent: Consents;
@@ -187,7 +188,7 @@ export type Tap = "play" | "stop";
 // where the timeline is: a scrubber never names a unit index.
 export type Gesture =
   | { readonly kind: "tap"; readonly control: Tap }
-  | { readonly kind: "mark"; readonly to: Mark }
+  | { readonly kind: "place"; readonly to: Place }
   | { readonly kind: "scrub"; readonly toMs: number }
   | { readonly kind: "nudge"; readonly bySeconds: number }
   | { readonly kind: "turn"; readonly by: -1 | 1 }
@@ -201,7 +202,7 @@ const moves = (gesture: Gesture): boolean => {
     case "tap":
     case "speed":
       return false;
-    case "mark":
+    case "place":
     case "scrub":
     case "nudge":
     case "turn":
@@ -214,7 +215,7 @@ const moves = (gesture: Gesture): boolean => {
 // it is used — or by a time on the timeline showing at the moment of the ask, which is
 // what the scrubber, a nudge and a turn skip name, and the only way to name the start of a
 // gap [LAW:types-are-the-program].
-export type Target = { readonly kind: "mark"; readonly mark: Mark } | { readonly kind: "time"; readonly ms: number };
+export type Target = { readonly kind: "place"; readonly place: Place } | { readonly kind: "time"; readonly ms: number };
 
 export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
@@ -282,7 +283,7 @@ const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
 // Every entry to the start: the voice in the given phase, the place, the consent and the
 // speed kept, and the store asked afresh what it holds.
-const enter = (neural: NeuralPhase, from: Mark, consent: Consents, speed: Speed): Step => ({
+const enter = (neural: NeuralPhase, from: Place, consent: Consents, speed: Speed): Step => ({
   state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null, consent, speed },
   effects: [{ kind: "home" }],
 });
@@ -366,10 +367,10 @@ const tap = (state: PanelState, control: Tap): Step => {
 };
 
 // [LAW:single-enforcer] The one resolution of a target to a time, on the timeline given.
-const timeOfTarget = (line: Timeline, to: Target): number => (to.kind === "mark" ? timeAt(line, to.mark) : to.ms);
+const timeOfTarget = (line: Timeline, to: Target): number => (to.kind === "place" ? timeAt(line, to.place) : to.ms);
 
 // The page the panel reads: its utterances, and their timeline, a fact of the list built
-// once with it — every leg a guess, since no voice has said any of it — and read wherever
+// once with it — every segment a guess, since no voice has said any of it — and read wherever
 // the state has no voice's timeline to read instead.
 export interface Page {
   readonly utterances: ReadonlyArray<Utterance>;
@@ -377,10 +378,10 @@ export interface Page {
 }
 export const pageOf = (utterances: ReadonlyArray<Utterance>): Page => ({ utterances, timeline: timelineOfUtterances(utterances) });
 
-// The one place a target becomes a durable name: its mark as given, or the name of the
+// The one place a target becomes a durable name: its place as given, or the name of the
 // place at its time on the timeline given. Null on a conversation with nothing to say,
 // which has no place to name.
-const nameOfTarget = (line: Timeline, to: Target): Mark | null => (to.kind === "mark" ? to.mark : markAt(line, to.ms));
+const nameOfTarget = (line: Timeline, to: Target): Place | null => (to.kind === "place" ? to.place : placeAt(line, to.ms));
 
 // A seek to a place: the voice on stage seeks to its time on the voice's own timeline;
 // the voice on its way is started as a Play tap starts it, and the place's name is kept
@@ -485,13 +486,14 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
   }
 };
 
-// Where the voice's view says it is, as the mark a retry starts from. The last REPORT, not
-// the live clock: the performer is about to be released, and a unit boundary is reported
+// Where the voice's view says it is, as the place a retry starts from. The last REPORT, not
+// the live clock: the performer is about to be released, and a segment boundary is reported
 // one hop after the clock crosses it. Cost, stated once: a crash retry resumes from the
-// reported unit, at most one unit behind the ear.
-const placeOf = (view: NeuralView): Mark => {
+// reported segment, at most one unit behind the ear. From inside a gap, the turn the gap
+// leads into.
+const placeOf = (view: NeuralView): Place => {
   const at = stateOf(view);
-  return at.kind === "idle" ? TOP : markIn(at.leg, at.atMs);
+  return at.kind === "idle" ? TOP : placeIn(view.timeline, at.segment, at.atMs);
 };
 
 // The voice leaves the stage, or never reached it: the phase it fell to, the place kept for
@@ -762,12 +764,12 @@ const sentence = (fragment: string): string => fragment.charAt(0).toUpperCase() 
 
 const where = (utterance: number, total: number): string => `passage ${utterance + 1} of ${total}`;
 
-// The passage the voice's leg says.
+// The passage the voice's segment says — from inside a gap, the passage the gap leads into.
 const neuralStatus = (view: NeuralView, total: number): string => {
   const unitAt = (unitIndex: number): string => {
-    const leg = view.units[unitIndex];
-    if (leg === undefined) throw new Error(`listen panel: unit ${unitIndex} of ${view.units.length}`);
-    return where(leg.content.utterance, total);
+    const segment = view.units[unitIndex];
+    if (segment === undefined) throw new Error(`listen panel: unit ${unitIndex} of ${view.units.length}`);
+    return where(segment.content.utterance, total);
   };
   const skipped = view.holdings.flatMap((holding, i) =>
     holding.kind === "failed" ? [`${unitAt(i)} could not be synthesized: ${unitFailureText(holding.reason)}`] : [],
@@ -777,7 +779,7 @@ const neuralStatus = (view: NeuralView, total: number): string => {
   const now =
     state.kind === "idle"
       ? "Ready"
-      : `${state.kind === "paused" ? "Paused" : player.kind === "speaking" && player.flow === "waiting" ? "Synthesizing ahead…" : "Playing"} · ${where(state.leg.content.utterance, total)}`;
+      : `${state.kind === "paused" ? "Paused" : player.kind === "speaking" && player.flow === "waiting" ? "Synthesizing ahead…" : "Playing"} · ${where(placeIn(view.timeline, state.segment, state.atMs).utterance, total)}`;
   return [now, ...skipped].join(" · ");
 };
 
@@ -788,7 +790,7 @@ const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Reado
 });
 
 // The timeline the state implies: the voice's own, measured as far as the worker has got,
-// once it is on stage; the page's own passages, every leg an estimate, before that
+// once it is on stage; the page's own passages, every segment an estimate, before that
 // [LAW:one-type-per-behavior]. The one spelling of which clock is current
 // [LAW:one-source-of-truth].
 export const timelineOf = (state: PanelState, page: Page): Timeline => (state.kind === "neural" ? state.view.timeline : page.timeline);
@@ -805,7 +807,7 @@ const timeIn = (state: PanelState, line: Timeline): number => {
 };
 
 // The scrubber and the times at a point on the clock. Takes the milliseconds rather than a
-// mark because the reader dragging the scrubber is at a time that is not yet anybody's
+// place because the reader dragging the scrubber is at a time that is not yet anybody's
 // place, and the drag must read the same words the voice does.
 const clockAt = (timeline: Timeline, ms: number): Clock => {
   const atMs = Math.min(Math.max(ms, 0), timeline.totalMs);
@@ -981,12 +983,12 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
 
 // ── the cursor ─────────────────────────────────────────────────────────────────────────
 
-// Where the read-along is, from the spot under the voice's time: the utterance, every
-// utterance of its turn, and the cursor to paint.
-export const readAlongAt = (spot: Spot, utterances: ReadonlyArray<Utterance>): ReadAlongAt => {
-  const utterance = utterances[spot.utterance];
-  if (utterance === undefined) throw new Error(`listen panel: the performer is at utterance ${spot.utterance} of ${utterances.length}`);
-  return { utterance, turn: turnOf(utterances, utterance.anchor), segment: spot.segment, word: spot.word };
+// Where the read-along is, from the cursor under the voice's time: the utterance, every
+// utterance of its turn, and the range and word to paint.
+export const readAlongAt = (cursor: Cursor, utterances: ReadonlyArray<Utterance>): ReadAlongAt => {
+  const utterance = utterances[cursor.utterance];
+  if (utterance === undefined) throw new Error(`listen panel: the performer is at utterance ${cursor.utterance} of ${utterances.length}`);
+  return { utterance, turn: turnOf(utterances, utterance.anchor), range: cursor.range, word: cursor.word };
 };
 
 // Whether the voice is speaking, from the state: exactly when the frame loop runs.
@@ -1189,7 +1191,7 @@ const renderClock = (controls: ListenControls, clock: Clock, held: boolean): voi
 const sameSpan = (a: WordSpan | null, b: WordSpan | null): boolean =>
   a === b || (a !== null && b !== null && a.charStart === b.charStart && a.charEnd === b.charEnd);
 const samePlace = (a: ReadAlongAt | null, b: ReadAlongAt | null): boolean =>
-  a === b || (a !== null && b !== null && a.utterance === b.utterance && sameSpan(a.segment, b.segment) && sameSpan(a.word, b.word));
+  a === b || (a !== null && b !== null && a.utterance === b.utterance && sameSpan(a.range, b.range) && sameSpan(a.word, b.word));
 
 // The answer to the latest ask only: an ask superseded or dropped before it settles is not
 // delivered.
@@ -1272,7 +1274,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   const emitPosition = (): void => {
     const now = stageState();
-    const at = now.kind === "idle" ? null : readAlongAt(spotIn(now.leg, now.atMs), utterances);
+    const cursor = now.kind === "idle" ? null : cursorIn(now.segment, now.atMs);
+    const at = cursor === null ? null : readAlongAt(cursor, utterances);
     if (samePlace(at, shown)) return;
     shown = at;
     config.onPosition(at);
@@ -1449,8 +1452,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         return { kind: "tap", control: g.control };
       case "speed":
         return { kind: "speed", by: g.by };
-      case "mark":
-        return { kind: "seek", to: { kind: "mark", mark: g.to } };
+      case "place":
+        return { kind: "seek", to: { kind: "place", place: g.to } };
       case "scrub":
         return at(g.toMs);
       case "nudge":

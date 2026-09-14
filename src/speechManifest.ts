@@ -1,7 +1,7 @@
 // [LAW:decomposition] The speech manifest: the record, filled in one unit at a time as the
 // synthesis worker finishes them, of how long each unit's audio is and where its words
-// fall in it — and the position arithmetic the player and the cursor read off that
-// record. One sentence, no "and" hiding a second job: it does not cut text (speechScript),
+// fall in it — and the word arithmetic the cursor reads off that record. One sentence, no
+// "and" hiding a second job: it does not cut text (speechScript),
 // it does not run the model (the worker), it does not play audio (the unit player) and it
 // paints nothing. Every function here is pure over a manifest value, so the check drives
 // it with no mocks at all [LAW:effects-at-boundaries].
@@ -198,16 +198,6 @@ export const addUnit = (manifest: Manifest, index: number, report: UnitReport): 
   return { kind: "added", manifest: { ...manifest, units: manifest.units.with(index, recorded.record) } };
 };
 
-// ── position math ───────────────────────────────────────────────────────────────────
-
-// Where playback is, in the pipeline's own coordinates: a unit and how far into its audio.
-// The player derives it from the audio clock; the neural performer turns it into a time on
-// the conversation's timeline, which is what everything else reads.
-export interface Position {
-  readonly unitIndex: number;
-  readonly offsetMs: number;
-}
-
 // ── the cursor ──────────────────────────────────────────────────────────────────────
 
 // The last word that has started by `offsetMs`: a read-along cursor stays on the word
@@ -218,18 +208,10 @@ export interface Position {
 export const wordAt = (words: ReadonlyArray<WordTime>, offsetMs: number): WordTime | undefined =>
   words.findLast((word) => word.startMs <= offsetMs);
 
-// What to highlight at a position, in utterance-text coordinates: the segment the voice
-// is inside and the word it is on, or null when no word may be claimed: an alignment
-// that is not a measurement, or a position before the first word has begun
-// [LAW:types-are-the-program]. The two are the two tiers the page paints; the timeline
-// supplies the segment (its leg's characters) and asks `wordUnder` for the word.
-export interface Cursor {
-  readonly segment: WordSpan;
-  readonly word: WordSpan | null;
-}
-
-// The word under a point in a unit's audio, when the alignment is a measurement; null for
-// an estimate or a unit with no word times, so a guess is never painted as a measurement.
+// The word under a point in a unit's audio, in utterance-text coordinates, when the
+// alignment is a measurement; null for an estimate or a unit with no word times, so a guess
+// is never painted as a measurement [LAW:types-are-the-program]. The timeline builds the
+// cursor the page paints from it: the segment's range and this word are its two tiers.
 export const wordUnder = (alignment: Alignment, offsetMs: number): WordSpan | null => {
   if (alignment.kind !== "words") return null;
   const word = wordAt(alignment.words, offsetMs);

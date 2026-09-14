@@ -1,17 +1,18 @@
-// The conversation's timeline: the gaps between speakers as silence legs, where a mark
-// falls on the clock, what a time names and what it paints, the landmarks a skip lands
-// on, and which part of the clock is a measurement rather than a guess
-// (slopspot-read-along-a35.3, slopspot-read-along-a35.1ni). Run: `tsx scripts/timeline-check.ts`.
+// The conversation's timeline: the layout with the gaps between speakers as silence
+// slots, where a place falls on the clock, what a time names and what it paints, the
+// landmarks a skip lands on, and which part of the clock is a measurement rather than a
+// guess (slopspot-read-along-a35.3, slopspot-read-along-a35.1ni). Run:
+// `tsx scripts/timeline-check.ts`.
 //
 // [LAW:behavior-not-structure] What is asserted is the contract the transport drives: that
-// exactly one silence leg of GAP_MS sits between consecutive turns and none before the
+// exactly one silence segment of GAP_MS sits between consecutive turns and none before the
 // first, that a time inside a gap paints nothing and names the turn about to begin, that
-// back and forward over the landmarks behave at every boundary, that a measured leg is the
-// worker's own duration and an unmeasured one the measured rate's share, and that "about"
-// appears over exactly the guesses. Pure over values, no mocks of anything
+// back and forward over the landmarks behave at every boundary, that a measured segment is
+// the worker's own duration and an unmeasured one the measured rate's share, and that
+// "about" appears over exactly the guesses. Pure over values, no mocks of anything
 // [LAW:effects-at-boundaries].
 
-import type { Mark } from "../src/performer";
+import type { Place } from "../src/performer";
 import type { Utterance } from "../src/speech";
 import { addUnit, emptyManifest, type Manifest, type UnitReport } from "../src/speechManifest";
 import type { SynthesisUnit } from "../src/speechScript";
@@ -22,10 +23,11 @@ import {
   GAP_MS,
   landmark,
   landmarks,
-  gapsOf,
-  markAt,
-  speechLegs,
-  spotAt,
+  layoutOf,
+  placeAt,
+  placeIn,
+  speechSegments,
+  cursorAt,
   timeAt,
   timelineOfScript,
   timelineOfUtterances,
@@ -78,21 +80,26 @@ const chars = (unitIndex: number): number => {
   if (u === undefined) throw new Error(`fixture: no unit ${unitIndex}`);
   return u.end - u.start;
 };
-const mark = (utterance: number, char = 0): Mark => ({ utterance, char });
-// Each leg as "utterance:chars" with m/e for measured/estimated, or "gap" for silence.
+const mark = (utterance: number, char = 0): Place => ({ utterance, char });
+// Each segment as "utterance:chars" with m/e for measured/estimated, or "gap" for silence.
 const legsOf = (timeline: Timeline): string =>
-  timeline.legs
+  timeline.segments
     .map((leg) => (leg.content.kind === "silence" ? `gap${leg.ms}` : `${leg.content.utterance}:${leg.content.charStart}-${leg.content.charEnd}${leg.content.alignment === null ? "e" : "m"}`))
     .join();
+// A layout as "s" per speech slot and "g" per gap.
+const shapeOf = (anchors: ReadonlyArray<string>): string => layoutOf(anchors).map((slot) => (slot.kind === "silence" ? "g" : "s")).join("");
 const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6;
 
 // ── the gap rule ──────────────────────────────────────────────────────────────────────
 
-console.log("gapsOf: a gap before every change of speaker, none before the first");
+console.log("layoutOf: a silence slot before every change of speaker, none before the first");
 {
-  assert("one rule over the anchors", gapsOf(["a", "a", "b", "c", "c"]).join() === `0,0,${GAP_MS},${GAP_MS},0`);
-  assert("a single speaker has no gap anywhere", gapsOf(["a", "a", "a"]).join() === "0,0,0");
-  assert("nobody speaking has no gap", gapsOf([]).length === 0);
+  assert("one rule over the anchors", shapeOf(["a", "a", "b", "c", "c"]) === "ssgsgss");
+  assert("a single speaker has no gap anywhere", shapeOf(["a", "a", "a"]) === "sss");
+  assert("nobody speaking has no slot at all", shapeOf([]) === "");
+  const laid = layoutOf(["a", "b"]);
+  assert("a speech slot names its span in order and a silence its length", JSON.stringify(laid) === JSON.stringify([{ kind: "speech", span: 0 }, { kind: "silence", ms: GAP_MS }, { kind: "speech", span: 1 }]));
+  assert("the timeline's segments are the layout's slots, index for index", timelineOfUtterances(utterances).segments.map((s) => (s.content.kind === "silence" ? "g" : "s")).join("") === shapeOf(utterances.map((u) => u.anchor)));
 }
 
 // ── before any performer exists: every leg a guess ────────────────────────────────────
@@ -108,7 +115,7 @@ console.log("timelineOfUtterances: one leg per passage, a gap between turns, the
   assert("an unmeasured leg has no word times, so every character of it resolves to the leg's start", [0, 4, 7].every((ch) => timeAt(line, mark(2, ch)) === timeAt(line, mark(2))));
   assert("the whole clock is a guess, so the time remaining is 'about' wherever the voice is", [0, line.totalMs / 2].every((ms) => estimated(line, ms)));
   assert("at the very end there is nothing left to guess about: 0:00 left is exact", !estimated(line, line.totalMs));
-  assert("a paste with one turn has no silence leg", timelineOfUtterances([one, two]).legs.every((leg) => leg.content.kind === "speech"));
+  assert("a paste with one turn has no silence segment", timelineOfUtterances([one, two]).segments.every((leg) => leg.content.kind === "speech"));
 }
 
 // ── the neural voice's clock: measured where the worker has finished ──────────────────
@@ -119,15 +126,15 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
   const RATE = 40;
   const partly = timelineOfScript(recorded([0], (i) => chars(i) * RATE), utteranceOf);
   assert("the measured unit is a measured leg; the rest are estimates; the gaps sit before units 3 and 4", legsOf(partly) === `0:0-20m,0:21-42e,1:0-27e,gap${GAP_MS},2:0-8m`.replace("2:0-8m", "2:0-8e") + `,gap${GAP_MS},3:0-25e`);
-  const first = partly.legs[0];
+  const first = partly.segments[0];
   assert("the measured leg carries the worker's own duration", first?.ms === chars(0) * RATE);
-  const second = partly.legs[1];
+  const second = partly.segments[1];
   assert(
     "an unmeasured leg takes the MEASURED rate's share, not the default's",
     second?.ms === chars(1) * RATE && chars(1) * RATE !== chars(1) * DEFAULT_MS_PER_CHAR,
   );
-  assert("the passage a leg says is the PAGE's utterance, from the performer's table", speechLegs(partly).map((leg) => leg.content.utterance).join() === utteranceOf.join());
-  assert("the speech legs are the units in order: the performer's table from unit to leg", speechLegs(partly).map((leg) => leg.content.charStart).join() === script.map((u) => u.start).join());
+  assert("the passage a segment says is the PAGE's utterance, from the performer's table", speechSegments(partly).map((leg) => leg.content.utterance).join() === utteranceOf.join());
+  assert("the speech segments are the units in order: the performer's table from unit to segment", speechSegments(partly).map((leg) => leg.content.charStart).join() === script.map((u) => u.start).join());
 
   const whole = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf);
   assert("with everything measured the clock is the sum of the durations and the gaps", whole.totalMs === script.reduce((sum, u) => sum + (u.end - u.start) * RATE, 0) + 2 * GAP_MS);
@@ -156,49 +163,55 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
   if (timed.kind !== "added") throw new Error("fixture: the words report was rejected");
   const worded = timelineOfScript(timed.manifest, utteranceOf);
   assert("a character inside a timed word resolves to when that word begins", timeAt(worded, mark(0, 8)) === 100 && timeAt(worded, mark(0, 17)) === 200 && timeAt(worded, mark(0, 3)) === 0);
-  assert("the spot under a timed word is that word, inside the leg's segment", (() => {
-    const spot = spotAt(worded, 150);
-    return spot?.utterance === 0 && spot.segment.charStart === 0 && spot.segment.charEnd === 20 && spot.word?.charStart === 6 && spot.word.charEnd === 14;
+  assert("the cursor under a timed word is that word, inside the segment's range", (() => {
+    const spot = cursorAt(worded, 150);
+    return spot?.utterance === 0 && spot.range.charStart === 0 && spot.range.charEnd === 20 && spot.word?.charStart === 6 && spot.word.charEnd === 14;
   })());
 }
 
 // ── what a time names and paints ──────────────────────────────────────────────────────
 
-console.log("markAt and spotAt: a time on the clock names a place, and paints it or nothing");
+console.log("placeAt, placeIn and cursorAt: a time on the clock names a place, and paints it or nothing");
 {
   const RATE = 40;
   const line = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf);
   const gapStart = timeAt(line, mark(1)) + chars(2) * RATE;
   const gapEnd = gapStart + GAP_MS;
   assert("the gap begins where the previous turn's audio ends, and the next turn begins at its end", timeAt(line, mark(2)) === gapEnd);
-  assert("inside a gap: nothing to paint", spotAt(line, gapStart + GAP_MS / 2) === null && spotAt(line, gapStart) === null);
+  assert("inside a gap: nothing to paint", cursorAt(line, gapStart + GAP_MS / 2) === null && cursorAt(line, gapStart) === null);
   assert("inside a gap: the place named is the turn about to begin", (() => {
-    const named = markAt(line, gapStart + GAP_MS / 2);
+    const named = placeAt(line, gapStart + GAP_MS / 2);
     return named?.utterance === 2 && named.char === 0;
   })());
-  assert("at the gap's end: the first character of the new turn, painted as its leg's segment", (() => {
-    const spot = spotAt(line, gapEnd);
-    const named = markAt(line, gapEnd);
-    return spot?.utterance === 2 && spot.segment.charStart === 0 && spot.segment.charEnd === 8 && spot.word === null && named?.utterance === 2 && named.char === 0;
+  const gap = line.segments.find((segment) => segment.content.kind === "silence");
+  assert("the gap segment given outright names the same place, the turn about to begin, and paints nothing", gap !== undefined && placeIn(line, gap, gap.startMs + 100).utterance === 2 && placeIn(line, gap, gap.startMs + 100).char === 0 && cursorAt(line, gap.startMs + 100) === null);
+  assert("at the gap's end: the first character of the new turn, painted as its segment's range", (() => {
+    const spot = cursorAt(line, gapEnd);
+    const named = placeAt(line, gapEnd);
+    return spot?.utterance === 2 && spot.range.charStart === 0 && spot.range.charEnd === 8 && spot.word === null && named?.utterance === 2 && named.char === 0;
   })());
-  assert("inside speech: the spot is the leg's segment and the name is the character under the time", (() => {
+  assert("inside speech: the cursor is the segment's range and the name is the character under the time", (() => {
     const t = timeAt(line, mark(0, 21)) + 5 * RATE;
-    const spot = spotAt(line, t);
-    const named = markAt(line, t);
-    return spot?.utterance === 0 && spot.segment.charStart === 21 && named?.utterance === 0 && named.char >= 21 && named.char < 42;
+    const spot = cursorAt(line, t);
+    const named = placeAt(line, t);
+    return spot?.utterance === 0 && spot.range.charStart === 21 && named?.utterance === 0 && named.char >= 21 && named.char < 42;
   })());
   assert("a time inside speech comes back as a character within one character of itself", (() => {
     const t = timeAt(line, mark(0, 21)) + 5 * RATE;
-    const named = markAt(line, t);
+    const named = placeAt(line, t);
     return named !== null && named.char === 21 + 5;
   })());
-  assert("before the start is the start: it names the first character and paints the first leg", markAt(line, -5000)?.utterance === 0 && markAt(line, -5000)?.char === 0 && spotAt(line, -5000)?.segment.charStart === 0);
-  const end = markAt(line, line.totalMs + 60_000);
-  assert("past the end is the last character of the last leg, never past it", end?.utterance === 3 && end?.char === 24);
+  assert("a speech segment given outright names the character its share reaches, its end included", (() => {
+    const second = line.segments[1];
+    return second !== undefined && placeIn(line, second, second.startMs + second.ms).char === 41 && placeIn(line, second, second.startMs - 100).char === 21;
+  })());
+  assert("before the start is the start: it names the first character and paints the first segment", placeAt(line, -5000)?.utterance === 0 && placeAt(line, -5000)?.char === 0 && cursorAt(line, -5000)?.range.charStart === 0);
+  const end = placeAt(line, line.totalMs + 60_000);
+  assert("past the end is the last character of the last segment, never past it", end?.utterance === 3 && end?.char === 24);
   assert(
-    "every mark the clock can name is a character INSIDE its passage — what a mark's door requires",
+    "every place the clock can name is a character INSIDE its passage — what a place's door requires",
     Array.from({ length: 200 }, (_, i) => (line.totalMs * i) / 199).every((ms) => {
-      const at = markAt(line, ms);
+      const at = placeAt(line, ms);
       const text = utterances[at?.utterance ?? -1]?.text;
       return at !== null && text !== undefined && at.char >= 0 && at.char < text.length && timeAt(line, at) >= 0;
     }),
@@ -206,8 +219,8 @@ console.log("markAt and spotAt: a time on the clock names a place, and paints it
   // Unit 1 begins at character 21 of passage 0: a time just after that boundary must name
   // a character in the second unit.
   const boundary = chars(0) * RATE;
-  assert("a time across a unit boundary names a character in the unit on the far side", (markAt(line, boundary + 5 * RATE)?.char ?? 0) >= 21);
-  assert("a time just short of the boundary stays in the near unit", (markAt(line, boundary - RATE)?.char ?? 99) < 21);
+  assert("a time across a unit boundary names a character in the unit on the far side", (placeAt(line, boundary + 5 * RATE)?.char ?? 0) >= 21);
+  assert("a time just short of the boundary stays in the near unit", (placeAt(line, boundary - RATE)?.char ?? 99) < 21);
 }
 
 // ── the landmarks ─────────────────────────────────────────────────────────────────────
@@ -248,7 +261,7 @@ console.log("landmarks and landmark: back and forward at every boundary");
 console.log("the edges: nothing to say, and a span that says nothing");
 {
   const empty = timelineOfUtterances([]);
-  assert("a conversation with nothing to say has no clock, names no mark and paints nothing", empty.totalMs === 0 && timeAt(empty, mark(0)) === 0 && markAt(empty, 0) === null && spotAt(empty, 0) === null && !estimated(empty, 0));
+  assert("a conversation with nothing to say has no clock, names no place and paints nothing", empty.totalMs === 0 && timeAt(empty, mark(0)) === 0 && placeAt(empty, 0) === null && cursorAt(empty, 0) === null && !estimated(empty, 0));
   throws("a unit covering no characters is a bug in whoever cut the text", () => timelineOfScript(emptyManifest([unit(one, 5, 5)]), [0]));
   assert(
     "every unit measured at nothing is a clock of the gaps alone: the measurements are believed",
@@ -258,8 +271,8 @@ console.log("the edges: nothing to say, and a span that says nothing");
     "but a zero measurement does not collapse the tail it cannot speak for: the unmeasured legs take the default rate",
     (() => {
       const line = timelineOfScript(recorded([0], () => 0), utteranceOf);
-      const tail = speechLegs(line).slice(1);
-      return line.legs[0]?.ms === 0 && tail.every((leg) => near(leg.ms, (leg.content.charEnd - leg.content.charStart) * DEFAULT_MS_PER_CHAR));
+      const tail = speechSegments(line).slice(1);
+      return line.segments[0]?.ms === 0 && tail.every((leg) => near(leg.ms, (leg.content.charEnd - leg.content.charStart) * DEFAULT_MS_PER_CHAR));
     })(),
   );
 }

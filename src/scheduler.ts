@@ -19,6 +19,15 @@
 // arrive cannot be dropped — by construction: that unit is the FRONTIER, the first unit at
 // or after the cursor that is not held, and the frontier is never evicted or cancelled.
 //
+// THE PLAYER PLAYS SEGMENTS; THE HOLDINGS ARE UNITS. The player is built over the
+// timeline's layout (timeline.ts) — speech slots naming units and the silence slots between
+// speakers — and reports its position as a segment of that layout and an offset into it.
+// Holdings stay unit-indexed, so two readings translate: the unit whose audio the cursor
+// needs first (`needed`), which in a gap is the unit of the speech the gap precedes, since
+// that is what must be held by the time the gap ends; and the speech unit the cursor is
+// inside (`spoken`), none in a gap. Nothing here treats a gap as any unit's: a gap is
+// planned around, never restarted, never skipped, never dropped [LAW:one-source-of-truth].
+//
 // TWO FACTS, TWO RECORDS. Audio held in the player and the measurement of a unit's audio
 // (its duration, its word times) are different facts with different lives: PCM is dropped
 // behind the cursor so a three-hour paste never accumulates a gigabyte of floats, while the
@@ -50,8 +59,9 @@
 // report the manifest rejects, becomes `failed{reason}` for the life of the scheduler: it is
 // never retried (a frame-cap is the model looping on that text and would loop again), its
 // void frames leave the player as soon as they are not the ones being cued, and when the
-// cursor reaches it the player is seeked past it — or stopped at the end — so playback
-// never waits on audio that will never come. The panel
+// cursor reaches its slot the player is seeked to the segment after it — the gap before the
+// next speaker when it ends a turn, else the next unit — or stopped at the end, so playback
+// never waits on audio that will never come and a failed unit does not cost the gap. The panel
 // reads the reason off `holdings` [LAW:no-silent-failure]. A message that the protocol says
 // cannot happen — `audio` for a unit never requested, `failed{duplicate-unit}`, `refused` for
 // a synthesize or cancel — is a scheduler bug and throws.
@@ -74,11 +84,12 @@
 // disposable projection of the stored original's rendition [LAW:one-way-deps].
 
 import { emptyManifest, recordUnit } from "./speechManifest";
-import type { Manifest, ManifestUnit, Position, RecordRejection } from "./speechManifest";
+import type { Manifest, ManifestUnit, RecordRejection } from "./speechManifest";
 import { unitText, type SynthesisUnit, type VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
-import type { PlayerEvent, PlayerState, UnitPlayer, UnitPlayerConfig } from "./unitPlayer";
+import { layoutOf, type Slot } from "./timeline";
+import type { PlayerEvent, PlayerState, SegmentOffset, UnitPlayer, UnitPlayerConfig } from "./unitPlayer";
 
 // ── the window ─────────────────────────────────────────────────────────────────────────
 
@@ -114,6 +125,8 @@ export interface SchedulerState {
   readonly voices: VoiceMap;
   readonly holdings: ReadonlyArray<Holding>;
   readonly manifest: Manifest;
+  // The sequence the player plays: the timeline's layout over this script, built once.
+  readonly layout: ReadonlyArray<Slot>;
 }
 
 const ABSENT: Holding = { kind: "absent" };
@@ -124,7 +137,40 @@ export const initialState = (script: ReadonlyArray<SynthesisUnit>, voices: Voice
   voices,
   holdings: script.map(() => ABSENT),
   manifest: emptyManifest(script),
+  layout: layoutOf(script.map((unit) => unit.utterance.anchor)),
 });
+
+// ── reading the player's position ──────────────────────────────────────────────────────
+
+// A unit and how far into its audio: the shape the window is measured in.
+interface UnitOffset {
+  readonly unit: number;
+  readonly offsetMs: number;
+}
+
+const slotAt = (layout: ReadonlyArray<Slot>, at: SegmentOffset): Slot => {
+  const slot = layout[at.segment];
+  if (slot === undefined) throw new RangeError(`scheduler: the player is at segment ${at.segment} of ${layout.length}`);
+  return slot;
+};
+
+// The unit whose audio the cursor needs first: the unit of a speech segment at the
+// offset; in silence, the unit of the speech the gap precedes, at its start — a gap is laid
+// only before speech (timeline.ts), so the slot after it is the unit wanted by its end.
+const needed = (layout: ReadonlyArray<Slot>, at: SegmentOffset): UnitOffset => {
+  const slot = slotAt(layout, at);
+  if (slot.kind === "speech") return { unit: slot.span, offsetMs: at.offsetMs };
+  const next = slotAt(layout, { segment: at.segment + 1, offsetMs: 0 });
+  if (next.kind !== "speech") throw new RangeError(`scheduler: segment ${at.segment} is a silence followed by silence`);
+  return { unit: next.span, offsetMs: 0 };
+};
+
+// The unit the cursor is inside, or null in a gap: what a failure skips and a voice change
+// restarts is a unit being spoken, never the silence between two.
+const spoken = (layout: ReadonlyArray<Slot>, at: SegmentOffset): number | null => {
+  const slot = slotAt(layout, at);
+  return slot.kind === "speech" ? slot.span : null;
+};
 
 // ── events and commands ────────────────────────────────────────────────────────────────
 
@@ -261,11 +307,11 @@ interface Reach {
 
 const EMPTY: Reach = { lo: 0, hi: -1, keepHi: -1, frontier: -1 };
 
-const reach = (holdings: ReadonlyArray<Holding>, at: Position): Reach => {
+const reach = (holdings: ReadonlyArray<Holding>, at: UnitOffset): Reach => {
   const count = holdings.length;
-  const cursor = holdings[at.unitIndex];
-  const lo = Math.max(0, at.unitIndex - KEEP_BEHIND);
-  let hi = at.unitIndex;
+  const cursor = holdings[at.unit];
+  const lo = Math.max(0, at.unit - KEEP_BEHIND);
+  let hi = at.unit;
   let unitsAhead = 0;
   let msAhead = cursor?.kind === "held" ? cursor.record.durationMs - at.offsetMs : 0;
   while (hi + 1 < count && unitsAhead < LOOKAHEAD.units && msAhead < LOOKAHEAD.ms) {
@@ -274,7 +320,7 @@ const reach = (holdings: ReadonlyArray<Holding>, at: Position): Reach => {
     if (holding?.kind === "held") msAhead += holding.record.durationMs;
     if (holding?.kind !== "failed") unitsAhead++;
   }
-  let frontier = at.unitIndex;
+  let frontier = at.unit;
   while (frontier < count && holdings[frontier]?.kind === "held") frontier++;
   return { lo, hi, keepHi: Math.max(hi, frontier), frontier };
 };
@@ -318,33 +364,36 @@ const plan = (state: SchedulerState, player: PlayerState): Plan => {
 
   const count = state.holdings.length;
 
-  // A failed unit under the cursor is skipped: the player moves to the next unit, or ends
-  // at the script's end, and the follow-up report plans from there. Its frames, now no
-  // longer the frontier's, are dropped in the same breath.
+  // A failed unit under the cursor is skipped: the player moves to the segment after it —
+  // the gap it leads into, or the next unit — or ends at the script's end, and the
+  // follow-up report plans from there. Its frames, now no longer the frontier's, are
+  // dropped in the same breath. A cursor in the gap before a failed unit is not yet on it:
+  // the gap sounds, and the skip is planned when the clock reaches the unit's own slot.
   if (player.kind !== "idle") {
-    const cursor = holdingOf(state, player.at.unitIndex);
-    if (cursor.kind === "failed") {
-      const next = player.at.unitIndex + 1;
-      commands.push(toPlayer(next < count ? { kind: "seek", to: { unitIndex: next, offsetMs: 0 } } : { kind: "stop" }));
-      evict(player.at.unitIndex);
+    const unit = spoken(state.layout, player.at);
+    if (unit !== null && holdingOf(state, unit).kind === "failed") {
+      const next = player.at.segment + 1;
+      commands.push(toPlayer(next < state.layout.length ? { kind: "seek", to: { segment: next, offsetMs: 0 } } : { kind: "stop" }));
+      evict(unit);
       return finish();
     }
   }
 
   // Outside the window everything goes; inside it a failed unit's void frames go too. The
   // frontier alone is untouchable: the player is cueing its frames as they arrive.
-  const window = player.kind === "idle" ? EMPTY : reach(state.holdings, player.at);
+  const at = player.kind === "idle" ? null : needed(state.layout, player.at);
+  const window = at === null ? EMPTY : reach(state.holdings, at);
   for (let unit = 0; unit < count; unit++) {
     if (unit === window.frontier) continue;
     if (unit < window.lo || unit > window.keepHi || current(unit).kind === "failed") evict(unit);
   }
 
-  if (player.kind === "idle") return finish();
+  if (at === null) return finish();
 
   // The most wanted unit: the first in the request window that is neither held nor
   // failed. Requested or cancelling, it is already on its way and the plan waits; absent,
   // it is requested now, displacing whatever else was in flight.
-  let next = player.at.unitIndex;
+  let next = at.unit;
   while (next <= window.hi && (current(next).kind === "held" || current(next).kind === "failed")) next++;
   if (next > window.hi || current(next).kind !== "absent") return finish();
 
@@ -362,11 +411,15 @@ const plan = (state: SchedulerState, player: PlayerState): Plan => {
 // How the unit under the cursor is restarted, by the player's own state: the player will
 // not drop the unit it is cueing, so a speaking player is held before the drops and set
 // going again after the seek; a paused one has its held place moved; an idle one has no
-// cursor. `changed` says whether that unit's voice is among the changed.
-const restart = (player: PlayerState, changed: (unit: number) => boolean): { before: Command[]; after: Command[] } => {
+// cursor, and one in a gap is inside no unit — the gap sounds on, and the unit after it
+// is asked for afresh by the plan. `changed` says whether that unit's voice is among the
+// changed.
+const restart = (layout: ReadonlyArray<Slot>, player: PlayerState, changed: (unit: number) => boolean): { before: Command[]; after: Command[] } => {
   const none = { before: [], after: [] };
-  if (player.kind === "idle" || !changed(player.at.unitIndex)) return none;
-  const seek = toPlayer({ kind: "seek", to: { unitIndex: player.at.unitIndex, offsetMs: 0 } });
+  if (player.kind === "idle") return none;
+  const unit = spoken(layout, player.at);
+  if (unit === null || !changed(unit)) return none;
+  const seek = toPlayer({ kind: "seek", to: { segment: player.at.segment, offsetMs: 0 } });
   switch (player.kind) {
     case "paused":
       return { before: [], after: [seek] };
@@ -407,9 +460,9 @@ const revoice = (state: SchedulerState, voices: VoiceMap, player: PlayerState): 
     }
   });
   const units = state.manifest.units.map((record, unit) => (changed(unit) ? undefined : record));
-  const { before, after } = restart(player, changed);
+  const { before, after } = restart(state.layout, player, changed);
   return {
-    state: { voices, holdings, manifest: { ...state.manifest, units } },
+    state: { ...state, voices, holdings, manifest: { ...state.manifest, units } },
     commands: [...before, ...commands, ...after],
   };
 };
@@ -444,9 +497,9 @@ export interface SchedulerConfig {
   readonly port: SynthesisPort;
   readonly script: ReadonlyArray<SynthesisUnit>;
   readonly voices: VoiceMap;
-  // Builds the player over the device the caller chooses; the scheduler supplies the unit
-  // count and the report callback, so the two can never disagree about the script.
-  readonly player: (config: Pick<UnitPlayerConfig, "unitCount" | "onState">) => UnitPlayer;
+  // Builds the player over the device the caller chooses; the scheduler supplies the
+  // layout and the report callback, so the two can never disagree about the script.
+  readonly player: (config: Pick<UnitPlayerConfig, "layout" | "onState">) => UnitPlayer;
   // Called after every event that changed what is held or where the player is.
   readonly onChange: (view: SchedulerView) => void;
 }
@@ -468,7 +521,7 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
   const queue: Event[] = [];
   let draining = false;
 
-  const player = config.player({ unitCount: config.script.length, onState: (reported) => dispatch({ kind: "player", state: reported }) });
+  const player = config.player({ layout: state.layout, onState: (reported) => dispatch({ kind: "player", state: reported }) });
 
   const view = (): SchedulerView => ({ player: player.state(), manifest: state.manifest, holdings: state.holdings });
 

@@ -792,7 +792,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
     import { readPick, writePick } from "../voiceChoice";
-    import { caretSource, createPainter, tapMark } from "../readAlong";
+    import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
     import type { Utterance } from "../speech";
@@ -929,14 +929,14 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           if (event.persisted) panel.wake();
         });
 
-        // A tap on the page's prose listens from there; readAlong.tapMark says which taps
+        // A tap on the page's prose listens from there; readAlong.tapPlace says which taps
         // are that and which are the page's own controls, links and selections. The reader
         // is looking where the voice is about to be, so the page follows again.
         const caretAt = caretSource(document);
         document.addEventListener("click", (event) => {
-          const mark = tapMark(document, caretAt, utterances, event);
-          if (mark === null) return;
-          panel.send({ kind: "mark", to: mark });
+          const place = tapPlace(document, caretAt, utterances, event);
+          if (place === null) return;
+          panel.send({ kind: "place", to: place });
         });
 
         // The transport's keys, claimed in the CAPTURE phase. Two things follow from the

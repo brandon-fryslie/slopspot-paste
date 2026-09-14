@@ -30,8 +30,11 @@
 //   seek back to an absent unit   -> in-flight (still in window) cancelled, target requested
 //   the frontier                  -> never dropped or cancelled, even past the window
 //   held run contiguous from cursor -> kept even past the window
-//   cursor enters a failed unit   -> seek to the next unit, its frames dropped
+//   cursor enters a failed unit   -> seek to the segment after it (the gap it leads into), its frames dropped
+//   cursor in the gap before a failed unit -> nothing yet: the gap sounds, the skip waits for the unit's slot
 //   cursor enters a failed last unit -> stop
+//   cursor in a gap               -> the window is measured from the unit the gap precedes
+//   voices change in a gap        -> no restart: the gap sounds on, the unit after it is asked again
 //   paused                        -> same window as speaking
 //   re-synthesis after a drop     -> the manifest record is replaced
 //   driver: reports raised by its own commands are handled after them, in order
@@ -45,9 +48,12 @@ import type { Utterance } from "../src/speech";
 import { unitText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
+import { GAP_MS } from "../src/timeline";
 import { SCHEDULE_LEAD_S, createUnitPlayer, openDevice } from "../src/unitPlayer";
 import type { PlayerState } from "../src/unitPlayer";
 import { FRAME_S, StubDevice, describe, frame } from "./playbackStub";
+
+const GAP_S = GAP_MS / 1000;
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -83,12 +89,17 @@ const scriptOf = (count: number): ReadonlyArray<SynthesisUnit> =>
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 
 const idle: PlayerState = { kind: "idle" };
-const speaking = (unitIndex: number, offsetMs = 0, flow: "audio" | "waiting" = "waiting"): PlayerState => ({
+// Every unit of `scriptOf` is its own turn, so the layout is unit, gap, unit, gap, …: unit
+// i's slot is segment 2i and the gap before it is segment 2i - 1.
+const slotOf = (unit: number): number => 2 * unit;
+const gapBefore = (unit: number): number => 2 * unit - 1;
+const speaking = (unit: number, offsetMs = 0, flow: "audio" | "waiting" = "waiting"): PlayerState => ({
   kind: "speaking",
-  at: { unitIndex, offsetMs },
+  at: { segment: slotOf(unit), offsetMs },
   flow,
 });
-const paused = (unitIndex: number, offsetMs = 0): PlayerState => ({ kind: "paused", at: { unitIndex, offsetMs } });
+const inGap = (unit: number, offsetMs = 100): PlayerState => ({ kind: "speaking", at: { segment: gapBefore(unit), offsetMs }, flow: "audio" });
+const paused = (unit: number, offsetMs = 0): PlayerState => ({ kind: "paused", at: { segment: slotOf(unit), offsetMs } });
 
 const worker = (message: FromWorker): Event => ({ kind: "worker", message });
 const reported = (state: PlayerState): Event => ({ kind: "player", state });
@@ -108,7 +119,7 @@ const describeCommand = (command: Command): string => {
     case "drop":
       return `${e.kind} ${e.unit}`;
     case "seek":
-      return `seek ${e.to.unitIndex}:${e.to.offsetMs}`;
+      return `seek ${e.to.segment}:${e.to.offsetMs}`;
     default:
       return e.kind;
   }
@@ -245,8 +256,10 @@ console.log("step: failure is skipped, not waited on");
   const capped = run(going.state, speaking(0, 0, "audio"), worker({ kind: "failed", unitId: 2, reason: { kind: "frame-cap", frames: 1000 } }));
   assert("failed at the frontier: frames stay (the player is cueing them), the unit after it is requested", capped.commands.join() === "synthesize 3" && kinds(capped.state) === "hhfr");
   assert("the failure is readable with its reason", capped.state.holdings[2]?.kind === "failed" && capped.state.holdings[2].reason.kind === "frame-cap" && capped.state.holdings[2].frames === "player");
+  const gapped = run(capped.state, inGap(2), reported(inGap(2)));
+  assert("the cursor in the gap before the failed unit: the gap sounds, nothing is skipped yet, and the window is measured from the failed unit — the one after it already in flight, the unit two behind dropped", gapped.commands.join() === "drop 0" && kinds(gapped.state) === "ahfr");
   const reached = run(capped.state, speaking(2, 5, "audio"), reported(speaking(2, 5, "audio")));
-  assert("the cursor entering the failed unit: seek past it, then drop its frames", reached.commands.join() === "seek 3:0,drop 2" && capped.state.holdings[2] !== reached.state.holdings[2] && reached.state.holdings[2]?.kind === "failed" && reached.state.holdings[2].frames === "none");
+  assert("the cursor entering the failed unit: seek to the segment after it — the gap it leads into — then drop its frames", reached.commands.join() === `seek ${gapBefore(3)}:0,drop 2` && capped.state.holdings[2] !== reached.state.holdings[2] && reached.state.holdings[2]?.kind === "failed" && reached.state.holdings[2].frames === "none");
   const onward = run(reached.state, speaking(3), reported(speaking(3)));
   assert("at the next unit, already in flight, nothing more is asked; the units now two behind are dropped", onward.commands.join() === "drop 0,drop 1" && kinds(onward.state) === "aafr");
   const lastFails = run(onward.state, speaking(3), worker({ kind: "failed", unitId: 3, reason: { kind: "runtime", message: "boom" } }));
@@ -256,9 +269,9 @@ console.log("step: failure is skipped, not waited on");
   const cutShort = run(going.state, idle, reported(idle));
   assert("idle with units held and in flight: everything dropped, the request withdrawn", cutShort.commands.join() === "drop 0,drop 1,cancel 2,drop 2" && kinds(cutShort.state) === "aaca");
   const replay = run(ended.state, speaking(2), reported(speaking(2)));
-  assert("seeking into a failed unit later skips it again without a request", replay.commands.join() === "seek 3:0");
+  assert("seeking into a failed unit later skips it again without a request", replay.commands.join() === `seek ${gapBefore(3)}:0`);
   const pausedAtFailed = run(ended.state, paused(2), reported(paused(2)));
-  assert("paused at a failed unit moves the held position past it", pausedAtFailed.commands.join() === "seek 3:0");
+  assert("paused at a failed unit moves the held position past it", pausedAtFailed.commands.join() === `seek ${gapBefore(3)}:0`);
 
   const notFrontier = run(fresh, speaking(0), reported(speaking(0)), done(0), done(1), audio(2, 0), audio(2, 1));
   const staleState: SchedulerState = { ...notFrontier.state, holdings: notFrontier.state.holdings.with(1, { kind: "absent" }) };
@@ -320,7 +333,7 @@ console.log("step: the reader's voices");
   const mid = run(at1.state, speaking(1, 300, "audio"), voices(userVoice));
   assert(
     "the user's voice changes while unit 1 speaks: paused, the user's held units dropped, seeked to 1's start, played; then the in-flight assistant unit gives way and 1 is asked again",
-    mid.commands.join() === "pause,drop 1,drop 3,seek 1:0,play,cancel 4,drop 4,synthesize 1",
+    mid.commands.join() === `pause,drop 1,drop 3,seek ${slotOf(1)}:0,play,cancel 4,drop 4,synthesize 1`,
   );
   assert("state: the assistant's units untouched, the user's forgotten, 1 requested", kinds(mid.state) === "hrhaca" && mid.state.voices.user === "fantine");
   assert("the user's records are voided, the assistant's kept", mid.state.manifest.units[1] === undefined && mid.state.manifest.units[3] === undefined && mid.state.manifest.units[0]?.durationMs === 1000 && mid.state.manifest.units[2]?.durationMs === 1000);
@@ -340,7 +353,7 @@ console.log("step: the reader's voices");
   const both = run(at1.state, speaking(1, 300, "audio"), voices(bothVoices));
   assert(
     "both voices change while unit 1 speaks: one pause, every held unit dropped, the in-flight one cancelled, one seek to 1's start and play, then 1 asked again",
-    both.commands.join() === "pause,drop 0,drop 1,drop 2,drop 3,cancel 4,drop 4,seek 1:0,play,synthesize 1" && kinds(both.state) === "araaca",
+    both.commands.join() === `pause,drop 0,drop 1,drop 2,drop 3,cancel 4,drop 4,seek ${slotOf(1)}:0,play,synthesize 1` && kinds(both.state) === "araaca",
   );
   const bothAsked = step(at1.state, voices(bothVoices), speaking(1, 300, "audio")).commands.at(-1);
   assert("unit 1 is asked in the new user voice", bothAsked?.kind === "worker" && bothAsked.message.kind === "synthesize" && bothAsked.message.unitId === 1 && bothAsked.message.voice === "fantine");
@@ -353,7 +366,9 @@ console.log("step: the reader's voices");
   );
 
   const heldStill = run(at1.state, paused(1, 300), voices(userVoice));
-  assert("paused: the held place moves to the unit's start, with no pause and no play", heldStill.commands.join() === "drop 1,drop 3,seek 1:0,cancel 4,drop 4,synthesize 1");
+  assert("paused: the held place moves to the unit's start, with no pause and no play", heldStill.commands.join() === `drop 1,drop 3,seek ${slotOf(1)}:0,cancel 4,drop 4,synthesize 1`);
+  const gapVoice = run(at1.state, inGap(1), voices(userVoice));
+  assert("the user's voice changes while the gap before unit 1 sounds: no pause, no seek, no play — the gap sounds on; the user's units are forgotten and 1 asked again for the gap's end", gapVoice.commands.join() === "drop 1,drop 3,cancel 4,drop 4,synthesize 1" && kinds(gapVoice.state) === "hrhaca");
 
   const stopped = run(built.state, idle, voices(userVoice));
   assert("idle: the changed units are forgotten with their records; the rest are dropped as always, their records kept", stopped.commands.join() === "drop 1,drop 3,drop 0,drop 2" && kinds(stopped.state) === "aaaaaa" && stopped.state.manifest.units[1] === undefined && stopped.state.manifest.units[0]?.durationMs === 1000);
@@ -412,15 +427,15 @@ console.log("driver: a voice change mid-unit restarts it in the new voice, over 
     emit({ kind: "audio", unitId: unit, frameIndex: 0, pcm: frame(unit, 0) });
     emit({ kind: "done", unitId: unit, report: report(FRAME_S * 1000), elapsedMs: 5 });
   }
-  device.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
-  assert("setup: every unit held, the cursor inside the user's unit 1", describe(scheduler.view().player) === "speaking/audio@1:10.000" && scheduler.view().holdings.every((h) => h.kind === "held"));
+  device.advance(SCHEDULE_LEAD_S + FRAME_S + GAP_S + 0.01);
+  assert("setup: every unit held, the cursor inside the user's unit 1, past the gap before it", describe(scheduler.view().player) === `speaking/audio@${slotOf(1)}:10.000` && scheduler.view().holdings.every((h) => h.kind === "held"));
   scheduler.voices(VOICES);
   assert("the same voices: nothing sent", said() === "synthesize 0 marius,synthesize 1 alba,synthesize 2 marius,synthesize 3 alba");
   scheduler.voices({ ...VOICES, user: "fantine" });
-  assert("the user's voice changes: the player took the pause, the drops and the seek, and waits at 1's start for the new rendition", describe(scheduler.view().player) === "speaking/waiting@1:0.000" && said().endsWith("synthesize 1 fantine"));
+  assert("the user's voice changes: the player took the pause, the drops and the seek, and waits at 1's start for the new rendition", describe(scheduler.view().player) === `speaking/waiting@${slotOf(1)}:0.000` && said().endsWith("synthesize 1 fantine"));
   assert("the user's units are gone from the view, the assistant's held", scheduler.view().holdings.map((h) => h.kind[0]).join("") === "hrha" && scheduler.view().manifest.units[1] === undefined && scheduler.view().manifest.units[0] !== undefined);
   emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
-  assert("the new rendition's first frame plays from the unit's start", describe(scheduler.view().player) === "speaking/audio@1:0.000");
+  assert("the new rendition's first frame plays from the unit's start", describe(scheduler.view().player) === `speaking/audio@${slotOf(1)}:0.000`);
   scheduler.dispose();
 }
 
@@ -467,8 +482,8 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
   emit({ kind: "done", unitId: 0, report: report(2 * FRAME_S * 1000), elapsedMs: 5 });
   assert("done 0: unit 1 requested; the view holds the record", said() === "synthesize 0,synthesize 1" && scheduler.view().manifest.units[0]?.durationMs === 160);
   emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
-  const boundary = device.sources[2];
-  assert("unit 1's first frame is scheduled at unit 0's last sample end — gapless through the scheduler", boundary?.started?.when === device.sources[1]?.endTime());
+  const [, last, gap, boundary] = device.sources;
+  assert("the gap is cued at unit 0's last sample end and unit 1's first frame at the gap's end — the timeline's own silence, through the scheduler", gap?.started?.when === last?.endTime() && gap !== undefined && Math.abs(gap.endTime() - (gap.started?.when ?? NaN) - GAP_S) < 1e-9 && boundary?.started?.when === gap.endTime());
   emit({ kind: "done", unitId: 1, report: report(FRAME_S * 1000), elapsedMs: 5 });
   emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });
   emit({ kind: "done", unitId: 2, report: report(FRAME_S * 1000), elapsedMs: 5 });
@@ -478,14 +493,16 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
   assert("all four held", scheduler.view().holdings.every((h) => h.kind === "held"));
 
   device.advance(SCHEDULE_LEAD_S + 2 * FRAME_S + 0.01);
-  assert("crossing into 1: reported, nothing dropped yet", describe(scheduler.view().player) === "speaking/audio@1:10.000" && scheduler.view().holdings[0]?.kind === "held");
-  device.advance(FRAME_S);
+  assert("crossing into the gap before 1: reported as the gap, nothing dropped", describe(scheduler.view().player) === `speaking/audio@${gapBefore(1)}:10.000` && scheduler.view().holdings[0]?.kind === "held");
+  device.advance(GAP_S);
+  assert("crossing into 1 at the gap's end: unit 0 still kept behind the cursor", describe(scheduler.view().player) === `speaking/audio@${slotOf(1)}:10.000` && scheduler.view().holdings[0]?.kind === "held");
+  device.advance(FRAME_S + GAP_S);
   assert("crossing into 2: unit 0 dropped behind the cursor, the view says absent", scheduler.view().holdings[0]?.kind === "absent" && scheduler.view().holdings[1]?.kind === "held");
   assert("the manifest still knows unit 0's length", scheduler.view().manifest.units[0]?.durationMs === 160);
 
   // A seek back into the dropped unit: the player waits there, the scheduler re-requests
   // it, and the report the player raised inside the seek was handled after the seek.
-  scheduler.send({ kind: "seek", to: { unitIndex: 0, offsetMs: 0 } });
+  scheduler.send({ kind: "seek", to: { segment: 0, offsetMs: 0 } });
   assert("seek to the dropped unit: waiting there, requested again", describe(scheduler.view().player) === "speaking/waiting@0:0.000" && said().endsWith("synthesize 0"));
   emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
   assert("its fresh frame 0 is accepted and plays", describe(scheduler.view().player) === "speaking/audio@0:0.000");
