@@ -102,7 +102,7 @@ import type { WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
-import { clockText, estimated, markAt, skipTurn, timeAt, timelineOfScript, timelineOfUtterances, turnMark, turnStarts, type Timeline } from "./timeline";
+import { clockText, estimated, markAt, timeAt, timelineOfScript, timelineOfUtterances, turnMark, turnStarts, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
 import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
@@ -265,10 +265,6 @@ export interface Step {
 
 // The one script the panel ever sends; a reply with another id is not ours.
 export const SCRIPT_ID = 1;
-// How far into a turn a back skip still means "the turn before" (timeline.skipTurn), in the
-// conversation's own milliseconds: about a word, chosen by ear — a music player's three
-// seconds felt long against turns this short.
-export const BACK_GRACE_MS = 1500;
 
 const IDLE: PerformerState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
@@ -1431,7 +1427,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "nudge":
         return to(markAt(timeline(), timeAt(timeline(), placeNow()) + g.bySeconds * 1000));
       case "turn":
-        return to(skipTurn(turns, timeline(), placeNow(), g.by, BACK_GRACE_MS));
+        return to(turnMark(turns, placeNow(), g.by));
     }
   };
 
