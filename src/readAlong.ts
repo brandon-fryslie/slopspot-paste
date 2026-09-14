@@ -1,10 +1,10 @@
 // [LAW:decomposition] The read-along painter: it marks, on the page, where the voice is —
-// the turn card, the segment inside it, the word — and answers the reverse, which place in
+// the turn card, the range inside it, the word — and answers the reverse, which place in
 // the text a point on the page is. One sentence, no "and" hiding a second job: this module
 // translates between utterance-text coordinates and the rendered card, both ways. It
 // decides nothing about WHAT is said (speech.ts), WHERE playback is (the performers) or
-// WHICH cursor to paint (speechManifest.cursorAt) — it is handed an utterance, its
-// turn-mates and a cursor, and paints; it is handed a caret, and names a mark.
+// WHICH cursor to paint (timeline.cursorAt) — it is handed an utterance, its
+// turn-mates and a cursor, and paints; it is handed a caret, and names a place.
 //
 // WHY A WORD MAP EXISTS AT ALL. An utterance is derived from the stored dialogue with the
 // markdown stripped and whitespace collapsed; the card is that same markdown rendered to
@@ -24,12 +24,12 @@
 // says where we are. Cost, stated once: a run of page words longer than the window that
 // speech skipped (an image's alt text, say) desyncs the rest of that card, which shows as
 // no word paint until the next card. A tap on text nothing says — a code block, a fold,
-// the usage aside — names no mark; the announcement that stands in for a code block has
+// the usage aside — names no place; the announcement that stands in for a code block has
 // no words on the page to tap.
 //
 // HOW IT PAINTS. On first entry to a card, every matched word of that card is wrapped in a
 // span and the card takes the turn class; painting a cursor is toggling two classes on the
-// spans — the segment's on the words the segment covers, the word's on the word — so the
+// spans — the range's on the words the range covers, the word's on the word — so the
 // page shows a light sentence and a bright word inside it. Leaving the card unwraps: each
 // span becomes its text again and the card's text nodes are re-merged, so the DOM the
 // renderer produced is restored. The Custom Highlight API would paint without touching
@@ -37,9 +37,10 @@
 // spans double as the elements the follow-scroll measures; that refinement is deferred,
 // its cost being one wrap and unwrap per card entered [LAW:carrying-cost].
 
-import type { Mark } from "./performer";
+import type { Place } from "./performer";
 import type { Utterance } from "./speech";
-import { wordSpans, type Cursor, type WordSpan } from "./speechManifest";
+import { wordSpans, type WordSpan } from "./speechManifest";
+import type { Cursor } from "./timeline";
 
 // ── the pure match ──────────────────────────────────────────────────────────────────
 
@@ -149,16 +150,17 @@ const matchCard = (card: Element, turn: ReadonlyArray<Utterance>): ReadonlyArray
 
 // ── the painter ─────────────────────────────────────────────────────────────────────
 
-// What the panel hands the painter: the utterance being said, every utterance of the same
-// turn in order (the match runs over the whole card, so a cursor in the third paragraph
-// lands in the third paragraph), and the cursor in utterance-text coordinates.
-export interface ReadAlongAt extends Cursor {
+// What the panel hands the painter: the timeline's cursor with its utterance resolved to
+// the page's, and every utterance of the same turn in order (the match runs over the whole
+// card, so a cursor in the third paragraph lands in the third paragraph); the range and
+// the word are in utterance-text coordinates.
+export interface ReadAlongAt extends Pick<Cursor, "range" | "word"> {
   readonly utterance: Utterance;
   readonly turn: ReadonlyArray<Utterance>;
 }
 
 // What was painted, for whoever keeps it in view: the card's anchor, and the element that
-// carries the cursor — the word, else the first word of the segment, else the card.
+// carries the cursor — the word, else the first word of the range, else the card.
 export interface Painted {
   readonly anchor: string;
   readonly el: Element;
@@ -186,7 +188,7 @@ interface WrappedCard {
 
 export const WORD_CLASS = "ra-word";
 export const CURSOR_CLASS = "ra-on";
-export const SEGMENT_CLASS = "ra-in";
+export const RANGE_CLASS = "ra-in";
 // The turn being spoken, on its card: the one mark that follows the voice even where no
 // word of the card can be placed.
 export const TURN_CLASS = "speaking";
@@ -252,24 +254,24 @@ export const createPainter = (doc: Document): Painter => {
       clear();
       return null;
     }
-    const { utterance, turn, segment, word } = at;
+    const { utterance, turn, range, word } = at;
     if (current === null || current.anchor !== utterance.anchor) {
       clear();
       current = wrapCard(doc, utterance.anchor, turn);
     }
     let onWord: Element | null = null;
-    let inSegment: Element | null = null;
+    let inRange: Element | null = null;
     for (const [said, words] of current.byUtterance) {
       for (const wrapped of words) {
         const lit = said === utterance && word !== null && intersects(wrapped.word, word);
-        const covered = said === utterance && intersects(wrapped.word, segment);
+        const covered = said === utterance && intersects(wrapped.word, range);
         wrapped.el.classList.toggle(CURSOR_CLASS, lit);
-        wrapped.el.classList.toggle(SEGMENT_CLASS, covered);
+        wrapped.el.classList.toggle(RANGE_CLASS, covered);
         if (lit && onWord === null) onWord = wrapped.el;
-        if (covered && inSegment === null) inSegment = wrapped.el;
+        if (covered && inRange === null) inRange = wrapped.el;
       }
     }
-    const el = onWord ?? inSegment ?? current.card;
+    const el = onWord ?? inRange ?? current.card;
     return el === null ? null : { anchor: current.anchor, el };
   };
 
@@ -315,13 +317,13 @@ export const caretSource = (doc: Document): CaretAt => {
   throw new Error("read-along: this browser cannot place a caret from a point");
 };
 
-// The mark a caret names: the matched word the caret is in, or the first matched word
+// The place a caret names: the matched word the caret is in, or the first matched word
 // after it (a tap between words, or on punctuation, starts the next word). Null when the
 // caret is not in text a voice says: outside every turn card, inside an unspoken block,
 // or past the last word the card and its turn share. The caret is a text position because
 // the browser's own caret placement (caretSource) reports one; a caret in an element is a
 // point between children, not in text, and names nothing.
-export const markAt = (utterances: ReadonlyArray<Utterance>, caret: Caret): Mark | null => {
+export const placeOfCaret = (utterances: ReadonlyArray<Utterance>, caret: Caret): Place | null => {
   if (caret.node.nodeType !== TEXT_NODE) return null;
   const text = caret.node as Text;
   const anchors = new Set(utterances.map((utterance) => utterance.anchor));
@@ -342,17 +344,17 @@ export const markAt = (utterances: ReadonlyArray<Utterance>, caret: Caret): Mark
   return { utterance, char: atOrAfter.word.charStart };
 };
 
-// [LAW:parse-dont-validate] A click, parsed into the mark it seeks to, or null when the
+// [LAW:parse-dont-validate] A click, parsed into the place it seeks to, or null when the
 // click is doing something else — following a link, pressing a control, opening a fold,
 // ending a drag that selected text — or lands on nothing a voice says. The one unit that
 // decides what a tap on the page means for the listen; the page does not re-ask.
 const CONTROLS = "a, button, summary, input, textarea, select, label";
 
-export const tapMark = (doc: Document, caretAt: CaretAt, utterances: ReadonlyArray<Utterance>, tap: MouseEvent): Mark | null => {
+export const tapPlace = (doc: Document, caretAt: CaretAt, utterances: ReadonlyArray<Utterance>, tap: MouseEvent): Place | null => {
   const target = tap.target;
   const control = target instanceof Element && target.closest(CONTROLS) !== null;
   const selecting = !(doc.defaultView?.getSelection()?.isCollapsed ?? true);
   if (tap.defaultPrevented || control || selecting) return null;
   const caret = caretAt(tap.clientX, tap.clientY);
-  return caret === null ? null : markAt(utterances, caret);
+  return caret === null ? null : placeOfCaret(utterances, caret);
 };

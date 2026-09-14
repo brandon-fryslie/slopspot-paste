@@ -116,4 +116,4 @@ export const frame = (unit: number, index: number): Float32Array<ArrayBuffer> =>
 export const describe = (state: PlayerState): string =>
   state.kind === "idle"
     ? "idle"
-    : `${state.kind}${state.kind === "speaking" ? `/${state.flow}` : ""}@${state.at.unitIndex}:${state.at.offsetMs.toFixed(3)}`;
+    : `${state.kind}${state.kind === "speaking" ? `/${state.flow}` : ""}@${state.at.segment}:${state.at.offsetMs.toFixed(3)}`;

@@ -46,8 +46,8 @@ const say = (gesture: Gesture | null): string => {
   switch (gesture.kind) {
     case "tap":
       return `tap ${gesture.control}`;
-    case "mark":
-      return `mark ${gesture.to.utterance}:${gesture.to.char}`;
+    case "place":
+      return `place ${gesture.to.utterance}:${gesture.to.char}`;
     case "scrub":
       return `scrub ${gesture.toMs}`;
     case "nudge":

@@ -10,15 +10,15 @@
 // punctuation-blind, honest about what it cannot place.
 
 import { JSDOM } from "jsdom";
-import type { Mark } from "../src/performer";
+import type { Place } from "../src/performer";
 import {
   alignWords,
   caretSource,
   createPainter,
   CURSOR_CLASS,
-  markAt,
   pageWords,
-  SEGMENT_CLASS,
+  placeOfCaret,
+  RANGE_CLASS,
   TURN_CLASS,
   WORD_CLASS,
   type Caret,
@@ -104,7 +104,7 @@ const page = [first, announced, second, thanks];
 
 const texts = (cls: string): string => Array.from(doc.querySelectorAll(`.${cls}`), (el) => el.textContent ?? "").join(" ");
 const lit = (): string => texts(CURSOR_CLASS);
-const inSegment = (): string => texts(SEGMENT_CLASS);
+const inRange = (): string => texts(RANGE_CLASS);
 const wrapped = (): number => doc.querySelectorAll(`.${WORD_CLASS}`).length;
 const speaking = (): string => Array.from(doc.querySelectorAll(`.${TURN_CLASS}`), (el) => el.id).join();
 const wordOf = (u: Utterance, n: number): WordSpan => {
@@ -113,7 +113,7 @@ const wordOf = (u: Utterance, n: number): WordSpan => {
   return span;
 };
 const whole = (u: Utterance): WordSpan => ({ charStart: 0, charEnd: u.text.length });
-const at = (utterance: Utterance, turnOf: ReadonlyArray<Utterance>, segment: WordSpan, word: WordSpan | null): ReadAlongAt => ({ utterance, turn: turnOf, segment, word });
+const at = (utterance: Utterance, turnOf: ReadonlyArray<Utterance>, range: WordSpan, word: WordSpan | null): ReadAlongAt => ({ utterance, turn: turnOf, range, word });
 const painted = (p: Painted | null): string => (p === null ? "null" : `${p.anchor} ${p.el.tagName.toLowerCase()} ${p.el.textContent?.trim().split(/\s+/)[0] ?? ""}`);
 
 console.log("createPainter");
@@ -124,7 +124,7 @@ console.log("createPainter");
 
   const onFix = painter.paint(at(first, turn, whole(first), wordOf(first, 3)));
   assert("the word tier lights exactly that word in the card, however it is punctuated", lit() === "fix");
-  assert("the segment tier covers every matched word of the segment", inSegment() === "Here is the fix in parser.ts");
+  assert("the segment tier covers every matched word of the segment", inRange() === "Here is the fix in parser.ts");
   assert("the card carries the turn class", speaking() === "t3");
   assert("what was painted names the card and the lit word", painted(onFix) === "t3 span fix");
   assert("the card still reads the same", card.textContent === text);
@@ -134,16 +134,16 @@ console.log("createPainter");
   assert("moving the cursor moves the light: the code span's word", lit() === "parser.ts" && painted(onCode) === "t3 span parser.ts");
 
   const onAnnouncement = painter.paint(at(announced, turn, whole(announced), null));
-  assert("an announcement has no words on the page: nothing lit, nothing thrown", lit() === "" && inSegment() === "");
+  assert("an announcement has no words on the page: nothing lit, nothing thrown", lit() === "" && inRange() === "");
   assert("with no word to stand on, what was painted is the card itself", painted(onAnnouncement) === "t3 article Here");
 
   const onSentence = painter.paint(at(second, turn, whole(second), null));
-  assert("a segment with no word lights no word and covers the whole sentence group", lit() === "" && inSegment() === "Then it works. Ship it.");
+  assert("a segment with no word lights no word and covers the whole sentence group", lit() === "" && inRange() === "Then it works. Ship it.");
   assert("what was painted is then the segment's first word", painted(onSentence) === "t3 span Then");
 
   const ship = { charStart: second.text.indexOf("Ship"), charEnd: second.text.length };
   const onShip = painter.paint(at(second, turn, ship, wordOf(second, 3)));
-  assert("a segment narrower than the utterance covers only its words", inSegment() === "Ship it." && lit() === "Ship" && painted(onShip) === "t3 span Ship");
+  assert("a segment narrower than the utterance covers only its words", inRange() === "Ship it." && lit() === "Ship" && painted(onShip) === "t3 span Ship");
 
   const onThanks = painter.paint(at(thanks, [thanks], whole(thanks), wordOf(thanks, 0)));
   assert("entering another card unwraps the last: its markup is exactly as rendered", card.innerHTML === original);
@@ -162,9 +162,9 @@ console.log("createPainter");
   const decoy = say(3, "narrator", "Then a code block.");
   const decoyed = [first, decoy, second];
   painter.paint(at(decoy, decoyed, whole(decoy), null));
-  assert("a narrator utterance sharing a word with the prose paints nothing", lit() === "" && inSegment() === "");
+  assert("a narrator utterance sharing a word with the prose paints nothing", lit() === "" && inRange() === "");
   painter.paint(at(second, decoyed, whole(second), null));
-  assert("and the prose utterance keeps its every word", inSegment() === "Then it works. Ship it.");
+  assert("and the prose utterance keeps its every word", inRange() === "Then it works. Ship it.");
   painter.paint(null);
   assert("unwrapped exactly as rendered", card.innerHTML === original);
 }
@@ -181,12 +181,12 @@ const textNodeWith = (root: Node, snippet: string): Text => {
   throw new Error(`fixture: no text node holding "${snippet}"`);
 };
 const caret = (node: Node, offset: number): Caret => ({ node, offset });
-const markOf = (m: Mark | null): string => (m === null ? "none" : `${m.utterance}:${m.char}`);
+const placeOf = (m: Place | null): string => (m === null ? "none" : `${m.utterance}:${m.char}`);
 const charOf = (u: Utterance, snippet: string): number => u.text.indexOf(snippet);
 
-console.log("markAt");
+console.log("placeOfCaret");
 {
-  const mark = (node: Node, offset: number): string => markOf(markAt(page, caret(node, offset)));
+  const mark = (node: Node, offset: number): string => placeOf(placeOfCaret(page, caret(node, offset)));
   const opening = textNodeWith(card, "Here is the");
   assert("a caret inside a word names that word", mark(opening, 6) === `0:${charOf(first, "is")}`);
   assert("a caret on the space after a word names the next word, across an element boundary", mark(opening, opening.data.length) === `0:${charOf(first, "fix")}`);

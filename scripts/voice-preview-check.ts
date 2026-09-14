@@ -100,7 +100,7 @@ console.log("step: hearing a voice out");
   assert("everything of the replaced preview is ignored", stale.commands.length === 0 && stale.state === replaced.state);
   const foreign = run(replaced.state, audio(0, 0), done(0), audio(5, 1));
   assert("the script's units, ids at or above zero, are another conversation", foreign.commands.length === 0 && foreign.state === replaced.state);
-  const notIdle = run(replaced.state, { kind: "player", unitId: -2, state: { kind: "speaking", at: { unitIndex: 0, offsetMs: 0 }, flow: "audio" } });
+  const notIdle = run(replaced.state, { kind: "player", unitId: -2, state: { kind: "speaking", at: { segment: 0, offsetMs: 0 }, flow: "audio" } });
   assert("its player speaking is not its end", notIdle.commands.length === 0 && notIdle.state === replaced.state);
 
   const lost = run(replaced.state, failed(-2));
