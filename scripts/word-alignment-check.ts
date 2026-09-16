@@ -150,7 +150,7 @@ const RECHUNKED: ReadonlySet<string> = new Set(["The well-known author didn't si
 // The unit the speech script cuts for a capture: one utterance, spoken whole.
 const unitOf = (capture: Capture): SynthesisUnit => {
   const text = RECHUNKED.has(capture.source) ? capture.fed : capture.source;
-  return { utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, ...prepareText(text) };
+  return { utterance: { index: 0, anchor: "t0", origin: "page", voice: "assistant", text }, start: 0, end: text.length, ...prepareText(text) };
 };
 
 const ms = (seconds: number): number => seconds * 1000;
@@ -305,7 +305,7 @@ console.log("\nunit scores");
 console.log("\nskipped words");
 {
   const text = "One two three.";
-  const unit: SynthesisUnit = { utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, ...prepareText(text) };
+  const unit: SynthesisUnit = { utterance: { index: 0, anchor: "t0", origin: "page", voice: "assistant", text }, start: 0, end: text.length, ...prepareText(text) };
   const plan = planAlignment(unitText(unit), ["▁One", "▁two", "▁three", "."]);
   const aligner = createWordAligner(plan);
   const score = (...xs: number[]): Float64Array => Float64Array.from(xs);

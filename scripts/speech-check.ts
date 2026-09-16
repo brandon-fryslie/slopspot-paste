@@ -215,6 +215,8 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
     all.includes("2 tool calls, 1 thinking block, 1 token usage note not read aloud"),
   );
   assert("the detail announcement is narrated, not attributed to the assistant", utterances.at(-1)?.voice === "narrator");
+  assert("the detail announcement is ours, not the page's words", utterances.at(-1)?.origin === "announcement");
+  assert("the user's and the assistant's words are the page's own", utterances[0]?.origin === "page" && utterances[1]?.origin === "page");
 
   // [LAW:one-source-of-truth] The anchor is the renderer's own t<N>, and the index is the
   // node's CARRIED index — so a view that omitted an earlier node still points each
@@ -240,6 +242,7 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   assert("code inside an assistant message is announced", coded.some((u) => u.text === "sh code block, 1 line"));
   assert("the announcement inside a message is narrated", coded.find((u) => u.text.includes("code block"))?.voice === "narrator");
   assert("the prose around it stays the assistant's", coded[0]?.voice === "assistant");
+  assert("a code block's announcement is not the page's words; the prose around it is", coded.find((u) => u.text.includes("code block"))?.origin === "announcement" && coded[0]?.origin === "page");
 
   // A turn-summary block is real, page-visible prose (renderDialogueHtml draws it as a
   // visible <aside>, never folded) — so it is SPOKEN, not merely counted like the folded
@@ -258,6 +261,7 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   );
   assert("a turn-summary's text is spoken, not silently dropped", summarized.some((u) => u.text === "Session compacted at 40k tokens."));
   assert("turn-summary speaks in the narrator voice", summarized.find((u) => u.text.includes("compacted"))?.voice === "narrator");
+  assert("and its words are the page's own, so the read-along can paint them", summarized.find((u) => u.text.includes("compacted"))?.origin === "page");
   assert("the assistant's own text still comes first", summarized[0]?.text === "Done.");
 
   // renderDialogueHtml draws a turn-summary with escapeHtml alone, never renderMarkdown —

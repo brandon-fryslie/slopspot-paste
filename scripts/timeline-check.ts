@@ -61,10 +61,10 @@ const throws = (label: string, f: () => unknown): void => {
 
 // Four passages on three turns — the first turn speaks twice, as a turn with prose and an
 // announced code block does — and the first passage is long enough for two units.
-const one: Utterance = { index: 1, anchor: "t1", voice: "user", text: "First sentence here. Second sentence here." };
-const two: Utterance = { index: 1, anchor: "t1", voice: "narrator", text: "python code block, 2 lines." };
-const three: Utterance = { index: 2, anchor: "t2", voice: "assistant", text: "A reply." };
-const four: Utterance = { index: 3, anchor: "t3", voice: "user", text: "And a follow-up question." };
+const one: Utterance = { index: 1, anchor: "t1", origin: "page", voice: "user", text: "First sentence here. Second sentence here." };
+const two: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "python code block, 2 lines." };
+const three: Utterance = { index: 2, anchor: "t2", origin: "page", voice: "assistant", text: "A reply." };
+const four: Utterance = { index: 3, anchor: "t3", origin: "page", voice: "user", text: "And a follow-up question." };
 const utterances = [one, two, three, four];
 
 const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, ...prepareText(utterance.text.slice(start, end)) });

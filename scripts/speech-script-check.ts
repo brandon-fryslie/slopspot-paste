@@ -61,6 +61,7 @@ const wellFormed = (s: string): boolean => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|
 const utter = (text: string, voice: Voice = "assistant", index = 0): Utterance => ({
   index,
   anchor: `t${index}`,
+  origin: "page",
   voice,
   text,
 });
@@ -344,7 +345,7 @@ console.log("\nScript hash:");
     scriptHash(said),
     scriptHash(said.map((u) => ({ ...u }))),
     scriptHash([said[0], utter("Hello?", "assistant", 1)].filter((u) => u !== undefined)),
-    scriptHash(said.map((u) => ({ ...u, voice: u.voice === "user" ? "assistant" : "user" }))),
+    scriptHash(said.map((u) => ({ ...u, origin: "page" as const, voice: u.voice === "user" ? "assistant" : "user" }))),
     scriptHash(said, { ...RENDITION_VERSIONS, pipeline: `${RENDITION_VERSIONS.pipeline}-next` }),
     scriptHash(said, renditionVersions({ ...MODEL_ASSETS, tokenizer: rehashed(MODEL_ASSETS.tokenizer) })),
     scriptHash(said, renditionVersions({ ...MODEL_ASSETS, weights: rehashed(MODEL_ASSETS.weights) })),

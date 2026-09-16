@@ -73,8 +73,8 @@ const throws = (label: string, f: () => unknown): void => {
 
 // Two passages on two turns; the first is long enough for two units. The units hold
 // CLONES of the utterances, as the worker's structured clone hands them back.
-const one: Utterance = { index: 1, anchor: "t1", voice: "user", text: "First sentence here. Second sentence here." };
-const two: Utterance = { index: 2, anchor: "t2", voice: "assistant", text: "A reply." };
+const one: Utterance = { index: 1, anchor: "t1", origin: "page", voice: "user", text: "First sentence here. Second sentence here." };
+const two: Utterance = { index: 2, anchor: "t2", origin: "page", voice: "assistant", text: "A reply." };
 const utterances = [one, two];
 const page = pageOf(utterances);
 const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, ...prepareText(utterance.text.slice(start, end)) });

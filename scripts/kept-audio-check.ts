@@ -46,7 +46,7 @@ const assert = (label: string, cond: boolean): void => {
 
 const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
 const unitOf = (index: number, text: string): SynthesisUnit => ({
-  utterance: { index, anchor: `t${index}`, voice: index % 2 === 0 ? "assistant" : "user", text },
+  utterance: { index, anchor: `t${index}`, origin: "page", voice: index % 2 === 0 ? "assistant" : "user", text },
   start: 0,
   end: text.length,
   ...prepareText(text),
@@ -208,7 +208,7 @@ console.log("scripts");
   const recalled = await cache.recallScript(asked);
   assert("kept: the same units back", JSON.stringify(recalled) === JSON.stringify(script));
   assert("each over the very utterance it was asked with", recalled !== null && recalled.every((unit, i) => unit.utterance === asked[i]));
-  assert("another paste's utterances: no script", (await cache.recallScript([...said, { index: 9, anchor: "t9", voice: "user", text: "More." }])) === null);
+  assert("another paste's utterances: no script", (await cache.recallScript([...said, { index: 9, anchor: "t9", origin: "page", voice: "user", text: "More." }])) === null);
   clock.now = 2;
   await flush();
   const [zero, one] = script;
@@ -225,7 +225,7 @@ console.log("a script's size");
   // One utterance of `sentences` sentences, a unit each: the shape a long turn is cut into.
   const passage = (sentences: number) => {
     const text = Array.from({ length: sentences }, (_, i) => `Sentence number ${i} is here.`).join(" ");
-    const utterance = { index: 0, anchor: "t0", voice: "assistant" as const, text };
+    const utterance = { index: 0, anchor: "t0", origin: "page" as const, voice: "assistant" as const, text };
     let start = 0;
     const units = text.split(/(?<=\.) /).map((sentence): SynthesisUnit => {
       const unit = { utterance, start, end: start + sentence.length, ...prepareText(sentence) };
@@ -251,7 +251,7 @@ console.log("a script not cut from its utterances");
 {
   const { store, ledger } = memoryStore();
   const { cache, failures } = cacheOver(Promise.resolve(store));
-  await cache.keepScript([{ index: 7, anchor: "t7", voice: "user", text: "Elsewhere." }], script);
+  await cache.keepScript([{ index: 7, anchor: "t7", origin: "page", voice: "user", text: "Elsewhere." }], script);
   assert("reported, nothing kept", failures.join() === "keeping a script" && ledger.size === 0);
 }
 
