@@ -133,7 +133,7 @@ export const step = (state: PreviewState, event: PreviewEvent): PreviewPlan => {
 
 export interface PreviewerConfig {
   readonly port: SynthesisPort;
-  // What opens the preview's own audio device: an AudioContext played through a media element
+  // What opens the preview's own audio device: an AudioContext with a media element beside it
   // in the page (mediaDevice.ts). Opened on the first preview, which is the reader's tap —
   // the gesture a browser requires — and closed with the previewer.
   readonly Device: DeviceFactory;

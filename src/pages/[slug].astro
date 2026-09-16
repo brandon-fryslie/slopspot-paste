@@ -811,7 +811,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
-    import { mediaDevice } from "../mediaDevice";
+    import { carrierWav, mediaDevice } from "../mediaDevice";
     import { createMediaSession } from "../mediaSession";
     import type { Utterance } from "../speech";
 
@@ -870,6 +870,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // The device's media controls — the lock screen, the notification, a headset — as
         // one more door into the panel, showing the paste and who is speaking. Every browser
         // that offers Listen (WebGPU) has the Media Session API.
+        // The carrier every device's element loops, made once for the page.
+        const carrier = URL.createObjectURL(new Blob([carrierWav()], { type: "audio/wav" }));
         const media = createMediaSession({
           session: navigator.mediaSession,
           metadata: (shown) => new MediaMetadata(shown),
@@ -942,12 +944,17 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             write: (pick) => writePick(window.localStorage, pick),
           },
           connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
-          // The voice leaves through a media element, which is what a phone gives a lock screen
-          // and background audio (mediaDevice.ts). A pause the platform makes — a call, another
-          // app's audio — pauses the listen as the lock screen's own pause would.
+          // Beside the voice, a silent media element plays while it sounds, which is what a
+          // browser gives a lock screen and media controls (mediaDevice.ts). A pause the
+          // platform makes — a call, another app's audio — pauses the listen as the lock
+          // screen's own pause would.
           Device: mediaDevice({
             Context: AudioContext,
-            element: () => new Audio(),
+            element: () => {
+              const element = new Audio(carrier);
+              element.loop = true;
+              return element;
+            },
             interrupted: () => media.act("pause"),
             refused: (error) => console.warn("listen: the media element refused to play; the voice plays without lock-screen controls", error),
           }),

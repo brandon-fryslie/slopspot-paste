@@ -42,7 +42,7 @@
 // to speak — and a dispose forgets it. The tap is also the reader's gesture, the one moment
 // a browser lets audio start [LAW:no-ambient-temporal-coupling]: a gesture on an able device
 // yields an `unlock` effect on its own stack, which opens the audio device if not yet open and
-// resumes it there, so the context is running long before the model is warm and the first
+// unlocks it there, sounding nothing, so the context is running long before the model is warm and the first
 // unit — scheduled from a worker message many seconds later — sounds. A voice that arrives
 // on a standing consent is built on a device opened outside any gesture; the reader's first
 // Play resumes it through the unit player, on the tap's stack. Costs, stated once: every
@@ -82,14 +82,19 @@
 // the page the moment on screen — the voice's place, or the cue — to write as a link.
 //
 // THE BACKGROUND. Whether the page is in view is the page's fact, told to the panel as an
-// event and carried on both arms like the speed. Out of view the voice is heard through the
-// lock screen, and the scheduler is told to make audio further ahead (scheduler.ts), since a
-// phone may suspend the worker at any moment. A voice that runs dry there — speaking with
-// nothing left to sound — is paused rather than left playing silence behind a lock screen
-// that says it plays: the panel pauses it, marks it `stalled`, and plays it again the moment
-// the audio it needs is held, or the page is back in view, whichever comes first. The pause
-// is the background's, not the reader's, so any gesture of the reader's — Play on the lock
-// screen included — takes the listen back from it [LAW:no-silent-failure].
+// event and carried on both arms like the speed. Out of view a listen that is on is heard
+// through the lock screen, and the scheduler is told to make audio further ahead
+// (scheduler.ts), since a phone may suspend the worker at any moment; a listen the reader
+// paused out of view is made no further ahead than one in view, since nobody is hearing it.
+// The window is a function of the state, and `step` alone tells the scheduler when it changes
+// [LAW:single-enforcer]. A voice that runs dry there — speaking with nothing left to sound — is
+// paused rather than left playing silence behind a lock screen that says it plays: the panel
+// pauses it, marks it `stalled`, and plays it again the moment the audio it needs is held, or
+// the page is back in view, whichever comes first. The pause is the background's, not the
+// reader's: to the reader the listen is still on, waiting for its audio as a voice in view
+// waits, so the transport offers Pause and the lock screen shows it playing — and a Pause, the
+// headset's included, is a real pause that nothing plays again but the reader
+// [LAW:no-silent-failure].
 //
 // WHAT THE PANEL MIRRORS. The `neural` arm carries the scheduler's view — player position,
 // manifest, holdings, and the conversation's timeline built over them — as delivered by
@@ -225,7 +230,8 @@ export type PanelState =
 export type Tap = "play" | "stop";
 
 // [LAW:types-are-the-program] The transport as the device's media controls read it
-// (mediaSession.ts): whether a voice is on stage and sounding, where it is on the
+// (mediaSession.ts): whether a voice is on stage and playing as the reader holds it — a stall
+// is playing, so the controls offer the pause that ends it — where it is on the
 // conversation's clock and how long that clock is, the speed, and the passage under the voice.
 export type Playback = "none" | "paused" | "playing";
 export interface Transport {
@@ -424,13 +430,19 @@ const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
 // theirs to make, and it takes the listen back.
 const seen = (visibility: StageVisibility): Visibility => (visibility === "stalled" ? "hidden" : visibility);
 
+// [LAW:single-enforcer] Whether the listen is on as the reader holds it: the voice speaking, or
+// stalled — paused by the background while its audio is made, never by the reader. A tap
+// pauses it, and the transport's label and the media controls offer that pause.
+const playing = (player: { readonly kind: PerformerState["kind"] }, visibility: StageVisibility): boolean =>
+  player.kind === "speaking" || visibility === "stalled";
+
 // On stage, every tap spends the cue: a Play from a cued idle voice is a seek to the cue,
 // which starts it there; any other tap leaves the cue behind with the moment it named.
 const tap = (state: PanelState, control: Tap): Step => {
   switch (state.kind) {
     case "neural": {
       const { cue, view } = state;
-      const verb: Verb = control === "stop" ? "stop" : view.player.kind === "speaking" ? "pause" : "play";
+      const verb: Verb = control === "stop" ? "stop" : playing(view.player, state.visibility) ? "pause" : "play";
       const act = cue !== null && verb === "play" ? perform({ kind: "seek", toMs: timeOfStart(view.timeline, cue) }) : perform({ kind: verb });
       return { state: { ...state, cue: null, visibility: seen(state.visibility) }, effects: [HUSH, act] };
     }
@@ -611,43 +623,51 @@ const sounding = (state: PanelState, voice: VoiceId | null): Step => {
   return stay({ ...state, sounding: voice });
 };
 
-// [LAW:single-enforcer] How far ahead the voice is made, from whether the page is in view.
-const lookaheadFor = (visibility: StageVisibility): Effect => ({ kind: "lookahead", to: visibility === "shown" ? LOOKAHEAD : BACKGROUND_LOOKAHEAD });
+// [LAW:single-enforcer] How far ahead the voice is made: further while the page is out of view
+// and the listen is on, the near window otherwise — which is also where every performer's
+// scheduler starts, so a voice not yet on stage reads as near.
+const windowOf = (state: PanelState): Lookahead =>
+  state.kind === "neural" && state.visibility !== "shown" && playing(state.view.player, state.visibility) ? BACKGROUND_LOOKAHEAD : LOOKAHEAD;
 
 // The background's pause, decided on every view of a voice out of view: a voice that is
 // speaking with nothing to sound is paused and marked stalled; a stalled voice whose audio is
-// held again — or whose page is back in view — plays again. Anything else stands.
+// held again is played, and stays stalled until it sounds, so the listen reads as on — and
+// the window as wide — the whole way through. Anything else stands.
 const background = (state: Extract<PanelState, { kind: "neural" }>): Step => {
   const { player, buffered } = state.view;
-  if (state.visibility === "hidden" && player.kind === "speaking" && player.flow === "waiting") {
-    return { state: { ...state, visibility: "stalled" }, effects: [perform({ kind: "pause" })] };
+  if (state.visibility === "shown") return stay(state);
+  if (player.kind === "speaking") {
+    if (player.flow === "audio") return stay({ ...state, visibility: "hidden" });
+    return state.visibility === "stalled" ? stay(state) : { state: { ...state, visibility: "stalled" }, effects: [perform({ kind: "pause" })] };
   }
-  if (state.visibility === "stalled" && player.kind === "paused" && buffered) {
-    return { state: { ...state, visibility: "hidden" }, effects: [perform({ kind: "play" })] };
-  }
-  return stay(state);
+  return state.visibility === "stalled" && player.kind === "paused" && buffered ? { state, effects: [perform({ kind: "play" })] } : stay(state);
 };
 
-// The page out of view or back: told to whoever makes the audio, and on stage the
-// background's pause decided again — lifted outright on return, where the reader sees the
-// honest "Synthesizing ahead…" instead.
+// The page out of view or back: on stage, the background's pause decided again — lifted
+// outright on return, where the reader sees the honest "Synthesizing ahead…" instead.
 const visibility = (state: PanelState, hidden: boolean): Step => {
   if (state.kind === "provisioning") return stay({ ...state, visibility: hidden ? "hidden" : "shown" });
   if (!hidden) {
     const resumed = state.visibility === "stalled" && state.view.player.kind === "paused" ? [perform({ kind: "play" })] : [];
-    return { state: { ...state, visibility: "shown" }, effects: [lookaheadFor("shown"), ...resumed] };
+    return { state: { ...state, visibility: "shown" }, effects: resumed };
   }
-  const told: Extract<PanelState, { kind: "neural" }> = { ...state, visibility: state.visibility === "stalled" ? "stalled" : "hidden" };
-  const decided = background(told);
-  return { state: decided.state, effects: [lookaheadFor("hidden"), ...decided.effects] };
+  return background({ ...state, visibility: state.visibility === "stalled" ? "stalled" : "hidden" });
 };
 
 const voices = (state: PanelState, map: VoiceMap): Step =>
   state.kind === "neural" ? { state, effects: [{ kind: "revoice", voices: map }] } : stay(state);
 
 // The page's timeline is read when a place named by time before the voice arrives has to
-// be kept by name.
+// be kept by name. Whatever the event, a step that moves the window tells the scheduler so,
+// after the step's own effects: a play, a pause, a stall, a return and a crash all change it
+// through the one reading of the state [LAW:single-enforcer].
 export const step = (state: PanelState, event: PanelEvent, page: Page): Step => {
+  const stepped = transition(state, event, page);
+  const to = windowOf(stepped.state);
+  return to === windowOf(state) || stepped.state.kind === "provisioning" ? stepped : { state: stepped.state, effects: [...stepped.effects, { kind: "lookahead", to }] };
+};
+
+const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
   switch (event.kind) {
     case "tap":
       return tap(state, event.control);
@@ -693,11 +713,7 @@ export const step = (state: PanelState, event: PanelEvent, page: Page): Step => 
       const speaks = granted(state) === "play";
       return {
         state: { kind: "neural", view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: null, speed: state.speed, visibility: state.visibility },
-        effects: [
-          perform({ kind: "rate", to: state.speed }),
-          lookaheadFor(state.visibility),
-          ...(speaks ? [perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : []),
-        ],
+        effects: [perform({ kind: "rate", to: state.speed }), ...(speaks ? [perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : [])],
       };
     }
   }
@@ -917,8 +933,8 @@ const neuralStatus = (view: NeuralView, total: number, visibility: StageVisibili
 };
 
 // The transport over the voice on stage: the label follows what a tap would do.
-const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Readout, "play" | "stop"> => ({
-  play: { label: state.kind === "speaking" ? "Pause" : state.kind === "paused" ? "Resume" : "Listen", enabled: true },
+const transport = (state: { readonly kind: PerformerState["kind"] }, visibility: StageVisibility): Pick<Readout, "play" | "stop"> => ({
+  play: { label: playing(state, visibility) ? "Pause" : state.kind === "paused" ? "Resume" : "Listen", enabled: true },
   stop: { enabled: state.kind !== "idle" },
 });
 
@@ -1119,7 +1135,7 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, visit);
   const offer = offerOf(state, page, mark, visit);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total, state.visibility), progress: null, mark, remembered, voices, mini, offer };
+    return { ...transport(state.view.player, state.visibility), ...rest, status: neuralStatus(state.view, total, state.visibility), progress: null, mark, remembered, voices, mini, offer };
   }
   const { neural } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -1258,7 +1274,7 @@ export interface ListenPanelConfig {
   // voiceChoice's two edges over window.localStorage in the page, over a Map in the check.
   readonly pick: { readonly read: () => VoicePick; readonly write: (pick: VoicePick) => void };
   readonly connection: () => ConnectionReading | undefined;
-  // What opens the audio device: an AudioContext played through a media element in the page
+  // What opens the audio device: an AudioContext with a media element beside it in the page
   // (mediaDevice.ts). Opened by the panel on the first gesture or the first build, whichever
   // comes first; closed with the worker.
   readonly Device: DeviceFactory;
@@ -1488,7 +1504,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const transportNow = (): Transport => {
     const now = stageState();
     return {
-      playback: now.kind === "idle" ? "none" : now.kind === "paused" ? "paused" : "playing",
+      playback: now.kind === "idle" ? "none" : state.kind === "neural" && playing(now, state.visibility) ? "playing" : "paused",
       atMs: now.kind === "idle" ? 0 : now.atMs,
       totalMs: timeline().totalMs,
       speed: state.speed,
@@ -1559,10 +1575,11 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
         return;
       case "unlock":
-        // On the gesture's stack: opened AND resumed inside it, which is the unlock every
-        // browser honours; the player's own resume, on a worker message later, is then a
-        // no-op on a running context.
-        void device().device.resume();
+        // On the gesture's stack: opened AND unlocked inside it, which is what every browser
+        // honours; the player's own resume, on a worker message later, then sounds without
+        // one. The unlock sounds nothing, so a tap that only downloads holds none of the
+        // phone's audio (mediaDevice.ts).
+        void device().device.unlock();
         return;
       case "load":
         portOf().send({ kind: "load" });

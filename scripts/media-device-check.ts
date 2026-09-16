@@ -1,13 +1,14 @@
-// The audio device played through a media element (slopspot-read-along-a35.5). Run:
+// The audio device with a media element beside it (slopspot-read-along-a35.5). Run:
 // `tsx scripts/media-device-check.ts`.
 //
 // [LAW:behavior-not-structure] What is asserted is what the platform and the reader get: the
-// context's sound reaches the element's stream, the element plays exactly while the context
-// runs and is started on the caller's own stack, the clock is the context's, a pause the
-// device did not ask for is said, and a refused play puts the voice on the speakers rather
-// than leaving it silent. The stubs implement only the seam mediaDevice.ts declares.
+// voice sounds from the context on the speakers, the clock is the context's, the element plays
+// exactly while the context runs for a listen — never for an unlock, which only primes it, and
+// only once — a pause the device did not ask for is said, a refused play is said while the
+// voice sounds on, and the carrier is a silent file long enough to count as media. The stubs
+// implement only the seam mediaDevice.ts declares.
 
-import { mediaDevice, type MediaElement, type OutputNode, type StreamContext } from "../src/mediaDevice";
+import { CARRIER_SECONDS, carrierWav, mediaDevice, type MediaElement, type SoundContext } from "../src/mediaDevice";
 import type { PcmBuffer, PcmSource } from "../src/unitPlayer";
 import { StubBuffer, StubSource } from "./playbackStub";
 
@@ -20,33 +21,15 @@ const assert = (label: string, cond: boolean): void => {
   }
 };
 
-const settle = async (): Promise<void> => {
-  for (let i = 0; i < 4; i++) await Promise.resolve();
-};
-
 // ── stubs ─────────────────────────────────────────────────────────────────────────────
 
 const SPEAKERS = { node: "speakers" };
-const STREAM = { stream: "media stream" };
 
-class StubGain implements OutputNode {
-  connections: unknown[] = [];
-  connect(destination: unknown): unknown {
-    this.connections.push(destination);
-    return destination;
-  }
-  disconnect(): void {
-    this.connections = [];
-  }
-}
-
-class StubContext implements StreamContext {
+class StubContext implements SoundContext {
   static last: StubContext | null = null;
   currentTime = 12.5;
   readonly destination = SPEAKERS;
   readonly calls: string[] = [];
-  readonly gain = new StubGain();
-  readonly streamNode = { stream: STREAM };
   constructor(readonly options: { readonly sampleRate: number }) {
     StubContext.last = this;
   }
@@ -55,12 +38,6 @@ class StubContext implements StreamContext {
   }
   createBufferSource(): PcmSource {
     return new StubSource();
-  }
-  createGain(): OutputNode {
-    return this.gain;
-  }
-  createMediaStreamDestination(): { readonly stream: unknown } {
-    return this.streamNode;
   }
   resume(): Promise<void> {
     this.calls.push("resume");
@@ -76,27 +53,33 @@ class StubContext implements StreamContext {
   }
 }
 
-// An element whose next play is answered as the check says; a pause fires its event a task
-// later, as a browser's does.
+// An element whose plays are answered as the check says; a pause fires its event a task
+// later, as a browser's does, and a pause before a play has settled rejects that play as
+// aborted, as a browser's does.
 class StubElement implements MediaElement {
-  srcObject: unknown = null;
   paused = true;
-  answer: "plays" | "refuses" | "aborts" = "plays";
+  answer: "plays" | "refuses" = "plays";
   readonly calls: string[] = [];
   readonly #listeners: Array<() => void> = [];
+  #pending: ((error: Error) => void) | null = null;
   play(): Promise<void> {
     this.calls.push("play");
-    if (this.answer !== "plays") {
-      const name = this.answer === "refuses" ? "NotAllowedError" : "AbortError";
-      return Promise.reject(Object.assign(new Error(name), { name }));
-    }
+    if (this.answer === "refuses") return Promise.reject(Object.assign(new Error("NotAllowedError"), { name: "NotAllowedError" }));
     this.paused = false;
-    return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      this.#pending = reject;
+      setTimeout(() => {
+        if (this.#pending === reject) resolve();
+        this.#pending = null;
+      }, 1);
+    });
   }
   pause(): void {
     this.calls.push("pause");
     if (this.paused) return;
     this.paused = true;
+    this.#pending?.(Object.assign(new Error("AbortError"), { name: "AbortError" }));
+    this.#pending = null;
     setTimeout(() => this.#fire(), 0);
   }
   // The platform pausing the element on its own.
@@ -138,18 +121,42 @@ const rig = () => {
   return { device, context, element, said };
 };
 
+// The real AudioContext and <audio> must fit the seams the device declares; these lines are
+// the proof the page's wiring rests on, checked here where the DOM lib is present.
+type RealContextFits = typeof AudioContext extends new (options: { readonly sampleRate: number }) => SoundContext ? true : never;
+type RealElementFits = HTMLAudioElement extends MediaElement ? true : never;
+const realContextFits: RealContextFits = true;
+const realElementFits: RealElementFits = true;
+assert("typeof AudioContext satisfies the device's context, and HTMLAudioElement its element", realContextFits && realElementFits);
+
+const plays = (element: StubElement): number => element.calls.filter((c) => c === "play").length;
+
 // ── the checks ────────────────────────────────────────────────────────────────────────
 
-console.log("mediaDevice: the context's sound leaves through the element");
+console.log("mediaDevice: the voice sounds from the context; the element plays while it does");
 {
-  const { device, context, element } = rig();
-  assert("the context is opened at the rate asked", context.options.sampleRate === 24_000);
-  assert("sources connect to one output, whose one onward connection is the stream the element plays", device.destination === context.gain && context.gain.connections.length === 1 && context.gain.connections[0] === context.streamNode && element.srcObject === STREAM);
+  const { device, context, element, said } = rig();
+  assert("the context is opened at the rate asked, and sources connect straight to its speakers", context.options.sampleRate === 24_000 && device.destination === SPEAKERS);
   assert("the clock is the context's", device.currentTime === 12.5);
   device.resume();
   assert("resume plays the element and resumes the context, both on the caller's stack", element.calls.join() === "play" && context.calls.join() === "resume" && !element.paused);
   void device.suspend();
   assert("suspend pauses the element with the context", element.calls.join() === "play,pause" && context.calls.join() === "resume,suspend" && element.paused);
+  await tick();
+  assert("the element's play, cut short by that pause, is not a refusal; the device's own pause is not an interruption", said.refused.length === 0 && said.interrupted === 0);
+}
+
+console.log("mediaDevice: an unlock sounds nothing — it primes the element once and resumes the context");
+{
+  const { device, context, element, said } = rig();
+  void device.unlock();
+  assert("the element is played and paused on the caller's stack, the context resumed", element.calls.join() === "play,pause" && element.paused && context.calls.join() === "resume");
+  await tick();
+  assert("the prime is neither a refusal nor an interruption", said.refused.length === 0 && said.interrupted === 0);
+  void device.unlock();
+  assert("a second unlock resumes the context and leaves the element alone", element.calls.join() === "play,pause" && context.calls.join() === "resume,resume");
+  device.resume();
+  assert("a later resume plays the element for the listen", plays(element) === 2 && !element.paused);
 }
 
 console.log("mediaDevice: a pause the device did not ask for is said; its own are not");
@@ -158,33 +165,43 @@ console.log("mediaDevice: a pause the device did not ask for is said; its own ar
   device.resume();
   void device.suspend();
   await tick();
-  assert("the device's own pause: nothing said", said.interrupted === 0);
   void device.suspend();
   await tick();
-  assert("a suspend over a paused element pauses nothing more, and counts nothing", said.interrupted === 0 && element.calls.filter((c) => c === "pause").length === 1);
+  assert("a suspend over a paused element pauses nothing more, and says nothing", said.interrupted === 0 && element.calls.filter((c) => c === "pause").length === 1);
   device.resume();
+  await tick();
   element.platformPause();
   await tick();
   assert("the platform pausing the element: said once to the owner", said.interrupted === 1);
   void device.close();
   await tick();
-  assert("close over the platform's pause: nothing more said, the element let go", said.interrupted === 1 && element.srcObject === null);
+  assert("close over the platform's pause: nothing more said", said.interrupted === 1);
 }
 
-console.log("mediaDevice: a refused play puts the voice on the speakers");
+console.log("mediaDevice: a refused play is said, and the voice sounds on");
 {
   const { device, context, element, said } = rig();
-  element.answer = "aborts";
-  device.resume();
-  await settle();
-  assert("a play cut short by a pause is not a refusal: the output still reaches the element", said.refused.length === 0 && context.gain.connections[0] === context.streamNode);
   element.answer = "refuses";
   device.resume();
-  await settle();
-  assert("a refused play: the output moves to the speakers and the refusal is said", context.gain.connections.length === 1 && context.gain.connections[0] === SPEAKERS && said.refused.length === 1);
+  await tick();
+  assert("refused: said, the context resumed all the same, the sources still bound for the speakers", said.refused.length === 1 && context.calls.join() === "resume" && device.destination === SPEAKERS);
+  element.answer = "plays";
   device.resume();
-  await settle();
-  assert("from then on the context alone is resumed; the element is not asked again", element.calls.filter((c) => c === "play").length === 2 && context.calls.filter((c) => c === "resume").length === 3);
+  await tick();
+  assert("the next play asks again, and is heard", plays(element) === 2 && !element.paused && said.refused.length === 1);
+}
+
+console.log("carrierWav: a silent PCM file longer than the five seconds under which Chrome counts a sound as transient");
+{
+  const wav = carrierWav();
+  const view = new DataView(wav);
+  const text = (at: number, length: number): string => String.fromCharCode(...new Uint8Array(wav, at, length));
+  const rate = view.getUint32(24, true);
+  const bytesPerSecond = view.getUint32(28, true);
+  const dataBytes = view.getUint32(40, true);
+  assert("a RIFF WAVE of PCM, mono, 8-bit", text(0, 4) === "RIFF" && view.getUint32(4, true) === wav.byteLength - 8 && text(8, 4) === "WAVE" && text(12, 4) === "fmt " && view.getUint16(20, true) === 1 && view.getUint16(22, true) === 1 && view.getUint16(34, true) === 8 && text(36, 4) === "data" && dataBytes === wav.byteLength - 44);
+  assert("its length is CARRIER_SECONDS, more than five", dataBytes / bytesPerSecond === CARRIER_SECONDS && CARRIER_SECONDS > 5 && rate === bytesPerSecond);
+  assert("every sample is silence", new Uint8Array(wav, 44).every((sample) => sample === 128));
 }
 
 console.log(process.exitCode === 1 ? "media-device-check: FAILED" : "media-device-check: ok");
