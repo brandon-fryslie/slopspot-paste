@@ -249,7 +249,10 @@ console.log("\nSpoken notation (slopspot-read-along-a35.5jv):");
     greaterThan: { says: ["a > b", "A is greater than b."], leaves: ["x -> y", "> quoted"] },
     plusOrMinus: { says: ["5 ± 0.1 and ±2", "5 plus or minus 0.1 and plus or minus 2."], leaves: ["± alone"] },
     plus: { says: ["(3+4)", "(3 plus 4)."], leaves: ["C++ and +1"] },
-    minus: { says: ["5 - 3 = 2, x = -5 and 7 − 1", "5 minus 3 equals 2, x equals minus 5 and 7 minus 1."], leaves: ["2026-09-16 is well-known", "pages 10-20", "a - the first"] },
+    minus: {
+      says: ["5 - 3 = 2, x = -5 and 7 − 1 and (-2) and −4", "5 minus 3 equals 2, x equals minus 5 and 7 minus 1 and (minus 2) and minus 4."],
+      leaves: ["2026-09-16 is well-known", "pages 10-20", "a - the first", "git commit -m msg", "tail -5 log", "rm -rf x"],
+    },
     times: { says: ["9 x 10 and 2 × 3 and (4)*5", "9 times 10 and 2 times 3 and (4) times 5."], leaves: ["0x10 and x-axis and 3x faster", "**bold**"] },
     dividedBy: { says: ["6 ÷ 2", "6 divided by 2."], leaves: ["÷ sign"] },
     over: { says: ["3/4 and a / b", "3 over 4 and a over b."], leaves: ["I/O and/or", "on 9/16/2026", "src/2/3", "http://a.com/1/2"] },

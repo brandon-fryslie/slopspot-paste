@@ -353,13 +353,25 @@ console.log("spoken notation (slopspot-read-along-a35.5jv)");
   const words = pageWords(mathCard).map((w) => w.node.data.slice(w.start, w.end));
   assert("a said symbol is a page word; a symbol read as written would not be", words.join(" ") === "So 9 x 10 = 90, and a + b is 3 done.");
   assert("a symbol matches only itself", alignWords(["=", "+"], ["+", "="]).map(String).join() === "1,undefined");
+  assert("a symbol is itself whatever punctuation it wears; a symbol word is not punctuation", wordKey("∞,") === "∞" && wordKey("(=)") === "=" && wordKey("/") === "/");
   const painter = createPainter(mathDoc);
   const equals = wordSpans(said.text, 0).findIndex((w) => said.text.slice(w.charStart, w.charEnd) === "=");
   painter.paint(at(said, [said], whole(said), wordOf(said, equals)));
   assert("the cursor on the said \"equals\" lights the page's \"=\"", Array.from(mathDoc.querySelectorAll(`.${CURSOR_CLASS}`), (el) => el.textContent).join() === "=");
+  const lit = Array.from(mathDoc.querySelectorAll(`.${CURSOR_CLASS}`), (el) => el.firstChild);
+  const litNode = lit[0];
+  assert(
+    "while the card is painted and \"=\" sits in a span of its own, a tap on it still names it",
+    litNode !== null && litNode !== undefined && placeOf(placeOfCaret([said], caret(litNode, 0))) === `0:${said.text.indexOf("=")}`,
+  );
   painter.paint(null);
   const node = textNodeWith(mathCard, "= 90");
   assert("a tap on the page's \"=\" names it", placeOf(placeOfCaret([said], caret(node, node.data.indexOf("=")))) === `0:${said.text.indexOf("=")}`);
+  const marked = new JSDOM(`<!DOCTYPE html><body><article id="t1"><p>Keep <code>n</code> <= 10, so 2</p><pre><code>code</code></pre><p> + 3.</p></article></body>`).window.document.getElementById("t1");
+  assert(
+    "notation beside inline markup is a word; unspoken text between two nodes is no operand",
+    marked !== null && pageWords(marked).map((w) => w.node.data.slice(w.start, w.end)).join(" ") === "Keep n <= 10, so 2 3.",
+  );
 }
 
 console.log("caretSource");
