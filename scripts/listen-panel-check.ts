@@ -335,10 +335,16 @@ console.log("step: a script in hand puts the voice on stage before the model is 
   assert("a unit the device does not keep waits for the voice, and says so — not \"synthesizing\" with no model to synthesize", shown(waiting.state) === "Pause | stop | Waiting for the voice · passage 1 of 2 · downloading the voice · 50% · 120 of 239 MB · estimating time left… | bar 120000000/239000000");
   const warmed = [progress(1, 1), ready].reduce((state, event) => step(state, event).state, waiting.state);
   assert("the model ready behind it: the line is the voice's alone, synthesizing ahead, and previews are offered", shown(warmed) === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && offer(warmed) === "offered");
+  const savable = (state: PanelState): boolean => {
+    const face = readout(state, page, ASKING).mini;
+    return face.kind === "controls" && face.save;
+  };
+  assert("a download is offered once the model is ready, and not while the voice plays what the device keeps ahead of it — nothing is rendered until then", !savable(kept.state) && !savable(waiting.state) && savable(warmed));
   assert("a preview before the model is ready does nothing", effects(step(waiting.state, { kind: "preview", voice: "marius" })) === "" && effects(step(warmed, { kind: "preview", voice: "marius" })) === "perform pause,preview");
 
   const failed = step(downloading.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
   assert("a load that fails behind a playing voice is on the line, where it stopped, and the voice plays on", failed.state.kind === "neural" && effects(failed) === "" && shown(failed.state) === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline | bar 120000000/239000000");
+  assert("nor once its load has failed, where a download would wait on a model that is not coming", !savable(failed.state));
   assert("the reader's Pause asks nothing of the model", effects(step(failed.state, tapPlay)) === "hush,perform pause");
   const paused = step(failed.state, { kind: "view", view: viewOf({ kind: "paused", at: inUnit(0) }) }).state;
   const replayed = step(paused, tapPlay);
@@ -1995,9 +2001,11 @@ console.log("createListenPanel: the download control makes the conversation's au
   await Promise.resolve();
   r.mark.button.click();
   assert("no voice on stage: nothing to make a file of, and the control is off", r.mini.save.disabled && r.mini.save.getAttribute("aria-label") === "Download this conversation as audio");
+  r.mini.save.click();
+  assert("and a tap on it starts nothing", r.renders.length === 0);
   r.mini.play.click();
   await warm(r);
-  assert("the voice on stage: the control is on", !r.mini.save.disabled);
+  assert("the voice on stage and ready: the control is on", !r.mini.save.disabled);
   r.mini.save.click();
   const render = r.renders[0];
   assert("a tap renders every unit of the script, in the reader's voices", r.renders.length === 1 && render !== undefined && render.requests.length === units.length && render.requests.every((request, unitId) => request.unitId === unitId && request.voice === DEFAULT_VOICES[units[unitId]!.utterance.voice]));

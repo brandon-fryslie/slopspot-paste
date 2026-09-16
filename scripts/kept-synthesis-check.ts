@@ -610,6 +610,18 @@ const hearer = () => {
   assert("a store that cannot be read stops what is made ahead, never the render", store.asked.join() === "5" && worker.said() === "synthesize 3");
 }
 {
+  const { worker, store, port } = setup({ allowed: true });
+  store.reads.unreadable = true;
+  port.ahead([synthesize(5)]);
+  const render = hearer();
+  port.render([synthesize(3)], render.onUnit);
+  await flush();
+  assert("a render begun while the device is still being asked ahead: asked for once that store answers it cannot be read", store.asked.join() === "5" && (store.lookups[0]?.request as SynthesizeRequest | undefined)?.unitId === 3);
+  answer(store, 0, null);
+  await flush();
+  assert("and made", worker.said() === "synthesize 3");
+}
+{
   const { worker, store, port, ear } = setup();
   port.send(synthesize(0));
   answer(store, 0, null);
@@ -643,7 +655,7 @@ const hearer = () => {
   assert("the listen's unit in its own voice is not the render's, which asks for its own again", render.said() === "made 0 x1,failed 1 frame-cap" && ear.said().endsWith("done 2") && store.lookups.length === 6);
 }
 {
-  const { worker, store, port, device } = setup({ allowed: true });
+  const { worker, store, port, device, ear } = setup({ allowed: true });
   const render = hearer();
   port.render([synthesize(3)], render.onUnit);
   answer(store, 0, null);
@@ -661,7 +673,7 @@ const hearer = () => {
   assert("the worker free again: the render's unit asked of the device again", (store.lookups[2]?.request as SynthesizeRequest | undefined)?.unitId === 3 && render.units.length === 0);
   store.lookups[2]?.reject(new Error("broken"));
   await flush();
-  assert("a lookup for the render that rejects: said, and the unit made", store.lookups.length === 3 && worker.said() === "synthesize 3,cancel 3,synthesize 1,synthesize 3");
+  assert("a lookup for the render that rejects: said on the error channel, as every broken lookup is, and nothing made", ear.errors.length === 1 && ear.errors[0]?.includes("rendering unit 3") === true && store.lookups.length === 3 && worker.said() === "synthesize 3,cancel 3,synthesize 1");
 }
 {
   const { worker, store, port, ear } = setup();

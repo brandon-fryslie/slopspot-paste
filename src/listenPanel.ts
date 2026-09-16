@@ -914,7 +914,7 @@ export interface Visit {
 // it [LAW:one-source-of-truth]. `play` is what a tap does, so the one button's face follows
 // the voice.
 // `share` is whether there is a moment to link to: a voice under way, or a cue. `save` is
-// whether there is a rendition to make a file of: a voice on stage over its script.
+// whether there is a rendition to make a file of (`savable`).
 export type MiniFace =
   | { readonly kind: "consent"; readonly ask: string }
   | { readonly kind: "progress"; readonly fraction: number | null }
@@ -1323,6 +1323,11 @@ const offerOf = (state: PanelState, page: Page, mark: MarkForm, visit: Visit): O
   return resume === null || text === undefined ? null : { kind: "resume", place: resume, words: openingWords(text, resume.char) };
 };
 
+// [LAW:single-enforcer] Whether there is a rendition to make a file of: a voice on stage over
+// its script, with its model ready. A render is made on a ready worker's time alone, so a
+// download offered while the model loads would wait on a load that may fail and never say so.
+const savable = (state: PanelState): state is Stage => state.kind === "neural" && state.model.kind === "ready";
+
 // The page's utterances count is the "of N" every position reads, and `around` reads the
 // page's timeline for the turn landmarks before a voice has measured any of it.
 export const readout = (state: PanelState, page: Page, visit: Visit): Readout => {
@@ -1331,7 +1336,7 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   const { remembered } = visit;
   const voices = voicesReadout(state, visit.pick);
   const rest = around(state, page);
-  const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, state.kind === "neural", visit);
+  const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, savable(state), visit);
   const offer = offerOf(state, page, mark, visit);
   if (state.kind === "neural") {
     return { ...transport(state.view.player, state.visibility), ...rest, status: neuralStatus(state, total), progress: progressOf(state.model), mark, remembered, voices, mini, offer };
@@ -2026,7 +2031,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // The download control: a tap on it makes the conversation's audio file, and its word on the
   // download is shown on the control — the percentage made while it runs, then the name saved or
   // why not, until the reader's next gesture or its losing focus [LAW:no-silent-failure]. A tap
-  // while a download runs withdraws it. A download needs the voice on stage, and ends with it.
+  // while a download runs withdraws it. A download needs the voice on stage and ready, and ends
+  // with the voice.
   const { save: saveButton } = controls.mini;
   const SAVE_LABEL = "Download this conversation as audio";
   // [LAW:no-shared-mutable-globals] The download under way, by its withdrawal; owned here. A
@@ -2106,7 +2112,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   showDownload(null);
   saveButton.addEventListener("click", () => {
     if (downloading !== null) return stopDownload(null);
-    if (state.kind !== "neural") return;
+    if (!savable(state)) return;
     // Under way before it starts: its first phase is said inside the start.
     const run = { withdraw: (): void => undefined };
     downloading = run;

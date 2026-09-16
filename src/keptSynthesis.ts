@@ -181,20 +181,14 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   const failedUnit = (request: Synthesize, reason: Extract<FromWorker, { kind: "failed" }>["reason"]): RenderedUnit | null =>
     reason.kind === "duplicate-unit" ? null : { kind: "failed", unitId: request.unitId, reason };
 
-  // The render's next unit, on the worker's free time: the device is asked first, and a lookup
-  // that rejects is said and made as a miss — the reader asked for the unit, and a broken
-  // cache must not withhold it.
+  // The render's next unit, on the worker's free time: the device is asked first. A lookup that
+  // rejects breaks the cache's contract and is said as every such break is, on the error channel.
   const renderNext = (current: NonNullable<typeof rendition>): void => {
     const request = current.pending[0];
     if (request === undefined) return;
     asking = true;
-    cache
-      .find(request)
-      .catch((error: unknown) => {
-        fail(`kept audio: the lookup for rendering unit ${request.unitId} failed: ${String(error)}`);
-        return null;
-      })
-      .then((kept) => {
+    cache.find(request).then(
+      (kept) => {
         asking = false;
         if (ended) return;
         if (kept !== null) {
@@ -205,7 +199,12 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
           return;
         }
         fill();
-      });
+      },
+      (error: unknown) => {
+        asking = false;
+        fail(`kept audio: the lookup for rendering unit ${request.unitId} failed: ${String(error)}`);
+      },
+    );
   };
 
   // The next unit worth making ahead, when the worker has nothing the listen asked for: the
@@ -230,9 +229,10 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
             worker.send(request);
             break;
           case "unreadable":
-            // The cache has reported why.
+            // The cache has reported why. Nothing more is made ahead, and a render waiting behind
+            // the answer is not stopped by it.
             keeping = false;
-            return;
+            break;
         }
         fill();
       },
