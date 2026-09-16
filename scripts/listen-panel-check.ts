@@ -39,7 +39,7 @@ import type { Place, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport, type WordStart } from "../src/speechManifest";
-import { speechSegments, timeAt, timelineOfScript } from "../src/timeline";
+import { speechSegments, timeAt, timelineOfScript, timelineOfUtterances } from "../src/timeline";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { ListenPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
@@ -1146,6 +1146,26 @@ console.log("createListenPanel: turn skips before the voice arrives step gap by 
   assert("forward from the top is that gap again, the last turn's gap, with nothing after it", held(panel.state()) === "gap before 1:0+0" && r.forward.disabled && !r.back.disabled);
   await arrive(r);
   assert("the voice arrives in the gap, not at the turn after it: the gap sounds, nothing painted, the turn after it asked for", r.where() === "silent" && r.line() === "Pause | stop | Playing · passage 2 of 2" && r.said().endsWith("synthesize 2"));
+  panel.dispose();
+}
+
+console.log("createListenPanel: a scrub let go in a gap before the voice arrives keeps its place in the gap (slopspot-read-along-a35.4gj)");
+{
+  const r = rig();
+  const panel = mount(r);
+  const window = r.doc.defaultView as unknown as typeof globalThis.window;
+  const pageGap = timelineOfUtterances(utterances).segments.find((segment) => segment.content.kind === "silence");
+  if (pageGap === undefined) throw new Error("fixture: the page has no gap between its turns");
+  const dropMs = Math.ceil(pageGap.startMs) + 200;
+  const into = dropMs - pageGap.startMs;
+  r.scrub.value = String(dropMs);
+  r.scrub.dispatchEvent(new window.Event("input", { bubbles: true }));
+  r.scrub.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert("let go in the gap: kept as the gap itself, as far in as it was dropped, not as the turn after it", held(panel.state()) === `gap before 1:0+${into}`);
+  assert("the thumb stays where it was let go, and does not hop to the turn's start", Number(r.scrub.value) === dropMs);
+  await arrive(r);
+  const voiceGap = (panel.state() as Extract<PanelState, { kind: "neural" }>).view.timeline.segments.find((segment) => segment.content.kind === "silence");
+  assert("the voice arrives that far into the gap on its own clock: the rest of the gap sounds before the turn", r.where() === "silent" && voiceGap !== undefined && Math.abs(performerAt(panel.state()) - (voiceGap.startMs + into)) < 1e-6);
   panel.dispose();
 }
 
