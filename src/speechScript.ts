@@ -327,11 +327,13 @@ export const deriveSpeechScript = (
 
 // The versions a rendition depends on, split the way units depend on them: `model` is
 // what every unit shares (weights and tokenizer); `voices` is each voice's own asset, so
-// a unit can carry the version of the one voice it is spoken in.
+// a unit can carry the version of the one voice it is spoken in; `tokenizer` alone is what
+// the cut of a script depends on, since the budget is counted in its tokens.
 export interface RenditionVersions {
   readonly pipeline: string;
   readonly generation: string;
   readonly model: string;
+  readonly tokenizer: string;
   readonly voices: Readonly<Record<VoiceId, string>>;
 }
 
@@ -339,6 +341,7 @@ export const renditionVersions = (manifest: ModelAssetManifest): RenditionVersio
   pipeline: PIPELINE_VERSION,
   generation: GENERATION_VERSION,
   model: [manifest.weights, manifest.tokenizer].map(assetVersion).join(","),
+  tokenizer: assetVersion(manifest.tokenizer),
   voices: Object.fromEntries(VOICE_IDS.map((id) => [id, assetVersion(manifest.voices[id])])) as Record<VoiceId, string>,
 });
 
@@ -370,3 +373,11 @@ export const renditionHash = (
 // wherever it is said.
 export const unitHash = (text: UnitText, voice: VoiceId, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
   contentHash({ pipeline: versions.pipeline, generation: versions.generation, model: versions.model, voice: versions.voices[voice], text });
+
+// [LAW:one-source-of-truth] A script's identity: exactly what `deriveSpeechScript` reads — each
+// utterance's index, anchor, voice and text — under the rules that cut it and the tokenizer
+// that counts its budget. The device keeps a paste's script under it (keptAudio.ts), so an
+// edit, new rules or a new tokenizer is another key and simply misses. The voices a reader
+// picks are not in it: a script is cut the same whoever speaks it.
+export const scriptHash = (utterances: ReadonlyArray<Utterance>, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
+  contentHash({ pipeline: versions.pipeline, tokenizer: versions.tokenizer, utterances: utterances.map((u) => [u.index, u.anchor, u.voice, u.text]) });

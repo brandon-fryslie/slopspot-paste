@@ -30,6 +30,7 @@ import {
   deriveSpeechScript,
   prepareText,
   renditionHash,
+  scriptHash,
   unitHash,
   unitText,
   renditionVersions,
@@ -333,4 +334,26 @@ console.log("\nUnit hash:");
   assert("new bytes for its voice make it another unit", same !== voiceRehashed);
   assert("new bytes for a voice it is not spoken in keep it", same === otherVoiceRehashed);
   assert("another source its words are timed against is another unit", same !== sourceChanged);
+}
+
+console.log("\nScript hash:");
+{
+  const said = [utter("Hi there.", "user", 0), utter("Hello!", "assistant", 1)];
+  const rehashed = <A extends ModelAsset>(asset: A): A => ({ ...asset, sha256: "f".repeat(64) });
+  const [same, again, edited, recast, pipelineChanged, tokenizerChanged, weightsChanged, generationChanged] = await Promise.all([
+    scriptHash(said),
+    scriptHash(said.map((u) => ({ ...u }))),
+    scriptHash([said[0], utter("Hello?", "assistant", 1)].filter((u) => u !== undefined)),
+    scriptHash(said.map((u) => ({ ...u, voice: u.voice === "user" ? "assistant" : "user" }))),
+    scriptHash(said, { ...RENDITION_VERSIONS, pipeline: `${RENDITION_VERSIONS.pipeline}-next` }),
+    scriptHash(said, renditionVersions({ ...MODEL_ASSETS, tokenizer: rehashed(MODEL_ASSETS.tokenizer) })),
+    scriptHash(said, renditionVersions({ ...MODEL_ASSETS, weights: rehashed(MODEL_ASSETS.weights) })),
+    scriptHash(said, { ...RENDITION_VERSIONS, generation: `${RENDITION_VERSIONS.generation}-next` }),
+  ]);
+  assert("the same utterances are one script, whatever object holds them", same === again);
+  assert("an edit is another script", same !== edited);
+  assert("a turn given to another speaker is another script", same !== recast);
+  assert("new rules are another script", same !== pipelineChanged);
+  assert("a new tokenizer is another script", same !== tokenizerChanged);
+  assert("new weights or a new generation cut the same script", same === weightsChanged && same === generationChanged);
 }

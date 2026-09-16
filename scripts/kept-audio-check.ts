@@ -14,6 +14,8 @@
 //   two keeps at once                     -> the second counts the store the first left
 //   a write the device refuses for room   -> the least recently played half removed, the write kept
 //   refused again                         -> reported, nothing kept
+//   keep a script, then recall it         -> the same units; another paste's utterances -> null
+//   a script under the cap                -> counted and forgotten by the same ledger as units
 //   a store that never opens              -> find null, keep settles, restore nothing; each failure reported
 //   an open another tab blocks            -> refused, and the connection closed if it opens later
 //   an open the browser never answers     -> refused once its patience runs out
@@ -167,6 +169,27 @@ console.log("the device's own limit");
   if (zero === undefined) throw new Error("fixture: no unit");
   await cache.keep(requestOf(zero), framesOf(2, 0), report(160));
   assert("refused with nothing left to free: reported, nothing kept", failures.join() === "keeping a unit" && ledger.size === 0);
+}
+
+console.log("scripts");
+{
+  const { store, ledger } = memoryStore();
+  const { cache, clock } = cacheOver(Promise.resolve(store), { cap: 2 * UNIT_BYTES });
+  const said = script.map((unit) => unit.utterance);
+  assert("nothing kept: no script", (await cache.recallScript(said)) === null);
+  clock.now = 1;
+  await cache.keepScript(said, script);
+  assert("kept: the same units back", (await cache.recallScript(said.map((u) => ({ ...u })))) === script);
+  assert("another paste's utterances: no script", (await cache.recallScript([...said, { index: 9, anchor: "t9", voice: "user", text: "More." }])) === null);
+  clock.now = 2;
+  await flush();
+  const [zero, one] = script;
+  if (zero === undefined || one === undefined) throw new Error("fixture: no units");
+  clock.now = 3;
+  await cache.keep(requestOf(zero), framesOf(2, 0), report(160));
+  clock.now = 4;
+  await cache.keep(requestOf(one), framesOf(2, 1), report(160));
+  assert("the script has its line in the ledger, and is forgotten first when it was played longest ago", ledger.size === 2 && (await cache.recallScript(said)) === null && (await cache.find(requestOf(zero))) !== null);
 }
 
 // ── failure ───────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,8 @@
-// [LAW:decomposition] Kept audio: the units the voice has already made, kept on the reader's
-// device so a replay or a resume plays them from the device instead of synthesizing them
-// again. One sentence, no "and" hiding a second job: this module decides what the device keeps
-// of a unit, under which key, and for how long. It packs no audio (audioCodec.ts), talks to no
+// [LAW:decomposition] Kept audio: what the voice has already made — a paste's script and each
+// unit's audio — kept on the reader's device so a replay or a resume plays from the device
+// instead of waiting on the model to cut and synthesize it again. One sentence, no "and"
+// hiding a second job: this module decides what the device keeps of a listen, under which
+// key, and for how long. It packs no audio (audioCodec.ts), talks to no
 // worker (keptSynthesis.ts answers requests from it) and plays nothing. Its effects — the
 // store, the codec, the clock — are parameters, so scripts/kept-audio-check.ts drives every
 // arm with an in-memory store and the PCM codec [LAW:effects-at-boundaries].
@@ -10,15 +11,19 @@
 // one unit's identity (`unitHash`: the fed text and its source, the voice asset, the model,
 // the rules and the generation) and nothing else, so it is the same audio the worker would
 // make — the seed is fixed — and the device holding it or not changes only how long a unit
-// takes to arrive. An edit, a voice change or a new model is a different key and simply
-// misses; nothing is ever invalidated, because nothing can go stale under its own key.
+// takes to arrive. A kept script is the same for its utterances (`scriptHash`: the text, the
+// rules and the tokenizer), cut once and read back wherever the paste is opened again. An
+// edit, a voice change or a new model is a different key and simply misses; nothing is ever
+// invalidated, because nothing can go stale under its own key.
 //
 // WHAT IS KEPT PER UNIT, in three parts under one key, each read alone: the audio in the
 // codec's form; the unit's record — its report (duration and word times) and frame count —
 // so a voice built over a script reads every kept unit's measurement in one small read
 // (`restore`) and a resume lands on its word before any audio is decoded; and its ledger
 // entry — its size and when it was last played — which is all the cap ever reads, so a
-// write near the cap never loads thousands of word timings to count bytes.
+// write near the cap never loads thousands of word timings to count bytes. A script is kept
+// as one entry with its own line in the same ledger, so it counts against the same cap and is
+// forgotten by the same rule: a paste whose script is read back is played again.
 //
 // THE CAP. At most KEPT_BYTES of audio stay on the device, counted in the kept form's bytes.
 // Every write that crosses the cap removes the least recently played units until it holds
@@ -39,14 +44,15 @@
 //
 // [LAW:no-silent-failure] exception: every failure — a store the browser refuses (private
 // mode, quota), a store another tab holds at an older version or the browser never opens, an entry that no longer
-// decodes — is the cache not holding the unit: a miss,
+// decodes — is the cache not holding the unit or the script: a miss,
 // synthesized as if nothing had been kept, and reported through `onFailure` so it is heard in
 // the console. A kept unit is a convenience; a refused store must not take Listen down with it
 // (keptPlace.ts makes the same trade for the resume position).
 
 import { bytesOf, type AudioCodec, type EncodedAudio } from "./audioCodec";
 import type { UnitReport } from "./speechManifest";
-import { unitHash, unitText, type SynthesisUnit, type UnitText, type VoiceMap } from "./speechScript";
+import type { Utterance } from "./speech";
+import { scriptHash, unitHash, unitText, type SynthesisUnit, type UnitText, type VoiceMap } from "./speechScript";
 import type { VoiceId } from "./modelAssets";
 
 // 128 MiB: about eleven hours of Opus at the codec's 24 kbps, or three quarters of an hour of
@@ -76,6 +82,9 @@ export interface KeptStore {
   audio(key: string): Promise<EncodedAudio | undefined>;
   // The entry, its record and its audio, together or not at all.
   put(entry: LedgerEntry, record: KeptRecord, audio: EncodedAudio): Promise<void>;
+  script(key: string): Promise<ReadonlyArray<SynthesisUnit> | undefined>;
+  // The entry and its script, together or not at all.
+  putScript(entry: LedgerEntry, units: ReadonlyArray<SynthesisUnit>): Promise<void>;
   touch(keys: ReadonlyArray<string>, playedAt: number): Promise<void>;
   ledger(): Promise<ReadonlyArray<LedgerEntry>>;
   remove(keys: ReadonlyArray<string>): Promise<void>;
@@ -123,6 +132,10 @@ export interface AudioCache {
   readonly keep: (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport) => Promise<void>;
   // For each unit of a script in these voices, its kept report, or undefined. Never rejects.
   readonly restore: (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap) => Promise<ReadonlyArray<UnitReport | undefined>>;
+  // The script cut from these utterances when the device holds it; null otherwise. Never rejects.
+  readonly recallScript: (utterances: ReadonlyArray<Utterance>) => Promise<ReadonlyArray<SynthesisUnit> | null>;
+  // Keeps the script the worker cut from these utterances. Never rejects.
+  readonly keepScript: (utterances: ReadonlyArray<Utterance>, units: ReadonlyArray<SynthesisUnit>) => Promise<void>;
 }
 
 export interface AudioCacheConfig {
@@ -166,22 +179,23 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
       return { frames, report: record.report };
     });
 
-  const keep = (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport): Promise<void> => {
-    // Played when it was made, not when its turn in the write chain comes.
+  // [LAW:single-enforcer] Every write, a unit's or a script's: its turn in the chain, the
+  // device's own limit, then the cap. `made` settles what is written — the key, its size and
+  // how to put it — and runs in the write's turn; `playedAt` is read at the ask, so a write is
+  // played when it was made, not when its turn comes.
+  const write = (what: string, made: (store: KeptStore) => Promise<{ readonly key: string; readonly bytes: number; readonly put: (entry: LedgerEntry) => Promise<void> }>): Promise<void> => {
     const playedAt = now();
     writes = writes.then(() =>
-      attempt("keeping a unit", undefined, async (store) => {
-        const key = await keyOf(request);
-        const audio = await (await config.codec).encode(frames);
-        const entry = { key, bytes: bytesOf(audio), playedAt };
-        const record = { report, frames: frames.length };
-        await store.put(entry, record, audio).catch(async (error: unknown) => {
+      attempt(what, undefined, async (store) => {
+        const { key, bytes, put } = await made(store);
+        const entry = { key, bytes, playedAt };
+        await put(entry).catch(async (error: unknown) => {
           if (!isQuota(error)) throw error;
           const ledger = await store.ledger();
           const gone = evictions(ledger, heldBytes(ledger) / 2);
           if (gone.length === 0) throw error;
           await store.remove(gone);
-          await store.put(entry, record, audio);
+          await put(entry);
         });
         const gone = evictions(await store.ledger(), cap);
         if (gone.length > 0) await store.remove(gone);
@@ -189,6 +203,27 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
     );
     return writes;
   };
+
+  const keep = (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport): Promise<void> =>
+    write("keeping a unit", async (store) => {
+      const audio = await (await config.codec).encode(frames);
+      const record = { report, frames: frames.length };
+      return { key: await keyOf(request), bytes: bytesOf(audio), put: (entry) => store.put(entry, record, audio) };
+    });
+
+  const recallScript = (utterances: ReadonlyArray<Utterance>): Promise<ReadonlyArray<SynthesisUnit> | null> =>
+    attempt("reading a kept script", null, async (store) => {
+      const key = await scriptHash(utterances);
+      const units = await store.script(key);
+      if (units === undefined) return null;
+      void attempt("marking a kept script played", undefined, (held) => held.touch([key], now()));
+      return units;
+    });
+
+  // A script's size is its JSON's length: the measure of what is kept that needs no
+  // encoder, and within a small factor of what the store spends on it.
+  const keepScript = (utterances: ReadonlyArray<Utterance>, units: ReadonlyArray<SynthesisUnit>): Promise<void> =>
+    write("keeping a script", async (store) => ({ key: await scriptHash(utterances), bytes: JSON.stringify(units).length, put: (entry) => store.putScript(entry, units) }));
 
   const restore = (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap): Promise<ReadonlyArray<UnitReport | undefined>> =>
     attempt("restoring kept units", script.map(() => undefined), async (store) => {
@@ -199,7 +234,7 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
       return records.map((record) => record?.report);
     });
 
-  return { find, keep, restore };
+  return { find, keep, restore, recallScript, keepScript };
 };
 
 // ── the browser's store ──────────────────────────────────────────────────────────────
@@ -208,7 +243,11 @@ const DATABASE = "listen-kept-audio";
 const LEDGER = "ledger";
 const RECORDS = "records";
 const AUDIO = "audio";
-const STORES = [LEDGER, RECORDS, AUDIO];
+const SCRIPTS = "scripts";
+const STORES = [LEDGER, RECORDS, AUDIO, SCRIPTS];
+// Version 1 held units alone; version 2 keeps scripts beside them. An upgrade creates the
+// stores the device does not yet have, so every version before is carried forward whole.
+const VERSION = 2;
 
 const settled = <T,>(request: IDBRequest<T>): Promise<T> =>
   new Promise((resolve, reject) => {
@@ -234,7 +273,7 @@ export const OPEN_PATIENCE_MS = 5_000;
 // after it was refused is closed at once, so it holds nothing up either.
 const opened = (factory: IDBFactory, patienceMs: number): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
-    const opening = factory.open(DATABASE, 1);
+    const opening = factory.open(DATABASE, VERSION);
     let refused = false;
     const refuse = (reason: string): void => {
       refused = true;
@@ -243,7 +282,7 @@ const opened = (factory: IDBFactory, patienceMs: number): Promise<IDBDatabase> =
     };
     const patience = setTimeout(() => refuse(`the store did not open within ${patienceMs} ms`), patienceMs);
     opening.onupgradeneeded = () => {
-      for (const name of STORES) opening.result.createObjectStore(name);
+      for (const name of STORES) if (!opening.result.objectStoreNames.contains(name)) opening.result.createObjectStore(name);
     };
     opening.onblocked = () => refuse("another tab holds the store at an older version");
     opening.onerror = () => {
@@ -260,9 +299,9 @@ const opened = (factory: IDBFactory, patienceMs: number): Promise<IDBDatabase> =
     };
   });
 
-// [LAW:effects-at-boundaries] The one edge to IndexedDB: three object stores under one
-// database — the ledger, the records and the audio — each keyed by the unit's hash. Opened
-// once per page.
+// [LAW:effects-at-boundaries] The one edge to IndexedDB: four object stores under one
+// database — the ledger, the records, the audio and the scripts — each keyed by its entry's
+// hash. Opened once per page.
 export const openKeptStore = async (factory: IDBFactory, patienceMs: number = OPEN_PATIENCE_MS): Promise<KeptStore> => {
   const db = await opened(factory, patienceMs);
 
@@ -291,6 +330,13 @@ export const openKeptStore = async (factory: IDBFactory, patienceMs: number = OP
     await done(transaction);
   };
 
+  const putScript = async (entry: LedgerEntry, units: ReadonlyArray<SynthesisUnit>): Promise<void> => {
+    const transaction = db.transaction([LEDGER, SCRIPTS], "readwrite");
+    transaction.objectStore(SCRIPTS).put(units, entry.key);
+    transaction.objectStore(LEDGER).put(entry, entry.key);
+    await done(transaction);
+  };
+
   const ledger = (): Promise<ReadonlyArray<LedgerEntry>> =>
     settled(db.transaction(LEDGER, "readonly").objectStore(LEDGER).getAll() as IDBRequest<LedgerEntry[]>);
 
@@ -306,6 +352,8 @@ export const openKeptStore = async (factory: IDBFactory, patienceMs: number = OP
     records,
     audio: (key) => settled(db.transaction(AUDIO, "readonly").objectStore(AUDIO).get(key) as IDBRequest<EncodedAudio | undefined>),
     put,
+    script: (key) => settled(db.transaction(SCRIPTS, "readonly").objectStore(SCRIPTS).get(key) as IDBRequest<ReadonlyArray<SynthesisUnit> | undefined>),
+    putScript,
     touch,
     ledger,
     remove,

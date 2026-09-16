@@ -1,7 +1,8 @@
-// Kept synthesis: the port that answers a unit from the device when it can, driven over a stub
-// worker and a stub cache through every arm of the protocol it must keep; then a real scheduler
-// over it, twice over one real cache, to show a listen replayed with no synthesis at all
-// (slopspot-read-along-a35.6.5zr). Run: `tsx scripts/kept-synthesis-check.ts`.
+// Kept synthesis: the port that answers a unit or a script from the device when it can, and
+// holds what it cannot until the model is ready, driven over a stub worker and a stub cache
+// through every arm of the protocol it must keep; then a real scheduler over it, twice over one
+// real cache, to show a listen replayed with no synthesis at all (slopspot-read-along-a35.6.5zr,
+// slopspot-read-along-a35.6.9wx). Run: `tsx scripts/kept-synthesis-check.ts`.
 //
 // [LAW:behavior-not-structure] Every assertion is about what the worker is told, what the
 // port's listeners hear, in what order, and what is kept — the contract the scheduler reads.
@@ -15,6 +16,10 @@
 //   synthesize again after a cancel   -> waits for the cancelled job's terminal, then looks up
 //   cancel of that waiting request    -> cancelled at once; the first job's terminal still follows
 //   synthesize a unit in flight       -> failed{duplicate-unit}
+//   a miss before the model is ready  -> held; sent when the worker says ready, in the order asked
+//   cancel of a held miss             -> cancelled at once, nothing ever sent
+//   script, kept                      -> answered from the device, ready or not; nothing to the worker
+//   script, not kept                  -> to the worker once ready; its reply heard and kept
 //   ids below zero (a preview)        -> straight to the worker and back; nothing looked up or kept
 //   every other request and message   -> straight through
 //   a lookup that rejects             -> said on the error channel
@@ -25,6 +30,7 @@ import { createCodec } from "../src/audioCodec";
 import { createAudioCache, type AudioCache, type KeptUnit, type UnitRequest } from "../src/keptAudio";
 import { withKeptAudio } from "../src/keptSynthesis";
 import { createScheduler } from "../src/scheduler";
+import type { Utterance } from "../src/speech";
 import type { UnitReport } from "../src/speechManifest";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
@@ -48,6 +54,9 @@ const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 const text = { ...prepareText("Hello there."), source: "Hello there." };
 const synthesize = (unitId: number): ToWorker => ({ kind: "synthesize", unitId, text, voice: "alba" });
+const READY: FromWorker = { kind: "ready", backend: "webgpu", modelVersion: "v" };
+const said: ReadonlyArray<Utterance> = [{ index: 0, anchor: "t0", voice: "user", text: "Hello there." }];
+const cutUnits: ReadonlyArray<SynthesisUnit> = [{ utterance: { index: 0, anchor: "t0", voice: "user", text: "Hello there." }, start: 0, end: 12, ...prepareText("Hello there.") }];
 
 // The worker: what it is told, and a hand to speak for it — or, given `answer`, a worker that
 // answers each request itself.
@@ -88,13 +97,19 @@ const stubWorker = (answer: (message: ToWorker, emit: (message: FromWorker) => v
 const stubCache = () => {
   const lookups: { request: UnitRequest; answer: (kept: KeptUnit | null) => void; reject: (error: Error) => void }[] = [];
   const kept: { request: UnitRequest; frames: ReadonlyArray<Float32Array>; report: UnitReport }[] = [];
-  const cache: Pick<AudioCache, "find" | "keep"> = {
+  const recalls: { utterances: ReadonlyArray<Utterance>; answer: (units: ReadonlyArray<SynthesisUnit> | null) => void }[] = [];
+  const scripts: { utterances: ReadonlyArray<Utterance>; units: ReadonlyArray<SynthesisUnit> }[] = [];
+  const cache: Pick<AudioCache, "find" | "keep" | "recallScript" | "keepScript"> = {
     find: (request) => new Promise((resolve, reject) => lookups.push({ request, answer: resolve, reject })),
     keep: async (request, frames, done) => {
       kept.push({ request, frames, report: done });
     },
+    recallScript: (utterances) => new Promise((resolve) => recalls.push({ utterances, answer: resolve })),
+    keepScript: async (utterances, units) => {
+      scripts.push({ utterances, units });
+    },
   };
-  return { cache, lookups, kept };
+  return { cache, lookups, kept, recalls, scripts };
 };
 
 const heard = (port: SynthesisPort) => {
@@ -109,10 +124,12 @@ const heard = (port: SynthesisPort) => {
   return { messages, errors, said };
 };
 
-const setup = () => {
+// A port over a worker whose model is ready, unless the case says it is still on its way.
+const setup = ({ ready = true }: { ready?: boolean } = {}) => {
   const worker = stubWorker();
   const store = stubCache();
   const port = withKeptAudio({ worker: worker.port, cache: store.cache, now: () => 0 });
+  if (ready) worker.emit(READY);
   return { worker, store, port, ear: heard(port) };
 };
 
@@ -214,6 +231,59 @@ console.log("again after a cancel, and twice at once");
   assert("and the first job's own terminal still follows, with nothing else looked up", ear.said().endsWith("cancelled 3,cancelled 3") && store.lookups.length === 3 && !worker.said().includes("3"));
 }
 
+console.log("before the model is ready");
+{
+  const { worker, store, port, ear } = setup({ ready: false });
+  port.send(synthesize(0));
+  port.send(synthesize(1));
+  answer(store, 0, null);
+  answer(store, 1, null);
+  await flush();
+  assert("misses are held: nothing to the worker, which would refuse them, and nothing heard", worker.sent.length === 0 && ear.messages.length === 0);
+  port.send({ kind: "cancel", unitId: 1 });
+  await flush();
+  assert("a held miss cancelled: cancelled at once, still nothing to the worker", ear.said() === "cancelled 1" && worker.sent.length === 0);
+  port.send(synthesize(2));
+  answer(store, 2, { frames: [frame(2, 0)], report: report(80) });
+  await flush();
+  assert("a kept unit is answered while the model is on its way", ear.said() === "cancelled 1,audio 2#0,done 2" && worker.sent.length === 0);
+  port.send(synthesize(3));
+  answer(store, 3, null);
+  await flush();
+  worker.emit(READY);
+  assert("ready: heard, and what was held goes to the worker in the order it was asked", ear.said().endsWith("done 2,ready") && worker.said() === "synthesize 0,synthesize 3");
+  worker.emit({ kind: "done", unitId: 0, report: report(80), elapsedMs: 4 });
+  assert("and is answered and kept as any unit the worker makes", ear.said().endsWith("ready,done 0") && store.kept.length === 1);
+  port.send(synthesize(4));
+  answer(store, 4, null);
+  await flush();
+  assert("a miss once ready goes straight to the worker", worker.said() === "synthesize 0,synthesize 3,synthesize 4");
+}
+
+console.log("scripts");
+{
+  const { worker, store, port, ear } = setup({ ready: false });
+  port.send({ kind: "script", id: 1, utterances: said });
+  assert("asked: the device is asked first, nothing to the worker", store.recalls.length === 1 && store.recalls[0]?.utterances === said && worker.sent.length === 0);
+  store.recalls[0]?.answer(cutUnits);
+  await flush();
+  const reply = ear.messages.at(-1);
+  assert("kept: answered from the device under the request's id before the model is ready, nothing to the worker", reply?.kind === "script" && reply.id === 1 && reply.units === cutUnits && worker.sent.length === 0);
+
+  port.send({ kind: "script", id: 2, utterances: said });
+  store.recalls[1]?.answer(null);
+  await flush();
+  assert("not kept, the model on its way: held", worker.sent.length === 0);
+  worker.emit(READY);
+  assert("ready: the script goes to the worker", worker.said() === "script");
+  worker.emit({ kind: "script", id: 2, units: cutUnits });
+  assert("the worker's cut is heard, and kept under the utterances it was cut from", ear.said().endsWith("ready,script") && store.scripts.length === 1 && store.scripts[0]?.utterances === said && store.scripts[0].units === cutUnits);
+  port.send({ kind: "script", id: 3, utterances: said });
+  store.recalls[2]?.answer(null);
+  await flush();
+  assert("not kept, the model ready: to the worker at once", worker.said() === "script,script");
+}
+
 console.log("everything else passes through");
 {
   const { worker, store, port, ear } = setup();
@@ -270,8 +340,10 @@ console.log("a scheduler over it, twice over one cache: the second listen needs 
         emit({ kind: "done", unitId: message.unitId, report: report(2 * FRAME_S * 1000), elapsedMs: 5 });
       });
     });
+    const port = withKeptAudio({ worker: worker.port, cache, now: () => 0 });
+    worker.emit(READY);
     const scheduler = createScheduler({
-      port: withKeptAudio({ worker: worker.port, cache, now: () => 0 }),
+      port,
       script,
       voices: VOICES,
       kept: await cache.restore(script, VOICES),
