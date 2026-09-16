@@ -225,6 +225,11 @@ export const nodeVisibleProse = (node: SpineNode): string =>
         .filter((s) => s.length > 0)
         .join("\n\n");
 
+// [LAW:one-source-of-truth] Who a spine node's words belong to: a spoken node's own role,
+// an assistant node the assistant. The outline colours by it and the digest names the
+// speaker by it, through this one fold rather than two that could disagree.
+export const nodeRole = (node: SpineNode): Role => (node.kind === "spoken" ? node.role : "assistant");
+
 const snippet = (text: string): string => {
   const collapsed = text.replace(/\s+/g, " ").trim();
   return collapsed.length > LABEL_MAX

@@ -33,8 +33,11 @@
 
 import { contentHash } from "./contentHash";
 import type { DisplayNode, ViewableDialogue } from "./dialogue";
-import { nodeVisibleProse } from "./dialogue";
+import { nodeRole, nodeVisibleProse } from "./dialogue";
+import type { Fence } from "./fence";
+import { closesFence, opensFence } from "./fence";
 import type { PreferenceStore } from "./preferenceStore";
+import type { Role } from "./types";
 
 // ── the input ────────────────────────────────────────────────────────────────────────
 
@@ -45,32 +48,32 @@ export const DIGEST_MIN_WORDS = 80;
 // [LAW:types-are-the-program] The selection: who spoke, and the readable prose in its
 // paragraphs — the grain the quota split cuts at, so a part never ends mid-sentence or
 // mid-fence.
-export type Speaker = "user" | "system" | "assistant";
 export interface DigestInput {
-  readonly speaker: Speaker;
+  readonly speaker: Role;
   readonly paragraphs: ReadonlyArray<string>;
 }
 
-const FENCE = /^\s*(`{3,}|~{3,})/;
-
 // [LAW:dataflow-not-control-flow] Prose split at its blank lines, a fenced code block kept
 // whole: the fence's own blank lines are inside it, and a fence that opens in one part and
-// closes in another is no paragraph. Exported for the check; selectDigestInput is its caller.
+// closes in another is no paragraph. Where a fence opens and closes is fence.ts's answer,
+// the one the speech segmenter reads too. An unclosed fence runs to the end, as there.
+// Exported for the check; selectDigestInput is its caller.
 export const paragraphsOf = (prose: string): ReadonlyArray<string> => {
   const paragraphs: string[] = [];
   let open: string[] = [];
-  let fence: string | null = null;
+  let fence: Fence | null = null;
   const close = (): void => {
     const text = open.join("\n").trim();
     if (text.length > 0) paragraphs.push(text);
     open = [];
   };
   for (const line of prose.split("\n")) {
-    const mark = FENCE.exec(line)?.[1]?.[0];
-    if (fence === null && mark !== undefined) fence = mark;
-    else if (mark === fence) fence = null;
-    if (fence === null && line.trim() === "") close();
-    else open.push(line);
+    if (fence === null && line.trim() === "") {
+      close();
+      continue;
+    }
+    fence = fence === null ? opensFence(line) : closesFence(line, fence) ? null : fence;
+    open.push(line);
   }
   close();
   return paragraphs;
@@ -80,7 +83,7 @@ export const paragraphsOf = (prose: string): ReadonlyArray<string> => {
 // nodeVisibleProse joins an assistant turn's spine blocks with a blank line, so a block
 // boundary is a paragraph boundary here by construction.
 export const selectDigestInput = (display: DisplayNode): DigestInput => ({
-  speaker: display.node.kind === "spoken" ? display.node.role : "assistant",
+  speaker: nodeRole(display.node),
   paragraphs: paragraphsOf(nodeVisibleProse(display.node)),
 });
 
@@ -151,6 +154,9 @@ export const DIGEST_KEEP = 1_000;
 // [LAW:parse-dont-validate] A kept entry is a Digest, or it is not this build's and reads as
 // absent. The store is the page's preference store, so a refused device already reads as
 // nothing kept and takes no write.
+// [LAW:no-silent-failure] exception: a kept value that does not parse is a cache entry
+// another build wrote, and absent is its true reading — the digest is re-derived, nothing
+// is lost.
 const parseDigest = (kept: string | null): Digest | undefined => {
   if (kept === null) return undefined;
   try {
@@ -166,6 +172,8 @@ const parseDigest = (kept: string | null): Digest | undefined => {
 
 // The kept keys in the order they were put, the eviction order; a value this build did not
 // write reads as none kept.
+// [LAW:no-silent-failure] exception: as parseDigest — a list that does not parse starts the
+// list over; the entries it named are re-derived when next read, not lost.
 const parseKeys = (kept: string | null): ReadonlyArray<string> => {
   if (kept === null) return [];
   try {
@@ -176,14 +184,17 @@ const parseKeys = (kept: string | null): ReadonlyArray<string> => {
   }
 };
 
+// The kept list is written before the digest it names: a device that refuses the list's
+// write then refuses the entry's too, or takes it under a list that already names it, so
+// no entry is kept that the list cannot evict.
 export const preferenceDigestStore = (store: PreferenceStore, keep: number = DIGEST_KEEP): DigestStore => ({
   get: async (key) => parseDigest(store.getItem(STORE_PREFIX + key)),
   put: async (key, digest) => {
     const keys = [...parseKeys(store.getItem(KEPT_KEYS)).filter((kept) => kept !== key), key];
     const evicted = keys.slice(0, Math.max(0, keys.length - keep));
     for (const old of evicted) store.removeItem(STORE_PREFIX + old);
-    store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
     store.setItem(KEPT_KEYS, JSON.stringify(keys.slice(evicted.length)));
+    store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
   },
 });
 
@@ -192,12 +203,12 @@ export const preferenceDigestStore = (store: PreferenceStore, keep: number = DIG
 // The context each summarize call is given: whose words these are. Not part of the key,
 // as the TL;DR's system prompt is not part of its key — a rewording re-derives future
 // digests and is never coupled to the ones already kept [LAW:no-ambient-temporal-coupling].
-const SPEAKER_WORD: { readonly [S in Speaker]: string } = {
+const SPEAKER_WORD: { readonly [R in Role]: string } = {
   user: "the user's message",
   system: "a system message",
   assistant: "the assistant's reply",
 };
-const turnContext = (speaker: Speaker): string =>
+const turnContext = (speaker: Role): string =>
   `This is ${SPEAKER_WORD[speaker]} in a transcript of a conversation with an AI assistant.`;
 const COMBINED_CONTEXT = "These are digests of consecutive parts of one long turn in a transcript of a conversation with an AI assistant; digest them as one.";
 
@@ -207,18 +218,20 @@ const joinParagraphs = (paragraphs: ReadonlyArray<string>): string => paragraphs
 // quota, measured under the context they will be summarized with. The whole measured first:
 // a turn that fits is one part for one call, the common case. Otherwise greedy: a paragraph
 // joins the open part while the part still fits, else closes it and opens the next.
-// Exported for the check; the service is its one caller.
+// Exported for the check; the service is its one caller, packing paragraphs in the first
+// round and part digests after, which is what `noun` names in the reason.
 // [LAW:no-silent-failure] A paragraph that measures over the quota on its own fits no part;
 // thrown, and the service reports it as the turn's failure.
 export const packByQuota = async (
   paragraphs: ReadonlyArray<string>,
   summarizer: Pick<Summarizer, "inputQuota" | "measureInputUsage">,
   options: SummarizeOptions,
+  noun = "paragraph",
 ): Promise<ReadonlyArray<string>> => {
   const usageOf = async (part: ReadonlyArray<string>): Promise<number> =>
     summarizer.measureInputUsage(joinParagraphs(part), options);
   const over = (usage: number): Error =>
-    new Error(`a paragraph measures ${usage} against the summarizer's quota of ${summarizer.inputQuota}`);
+    new Error(`a ${noun} measures ${usage} against the summarizer's quota of ${summarizer.inputQuota}`);
   if ((await usageOf(paragraphs)) <= summarizer.inputQuota) return [joinParagraphs(paragraphs)];
   const parts: string[][] = [];
   let open: string[] = [];
@@ -238,23 +251,31 @@ export const packByQuota = async (
   return parts.map(joinParagraphs);
 };
 
+const textLength = (texts: ReadonlyArray<string>): number => texts.reduce((n, text) => n + text.length, 0);
+
 // One turn's digest: its paragraphs packed and each part summarized; while more than one
 // digest remains, the digests are packed and summarized the same way, until one is left,
-// marked combined. Every round must leave fewer digests than went in, or the summarizer's
-// digests are no shorter than its inputs and the turn fails with that reason.
+// marked combined. Every round's digests must be shorter together than what went in, or
+// the summarizer's digests are no shorter than its inputs and the turn fails with that
+// reason [LAW:no-silent-failure]; so does a summarizer that answers nothing, since a blank
+// kept under the turn's key would be served as its digest on every visit.
 const digestOf = async (input: DigestInput, summarizer: Summarizer, signal: AbortSignal): Promise<Digest> => {
-  const round = async (texts: ReadonlyArray<string>, context: string): Promise<ReadonlyArray<string>> => {
-    const parts = await packByQuota(texts, summarizer, { context, signal });
+  const round = async (texts: ReadonlyArray<string>, context: string, noun: string): Promise<ReadonlyArray<string>> => {
+    const parts = await packByQuota(texts, summarizer, { context, signal }, noun);
     const digests: string[] = [];
-    for (const part of parts) digests.push(await summarizer.summarize(part, { context, signal }));
+    for (const part of parts) {
+      const digest = await summarizer.summarize(part, { context, signal });
+      if (digest.trim() === "") throw new Error(`the summarizer answered nothing for a ${noun === "paragraph" ? "part" : "round"} of the turn`);
+      digests.push(digest);
+    }
     return digests;
   };
-  let digests = await round(input.paragraphs, turnContext(input.speaker));
+  let digests = await round(input.paragraphs, turnContext(input.speaker), "paragraph");
   const combined = digests.length > 1;
   while (digests.length > 1) {
-    const next = await round(digests, COMBINED_CONTEXT);
-    if (next.length >= digests.length) {
-      throw new Error(`${digests.length} part digests pack into ${next.length} parts, no fewer: the summarizer's digests are no shorter than its inputs`);
+    const next = await round(digests, COMBINED_CONTEXT, "part digest");
+    if (textLength(next) >= textLength(digests)) {
+      throw new Error(`${digests.length} part digests summarize to ${next.length} no shorter together: the summarizer's digests are no shorter than its inputs`);
     }
     digests = next;
   }
@@ -323,11 +344,20 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
   let from = 0;
   let live: Walk | null = null;
 
-  // The outcome is written before any listener hears it, so a listener that throws leaves
-  // the outcome right and its throw reaches the caller of start, whose listener it is.
+  // The outcome is written before any listener hears it, and every listener hears it, so a
+  // listener that throws leaves the outcome right and the others told; its throw (the first,
+  // if several) reaches the caller of start, whose listener it is.
   const settle = (entry: Entry, outcome: DigestOutcome): void => {
     entry.outcome = outcome;
-    for (const listener of listeners) listener(entry.index, outcome);
+    const thrown: unknown[] = [];
+    for (const listener of listeners) {
+      try {
+        listener(entry.index, outcome);
+      } catch (error) {
+        thrown.push(error);
+      }
+    }
+    if (thrown.length > 0) throw thrown[0];
   };
 
   // The next pending turn in reading order: the first shown turn at or after `from`, to the
@@ -362,11 +392,19 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
     }
   };
 
-  const walk = async (signal: AbortSignal): Promise<void> => {
-    for (let entry = next(); entry !== undefined; entry = next()) {
-      const outcome = await outcomeOf(entry, signal);
-      if (signal.aborted) return;
-      settle(entry, outcome);
+  // The walk clears itself as the live one in its own finally, before its promise settles,
+  // so a start from a listener that just threw opens a new walk rather than answering with
+  // the one that is ending.
+  const walk = async (controller: AbortController): Promise<void> => {
+    const { signal } = controller;
+    try {
+      for (let entry = next(); entry !== undefined; entry = next()) {
+        const outcome = await outcomeOf(entry, signal);
+        if (signal.aborted) return;
+        settle(entry, outcome);
+      }
+    } finally {
+      if (live?.controller === controller) live = null;
     }
   };
 
@@ -379,14 +417,8 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
     from = at;
     if (live !== null) return live.done;
     const controller = new AbortController();
-    const started: Walk = {
-      controller,
-      done: walk(controller.signal).finally(() => {
-        if (live === started) live = null;
-      }),
-    };
-    live = started;
-    return started.done;
+    live = { controller, done: walk(controller) };
+    return live.done;
   };
 
   return {
