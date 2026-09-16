@@ -7,10 +7,9 @@
 // next visit and what voice each role would be spoken in — never how the string is laid out.
 
 import { VOICE_IDS } from "../src/modelAssets";
-import type { PreferenceStore } from "../src/preferenceStore";
 import { DEFAULT_PICK, DEFAULT_VOICES, PICK_KEY, SYSTEM_VOICE, previewText, readPick, samePick, voiceMapOf, voiceName, writePick } from "../src/voiceChoice";
 import type { VoicePick } from "../src/voiceChoice";
-import { memoryPreferences } from "./preferenceStub";
+import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -51,10 +50,7 @@ console.log("a stored value this build did not write reads as the default");
     store.setItem(PICK_KEY, raw);
     assert(`${JSON.stringify(raw)} reads as the default`, samePick(readPick(store), DEFAULT_PICK));
   }
-  const refuse = (): never => {
-    throw new Error("storage refused");
-  };
-  const refusing: PreferenceStore = { getItem: refuse, setItem: refuse, removeItem: refuse };
+  const refusing = refusedPreferences();
   assert("a browser that refuses storage: the default, no throw", samePick(readPick(refusing), DEFAULT_PICK));
   let threw = false;
   try {

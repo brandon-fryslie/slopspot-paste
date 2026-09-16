@@ -47,7 +47,7 @@ import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
 import { DEFAULT_PICK, DEFAULT_VOICES, readPick, writePick } from "../src/voiceChoice";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
-import { memoryPreferences } from "./preferenceStub";
+import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 import { forgetResume, printsOf, readResume, RESUME_PREFIX, writeResume, type PrintedPage } from "../src/keptPlace";
 
 // No unit is being made: the model has begun no word of any.
@@ -736,12 +736,13 @@ interface Rig {
 }
 
 type Store = ReturnType<typeof memoryPreferences>;
-// The device's storage: a fresh one, remembering the download consent or not, or one
-// carried over from an earlier rig — the storage surviving a reload, exactly as that rig
-// left it.
-type Storage = { readonly remembered: boolean } | { readonly store: Store };
+// The device's storage: a fresh one, remembering the download consent or not, one carried
+// over from an earlier rig — the storage surviving a reload, exactly as that rig left it —
+// or one the browser refuses, as a browser that blocks site data does, which holds nothing.
+type Storage = { readonly remembered: boolean } | { readonly store: Store } | { readonly refused: true };
 const storeOf = (storage: Storage): Store => {
   if ("store" in storage) return storage.store;
+  if ("refused" in storage) return { ...refusedPreferences(), keys: () => [] };
   const store = memoryPreferences();
   writePreference(store, storage.remembered);
   return store;
@@ -1239,6 +1240,26 @@ console.log("createListenPanel: the hover's yes downloads the voice and leaves i
   assert("the voice arrives on the yes alone: on stage, Ready, nothing synthesized, no cursor, the mark ready", panel.state().kind === "neural" && r.said() === "script,load" && r.line() === "Listen | stop(off) | Ready" && r.shownMark() === "ready | folded | play | remember off" && r.positions.every((at) => at === null) && r.frames.pending === 0);
   r.play.click();
   assert("Play on the ready voice speaks from the top on the device the yes opened", r.devices().length === 1 && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
+  panel.dispose();
+}
+
+console.log("createListenPanel: a browser that refuses site storage still listens (slopspot-read-along-a35.2wu)");
+{
+  const r = rig({ storage: { refused: true } });
+  const panel = mount(r);
+  await ableAbsent(r);
+  assert("mounted over a refused store: nothing remembered, so the hover asks; nothing sent", r.shownMark() === ASK_MARK && r.line() === ABSENT_LINE && r.said() === "script");
+  r.check(true);
+  assert("the box on a refused store keeps nothing, so it grants no standing yes and reads unchecked", !readPreference(r.store) && r.said() === "script" && r.shownMark() === ASK_MARK);
+  r.mini.download.click();
+  assert("the tap's yes is this visit's own: load sent", r.said() === "script,load" && r.line() === PREPARING_LINE);
+  r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
+  r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
+  await scripted(r);
+  r.play.click();
+  assert("Play speaks from the top, with no pick, no place and no preference to read", r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
+  r.check(false);
+  assert("clearing the box on a refused store does not throw; the voice on stage is untouched", panel.state().kind === "neural" && r.counts.spawned === 1);
   panel.dispose();
 }
 

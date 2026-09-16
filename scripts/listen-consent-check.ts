@@ -3,8 +3,7 @@
 // Run: `tsx scripts/listen-consent-check.ts`.
 
 import { PREFERENCE_KEY, readPreference, standingConsent, writePreference } from "../src/listenConsent";
-import type { PreferenceStore } from "../src/preferenceStore";
-import { memoryPreferences } from "./preferenceStub";
+import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -29,10 +28,7 @@ console.log("the preference round-trips through the store");
 
 console.log("a store that refuses — a browser that throws on site storage — reads as not remembered and takes no write");
 {
-  const refuse = (): never => {
-    throw new Error("SecurityError: storage refused");
-  };
-  const refusing: PreferenceStore = { getItem: refuse, setItem: refuse, removeItem: refuse };
+  const refusing = refusedPreferences();
   const survives = (act: () => void): boolean => {
     try {
       act();

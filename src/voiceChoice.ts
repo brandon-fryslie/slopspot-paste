@@ -17,7 +17,8 @@
 // short generation on the GPU.
 //
 // [LAW:effects-at-boundaries] Storage is a parameter of the two edges below, so
-// scripts/voice-choice-check.ts drives them over a Map; the page hands window.localStorage.
+// scripts/voice-choice-check.ts drives them over a Map; the page hands them the device's
+// storage through preferenceStore.deviceStore, which answers a refused store.
 
 import { VOICE_IDS, type VoiceId } from "./modelAssets";
 import type { PreferenceStore } from "./preferenceStore";
@@ -61,34 +62,33 @@ const isVoiceId = (value: unknown): value is VoiceId => typeof value === "string
 
 // [LAW:parse-dont-validate] The stored string becomes a pick or the default: a value that
 // is not a pick this build wrote — another build's shape, a voice no longer hosted, a hand
-// edit — is not a preference, and reads as none.
+// edit, a string that is not JSON at all — is not a preference, and reads as none.
 const parsePick = (raw: string | null): VoicePick => {
   if (raw === null) return DEFAULT_PICK;
-  const parsed: unknown = JSON.parse(raw);
+  const parsed = jsonOf(raw);
   if (typeof parsed !== "object" || parsed === null) return DEFAULT_PICK;
   const { user, assistant } = parsed as Record<string, unknown>;
   return isVoiceId(user) && isVoiceId(assistant) ? { user, assistant } : DEFAULT_PICK;
 };
 
-// [LAW:no-silent-failure] exception: a browser that refuses site storage throws on the
-// store itself, and a stored string that is not JSON throws in the parse; both read as
-// the default — the pick is a convenience, and a refused store must not take Listen down
-// with it (listenConsent.ts makes the same trade).
-export const readPick = (store: PreferenceStore): VoicePick => {
+// A stored string's JSON, or null when it is not JSON.
+// [LAW:no-silent-failure] exception: a string that is not JSON is not a pick this build
+// wrote, so it reads as none, like any other shape the parse does not know.
+const jsonOf = (raw: string): unknown => {
   try {
-    return parsePick(store.getItem(PICK_KEY));
+    return JSON.parse(raw);
   } catch {
-    return DEFAULT_PICK;
+    return null;
   }
 };
 
+// The device's pick: a store that holds none, or refuses (deviceStore reads a refused store
+// as nothing), reads as the default.
+export const readPick = (store: PreferenceStore): VoicePick => parsePick(store.getItem(PICK_KEY));
+
 export const writePick = (store: PreferenceStore, pick: VoicePick): void => {
-  try {
-    if (samePick(pick, DEFAULT_PICK)) store.removeItem(PICK_KEY);
-    else store.setItem(PICK_KEY, JSON.stringify(pick));
-  } catch {
-    /* storage refused — the pick is not kept; the listen under way is unaffected */
-  }
+  if (samePick(pick, DEFAULT_PICK)) store.removeItem(PICK_KEY);
+  else store.setItem(PICK_KEY, JSON.stringify(pick));
 };
 
 // ── the voices, as the reader meets them ────────────────────────────────────────────

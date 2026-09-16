@@ -17,7 +17,7 @@
 //
 // [LAW:effects-at-boundaries] Storage is a parameter of the two edges below, so
 // scripts/listen-consent-check.ts drives them over an in-memory store; the page hands them
-// window.localStorage.
+// the device's storage through preferenceStore.deviceStore, which answers a refused store.
 
 import { downloadNeedsTap, type ConnectionReading } from "./modelAssets";
 import type { PreferenceStore } from "./preferenceStore";
@@ -27,26 +27,15 @@ import type { PreferenceStore } from "./preferenceStore";
 export const PREFERENCE_KEY = "listen.download";
 const REMEMBERED = "always";
 
-// [LAW:no-silent-failure] exception: a browser that refuses site storage throws on the
-// store itself, and reads as "ask" — the preference is a convenience, and a refused store
-// must not take Listen down with it (the editor's draft storage makes the same trade).
-export const readPreference = (store: PreferenceStore): boolean => {
-  try {
-    return store.getItem(PREFERENCE_KEY) === REMEMBERED;
-  } catch {
-    return false;
-  }
-};
+// The remembered yes, or "ask": a store that holds nothing, holds another value, or refuses
+// (deviceStore reads a refused store as nothing) reads as "ask".
+export const readPreference = (store: PreferenceStore): boolean => store.getItem(PREFERENCE_KEY) === REMEMBERED;
 
 // Unchecking removes the key rather than writing "never": the absence IS "ask", and a store
 // that never held the key and one the reader cleared read the same [LAW:one-type-per-behavior].
 export const writePreference = (store: PreferenceStore, remembered: boolean): void => {
-  try {
-    if (remembered) store.setItem(PREFERENCE_KEY, REMEMBERED);
-    else store.removeItem(PREFERENCE_KEY);
-  } catch {
-    /* storage refused — the preference is not kept; the visit's consent is unaffected */
-  }
+  if (remembered) store.setItem(PREFERENCE_KEY, REMEMBERED);
+  else store.removeItem(PREFERENCE_KEY);
 };
 
 // [LAW:types-are-the-program] What the visit grants before any tap: nothing, or a download.
