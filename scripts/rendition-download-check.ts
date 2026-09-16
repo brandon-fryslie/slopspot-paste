@@ -110,13 +110,43 @@ console.log("a download from tap to file");
 }
 {
   let release: (form: FileForm) => void = () => undefined;
-  const r = rig({ form: () => new Promise((resolve) => (release = resolve)) });
+  let encodes = 0;
+  const r = rig({
+    form: () => new Promise((resolve) => (release = resolve)),
+    encode: (...args) => {
+      encodes += 1;
+      return encodeFile(...args);
+    },
+  });
   [0, 1, 2].forEach((unitId) => r.heard(made(unitId, 1)));
   await settle();
   r.withdraw();
   release({ container: "wav" });
   await settle();
-  assert("withdrawn while encoding: nothing saved, and nothing said after", r.shown().endsWith("encoding 0") && r.saved.length === 0);
+  assert("withdrawn while the form is asked: nothing encoded, nothing saved, and nothing said after", r.shown().endsWith("encoding 0") && encodes === 0 && r.saved.length === 0);
+}
+{
+  const withdrawing = { now: (): void => undefined };
+  let runs = 0;
+  let outcome = "pending";
+  const r = rig({
+    encode: (audio, format, form, onProgress, signal) => {
+      const encoding = encodeFile(audio, format, form, (fraction) => {
+        runs += 1;
+        onProgress(fraction);
+        withdrawing.now();
+      }, signal);
+      encoding.then(
+        () => (outcome = "finished"),
+        () => (outcome = "stopped"),
+      );
+      return encoding;
+    },
+  });
+  withdrawing.now = r.withdraw;
+  [0, 1, 2].forEach((unitId) => r.heard(made(unitId, 1)));
+  await settle();
+  assert("withdrawn while encoding: the encode stopped at its next run, nothing saved, and nothing said after", outcome === "stopped" && runs === 1 && r.shown().endsWith("encoding 0 > encoding part") && r.saved.length === 0);
 }
 
 console.log(process.exitCode === 1 ? "rendition-download-check: FAILED" : "rendition-download-check: ok");

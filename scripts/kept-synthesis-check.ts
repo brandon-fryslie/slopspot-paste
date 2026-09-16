@@ -622,6 +622,17 @@ const hearer = () => {
   assert("and made", worker.said() === "synthesize 3");
 }
 {
+  const { worker, store, port } = setup({ allowed: true });
+  port.ahead([synthesize(5)]);
+  const render = hearer();
+  port.render([synthesize(3)], render.onUnit);
+  await flush();
+  assert("a render begun while the device is asked about a unit ahead: the render's unit comes before it", store.asked.join() === "5" && worker.said() === "" && (store.lookups[0]?.request as SynthesizeRequest | undefined)?.unitId === 3);
+  answer(store, 0, null);
+  await flush();
+  assert("and is made first", worker.said() === "synthesize 3");
+}
+{
   const { worker, store, port, ear } = setup();
   port.send(synthesize(0));
   answer(store, 0, null);

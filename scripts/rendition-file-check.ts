@@ -77,7 +77,7 @@ console.log("the WAV form, encoded and read back");
 {
   const audio = fileAudio(layout, unitsOf(made(0, 3), made(1, 2), made(2, 4), made(3, 1)), MODEL_PCM);
   const progress: number[] = [];
-  const file = await encodeFile(audio, MODEL_PCM, { container: "wav" }, (fraction) => progress.push(fraction));
+  const file = await encodeFile(audio, MODEL_PCM, { container: "wav" }, (fraction) => progress.push(fraction), new AbortController().signal);
   const view = new DataView(file.bytes);
   const tag = (at: number): string => String.fromCharCode(...new Uint8Array(file.bytes, at, 4));
   assert("a RIFF WAVE file, named as one", tag(0) === "RIFF" && tag(8) === "WAVE" && file.extension === ".wav" && file.mimeType === "audio/wav");
@@ -101,6 +101,20 @@ console.log("the WAV form, encoded and read back");
   const gapAt = 5 * frameSamples;
   assert("the gap is silence to the sample, and the next turn starts on its first", samples[gapAt - 1] === s16(1, 1) && samples.subarray(gapAt, gapAt + gapSamples).every((x) => x === 0) && samples[gapAt + gapSamples] === s16(2, 0));
   assert("progress rises to the whole", progress.length === audio.runs.length && progress.every((p, i) => i === 0 || p > progress[i - 1]!) && progress[progress.length - 1] === 1);
+}
+
+{
+  const audio = fileAudio(layout, unitsOf(made(0, 3), made(1, 2), made(2, 4), made(3, 1)), MODEL_PCM);
+  const stop = new AbortController();
+  const progress: number[] = [];
+  const outcome = await encodeFile(audio, MODEL_PCM, { container: "wav" }, (fraction) => {
+    progress.push(fraction);
+    stop.abort(new Error("withdrawn"));
+  }, stop.signal).then(
+    () => "finished",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  assert("an abort stops the encode at the next run, rejecting with its reason", outcome === "withdrawn" && progress.length === 1);
 }
 
 console.log(process.exitCode === 1 ? "rendition-file-check: FAILED" : "rendition-file-check: ok");

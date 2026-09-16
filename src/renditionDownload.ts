@@ -7,8 +7,9 @@
 //
 // ONE WAY THROUGH [LAW:dataflow-not-control-flow]: rendering, as every unit is heard; encoding,
 // as the encoder takes the samples; then saved, naming what the file leaves out, or failed with
-// why [LAW:no-silent-failure]. A download withdrawn part way says nothing more: whatever
-// settles after the withdrawal lands nowhere.
+// why [LAW:no-silent-failure]. A download withdrawn part way says nothing more and does nothing
+// more: the render is withdrawn, the encode stopped at its next run, and whatever settles after
+// the withdrawal lands nowhere.
 
 import { encodeFile, fileAudio, type AudioFile, type FileForm } from "./renditionFile";
 import { unitRequest } from "./scheduler";
@@ -42,17 +43,20 @@ export interface DownloadConfig {
 export const startDownload = (config: DownloadConfig): (() => void) => {
   const { port, script, voices, format, onPhase } = config;
   const units = new Map<number, RenderedUnit>();
-  let live = true;
+  // [LAW:one-source-of-truth] Whether the download is still wanted: its withdrawal aborts this.
+  const withdrawal = new AbortController();
+  const { signal } = withdrawal;
   const say = (phase: DownloadPhase): void => {
-    if (live) onPhase(phase);
+    if (!signal.aborted) onPhase(phase);
   };
 
   const finish = async (): Promise<void> => {
     const audio = fileAudio(scriptLayout(script), units, format);
     say({ kind: "encoding", fraction: 0 });
     const form = await config.form();
-    const file = await config.encode(audio, format, form, (fraction) => say({ kind: "encoding", fraction }));
-    if (!live) return;
+    if (signal.aborted) return;
+    const file = await config.encode(audio, format, form, (fraction) => say({ kind: "encoding", fraction }), signal);
+    if (signal.aborted) return;
     const name = `${config.name}${file.extension}`;
     config.save(file, name);
     say({ kind: "saved", name, missing: audio.missing });
@@ -78,7 +82,7 @@ export const startDownload = (config: DownloadConfig): (() => void) => {
   );
   whenWhole();
   return () => {
-    live = false;
+    withdrawal.abort();
     withdraw();
   };
 };

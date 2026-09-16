@@ -64,8 +64,12 @@ export type FileForm = { readonly container: "m4a"; readonly sampleRate: number 
 
 // The AAC rates worth trying, best first: 48 kHz is an exact multiple of the model's 24 kHz.
 export const AAC_RATES: ReadonlyArray<number> = [48_000, 44_100];
-// Speech from a 24 kHz model, mono: 64 kbps AAC carries all of it.
+// Speech from a 24 kHz model, mono: 64 kbps AAC carries all of it. Measured in Chrome 152 on
+// macOS, 2026-09-16: a 149.1 s paste is a 1.25 MB file.
 export const AAC_BITRATE = 64_000;
+// [LAW:single-enforcer] The one AAC setting, asked of the browser and encoded with alike. A bare
+// number to mediabunny's Quality is a 0–1 quality level, never bits per second.
+const aacQuality = (lib: Mediabunny): InstanceType<Mediabunny["Quality"]> => new lib.Quality({ bitrate: AAC_BITRATE });
 
 // [LAW:single-enforcer] The one choice of form. `canEncodeAac` is the browser's word on AAC at
 // a rate, taken as a parameter so the check drives every arm.
@@ -78,29 +82,30 @@ export const chooseForm = async (canEncodeAac: (sampleRate: number) => Promise<b
 
 // ── the browser half ──────────────────────────────────────────────────────────────────
 
+type Mediabunny = typeof import("mediabunny");
+
 export interface AudioFile {
   readonly bytes: ArrayBuffer;
   readonly extension: string;
   readonly mimeType: string;
 }
 
-type Mediabunny = typeof import("mediabunny");
-
 // This browser's form, asked of mediabunny.
 export const browserForm = async (): Promise<FileForm> => {
-  const { canEncodeAudio, Quality } = await import("mediabunny");
-  return chooseForm((sampleRate) => canEncodeAudio("aac", { numberOfChannels: 1, sampleRate, quality: new Quality(AAC_BITRATE) }));
+  const lib = await import("mediabunny");
+  return chooseForm((sampleRate) => lib.canEncodeAudio("aac", { numberOfChannels: 1, sampleRate, quality: aacQuality(lib) }));
 };
 
 const sourceFor = (lib: Mediabunny, form: FileForm): AudioSampleSource =>
   form.container === "m4a"
-    ? new lib.AudioSampleSource({ codec: "aac", quality: new lib.Quality(AAC_BITRATE), transform: { sampleRate: form.sampleRate } })
+    ? new lib.AudioSampleSource({ codec: "aac", quality: aacQuality(lib), transform: { sampleRate: form.sampleRate } })
     : new lib.AudioSampleSource({ codec: "pcm-s16" });
 
 // The runs encoded in the form, one sample run at a time; `onProgress` hears the fraction of
 // samples handed to the encoder after each. Each run's timestamp is counted in samples, so no
-// rounding accumulates across an hour of runs.
-export const encodeFile = async (audio: FileAudio, format: PcmFormat, form: FileForm, onProgress: (fraction: number) => void): Promise<AudioFile> => {
+// rounding accumulates across an hour of runs. An abort stops the encode at the next run: the
+// output is cancelled, what it held let go, and the promise rejects with the abort's reason.
+export const encodeFile = async (audio: FileAudio, format: PcmFormat, form: FileForm, onProgress: (fraction: number) => void, signal: AbortSignal): Promise<AudioFile> => {
   const lib = await import("mediabunny");
   const output = new lib.Output({
     format: form.container === "m4a" ? new lib.Mp4OutputFormat() : new lib.WavOutputFormat(),
@@ -112,6 +117,10 @@ export const encodeFile = async (audio: FileAudio, format: PcmFormat, form: File
   const total = audio.runs.reduce((sum, run) => sum + run.length, 0);
   let at = 0;
   for (const run of audio.runs) {
+    if (signal.aborted) {
+      await output.cancel();
+      signal.throwIfAborted();
+    }
     const sample: AudioSample = new lib.AudioSample({ data: run, format: "f32", numberOfChannels: 1, sampleRate: format.sampleRate, timestamp: at / format.sampleRate });
     try {
       await source.add(sample);

@@ -224,7 +224,8 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
             made.add(tried(request));
             break;
           case "absent":
-            if (!idle() || !wanted(request)) break;
+            // A render begun while the device was asked comes before this unit.
+            if (rendition !== null || !idle() || !wanted(request)) break;
             jobs.set(request.unitId, { kind: "filling", request, frames: [], words: [], cancelled: false, next: null });
             worker.send(request);
             break;
