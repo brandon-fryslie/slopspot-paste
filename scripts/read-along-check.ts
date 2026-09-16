@@ -353,7 +353,7 @@ console.log("spoken notation (slopspot-read-along-a35.5jv)");
   const words = pageWords(mathCard).map((w) => w.node.data.slice(w.start, w.end));
   assert("a said symbol is a page word; a symbol read as written would not be", words.join(" ") === "So 9 x 10 = 90, and a + b is 3 done.");
   assert("a symbol matches only itself", alignWords(["=", "+"], ["+", "="]).map(String).join() === "1,undefined");
-  assert("a symbol is itself whatever punctuation it wears; a symbol word is not punctuation", wordKey("∞,") === "∞" && wordKey("(=)") === "=" && wordKey("/") === "/");
+  assert("a symbol is itself whatever punctuation it wears; a symbol word is not punctuation", wordKey("∞,") === "∞" && wordKey("(=)") === "=" && wordKey("/") === "/" && wordKey("!=") !== wordKey("="));
   const painter = createPainter(mathDoc);
   const equals = wordSpans(said.text, 0).findIndex((w) => said.text.slice(w.charStart, w.charEnd) === "=");
   painter.paint(at(said, [said], whole(said), wordOf(said, equals)));

@@ -39,8 +39,8 @@ const spaced = (symbol: string): string => String.raw`(?<=${LEFT}${GAP})(?:${sym
 const tight = (symbol: string): string => String.raw`(?<=[\p{N})\]])(?:${symbol})(?=[\p{Nd}(\[])`;
 // Between two operands, tight or spaced.
 const binary = (symbol: string): string => `${spaced(symbol)}|${tight(symbol)}`;
-// After an operand, attached to it ("50%", "x²").
-const after = (symbol: string): string => String.raw`(?<=[\p{L}\p{N})\]])(?:${symbol})`;
+// After an operand, attached to it ("50%", "x²") — an operand, not a word: "HEAD^2" is git.
+const after = (symbol: string): string => String.raw`(?<=${LEFT})(?:${symbol})`;
 // A sign on a number at the start of a term ("±2", "−5").
 const sign = (symbol: string): string => String.raw`(?<=^|[\s(\[])(?:${symbol})(?=\p{N})`;
 
@@ -62,22 +62,24 @@ export const NOTATION = {
   greaterThan: { written: binary(">"), said: "is greater than" },
   plusOrMinus: { written: `${binary("±")}|${sign("±")}`, said: "plus or minus" },
   plus: { written: binary(String.raw`\+`), said: "plus" },
-  // "-" tight between digits is a date or a range ("2026-09-16", "10-20"), so only spaced; a
-  // spaced range ("pages 10 - 20") is read as minus, the cost of reading "5 - 3". A leading
+  // "-" tight between digits is a date or a range ("2026-09-16", "10-20"), so only spaced, and
+  // only between numbers: beside a letter a spaced hyphen is a dash ("Chapter 1 - A new start").
+  // A spaced range ("pages 10 - 20") is read as minus, the cost of reading "5 - 3". A leading
   // "-" is a command's flag ("tail -5", "commit -m"), so it is a sign only after an operator
   // or an opening bracket ("x = -5", "(-5)"); "−" is only ever a minus.
-  minus: { written: String.raw`${binary("−")}|${spaced("-")}|${sign("−")}|(?<=[=<>≤≥≠≈+×*÷(\[]\s*)-(?=\p{N})`, said: "minus" },
+  minus: { written: String.raw`${binary("−")}|(?<=[\p{N})\]]\s+)-(?=\s+(?:[\p{N}(\[]|[-−]\p{Nd}))|${sign("−")}|(?<=[=<>≤≥≠≈+×*÷(\[]\s*)-(?=\p{N})`, said: "minus" },
   // "×" is only ever multiplication; the letter x is, spaced between two numbers ("9 x 10").
   // Tight between digits it is hex ("0x10"), so never there.
   times: { written: String.raw`${binary("[×*]")}|(?<=\p{Nd}${GAP})x(?=${GAP}\p{Nd})`, said: "times" },
   dividedBy: { written: binary("÷"), said: "divided by" },
   // A slash tight between digits is a fraction ("3/4") unless it is one of a run of slashed
-  // numbers, which is a date ("9/16/2026"). A short date or a ratio ("9/16", "24/7") has the
+  // numbers, which is a date ("9/16/2026"), or follows a dotted number, which is an address
+  // ("10.0.0.0/8") or a version. A short date or a ratio ("9/16", "24/7") has the
   // fraction's shape and is read "over": intelligible, where a dropped slash is not.
-  over: { written: String.raw`${spaced("/")}|(?<!\/\p{Nd}+)(?<=\p{Nd})\/(?=\p{Nd}+(?![\p{Nd}\/]))`, said: "over" },
-  squared: { written: after(String.raw`\^2(?!\p{N})|²`), said: "squared" },
-  cubed: { written: after(String.raw`\^3(?!\p{N})|³`), said: "cubed" },
-  toThePowerOf: { written: String.raw`(?<=[\p{L}\p{N})\]])\^(?=[\p{N}(\[]|${LETTER})`, said: "to the power of" },
+  over: { written: String.raw`${spaced("/")}|(?<![\/.]\p{Nd}+)(?<=\p{Nd})\/(?=\p{Nd}+(?![\p{Nd}\/]))`, said: "over" },
+  squared: { written: after(String.raw`\^2(?!\.?\p{N})|²`), said: "squared" },
+  cubed: { written: after(String.raw`\^3(?!\.?\p{N})|³`), said: "cubed" },
+  toThePowerOf: { written: after(String.raw`\^(?=[\p{N}(\[]|${LETTER})`), said: "to the power of" },
   percent: { written: String.raw`(?<=\p{Nd})%`, said: "percent" },
   degrees: { written: String.raw`(?<=\p{Nd})°`, said: "degrees" },
   squareRootOf: { written: String.raw`√(?=[\p{N}(\[]|${LETTER})`, said: "the square root of" },

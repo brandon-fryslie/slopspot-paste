@@ -59,8 +59,9 @@ import type { Cursor } from "./timeline";
 // whatever case or attached punctuation they wear: the utterance says "cell," where a
 // table cell shows "cell", and "Hello" opens a sentence the page may set in caps. A word
 // with no letter or digit is notation the voice says ("=", "/"): it is its symbols, whatever
-// brackets, quotes or sentence punctuation it wears ("∞," is "∞").
-const WORN = /[\p{Ps}\p{Pe}\p{Pi}\p{Pf}.,;:!?…"']/gu;
+// brackets, quotes or sentence punctuation it wears ("∞," is "∞"). "!" and "?" are kept: "!="
+// is not "=".
+const WORN = /[\p{Ps}\p{Pe}\p{Pi}\p{Pf}.,;:…"']/gu;
 export const wordKey = (word: string): string => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "") || word.replace(WORN, "");
 
 // How far past the last match the scan looks for the next spoken word before calling it
