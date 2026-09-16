@@ -13,13 +13,16 @@
 // measured accuracy (49 ms mean error against CrisperWhisper, zero skips) is inherited by
 // equality, not re-measured [LAW:verifiable-goals].
 //
-// Three of the reference's habits are not the port's to reproduce and are handled at the
-// fixture's edge: it re-chunks text with its own chunker (it fed "foo. bar" for "foo.bar"),
-// so the unit is built over the FED text; it appends a terminal "." the source lacked,
-// which is the speech script's own rule too, so the utterance the unit points into is the
-// fed text minus that synthetic punctuation; and it indexes Python strings by code point,
-// where the port's spans are UTF-16 units, so its offsets are converted before any
-// comparison — one text carries an emoji so that conversion is exercised.
+// Each capture's unit is the speech script's own: the utterance is the source, and the text
+// fed is the script's preparation of it, which must equal what the fork fed — appended
+// period, collapsed double space and flattened newline included — so the fork's source
+// spans are compared with the script's source map. Two of the reference's habits are not
+// the port's to reproduce and are handled at the fixture's edge: it re-chunks text with its
+// own chunker (it fed "foo. bar" for "foo.bar"), so for that one text the utterance is the
+// FED text and the fork's source spans point into a string the unit never saw; and it
+// indexes Python strings by code point, where the port's spans are UTF-16 units, so its
+// offsets are converted before any comparison — one text carries an emoji so that
+// conversion is exercised.
 //
 // [LAW:behavior-not-structure] Every assertion is about an observable: the units and map a
 // text yields, the events a stream yields, the times the manifest admits. A different
@@ -28,7 +31,7 @@
 import { readFileSync } from "node:fs";
 import { FRAME_MS, MODEL_ASSETS } from "../src/modelAssets";
 import { recordUnit, wordsOf } from "../src/speechManifest";
-import { unitText, type SynthesisUnit } from "../src/speechScript";
+import { prepareText, sourceSpanOf, unitText, type SynthesisUnit } from "../src/speechScript";
 import {
   createWordAligner,
   isVoiced,
@@ -69,6 +72,8 @@ interface FixtureUnit {
   readonly isWord: boolean;
   readonly synthetic: boolean;
   readonly wordIndex: number | null;
+  readonly sourceBegin: number | null;
+  readonly sourceEnd: number | null;
 }
 
 interface FixtureEvent {
@@ -107,31 +112,45 @@ interface Fixture {
 
 const fixture = JSON.parse(readFileSync("test/fixtures/word-alignment.json", "utf8")) as Fixture;
 
-// [LAW:parse-dont-validate] The reference's units with their spans in the fed text's UTF-16
-// units, converted once from its code-point offsets; an offset past the text is a broken
-// capture, thrown.
-const unitsInUtf16 = (capture: Capture): ReadonlyArray<FixtureUnit> => {
+// [LAW:parse-dont-validate] A code-point offset into `text` as a UTF-16 offset; an offset
+// past the text is a broken capture, thrown.
+const utf16In = (text: string): ((codePoint: number) => number) => {
   const offsets: number[] = [];
   let at = 0;
-  for (const char of capture.fed) {
+  for (const char of text) {
     offsets.push(at);
     at += char.length;
   }
   offsets.push(at);
-  const utf16 = (codePoint: number): number => {
+  return (codePoint) => {
     const offset = offsets[codePoint];
-    if (offset === undefined) throw new RangeError(`code point ${codePoint} is past the ${offsets.length - 1} of ${JSON.stringify(capture.fed)}`);
+    if (offset === undefined) throw new RangeError(`code point ${codePoint} is past the ${offsets.length - 1} of ${JSON.stringify(text)}`);
     return offset;
   };
-  return capture.units.map((unit) => ({ ...unit, begin: utf16(unit.begin), end: utf16(unit.end) }));
 };
 
-// The unit as the speech script would have cut it for the fed text: the utterance is the
-// fed text without the punctuation the reference appended, the unit spans all of it.
-const unitOf = (fed: string, units: ReadonlyArray<FixtureUnit>): SynthesisUnit => {
-  const last = units.at(-1);
-  const text = last !== undefined && !last.isWord && last.synthetic ? fed.slice(0, last.begin) : fed;
-  return { utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, text: fed };
+// The reference's units with their spans in UTF-16 units: `begin`/`end` into the fed text,
+// `sourceBegin`/`sourceEnd` into the source.
+const unitsInUtf16 = (capture: Capture): ReadonlyArray<FixtureUnit> => {
+  const fed = utf16In(capture.fed);
+  const source = utf16In(capture.source);
+  const inSource = (codePoint: number | null): number | null => (codePoint === null ? null : source(codePoint));
+  return capture.units.map((unit) => ({
+    ...unit,
+    begin: fed(unit.begin),
+    end: fed(unit.end),
+    sourceBegin: inSource(unit.sourceBegin),
+    sourceEnd: inSource(unit.sourceEnd),
+  }));
+};
+
+// The one text the fork re-chunked before feeding it (see the header).
+const RECHUNKED: ReadonlySet<string> = new Set(["The well-known author didn't sign (ok) the foo.bar file at 3.5 percent!"]);
+
+// The unit the speech script cuts for a capture: one utterance, spoken whole.
+const unitOf = (capture: Capture): SynthesisUnit => {
+  const text = RECHUNKED.has(capture.source) ? capture.fed : capture.source;
+  return { utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, ...prepareText(text) };
 };
 
 const ms = (seconds: number): number => seconds * 1000;
@@ -139,13 +158,19 @@ const near = (a: number, b: number, tolerance = 1e-6): boolean => Math.abs(a - b
 const sameEvent = (ours: AlignmentEvent, theirs: FixtureEvent): boolean =>
   ours.kind === theirs.kind && ours.word === theirs.index && near(ours.at, ms(theirs.t)) && (ours.kind === "start" || near(ours.start, ms(theirs.start ?? NaN)));
 
-assert(`the fixture was captured from ${fixture.model} with the ${fixture.voice} voice`, fixture.model === "english_2026-04" && fixture.voice === "alba" && fixture.captures.length === 7);
+assert(`the fixture was captured from ${fixture.model} with the ${fixture.voice} voice`, fixture.model === "english_2026-04" && fixture.voice === "alba" && fixture.captures.length === 9);
+assert(
+  "among the captures are a double space and a newline, which the fork collapsed",
+  fixture.captures.some((c) => c.source.includes("  ") && !c.fed.includes("  ")) && fixture.captures.some((c) => c.source.includes("\n") && !c.fed.includes("\n")),
+);
+assert("every re-chunked text is a capture", [...RECHUNKED].every((source) => fixture.captures.some((c) => c.source === source)));
 
 for (const capture of fixture.captures) {
   console.log(`\nreplay: ${JSON.stringify(capture.source)}`);
   const theirUnits = unitsInUtf16(capture);
-  const unit = unitOf(capture.fed, theirUnits);
+  const unit = unitOf(capture);
   const plan = planAlignment(unitText(unit), capture.pieces);
+  assert("the speech script feeds the model exactly what the fork fed it", unit.text === capture.fed);
 
   const sameUnits =
     plan.units.length === theirUnits.length &&
@@ -158,6 +183,14 @@ for (const capture of fixture.captures) {
   assert(
     "every unit spells the reference's text",
     plan.units.every((ours, i) => capture.fed.slice(ours.begin, ours.end) === theirUnits[i]?.text),
+  );
+  const sourceWords = RECHUNKED.has(capture.source) ? [] : plan.units.flatMap((ours, i) => (ours.kind === "word" ? [{ ours, theirs: theirUnits[i] }] : []));
+  assert(
+    `${sourceWords.length} words map back to the reference's source spans`,
+    sourceWords.every(({ ours, theirs }) => {
+      const source = sourceSpanOf(unit, ours);
+      return source.begin === theirs?.sourceBegin && source.end === theirs.sourceEnd;
+    }),
   );
 
   assert(`${capture.pieces.length} pieces, one per token id`, capture.pieces.length === capture.tokens.length);
@@ -188,7 +221,7 @@ for (const capture of fixture.captures) {
   // The reference's lexical words, projected onto the manifest's words: a manifest word
   // spans its first lexical word's start to its last one's end.
   const words = wordsOf(unit);
-  const lexical = lexicalWords(unit.text);
+  const lexical = lexicalWords(unit.text).map((span) => sourceSpanOf(unit, span));
   const expected = words.map((word) => {
     const own = capture.words.filter((w) => {
       const span = lexical[w.index];
@@ -218,12 +251,12 @@ console.log("\ntext units");
   // The reference's `_is_synthetic_punctuation` reads the source's trailing text as a whole:
   // a closer the source had makes the run it shares with the appended period non-synthetic.
   const source = 'She whispered "goodbye"';
-  const closerAndPeriod = textUnits(`${source}.`, source.length).at(-1);
+  const closerAndPeriod = textUnits({ ...prepareText(source), source }).at(-1);
   assert(
     "a source-owned closer merged with the appended period is one non-synthetic run",
     closerAndPeriod?.kind === "punctuation" && closerAndPeriod.begin === 22 && closerAndPeriod.end === 24 && !closerAndPeriod.synthetic,
   );
-  const period = textUnits("No end.", "No end".length).at(-1);
+  const period = textUnits({ ...prepareText("No end"), source: "No end" }).at(-1);
   assert("an appended period after a bare word is synthetic", period?.kind === "punctuation" && period.synthetic);
 }
 
@@ -252,12 +285,13 @@ console.log("\ntoken spans");
 console.log("\nunit scores");
 {
   const text = "Hello world.";
-  const units = textUnits(text, text.length);
+  const unit = { ...prepareText(text), source: text };
+  const units = textUnits(unit);
   const spans = tokenSpans(text, ["▁Hello", "▁wor", "ld", "."]);
   const map = tokenToUnit(spans, units);
   assert("a token inside one unit gives it all its share", map[0]?.join() === "1,0,0" && map[3]?.join() === "0,0,1");
   assert("a token split over two units shares by overlap", map[1]?.join() === "0,1,0" && map[2]?.join() === "0,1,0");
-  const plan = planAlignment({ text, source: text }, ["▁Hello", "▁wor", "ld", "."]);
+  const plan = planAlignment(unit, ["▁Hello", "▁wor", "ld", "."]);
   const uniform = unitScores(plan, [0, 0, 0, 0]);
   assert("uniform logits spread attention by token count: 1/4, 2/4, 1/4", near(uniform[0] ?? NaN, 0.25) && near(uniform[1] ?? NaN, 0.5) && near(uniform[2] ?? NaN, 0.25));
   const peaked = unitScores(plan, [100, 0, 0, 0]);
@@ -271,7 +305,7 @@ console.log("\nunit scores");
 console.log("\nskipped words");
 {
   const text = "One two three.";
-  const unit: SynthesisUnit = { utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, text };
+  const unit: SynthesisUnit = { utterance: { index: 0, anchor: "t0", voice: "assistant", text }, start: 0, end: text.length, ...prepareText(text) };
   const plan = planAlignment(unitText(unit), ["▁One", "▁two", "▁three", "."]);
   const aligner = createWordAligner(plan);
   const score = (...xs: number[]): Float64Array => Float64Array.from(xs);

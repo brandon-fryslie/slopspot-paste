@@ -20,10 +20,11 @@
 // WHY UNITS ARE CONTIGUOUS SPANS OF THE UTTERANCE TEXT. Word timing (q35.v70) must map a
 // word the model said back onto the utterance it came from, so a unit carries its char
 // range [start, end) into Utterance.text, and the text fed to the model is derived from
-// that slice by a LENGTH-PRESERVING preparation plus at most one appended character:
-// `text.charAt(i)` was `utterance.text.charAt(start + i)` for every i < end - start, and
-// anything past that is ours. The character map is an offset, not a table, and it cannot
-// drift because it is not stored [LAW:types-are-the-program].
+// that slice together with a map back into it: `sourceSpans[i]` is the stretch of the
+// slice fed character i was made from. Preparation collapses every whitespace run to one
+// space as the reference does, so the map is a table, not an offset — and the same fold
+// that writes each fed character writes its entry, so the two cannot disagree
+// [LAW:types-are-the-program] [LAW:one-source-of-truth].
 //
 // Audio remains a derived, disposable projection: nothing here is persisted and no audio
 // is ever cached. The rendition hash names a rendition client-side (resume position,
@@ -36,35 +37,60 @@ import type { Utterance, Voice } from "./speech";
 // Bump when any rule in this file changes what text a unit is fed or where units are cut:
 // an old resume position or per-device cache keyed on the previous rules is then simply
 // unused, never misapplied [LAW:no-ambient-temporal-coupling].
-export const PIPELINE_VERSION = "1";
+export const PIPELINE_VERSION = "2";
 
 // [LAW:types-are-the-program] The tokenizer seam: how many text tokens the model would
 // see for this exact string. The real answer needs the SentencePiece model, which lives
 // in the worker; this module only ever asks the question.
 export type TokenCount = (text: string) => number;
 
-// One generation. `text` is the exact string the model is fed; [start, end) is where it
-// came from in `utterance.text` (see the header for the character map). The utterance is
+// A half-open range of UTF-16 offsets into a string; which string is the holder's to say.
+export interface TextSpan {
+  readonly begin: number;
+  readonly end: number;
+}
+
+// The exact string the model is fed for a slice of text, and where each of its characters
+// came from in that slice (see the header): one character of the slice, a whitespace run
+// for a space, or an empty span for the period preparation appends. Plain data, so it
+// crosses into the synthesis worker as it is.
+export interface PreparedText {
+  readonly text: string;
+  readonly sourceSpans: ReadonlyArray<TextSpan>;
+}
+
+// One generation: the prepared text of `utterance.text` over [start, end). The utterance is
 // held by reference: its index, anchor and voice are read from it, never copied where
 // they could disagree [LAW:one-source-of-truth].
-export interface SynthesisUnit {
+export interface SynthesisUnit extends PreparedText {
   readonly utterance: Utterance;
   readonly start: number;
   readonly end: number;
-  readonly text: string;
 }
 
-// What the worker reads of a unit: the text the model is fed and the utterance slice it
-// covers. The utterance itself stays on the page.
-export interface UnitText {
-  readonly text: string;
+// What the worker reads of a unit: the prepared text and the utterance slice its map points
+// into. The utterance itself stays on the page.
+export interface UnitText extends PreparedText {
   readonly source: string;
 }
 
-export const unitText = ({ utterance, start, end, text }: SynthesisUnit): UnitText => ({
+export const unitText = ({ utterance, start, end, text, sourceSpans }: SynthesisUnit): UnitText => ({
   text,
+  sourceSpans,
   source: utterance.text.slice(start, end),
 });
+
+// [LAW:parse-dont-validate] The stretch of source a non-empty run [begin, end) of the fed
+// text was made from: its first character's source to its last one's. A run outside the
+// fed text is a span of some other string, thrown [LAW:no-silent-failure].
+export const sourceSpanOf = ({ sourceSpans }: PreparedText, fed: TextSpan): TextSpan => {
+  const first = sourceSpans[fed.begin];
+  const last = sourceSpans[fed.end - 1];
+  if (first === undefined || last === undefined || fed.end <= fed.begin) {
+    throw new RangeError(`fed span ${fed.begin}..${fed.end} is not a run of ${sourceSpans.length} fed characters`);
+  }
+  return { begin: first.begin, end: last.end };
+};
 
 // Which model voice speaks each role. A VALUE the reader picks (voiceChoice.ts derives it
 // from the pick kept on the device); changing it re-derives every rendition rather than
@@ -75,10 +101,10 @@ export type VoiceMap = Readonly<Record<Voice, VoiceId>>;
 //
 // Mirrors upstream prepare_text_prompt + _ensure_terminal_punctuation under the options
 // the released model runs with (no space padding, semicolons kept, terminal punctuation
-// appended), restricted to length-preserving edits so the character map stays an offset.
-// The one non-preserving edit — a "." appended when the text has no sentence-final
-// punctuation — is the last character, past the mapped range. Upstream's reason for it,
-// verbatim: "Without one, the last word is often mispronounced or repeated."
+// appended). Every step maps a list of fed characters, each carrying its source span, so an
+// edit changes what a character says and never where it came from. Upstream's reason for
+// the appended period, verbatim: "Without one, the last word is often mispronounced or
+// repeated."
 
 export const TERMINAL: ReadonlySet<string> = new Set(".!?…");
 // A trailing comma, colon or dash is replaced by a period (upstream's rule); a hyphen is
@@ -89,45 +115,64 @@ const WEAK = new Set(",;:-–—");
 // the sentence cutter sees; preparation straightens them afterwards.
 export const CLOSERS: ReadonlySet<string> = new Set("\"')]»”’");
 
-// The q35.1 spike heard every voice mangle the curly apostrophe in "isn’t" while reading
-// the straight one in "it's" correctly, so curly quotes are straightened along with the
-// newline flattening upstream does. Every replacement is one UTF-16 code unit for one.
-const straightened = (slice: string): string =>
-  slice
-    .replace(/[\n\r]/g, " ")
-    .replace(/[’‘]/g, "'")
-    .replace(/[“”]/g, '"');
-
-// Upper-cases the first character only when its upper-case form is the same length (ß →
-// SS would shift every offset after it), which is the length-preserving theorem stated
-// as a rule rather than assumed.
-const capitalised = (text: string): string => {
-  const first = text.charAt(0);
-  const upper = first.toUpperCase();
-  return (upper.length === first.length ? upper : first) + text.slice(1);
-};
+// One UTF-16 unit of fed text and the stretch of the slice it was made from.
+interface FedChar {
+  readonly char: string;
+  readonly source: TextSpan;
+}
 
 const isWhitespace = (c: string): boolean => /\s/.test(c);
 
+// The q35.1 spike heard every voice mangle the curly apostrophe in "isn’t" while reading
+// the straight one in "it's" correctly, so curly quotes are straightened.
+const STRAIGHT: Readonly<Record<string, string>> = { "’": "'", "‘": "'", "“": '"', "”": '"' };
+
+// The slice trimmed, every whitespace run one space, every other unit itself, straightened.
+// Divergence, deliberate: upstream strips, flattens newlines and then replaces "  " with
+// " " in a single pass, which leaves three spaces as two and a tab as a tab. Both
+// leftovers reach the model as text it never saw in training — a boundary piece per
+// space, a byte-fallback token for the tab — so here a run of any whitespace is one space,
+// which agrees with upstream on every text its pass does collapse.
+const collapsed = (slice: string): ReadonlyArray<FedChar> => {
+  const lead = slice.length - slice.trimStart().length;
+  return Array.from(slice.trim().matchAll(/\s+|\S/g), (match) => {
+    const begin = lead + match.index;
+    const run = match[0];
+    return { char: isWhitespace(run) ? " " : (STRAIGHT[run] ?? run), source: { begin, end: begin + run.length } };
+  });
+};
+
+// Upper-cases the first character only when its upper-case form is one UTF-16 unit too:
+// ß → SS would be two fed characters made from one, which the map has no entry shape for.
+const capitalised = (chars: ReadonlyArray<FedChar>): ReadonlyArray<FedChar> =>
+  chars.map((c, i) => (i === 0 && c.char.toUpperCase().length === 1 ? { ...c, char: c.char.toUpperCase() } : c));
+
+const charOf = (chars: ReadonlyArray<FedChar>, i: number): string => chars[i]?.char ?? "";
+
 // The index just past the "core": the text minus any trailing closers and spaces.
-const endOfCore = (text: string): number => {
-  let i = text.length;
-  while (i > 0 && (CLOSERS.has(text.charAt(i - 1)) || isWhitespace(text.charAt(i - 1)))) i--;
+const endOfCore = (chars: ReadonlyArray<FedChar>): number => {
+  let i = chars.length;
+  while (i > 0 && (CLOSERS.has(charOf(chars, i - 1)) || isWhitespace(charOf(chars, i - 1)))) i--;
   return i;
 };
 
-const withTerminalPunctuation = (text: string): string => {
-  const core = endOfCore(text);
-  const last = text.charAt(core - 1);
-  if (TERMINAL.has(last)) return text;
-  if (WEAK.has(last)) return text.slice(0, core - 1) + "." + text.slice(core);
-  return text + ".";
+// A weak mark ending the core becomes the period in place and keeps its source; an
+// appended period was made from nothing, so its span is empty, where the text ends.
+const withTerminalPunctuation = (chars: ReadonlyArray<FedChar>): ReadonlyArray<FedChar> => {
+  const core = endOfCore(chars);
+  const last = charOf(chars, core - 1);
+  if (TERMINAL.has(last)) return chars;
+  if (WEAK.has(last)) return chars.map((c, i) => (i === core - 1 ? { ...c, char: "." } : c));
+  const end = chars.at(-1)?.source.end ?? 0;
+  return [...chars, { char: ".", source: { begin: end, end } }];
 };
 
-// The exact string the model is fed for a trimmed slice of utterance text. Exported so
-// the check can state the character-map theorem against it directly.
-export const prepareText = (slice: string): string =>
-  withTerminalPunctuation(capitalised(straightened(slice)));
+// The exact string the model is fed for a slice of utterance text, with its map back into
+// the slice. Exported so the check can state the map's theorem against it directly.
+export const prepareText = (slice: string): PreparedText => {
+  const chars = withTerminalPunctuation(capitalised(collapsed(slice)));
+  return { text: chars.map((c) => c.char).join(""), sourceSpans: chars.map((c) => c.source) };
+};
 
 // ── cutting ─────────────────────────────────────────────────────────────────────────
 
@@ -225,8 +270,8 @@ interface Piece {
 }
 
 // Greedy packing, as upstream: a piece joins the open unit when the joined text still
-// fits. The joined span is contiguous, so the original whitespace between the pieces is
-// what separates them in the fed text. One rule of ours on top: a sentence whose text was
+// fits. The joined span is contiguous, so the original whitespace between the pieces,
+// collapsed, is what separates them in the fed text. One rule of ours on top: a sentence whose text was
 // already said by a DIFFERENT sentence in the open unit starts a new one — the q35.1
 // spike heard five identical "code block, 2 lines." sentences in one chunk come out as
 // one to three, so identical sentences never share a generation.
@@ -255,13 +300,13 @@ const pack = (pieces: readonly Piece[], fits: Fits): readonly Span[] => {
 
 const unitsOf = (utterance: Utterance, countTokens: TokenCount): readonly SynthesisUnit[] => {
   const text = utterance.text;
-  const fed = (span: Span): string => prepareText(text.slice(span.start, span.end));
-  const fits: Fits = (span) => countTokens(fed(span)) <= MAX_UNIT_TOKENS;
+  const fed = (span: Span): PreparedText => prepareText(text.slice(span.start, span.end));
+  const fits: Fits = (span) => countTokens(fed(span).text) <= MAX_UNIT_TOKENS;
   const sentences: readonly Sentence[] = trimmed(text, 0, text.length)
     .flatMap((whole) => cut(text, whole, atSentenceEnd))
-    .map((span) => ({ span, said: fed(span) }));
+    .map((span) => ({ span, said: fed(span).text }));
   const pieces = sentences.flatMap((of) => refine(text, of.span, fits, REFINEMENTS).map((span) => ({ span, of })));
-  return pack(pieces, fits).map((span) => ({ utterance, start: span.start, end: span.end, text: fed(span) }));
+  return pack(pieces, fits).map((span) => ({ utterance, start: span.start, end: span.end, ...fed(span) }));
 };
 
 // Utterances in, units out, in the same order; a unit never spans two utterances because

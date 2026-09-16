@@ -32,13 +32,13 @@
 // [LAW:one-source-of-truth].
 //
 // WHY THE PLAN IS BUILT OVER THE FED TEXT. The model sees `unit.text` (prepared:
-// straightened quotes, capitalised, terminal punctuation appended); its tokens and their
-// positions are facts about that string, so units and the token map are computed in its
-// coordinates. The speech script's character-map theorem — the fed text is the utterance
-// slice character for character, plus at most one appended character — is what makes a
-// lexical word at [a, b) of the fed text the same word at [a, b) of the source, and what
-// makes the appended punctuation `synthetic` in the reference's sense: punctuation the
-// model was given that the source never had.
+// whitespace collapsed, straightened quotes, capitalised, terminal punctuation appended);
+// its tokens and their positions are facts about that string, so units and the token map
+// are computed in its coordinates. The speech script's source map carries a fed span back
+// to the source: a lexical word has no whitespace, so the run it spans is the same word in
+// the source, which is where the manifest's words live; and the source text after the last
+// word is what decides whether the punctuation after it is `synthetic` in the reference's
+// sense: punctuation the model was given that the source never had.
 //
 // A WORD THE MODEL SKIPPED. The reference emits no timestamp for a word its state
 // machine never opened (the tiny model does skip words, rarely). The manifest wants one
@@ -49,7 +49,7 @@
 // [LAW:no-silent-failure].
 
 import { wordSpans, type WordTiming } from "./speechManifest";
-import type { UnitText } from "./speechScript";
+import { sourceSpanOf, type TextSpan, type UnitText } from "./speechScript";
 
 // [LAW:parse-dont-validate] The element at `i` of a sequence whose length was established
 // by construction (a word index into the plan's own word list, a token row of the map).
@@ -62,10 +62,7 @@ const at = <T>(xs: ArrayLike<T>, i: number): T => {
 
 // ── text units ──────────────────────────────────────────────────────────────────────
 
-export interface Span {
-  readonly begin: number;
-  readonly end: number;
-}
+export type Span = TextSpan;
 
 // A unit of the fed text as the reference sees it: a lexical word, numbered in text order,
 // or a run of punctuation, `synthetic` when the model was given it and the source had none.
@@ -129,17 +126,17 @@ export const lexicalWords = (text: string): ReadonlyArray<Span> => {
   return spans;
 };
 
-// Port of `_build_units` for the case where the fed text IS the source (no re-chunking
-// between them): lexical words, then every maximal run of punctuation outside them, in
-// text order. `sourceLength` is how much of `text` the source had; a punctuation run
-// after the last word is synthetic when the source's own text after that word — which
-// is the fed text's up to `sourceLength`, character for character — holds no punctuation.
-export const textUnits = (text: string, sourceLength: number): ReadonlyArray<TextUnit> => {
+// Port of `_build_units` for a unit whose fed text is prepared from its whole source, with
+// no re-chunking between them: lexical words of the fed text, then every maximal run of
+// punctuation outside them, in text order. A punctuation run after the last word is
+// synthetic when the source's own text after that word holds no punctuation.
+export const textUnits = (unit: UnitText): ReadonlyArray<TextUnit> => {
+  const text = unit.text;
   const words = lexicalWords(text);
   const covered = new Uint8Array(text.length);
   for (const word of words) covered.fill(1, word.begin, word.end);
   const lastWord = words.at(-1);
-  const trailing = lastWord === undefined ? "" : text.slice(lastWord.end, sourceLength);
+  const trailing = lastWord === undefined ? "" : unit.source.slice(sourceSpanOf(unit, lastWord).end);
   const synthetic = (span: Span): boolean =>
     lastWord !== undefined && span.begin >= lastWord.end && !PUNCTUATION.test(trailing);
   const punctuation: Span[] = [];
@@ -230,16 +227,17 @@ export interface AlignmentPlan {
   readonly wordCount: number;
 }
 
-// [LAW:parse-dont-validate] A lexical word that lies in no manifest word contradicts the
-// theorem in the header — thrown, so the manifest never receives a count it cannot stamp.
+// [LAW:parse-dont-validate] A lexical word whose source lies in no manifest word contradicts
+// the theorem in the header — thrown, so the manifest never receives a count it cannot stamp.
 export const planAlignment = (unit: UnitText, pieces: ReadonlyArray<string>): AlignmentPlan => {
-  const units = textUnits(unit.text, unit.source.length);
+  const units = textUnits(unit);
   const words = wordSpans(unit.source, 0);
   const wordOf = units
     .filter((u): u is Extract<TextUnit, { kind: "word" }> => u.kind === "word")
     .map((lexical) => {
-      const at = words.findIndex((word) => word.charStart <= lexical.begin && lexical.end <= word.charEnd);
-      if (at === -1) throw new Error(`lexical word at ${lexical.begin}..${lexical.end} of ${JSON.stringify(unit.text)} lies in no manifest word`);
+      const source = sourceSpanOf(unit, lexical);
+      const at = words.findIndex((word) => word.charStart <= source.begin && source.end <= word.charEnd);
+      if (at === -1) throw new Error(`lexical word at ${source.begin}..${source.end} of ${JSON.stringify(unit.source)} lies in no manifest word`);
       return at;
     });
   return { units, tokenToUnit: tokenToUnit(tokenSpans(unit.text, pieces), units), wordOf, wordCount: words.length };

@@ -47,7 +47,7 @@ import type { Command, Event, Holding, SchedulerState, SchedulerView } from "../
 import { wordsOf } from "../src/speechManifest";
 import type { UnitReport } from "../src/speechManifest";
 import type { Utterance } from "../src/speech";
-import { unitText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
+import { prepareText, unitText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { GAP_MS } from "../src/timeline";
@@ -83,7 +83,7 @@ const unitOf = (index: number, text: string, voice: Utterance["voice"] = "assist
   utterance: { index, anchor: `t${index}`, voice, text },
   start: 0,
   end: text.length,
-  text,
+  ...prepareText(text),
 });
 const scriptOf = (count: number): ReadonlyArray<SynthesisUnit> =>
   Array.from({ length: count }, (_, i) => unitOf(i, `Unit ${i} says hello.`, i % 2 === 0 ? "assistant" : "user"));

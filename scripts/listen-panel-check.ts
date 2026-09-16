@@ -38,7 +38,7 @@ import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
 import { speechSegments, timeAt, timelineOfScript } from "../src/timeline";
-import type { SynthesisUnit } from "../src/speechScript";
+import { prepareText, type SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
@@ -73,7 +73,7 @@ const one: Utterance = { index: 1, anchor: "t1", voice: "user", text: "First sen
 const two: Utterance = { index: 2, anchor: "t2", voice: "assistant", text: "A reply." };
 const utterances = [one, two];
 const page = pageOf(utterances);
-const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, text: utterance.text.slice(start, end) });
+const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, ...prepareText(utterance.text.slice(start, end)) });
 const units: SynthesisUnit[] = ((): SynthesisUnit[] => {
   const [a, b] = [{ ...one }, { ...two }];
   return [unit(a, 0, 20), unit(a, 21, 42), unit(b, 0, 8)];
@@ -429,7 +429,7 @@ console.log("readout: the voice picker, cold, warm and mid-listen");
 
   const tapped = step(speaking, { kind: "preview", voice: "azelma" });
   assert("a preview tapped on stage: the reading is paused, then the previewer speaks", effects(tapped) === "perform pause,preview" && tapped.state === speaking);
-  const refusedPreview = step(speaking, worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: { text: "x", source: "x" }, voice: "azelma" }, phase: "idle" }));
+  const refusedPreview = step(speaking, worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: { ...prepareText("x"), source: "x" }, voice: "azelma" }, phase: "idle" }));
   assert("a refusal with the voice on stage: the performer that asked judges it, the panel stays", effects(refusedPreview) === "" && refusedPreview.state === speaking);
   assert("a preview tapped before the voice is on stage changes nothing", effects(step(probing, { kind: "preview", voice: "azelma" })) === "" && effects(step(idle, { kind: "preview", voice: "azelma" })) === "");
   const heard = step(speaking, { kind: "sounding", voice: "azelma" }).state;

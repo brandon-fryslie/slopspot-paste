@@ -5,7 +5,8 @@
 // Two kinds of assertion, kept apart on purpose:
 //
 //   1. Invariants that hold for ANY utterances under ANY tokenizer — nothing dropped, no
-//      unit over budget, unit order is utterance order, the character map is an offset.
+//      unit over budget, unit order is utterance order, the source map explains every fed
+//      character.
 //      These run over the fixture paste twice: under a word-ish tokenizer that behaves
 //      like SentencePiece on prose, and under a one-token-per-character tokenizer that
 //      forces every refinement rule (weak punctuation, whitespace, single characters).
@@ -31,6 +32,8 @@ import {
   renditionHash,
   renditionVersions,
   RENDITION_VERSIONS,
+  sourceSpanOf,
+  type PreparedText,
   type SynthesisUnit,
   type TokenCount,
   type VoiceMap,
@@ -61,6 +64,31 @@ const utter = (text: string, voice: Voice = "assistant", index = 0): Utterance =
 const texts = (units: ReadonlyArray<SynthesisUnit>): ReadonlyArray<string> => units.map((u) => u.text);
 const sourceOf = (u: SynthesisUnit): string => u.utterance.text.slice(u.start, u.end);
 const endsSentence = (s: string): boolean => new RegExp(`${TERMINAL_MARK}${CLOSER_RUN}$`, "u").test(s);
+
+// The source map's theorem, over observables only: one span per fed character, in order and
+// disjoint; a fed space was made from a whitespace run; any other fed character was made
+// from one source character — itself, or the capitalised, straightened or weak-to-period form
+// of it — except a final "." made from nothing; and no non-whitespace source character is
+// left out of every span.
+const EDITS: ReadonlyArray<(from: string, to: string, i: number) => boolean> = [
+  (from, to) => from === to,
+  (from, to, i) => i === 0 && from.toUpperCase() === to,
+  (from, to) => /[’‘]/.test(from) && to === "'",
+  (from, to) => /[“”]/.test(from) && to === '"',
+  (from, to) => /[,;:\-–—]/.test(from) && to === ".",
+];
+const mapHolds = ({ text, sourceSpans }: PreparedText, source: string): boolean => {
+  const spans = sourceSpans.map((span) => ({ ...span, from: source.slice(span.begin, span.end) }));
+  const explained = spans.every((span, i) => {
+    const to = text.charAt(i);
+    if (span.from === "") return i === text.length - 1 && to === "." && span.begin === (spans[i - 1]?.end ?? 0);
+    if (to === " ") return /^\s+$/u.test(span.from);
+    return span.from.length === 1 && EDITS.some((edit) => edit(span.from, to, i));
+  });
+  const ordered = spans.every((span, i) => span.begin <= span.end && span.begin >= (spans[i - 1]?.end ?? 0) && span.end <= source.length);
+  const uncovered = source.split("").some((c, at) => /\S/u.test(c) && !spans.some((span) => span.begin <= at && at < span.end));
+  return spans.length === text.length && explained && ordered && !uncovered;
+};
 
 const assertInvariants = (label: string, utterances: ReadonlyArray<Utterance>, count: TokenCount): void => {
   const units = deriveSpeechScript(utterances, count);
@@ -98,15 +126,8 @@ const assertInvariants = (label: string, utterances: ReadonlyArray<Utterance>, c
     units.every((u) => count(u.text) <= MAX_UNIT_TOKENS),
   );
 
-  // The character map is an offset: the fed text is the source slice, character for
-  // character, plus at most one appended period.
-  assert(
-    `${label}: unit text is its source slice plus at most one appended character`,
-    units.every((u) => {
-      const extra = u.text.length - (u.end - u.start);
-      return (extra === 0 && endsSentence(u.text)) || (extra === 1 && u.text.endsWith("."));
-    }),
-  );
+  assert(`${label}: every unit's source map explains each fed character from its source slice`, units.every((u) => mapHolds(u, sourceOf(u))));
+  assert(`${label}: no unit feeds the model a whitespace run or an edge space`, units.every((u) => !/\s\s|^\s|\s$|[^\S ]/u.test(u.text)));
   assert(`${label}: every unit ends with sentence-final punctuation`, units.every((u) => endsSentence(u.text)));
 };
 
@@ -140,7 +161,7 @@ console.log("\nSpeech script — invariants over the fixture paste (slopspot-rea
     const inside = units.filter((u, i) => units[i + 1]?.utterance === u.utterance);
     assert(
       "chatgpt-share/wordish: every cut inside an utterance is at a sentence end or inside an oversized sentence",
-      inside.every((u) => endsSentence(sourceOf(u)) || wordish(prepareText(sentenceAround(u))) > MAX_UNIT_TOKENS),
+      inside.every((u) => endsSentence(sourceOf(u)) || wordish(prepareText(sentenceAround(u)).text) > MAX_UNIT_TOKENS),
     );
     assert(
       "chatgpt-share/wordish: at least one utterance is cut into several units at sentence ends",
@@ -149,21 +170,43 @@ console.log("\nSpeech script — invariants over the fixture paste (slopspot-rea
   }
 }
 
-console.log("\nText preparation (mirrors upstream prepare_text_prompt, length-preserving):");
+console.log("\nText preparation (mirrors upstream prepare_text_prompt, with a source map):");
 {
-  assert("curly apostrophe is straightened (the spike heard every voice mangle it)", prepareText("isn’t it") === "Isn't it.");
-  assert("curly double quotes are straightened", prepareText("“quoted”") === '"quoted".');
-  assert("newlines are flattened to spaces, one for one", prepareText("line one\nline two.") === "Line one line two.");
-  assert("the first letter is capitalised", prepareText("hello world.") === "Hello world.");
-  assert("a period is appended when the text has no sentence-final punctuation", prepareText("hello world") === "Hello world.");
-  assert("a trailing comma becomes a period in place", prepareText("hello world,") === "Hello world.");
-  assert("a trailing dash becomes a period in place", prepareText("hello world —") === "Hello world .");
-  assert("a period is appended after a closing quote", prepareText('he said "hi"') === 'He said "hi".');
-  assert("a trailing comma inside a closing quote becomes a period", prepareText('he said "hi,"') === 'He said "hi."');
-  assert("existing terminal punctuation is left alone", prepareText("Done!") === "Done!" && prepareText("wait…") === "Wait…");
-  assert("terminal punctuation followed by a closer is left alone", prepareText('she asked "why?"') === 'She asked "why?"');
-  assert("a first letter whose upper case changes length is left alone", prepareText("ßtraße") === "ßtraße.");
-  assert("a piece that is only closers still ends in a period", prepareText(")") === ")." && prepareText('")') === '").');
+  const fed = (slice: string): string => prepareText(slice).text;
+  assert("curly apostrophe is straightened (the spike heard every voice mangle it)", fed("isn’t it") === "Isn't it.");
+  assert("curly double quotes are straightened", fed("“quoted”") === '"quoted".');
+  assert("a newline is a space, as upstream flattens it", fed("line one\nline two.") === "Line one line two.");
+  assert("a double space is one space, as upstream collapses it", fed("Two  spaces here") === "Two spaces here.");
+  assert("any whitespace run — a CRLF, a tab, three spaces — is one space", fed("a\r\nb\tc   d \n\t e.") === "A b c d e.");
+  assert("the slice is trimmed before anything else", fed(" \n hello \t") === "Hello.");
+  assert("the first letter is capitalised", fed("hello world.") === "Hello world.");
+  assert("a period is appended when the text has no sentence-final punctuation", fed("hello world") === "Hello world.");
+  assert("a trailing comma becomes a period in place", fed("hello world,") === "Hello world.");
+  assert("a trailing dash becomes a period in place", fed("hello world —") === "Hello world .");
+  assert("a period is appended after a closing quote", fed('he said "hi"') === 'He said "hi".');
+  assert("a trailing comma inside a closing quote becomes a period", fed('he said "hi,"') === 'He said "hi."');
+  assert("existing terminal punctuation is left alone", fed("Done!") === "Done!" && fed("wait…") === "Wait…");
+  assert("terminal punctuation followed by a closer is left alone", fed('she asked "why?"') === 'She asked "why?"');
+  assert("a first letter whose upper case changes length is left alone", fed("ßtraße") === "ßtraße.");
+  assert("a piece that is only closers still ends in a period", fed(")") === ")." && fed('")') === '").');
+
+  const spaced = prepareText("Two  spaces here");
+  const spans = (prepared: PreparedText): string => prepared.sourceSpans.map((s) => `${s.begin}-${s.end}`).join(" ");
+  assert("the collapsed space maps to the whole run, the words after it to their own source", spans(spaced) === "0-1 1-2 2-3 3-5 5-6 6-7 7-8 8-9 9-10 10-11 11-12 12-13 13-14 14-15 15-16 16-16");
+  assert("a fed word maps back to the source word", sourceSpanOf(spaced, { begin: 4, end: 10 }).begin === 5 && sourceSpanOf(spaced, { begin: 4, end: 10 }).end === 11);
+  const weak = prepareText("  hi,");
+  assert("a weak mark turned period keeps its source; leading whitespace is outside every span", spans(weak) === "2-3 3-4 4-5");
+  let thrown = false;
+  try {
+    sourceSpanOf(spaced, { begin: 15, end: 17 });
+  } catch {
+    thrown = true;
+  }
+  assert("a fed span past the fed text is thrown", thrown);
+  assert(
+    "the map theorem holds for every preparation above",
+    ["isn’t it", "“quoted”", "line one\nline two.", "a\r\nb\tc   d \n\t e.", " \n hello \t", "hello world —", 'he said "hi,"', "ßtraße", '")', "🙂 hi"].every((slice) => mapHolds(prepareText(slice), slice)),
+  );
 }
 
 console.log("\nCutting rules:");
@@ -174,9 +217,13 @@ console.log("\nCutting rules:");
     texts(deriveSpeechScript([utter("hello world")], wordish)).join("|") === "Hello world.",
   );
   assert(
-    "short sentences pack into one unit with their original spacing",
-    texts(deriveSpeechScript([utter("One. Two!  Three?")], wordish)).join("|") === "One. Two!  Three?",
+    "short sentences pack into one unit, the whitespace between them collapsed",
+    texts(deriveSpeechScript([utter("One. Two!  Three?")], wordish)).join("|") === "One. Two! Three?",
   );
+  const spaced = [utter("First\tline  here.\n\nSecond   line.")];
+  assert("a unit's source map points past the collapsed runs into the utterance", deriveSpeechScript(spaced, wordish).every((u) => mapHolds(u, sourceOf(u))));
+  assertInvariants("spaced", spaced, wordish);
+  assertInvariants("spaced/per-character", spaced, perCharacter);
   assert(
     "a closing quote after a period stays with its sentence",
     texts(deriveSpeechScript([utter('He said "Go." She left.')], (t) => (t.match(/[.!?]/g) ?? []).length * 30)).join("|") ===

@@ -15,7 +15,7 @@
 import type { Place } from "../src/performer";
 import type { Utterance } from "../src/speech";
 import { addUnit, emptyManifest, type Manifest, type UnitReport } from "../src/speechManifest";
-import type { SynthesisUnit } from "../src/speechScript";
+import { prepareText, type SynthesisUnit } from "../src/speechScript";
 import {
   clockText,
   DEFAULT_MS_PER_CHAR,
@@ -67,7 +67,7 @@ const three: Utterance = { index: 2, anchor: "t2", voice: "assistant", text: "A 
 const four: Utterance = { index: 3, anchor: "t3", voice: "user", text: "And a follow-up question." };
 const utterances = [one, two, three, four];
 
-const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, text: utterance.text.slice(start, end) });
+const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, ...prepareText(utterance.text.slice(start, end)) });
 const script: SynthesisUnit[] = [unit(one, 0, 20), unit(one, 21, 42), unit(two, 0, 27), unit(three, 0, 8), unit(four, 0, 25)];
 const utteranceOf = [0, 0, 1, 2, 3];
 
