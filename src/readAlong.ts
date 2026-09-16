@@ -56,8 +56,9 @@ import type { Cursor } from "./timeline";
 
 // Two words are the same word when they agree letter for letter and digit for digit,
 // whatever case or attached punctuation they wear: the utterance says "cell," where a
-// table cell shows "cell", and "Hello" opens a sentence the page may set in caps.
-export const wordKey = (word: string): string => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+// table cell shows "cell", and "Hello" opens a sentence the page may set in caps. A word
+// with no letter or digit is notation the voice says ("=", "≤"), and is itself.
+export const wordKey = (word: string): string => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "") || word;
 
 // How far past the last match the scan looks for the next spoken word before calling it
 // unmatched. Wide enough to step over a heading's number or a list's marker text, narrow

@@ -33,11 +33,13 @@
 import { contentHash } from "./contentHash";
 import { MAX_UNIT_TOKENS, MODEL_ASSETS, VOICE_IDS, assetVersion, type ModelAssetManifest, type VoiceId } from "./modelAssets";
 import type { Utterance, Voice } from "./speech";
+import { NOTATION, voicedNotation } from "./spokenNotation";
 
 // Bump when any rule in this file changes what text a unit is fed or where units are cut:
 // an old resume position or per-device cache keyed on the previous rules is then simply
 // unused, never misapplied [LAW:no-ambient-temporal-coupling].
-export const PIPELINE_VERSION = "2";
+// A row of the notation table (spokenNotation.ts) needs no bump: the script hash holds the table.
+export const PIPELINE_VERSION = "3";
 
 // Bump when a change to generation makes the audio or the word times of the same fed text in
 // the same voice come out differently: the runtime's sampling (pocketTtsRuntime.ts: seed,
@@ -60,7 +62,8 @@ export interface TextSpan {
 
 // The exact string the model is fed for a slice of text, and where each of its characters
 // came from in that slice (see the header): one character of the slice, a whitespace run
-// for a space, or an empty span for the period preparation appends. Plain data, so it
+// for a space, the notation a said word was made from, or an empty span for the period
+// preparation appends. Plain data, so it
 // crosses into the synthesis worker as it is.
 export interface PreparedText {
   readonly text: string;
@@ -109,7 +112,7 @@ export type VoiceMap = Readonly<Record<Voice, VoiceId>>;
 //
 // Mirrors upstream prepare_text_prompt + _ensure_terminal_punctuation under the options
 // the released model runs with (no space padding, semicolons kept, terminal punctuation
-// appended). Every step maps a list of fed characters, each carrying its source span, so an
+// appended), with one step of ours: notation is said as words (spokenNotation.ts). Every step maps a list of fed characters, each carrying its source span, so an
 // edit changes what a character says and never where it came from. Upstream's reason for
 // the appended period, verbatim: "Without one, the last word is often mispronounced or
 // repeated."
@@ -150,6 +153,27 @@ const collapsed = (slice: string): ReadonlyArray<FedChar> => {
   });
 };
 
+// Each stretch of notation said as its words: "9 x 10" is fed as "9 times 10". Every fed
+// character of the words — and the space that sets them off from a neighbour, where there is
+// no space already — was made from the symbol, so it carries the symbol's span: the cursor
+// paints the page's "x" while "times" is said, and a tap on "x" seeks to "times".
+const WORD_BEFORE = /[\p{L}\p{N}\p{S})\]}]/u;
+const WORD_AFTER = /[\p{L}\p{N}\p{S}(\[{]/u;
+const spoken = (chars: ReadonlyArray<FedChar>): ReadonlyArray<FedChar> => {
+  const prepared: PreparedText = { text: chars.map((c) => c.char).join(""), sourceSpans: chars.map((c) => c.source) };
+  const fed: FedChar[] = [];
+  let at = 0;
+  for (const notation of voicedNotation(prepared.text)) {
+    fed.push(...chars.slice(at, notation.begin));
+    const source = sourceSpanOf(prepared, notation);
+    const lead = WORD_BEFORE.test(charOf(fed, fed.length - 1)) ? " " : "";
+    const trail = WORD_AFTER.test(prepared.text.charAt(notation.end)) ? " " : "";
+    fed.push(...Array.from(`${lead}${notation.said}${trail}`, (char) => ({ char, source })));
+    at = notation.end;
+  }
+  return [...fed, ...chars.slice(at)];
+};
+
 // Upper-cases the first character only when its upper-case form is one UTF-16 unit too:
 // ß → SS would be two fed characters made from one, which the map has no entry shape for.
 const capitalised = (chars: ReadonlyArray<FedChar>): ReadonlyArray<FedChar> =>
@@ -178,7 +202,7 @@ const withTerminalPunctuation = (chars: ReadonlyArray<FedChar>): ReadonlyArray<F
 // The exact string the model is fed for a slice of utterance text, with its map back into
 // the slice. Exported so the check can state the map's theorem against it directly.
 export const prepareText = (slice: string): PreparedText => {
-  const chars = withTerminalPunctuation(capitalised(collapsed(slice)));
+  const chars = withTerminalPunctuation(capitalised(spoken(collapsed(slice))));
   return { text: chars.map((c) => c.char).join(""), sourceSpans: chars.map((c) => c.source) };
 };
 
@@ -376,10 +400,11 @@ export const unitHash = (text: UnitText, voice: VoiceId, versions: RenditionVers
   contentHash({ pipeline: versions.pipeline, generation: versions.generation, model: versions.model, voice: versions.voices[voice], text });
 
 // [LAW:one-source-of-truth] A script's identity: exactly what `deriveSpeechScript` reads — each
-// utterance's index, anchor, voice and text — under the rules that cut it, the encoder that
+// utterance's index, anchor, voice and text — under the rules that cut it and the notation
+// table that says its symbols, the encoder that
 // counts its tokens (the generation's), the tokenizer it encodes with and the budget it counts
 // against. The device keeps a paste's script under it (keptAudio.ts), so an edit, new rules, a
 // new encoder, tokenizer or budget is another key and simply misses. The voices a reader
 // picks are not in it: a script is cut the same whoever speaks it.
 export const scriptHash = (utterances: ReadonlyArray<Utterance>, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
-  contentHash({ pipeline: versions.pipeline, generation: versions.generation, cut: versions.cut, utterances: utterances.map((u) => [u.index, u.anchor, u.voice, u.text]) });
+  contentHash({ pipeline: versions.pipeline, generation: versions.generation, cut: versions.cut, notation: NOTATION, utterances: utterances.map((u) => [u.index, u.anchor, u.voice, u.text]) });
