@@ -52,7 +52,10 @@
 // or the device withdrawing its allowance, cancels it too. A unit the device holds, or the
 // worker finishes or fails through this port, is not made ahead again — a keep the store
 // refuses must not become a loop — and a cancelled one is tried again when its turn comes
-// back. Cost, stated once: a pre-empted fill discards what it had made.
+// back. A device whose store cannot be read keeps nothing, so nothing is made ahead for the
+// rest of the listen: a store refused for the page stays refused, and a fill that made each
+// unit only to lose it would spend the GPU on nothing. Cost, stated once: a pre-empted fill
+// discards what it had made.
 //
 // [LAW:no-silent-failure] A lookup that rejects breaks the cache's contract (it never rejects),
 // so it is reported on the port's error channel, where the panel hears a worker's own crash.
@@ -95,10 +98,11 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   let ready = false;
   // What is worth making ahead, the units the device holds or the worker has finished or failed
   // through this port — never made ahead again — whether the device is being asked about the
-  // next one, and the voice previews in flight.
+  // next one, whether it can keep anything at all, and the voice previews in flight.
   let order: ReadonlyArray<Synthesize> = [];
   const made = new Set<string>();
   let asking = false;
+  let keeping = true;
   const previews = new Set<number>();
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
@@ -140,21 +144,34 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   // The next unit worth making ahead, when the worker has nothing the listen asked for: the
   // device is asked first, and the worker's time is read again once it answers.
   const fill = (): void => {
-    if (asking || !idle()) return;
+    if (asking || !keeping || !idle()) return;
     const request = order.find((ordered) => !made.has(tried(ordered)));
     if (request === undefined) return;
     asking = true;
     cache.holds(request).then(
-      (held) => {
+      (holding) => {
         asking = false;
-        if (held) made.add(tried(request));
-        else if (idle() && wanted(request)) {
-          jobs.set(request.unitId, { kind: "filling", request, frames: [], cancelled: false, next: null });
-          worker.send(request);
+        switch (holding) {
+          case "held":
+            made.add(tried(request));
+            break;
+          case "absent":
+            if (!idle() || !wanted(request)) break;
+            jobs.set(request.unitId, { kind: "filling", request, frames: [], cancelled: false, next: null });
+            worker.send(request);
+            break;
+          case "unreadable":
+            // The cache has reported why.
+            keeping = false;
+            return;
         }
         fill();
       },
-      (error: unknown) => fail(`kept audio: the lookup ahead for unit ${request.unitId} failed: ${String(error)}`),
+      (error: unknown) => {
+        asking = false;
+        keeping = false;
+        fail(`kept audio: the lookup ahead for unit ${request.unitId} failed: ${String(error)}`);
+      },
     );
   };
 

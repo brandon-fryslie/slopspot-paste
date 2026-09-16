@@ -36,6 +36,7 @@
 //   a scheduler over it, idle         -> every unit of the paste kept, none in the player
 //   a play and a seek during the fill -> served first; the fill finishes the paste after
 //   ahead of a unit the device holds  -> not made; the next is
+//   a store that cannot be read       -> nothing made ahead for the rest of the listen; a rejected lookup said too
 //   the listen asks for a held unit   -> answered from the device; the fill left running
 //   a play over units made ahead      -> served from the device; nothing cancelled, nothing made twice
 
@@ -108,7 +109,8 @@ const stubWorker = (answer: (message: ToWorker, emit: (message: FromWorker) => v
 };
 
 // The cache: each lookup waits for the case to answer it; every keep is recorded; the device
-// holds, for a fill's own question, the units the case puts in `holding`.
+// holds, for a fill's own question, the units the case puts in `holding` — or, told its store
+// is `unreadable` or `broken`, cannot say or rejects.
 const stubCache = () => {
   const lookups: { request: UnitRequest; answer: (kept: KeptUnit | null) => void; reject: (error: Error) => void }[] = [];
   const kept: { request: UnitRequest; frames: ReadonlyArray<Float32Array>; report: UnitReport }[] = [];
@@ -116,12 +118,14 @@ const stubCache = () => {
   const scripts: { utterances: ReadonlyArray<Utterance>; units: ReadonlyArray<SynthesisUnit> }[] = [];
   const holding = new Set<number>();
   const asked: number[] = [];
+  const reads = { unreadable: false, broken: false };
   const cache: Pick<AudioCache, "find" | "holds" | "keep" | "recallScript" | "keepScript"> = {
     find: (request) => new Promise((resolve, reject) => lookups.push({ request, answer: resolve, reject })),
     holds: async (request) => {
       const { unitId } = request as SynthesizeRequest;
       asked.push(unitId);
-      return holding.has(unitId);
+      if (reads.broken) throw new Error("broken");
+      return reads.unreadable ? "unreadable" : holding.has(unitId) ? "held" : "absent";
     },
     keep: async (request, frames, done) => {
       kept.push({ request, frames, report: done });
@@ -131,7 +135,7 @@ const stubCache = () => {
       scripts.push({ utterances, units });
     },
   };
-  return { cache, lookups, kept, recalls, scripts, holding, asked };
+  return { cache, lookups, kept, recalls, scripts, holding, asked, reads };
 };
 
 const heard = (port: SynthesisPort) => {
@@ -353,6 +357,30 @@ console.log("made ahead");
   port.ahead([synthesize(3), synthesize(4)]);
   await flush();
   assert("and not asked about again", store.asked.join() === "3,4" && worker.said() === "synthesize 4");
+}
+{
+  const { worker, store, port, ear } = setup({ allowed: true });
+  store.reads.unreadable = true;
+  port.ahead([synthesize(3), synthesize(4)]);
+  await flush();
+  store.reads.unreadable = false;
+  port.ahead([synthesize(5)]);
+  await flush();
+  assert("a store that cannot be read: nothing made ahead, now or for the rest of the listen", store.asked.join() === "3" && worker.said() === "" && ear.errors.length === 0);
+  port.send(synthesize(0));
+  answer(store, 0, null);
+  await flush();
+  assert("the listen itself still goes to the worker", worker.said() === "synthesize 0");
+}
+{
+  const { worker, store, port, ear } = setup({ allowed: true });
+  store.reads.broken = true;
+  port.ahead([synthesize(3)]);
+  await flush();
+  store.reads.broken = false;
+  port.ahead([synthesize(5)]);
+  await flush();
+  assert("a lookup ahead that rejects: said on the error channel, and nothing more made ahead", ear.errors.length === 1 && ear.errors[0]?.includes("unit 3") === true && store.asked.join() === "3" && worker.said() === "");
 }
 {
   const { worker, store, port } = setup({ allowed: true });

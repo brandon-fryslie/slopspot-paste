@@ -164,12 +164,16 @@ export interface KeptUnit {
   readonly report: UnitReport;
 }
 
+// Whether the device holds a unit — or cannot say, because its store cannot be read.
+export type Holding = "held" | "absent" | "unreadable";
+
 export interface AudioCache {
   // The unit's frames and report when the device holds it; null otherwise. Never rejects.
   readonly find: (request: UnitRequest) => Promise<KeptUnit | null>;
   // Whether the device holds the unit, read from its record alone: nothing decoded and nothing
-  // played, for a unit about to be made ahead. Never rejects.
-  readonly holds: (request: UnitRequest) => Promise<boolean>;
+  // played, for a unit about to be made ahead. A store that cannot be read is `unreadable`, not
+  // `absent`: what the device cannot keep is not worth making ahead. Never rejects.
+  readonly holds: (request: UnitRequest) => Promise<Holding>;
   // Keeps a unit the worker finished. Never rejects.
   readonly keep: (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport) => Promise<void>;
   // For each unit of a script in these voices, its kept report, or undefined. Never rejects.
@@ -231,10 +235,10 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
     });
 
   // A record is put and removed with its audio, so the record alone says the unit is held.
-  const holds = (request: UnitRequest): Promise<boolean> =>
-    read("looking for a kept unit", false, async (store) => {
+  const holds = (request: UnitRequest): Promise<Holding> =>
+    read<Holding>("looking for a kept unit", "unreadable", async (store) => {
       const [record] = await store.records([await keyOf(request)]);
-      return record !== undefined;
+      return record === undefined ? "absent" : "held";
     });
 
   // [LAW:single-enforcer] Every write, a unit's or a script's: its turn in the chain, the
