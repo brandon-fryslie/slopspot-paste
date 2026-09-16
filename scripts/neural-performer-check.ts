@@ -17,7 +17,7 @@ import { DEFAULT_VOICES } from "../src/voiceChoice";
 import type { ListenPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, openDevice } from "../src/unitPlayer";
-import { GAP_MS, cursorAt, cursorIn, speechSegments, timeAt, timelineOfScript } from "../src/timeline";
+import { DEFAULT_MS_PER_CHAR, GAP_MS, cursorAt, cursorIn, speechSegments, timeAt, timelineOfScript } from "../src/timeline";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 
 // No unit is being made: the model has begun no word of any.
@@ -250,8 +250,15 @@ console.log("a unit still being made: the words the model has begun are painted 
   assert("between a word's start and the next word's, the cursor stays on it", lit() === "First");
   device.advance(frameMs / 1000);
   assert("the next word begun is lit once the voice reaches its start", lit() === "sentence");
-  emit({ kind: "done", unitId: 0, report: { durationMs: 3 * frameMs, alignment: { kind: "words", times: [{ startMs: 0, endMs: 2 * frameMs }, { startMs: 2 * frameMs, endMs: 3 * frameMs }, { startMs: 3 * frameMs, endMs: 3 * frameMs }] } }, elapsedMs: 5 });
-  assert("the record replaces the words begun, and the word under the voice is the same one", lit() === "sentence" && performer.view().holdings[0]?.kind === "held");
+  // "here." begins in frame 20, past the guess of the whole unit's length (20 characters at
+  // the default rate): the clock must reach it while the unit is still being made.
+  for (let index = 3; index < 20; index++) emit({ kind: "audio", unitId: 0, frameIndex: index, pcm: frame(0, index) });
+  emit({ kind: "word", unitId: 0, word: 2, startMs: 20 * frameMs });
+  for (const index of [20, 21]) emit({ kind: "audio", unitId: 0, frameIndex: index, pcm: frame(0, index) });
+  device.advance((18 * frameMs) / 1000);
+  assert("a word begun past the unit's guessed length is lit once the voice reaches it", 20 * frameMs > 20 * DEFAULT_MS_PER_CHAR && lit() === "here.");
+  emit({ kind: "done", unitId: 0, report: { durationMs: 22 * frameMs, alignment: { kind: "words", times: [{ startMs: 0, endMs: 2 * frameMs }, { startMs: 2 * frameMs, endMs: 20 * frameMs }, { startMs: 20 * frameMs, endMs: 22 * frameMs }] } }, elapsedMs: 5 });
+  assert("the record replaces the words begun, and the word under the voice is the same one", lit() === "here." && performer.view().holdings[0]?.kind === "held");
   performer.dispose();
 }
 

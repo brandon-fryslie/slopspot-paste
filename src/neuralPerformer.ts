@@ -91,7 +91,8 @@ const segmentOf = (timeline: Timeline, at: SegmentOffset): Segment => {
 
 // Where an offset into a segment falls on the conversation's clock: the segment's start
 // plus the offset, read no further than the segment — a unit streaming past its guessed
-// length holds the clock at the segment's end until its record recuts the timeline.
+// length holds the clock at the segment's end, which reaches its last begun word, until its
+// next word or its record recuts the timeline.
 const timeIn = (segment: Segment, offsetMs: number): number => segment.startMs + Math.min(offsetMs, segment.ms);
 
 // Where the player's position falls on the conversation's clock.

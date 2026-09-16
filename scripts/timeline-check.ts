@@ -31,6 +31,7 @@ import {
   startAt,
   timeOfStart,
   cursorAt,
+  cursorIn,
   timeAt,
   timelineOfScript,
   timelineOfUtterances,
@@ -194,6 +195,13 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
   assert("a unit being made names a moment by the word begun there", streaming !== undefined && placeIn(making, streaming, 450).char === 6);
   assert("its length is still a guess: 'about', and a place in it resolves to its start", estimated(making, 0) && timeAt(making, mark(0, 6)) === 0 && streaming?.ms === chars(0) * DEFAULT_MS_PER_CHAR);
   assert("a unit nothing has begun paints its range and no word", cursorAt(making, (making.segments[1]?.startMs ?? 0) + 10)?.word === null);
+  // A unit whose voice runs past its guess: "here." begun at 2000 ms of a 1320 ms guess. A
+  // begun word is heard, so the guess is never shorter than it, and the voice's clock, held
+  // at the segment's end, stands on that word.
+  const overrun = timelineOfScript(emptyManifest(script), utteranceOf, (unit) => (unit === 0 ? [{ charStart: 0, charEnd: 5, startMs: 0 }, { charStart: 15, charEnd: 20, startMs: 2000 }] : []));
+  const long = overrun.segments[0];
+  assert("a guess is no shorter than the last word begun, and the clock at its end paints that word", 2000 > chars(0) * DEFAULT_MS_PER_CHAR && long?.ms === 2000 && cursorIn(long, long.startMs + long.ms)?.word?.charStart === 15);
+  assert("it is still a guess, and the segments after it start later by the overrun", estimated(overrun, 0) && overrun.segments[1]?.startMs === (making.segments[1]?.startMs ?? 0) + 2000 - chars(0) * DEFAULT_MS_PER_CHAR);
 
   // A measured unit whose voice draws breath before its first word and trails off after its
   // last (slopspot-read-along-a35.iey). Painted frame by frame, no frame may fall back to

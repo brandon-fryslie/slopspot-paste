@@ -111,7 +111,8 @@ export const layoutOf = (anchors: ReadonlyArray<string>): ReadonlyArray<Slot> =>
 // its length is a share of the characters, and of its words only those the model has begun
 // while its unit is still being made, none before — or the worker's measurement of the
 // whole unit. A guess's begun words are measurements too, so the cursor stands on them as on
-// a measured word; its length stays a guess until the unit is done.
+// a measured word; its length stays a guess until the unit is done, though never shorter
+// than its last begun word.
 export type Timing =
   | { readonly kind: "guess"; readonly begun: ReadonlyArray<WordStart> }
   | { readonly kind: "measured"; readonly alignment: Alignment };
@@ -200,7 +201,10 @@ const build = (spans: ReadonlyArray<Span>): Timeline => {
     const { heard } = span;
     const timing: Timing = heard.kind === "measured" ? { kind: "measured", alignment: heard.alignment } : heard;
     const speech: Speech = { kind: "speech", utterance: span.utterance, charStart: span.charStart, charEnd: span.charEnd, timing };
-    return lay(heard.kind === "measured" ? heard.ms : chars(span) * rate, speech);
+    // A begun word has been heard, so a guess is never shorter than the last of them: a unit
+    // streaming past its share of the characters lengthens as its words begin, and the voice's
+    // clock, held at the segment's end, stands on the word being said.
+    return lay(heard.kind === "measured" ? heard.ms : Math.max(chars(span) * rate, ...heard.begun.map((word) => word.startMs)), speech);
   });
   return { segments, totalMs: startMs };
 };
