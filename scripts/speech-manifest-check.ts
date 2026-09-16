@@ -27,6 +27,8 @@ import {
   estimateTimes,
   offsetAt,
   wordUnder,
+  beginWord,
+  measuredWords,
   wordAt,
   wordsOf,
   type Manifest,
@@ -47,6 +49,16 @@ const assert = (label: string, cond: boolean): void => {
   } else {
     console.log(`  ✓ ${label}`);
   }
+};
+
+const throws = (label: string, fn: () => unknown): void => {
+  let threw = false;
+  try {
+    fn();
+  } catch {
+    threw = true;
+  }
+  assert(label, threw);
 };
 
 const utter = (text: string, index = 0): Utterance => ({ index, anchor: `t${index}`, origin: "page", voice: "assistant", text });
@@ -185,7 +197,7 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
     const cursorHonest = all.every((r) => {
       const probes = [0, r.durationMs / 3, r.durationMs / 2, r.durationMs];
       return probes.every((ms) => {
-        const word = wordUnder(r.alignment, ms);
+        const word = wordUnder(measuredWords(r.alignment), ms);
         return word === null ? r.alignment.kind !== "words" || r.alignment.words.length === 0 : r.alignment.kind === "words" && within({ charStart: r.unit.start, charEnd: r.unit.end }, word);
       });
     });
@@ -193,7 +205,7 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
     const measured = all.filter((r) => r.alignment.kind === "words" && r.alignment.words.length > 0);
     assert(
       "for a measured unit the cursor is on a word at every point of its audio, its first instant included",
-      measured.every((r) => [0, r.durationMs / 2, r.durationMs].every((ms) => wordUnder(r.alignment, ms) !== null)),
+      measured.every((r) => [0, r.durationMs / 2, r.durationMs].every((ms) => wordUnder(measuredWords(r.alignment), ms) !== null)),
     );
 
     // The reverse: a character seeks to the start of the word holding it.
@@ -238,6 +250,21 @@ console.log("\nSpeech manifest — words, estimation and the cursor:");
   assert("wordAt: in the silence between words the cursor stays on the word just said", wordAt(words, 700)?.charStart === 4);
   assert("wordAt: after the last word it stays on the last word", wordAt(words, 5000)?.charStart === 8);
   assert("wordAt: a unit with no words has no word to stand on", wordAt([], 0) === undefined);
+
+  // slopspot-read-along-a35.8o0: the words of a unit still being made, admitted one at a time.
+  const [streaming] = scriptOf("hello — world, 3.5 (ok)... isn’t it? Yes.");
+  if (streaming !== undefined) {
+    const script = [streaming];
+    const first = beginWord(script, 0, [], 0, 0);
+    const skipped = beginWord(script, 0, first, 2, 400);
+    assert("beginWord: a word begun is the unit's own word at its start; a word the model skipped may be passed over", same(skipped.map((w) => streaming.utterance.text.slice(w.charStart, w.charEnd)), ["hello", "3.5"]) && skipped[1]?.startMs === 400);
+    assert("wordUnder over words begun: the last begun by the time, the first before any", wordUnder(skipped, 500)?.charStart === skipped[1]?.charStart && wordUnder(skipped, 0)?.charStart === 0 && wordUnder([], 0) === null);
+    throws("beginWord: a word begun again", () => beginWord(script, 0, skipped, 2, 480));
+    throws("beginWord: a word before the last begun", () => beginWord(script, 0, skipped, 1, 480));
+    throws("beginWord: an earlier start than the last word's", () => beginWord(script, 0, skipped, 3, 320));
+    throws("beginWord: a word past the unit's last", () => beginWord(script, 0, skipped, 7, 480));
+    throws("beginWord: a unit the script lacks", () => beginWord(script, 1, [], 0, 0));
+  }
 }
 
 console.log("\nSpeech manifest — admission and rejection:");
@@ -294,7 +321,7 @@ console.log("\nSpeech manifest — admission and rejection:");
   const r1 = m3.units[1];
   assert(
     "the cursor on an `estimated` unit is never a word",
-    r1 !== undefined && r1.alignment.kind === "estimated" && [0, dur(1) / 2, dur(1)].every((ms) => wordUnder(r1.alignment, ms) === null),
+    r1 !== undefined && r1.alignment.kind === "estimated" && [0, dur(1) / 2, dur(1)].every((ms) => wordUnder(measuredWords(r1.alignment), ms) === null),
   );
   assert(
     "offsetAt on an `estimated` unit reads the estimate: a tap on its second word seeks to that word's estimated start, not zero",
@@ -308,7 +335,7 @@ console.log("\nSpeech manifest — admission and rejection:");
     "the cursor on a `words` unit is the utterance's own word at that time",
     r0 !== undefined &&
       (() => {
-        const word = wordUnder(r0.alignment, 250);
+        const word = wordUnder(measuredWords(r0.alignment), 250);
         return word !== null && r0.unit.utterance.text.slice(word.charStart, word.charEnd) === "two";
       })(),
   );

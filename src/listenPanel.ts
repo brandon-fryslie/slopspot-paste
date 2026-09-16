@@ -653,6 +653,7 @@ const provision = (state: Provisioning, message: FromWorker, at: number): Step =
       // panel could hear it.
       throw violation(state, "disposed");
     case "audio":
+    case "word":
     case "done":
     case "cancelled":
     case "failed":
@@ -666,6 +667,7 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
   if (state.kind === "provisioning") return provision(state, message, at);
   switch (message.kind) {
     case "audio":
+    case "word":
     case "done":
     case "cancelled":
     case "failed":

@@ -28,7 +28,7 @@
 //
 // ONE CLASS OF SEGMENT [LAW:one-type-per-behavior]. A segment is a duration with content,
 // and the content is data: spoken text — which utterance, which characters of it, and the
-// word times when the worker has measured it — or silence. A gap between two speakers is a
+// word times the worker has measured of it so far — or silence. A gap between two speakers is a
 // silence segment like any other segment; it is on the scrubber, the clock runs through
 // it, the player sounds it and a seek can land in it. Nothing below switches on a
 // segment's content except the readings whose answer differs by it: what text is under a
@@ -72,7 +72,7 @@
 
 import type { Place } from "./performer";
 import type { Utterance } from "./speech";
-import { offsetAt, wordUnder, type Alignment, type Manifest, type WordSpan } from "./speechManifest";
+import { measuredWords, offsetAt, wordUnder, type Alignment, type Manifest, type WordSpan, type WordStart } from "./speechManifest";
 
 // ── the layout ──────────────────────────────────────────────────────────────────────
 
@@ -107,17 +107,31 @@ export const layoutOf = (anchors: ReadonlyArray<string>): ReadonlyArray<Slot> =>
 
 // ── the timeline ────────────────────────────────────────────────────────────────────
 
+// [LAW:types-are-the-program] What is known of when a segment's speech is said: a guess —
+// its length is a share of the characters, and of its words only those the model has begun
+// while its unit is still being made, none before — or the worker's measurement of the
+// whole unit. A guess's begun words are measurements too, so the cursor stands on them as on
+// a measured word; its length stays a guess until the unit is done.
+export type Timing =
+  | { readonly kind: "guess"; readonly begun: ReadonlyArray<WordStart> }
+  | { readonly kind: "measured"; readonly alignment: Alignment };
+
+// The timing of a segment nobody has begun to say.
+export const UNHEARD: Timing = { kind: "guess", begun: [] };
+
+// The words a segment's timing has measured starts for, in order: the cursor's words.
+const wordsOfTiming = (timing: Timing): ReadonlyArray<WordStart> => (timing.kind === "guess" ? timing.begun : measuredWords(timing.alignment));
+
 // What a segment holds. Spoken text names its utterance, the characters of that utterance's
-// text it covers, and its word times — the worker's alignment when the segment is
-// measured, none while it is a guess — which is the whole of what the cursor and a tap
-// resolve through. Silence holds nothing.
+// text it covers, and its timing, which is the whole of what the cursor and a tap resolve
+// through. Silence holds nothing.
 export type Content =
   | {
       readonly kind: "speech";
       readonly utterance: number;
       readonly charStart: number;
       readonly charEnd: number;
-      readonly alignment: Alignment | null;
+      readonly timing: Timing;
     }
   | { readonly kind: "silence" };
 
@@ -140,21 +154,20 @@ export interface Timeline {
 
 // What a speech segment is built from, before its place on the clock is known: the two
 // constructors below differ only in what they put in this list. `anchor` is the turn the
-// span belongs to, read for the layout and kept nowhere.
+// span belongs to, read for the layout and kept nowhere. A measured span carries its length.
 interface Span {
   readonly utterance: number;
   readonly anchor: string;
   readonly charStart: number;
   readonly charEnd: number;
-  readonly measuredMs: number | undefined;
-  readonly alignment: Alignment | null;
+  readonly heard: Extract<Timing, { kind: "guess" }> | (Extract<Timing, { kind: "measured" }> & { readonly ms: number });
 }
 
 type Speech = Extract<Content, { kind: "speech" }>;
 const SILENCE: Content = { kind: "silence" };
 
 // Whether a segment's duration is a guess: only unmeasured speech is; silence is by rule.
-const guessed = (segment: Segment): boolean => segment.content.kind === "speech" && segment.content.alignment === null;
+const guessed = (segment: Segment): boolean => segment.content.kind === "speech" && segment.content.timing.kind === "guess";
 
 // [LAW:parse-dont-validate] The one place spans become a timeline: the measured segments
 // set the rate, the rest take their character share of it, the layout says where the
@@ -164,9 +177,9 @@ const guessed = (segment: Segment): boolean => segment.content.kind === "speech"
 // shorter than the conversation [LAW:no-silent-failure].
 const build = (spans: ReadonlyArray<Span>): Timeline => {
   const chars = (span: Span): number => span.charEnd - span.charStart;
-  const measured = spans.filter((span) => span.measuredMs !== undefined);
-  const measuredMs = measured.reduce((sum, span) => sum + (span.measuredMs ?? 0), 0);
-  const measuredChars = measured.reduce((sum, span) => sum + chars(span), 0);
+  const measured = spans.flatMap((span) => (span.heard.kind === "measured" ? [{ ms: span.heard.ms, chars: chars(span) }] : []));
+  const measuredMs = measured.reduce((sum, span) => sum + span.ms, 0);
+  const measuredChars = measured.reduce((sum, span) => sum + span.chars, 0);
   // A rate of zero would put the whole unheard tail at the same instant; the default
   // stands in until a measurement says something about how long text takes.
   const rate = measuredChars > 0 && measuredMs > 0 ? measuredMs / measuredChars : DEFAULT_MS_PER_CHAR;
@@ -184,8 +197,10 @@ const build = (spans: ReadonlyArray<Span>): Timeline => {
     if (chars(span) <= 0) {
       throw new RangeError(`timeline: utterance ${span.utterance} has a span of no characters at ${span.charStart}`);
     }
-    const speech: Speech = { kind: "speech", utterance: span.utterance, charStart: span.charStart, charEnd: span.charEnd, alignment: span.alignment };
-    return lay(span.measuredMs ?? chars(span) * rate, speech);
+    const { heard } = span;
+    const timing: Timing = heard.kind === "measured" ? { kind: "measured", alignment: heard.alignment } : heard;
+    const speech: Speech = { kind: "speech", utterance: span.utterance, charStart: span.charStart, charEnd: span.charEnd, timing };
+    return lay(heard.kind === "measured" ? heard.ms : chars(span) * rate, speech);
   });
   return { segments, totalMs: startMs };
 };
@@ -199,19 +214,23 @@ export const timelineOfUtterances = (utterances: ReadonlyArray<Utterance>): Time
       anchor: utterance.anchor,
       charStart: 0,
       charEnd: utterance.text.length,
-      measuredMs: undefined,
-      alignment: null,
+      heard: UNHEARD,
     })),
   );
 
 // The neural voice's timeline: one speech segment per synthesis unit, in unit order,
-// measured wherever the worker has finished one. `utteranceOf` is the neural performer's
-// own table — the page utterance each unit says — so the places this timeline names are
-// the page's, never the script's [LAW:one-source-of-truth]; the turn each unit belongs to
-// is the script's own word, since a unit holds its utterance.
-export const timelineOfScript = (manifest: Manifest, utteranceOf: ReadonlyArray<number>): Timeline =>
+// measured wherever the worker has finished one, and elsewhere a guess holding the words
+// `begun` says the model has begun of that unit so far. `utteranceOf` is the neural
+// performer's own table — the page utterance each unit says — so the places this timeline
+// names are the page's, never the script's [LAW:one-source-of-truth]; the turn each unit
+// belongs to is the script's own word, since a unit holds its utterance.
+export const timelineOfScript = (
+  manifest: Manifest,
+  utteranceOf: ReadonlyArray<number>,
+  begun: (unit: number) => ReadonlyArray<WordStart>,
+): Timeline =>
   build(
-    manifest.script.map((unit, index) => {
+    manifest.script.map((unit, index): Span => {
       const utterance = utteranceOf[index];
       if (utterance === undefined) throw new RangeError(`timeline: no utterance for unit ${index} of ${manifest.script.length}`);
       const record = manifest.units[index];
@@ -220,8 +239,7 @@ export const timelineOfScript = (manifest: Manifest, utteranceOf: ReadonlyArray<
         anchor: unit.utterance.anchor,
         charStart: unit.start,
         charEnd: unit.end,
-        measuredMs: record?.durationMs,
-        alignment: record?.alignment ?? null,
+        heard: record === undefined ? { kind: "guess", begun: begun(index) } : { kind: "measured", ms: record.durationMs, alignment: record.alignment },
       };
     }),
   );
@@ -245,8 +263,8 @@ export const speechSegments = (timeline: Timeline): ReadonlyArray<SpeechSegment>
 // to say.
 export const timeAt = (timeline: Timeline, place: Place): number => {
   if (timeline.segments.length === 0) return 0;
-  const segment = speechOf(timeline, place);
-  return segment.startMs + (segment.content.alignment === null ? 0 : offsetAt(segment.content.alignment, place.char));
+  const { startMs, content } = speechOf(timeline, place);
+  return startMs + (content.timing.kind === "guess" ? 0 : offsetAt(content.timing.alignment, place.char));
 };
 
 // The speech segment a place is in, by timeAt's rule; its throws are timeAt's.
@@ -274,15 +292,15 @@ const speechFrom = (timeline: Timeline, ms: number): SpeechSegment | undefined =
   return speech.find((candidate) => candidate.startMs + candidate.ms > ms) ?? speech.at(-1);
 };
 
-// The name of a point on the clock within a speech segment's span. Where the segment's words
-// are measured, the first character of the word under the point — the word the cursor
-// paints there — so the name resolves back through `timeAt` to that word's own start, and a
-// place kept at a moment resumes on the word the reader saw [LAW:one-source-of-truth]. Where
-// they are a guess, the character the point's share of the segment reaches: the first
-// before the segment begins, the last past its end.
+// The name of a point on the clock within a speech segment's span. Where the segment has
+// measured words, the first character of the word under the point — the word the cursor
+// paints there — so the name resolves back through `timeAt` to that word's own start once
+// the unit is measured, and a place kept at a moment resumes on the word the reader saw
+// [LAW:one-source-of-truth]. Where it has none, the character the point's share of the
+// segment reaches: the first before the segment begins, the last past its end.
 const placeInSpeech = (segment: SpeechSegment, ms: number): Place => {
-  const { utterance, charStart, charEnd, alignment } = segment.content;
-  const word = alignment === null ? null : wordUnder(alignment, ms - segment.startMs);
+  const { utterance, charStart, charEnd, timing } = segment.content;
+  const word = wordUnder(wordsOfTiming(timing), ms - segment.startMs);
   if (word !== null) return { utterance, char: word.charStart };
   const width = charEnd - charStart;
   const into = segment.ms <= 0 ? 0 : Math.min(Math.max(ms - segment.startMs, 0), segment.ms) / segment.ms;
@@ -350,8 +368,7 @@ export const timeOfStart = (timeline: Timeline, start: Start): number => {
 };
 
 // What the read-along paints at a point on the clock: the utterance, the range of its text
-// the segment covers, and the word under the point when the segment's alignment is a
-// measurement. Null in silence and on a conversation with nothing to say: nothing is
+// the segment covers, and the word under the point when a measured word is. Null in silence and on a conversation with nothing to say: nothing is
 // being said, so nothing is painted.
 export interface Cursor {
   readonly utterance: number;
@@ -365,12 +382,12 @@ export const cursorAt = (timeline: Timeline, ms: number): Cursor | null => {
 };
 
 // What the read-along paints at a point on the clock within a given segment: the
-// segment's range, with the word under the point when the segment is measured; nothing
-// in silence.
+// segment's range, with the word under the point among the segment's measured words — all
+// of a measured unit's, the begun ones of a unit still being made; nothing in silence.
 export const cursorIn = (segment: Segment, ms: number): Cursor | null => {
   if (!isSpeech(segment)) return null;
-  const { utterance, charStart, charEnd, alignment } = segment.content;
-  return { utterance, range: { charStart, charEnd }, word: alignment === null ? null : wordUnder(alignment, ms - segment.startMs) };
+  const { utterance, charStart, charEnd, timing } = segment.content;
+  return { utterance, range: { charStart, charEnd }, word: wordUnder(wordsOfTiming(timing), ms - segment.startMs) };
 };
 
 // Whether any of the conversation still to come at `ms` is a guess rather than a

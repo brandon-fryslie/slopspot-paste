@@ -146,7 +146,7 @@ const heard = (port: SynthesisPort) => {
   port.errors((message) => errors.push(message));
   const said = (): string =>
     messages
-      .map((m) => (m.kind === "audio" ? `audio ${m.unitId}#${m.frameIndex}` : m.kind === "failed" ? `failed ${m.unitId} ${m.reason.kind}` : "unitId" in m ? `${m.kind} ${m.unitId}` : m.kind))
+      .map((m) => (m.kind === "audio" ? `audio ${m.unitId}#${m.frameIndex}` : m.kind === "word" ? `word ${m.unitId}:${m.word}` : m.kind === "failed" ? `failed ${m.unitId} ${m.reason.kind}` : "unitId" in m ? `${m.kind} ${m.unitId}` : m.kind))
       .join();
   return { messages, errors, said };
 };
@@ -440,15 +440,17 @@ console.log("the listen comes first");
   const { worker, store, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3), synthesize(4)]);
   await flush();
+  worker.emit({ kind: "word", unitId: 3, word: 0, startMs: 0 });
   worker.emit({ kind: "audio", unitId: 3, frameIndex: 0, pcm: frame(3, 0) });
   port.send(synthesize(3));
   assert("the fill's own unit asked for: nothing more to the worker, and nothing heard inside the send", worker.said() === "synthesize 3" && ear.messages.length === 0 && store.lookups.length === 0);
   await Promise.resolve();
-  assert("the frames it had made are heard after the send", ear.said() === "audio 3#0");
+  assert("the words it had begun and the frames it had made are heard after the send, each word before its frame", ear.said() === "word 3:0,audio 3#0");
+  worker.emit({ kind: "word", unitId: 3, word: 1, startMs: 80 });
   worker.emit({ kind: "audio", unitId: 3, frameIndex: 1, pcm: frame(3, 1) });
   worker.emit({ kind: "done", unitId: 3, report: report(160), elapsedMs: 4 });
   await flush();
-  assert("the rest as the worker makes them; kept once, and the fill goes on", ear.said() === "audio 3#0,audio 3#1,done 3" && store.kept.length === 1 && store.kept[0]?.frames.length === 2 && worker.said() === "synthesize 3,synthesize 4");
+  assert("the rest as the worker makes them; kept once, and the fill goes on", ear.said() === "word 3:0,audio 3#0,word 3:1,audio 3#1,done 3" && store.kept.length === 1 && store.kept[0]?.frames.length === 2 && worker.said() === "synthesize 3,synthesize 4");
 
   port.send(synthesize(1));
   assert("anything else asked for: looked up, the fill left running meanwhile", worker.said() === "synthesize 3,synthesize 4" && store.lookups.length === 1);
@@ -498,10 +500,12 @@ console.log("the listen comes first");
   port.send({ kind: "synthesize", unitId: -1, text, voice: "marius" });
   assert("a voice preview: the fill cancelled, the preview straight through", worker.said() === "synthesize 3,cancel 3,synthesize -1");
   worker.emit({ kind: "cancelled", unitId: 3 });
-  assert("nothing made ahead while the preview speaks", worker.said() === "synthesize 3,cancel 3,synthesize -1");
+  worker.emit({ kind: "word", unitId: -1, word: 0, startMs: 0 });
+  await flush();
+  assert("nothing made ahead while the preview speaks, its words begun included", worker.said() === "synthesize 3,cancel 3,synthesize -1");
   worker.emit({ kind: "done", unitId: -1, report: report(80), elapsedMs: 4 });
   await flush();
-  assert("the preview heard; the fill resumes after it", ear.said() === "done -1" && worker.said().endsWith("synthesize -1,synthesize 3"));
+  assert("the preview heard; the fill resumes after it", ear.said() === "word -1:0,done -1" && worker.said().endsWith("synthesize -1,synthesize 3"));
 }
 {
   const { worker, port } = setup({ allowed: true });

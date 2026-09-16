@@ -34,6 +34,7 @@ import { recordUnit, wordsOf } from "../src/speechManifest";
 import { prepareText, sourceSpanOf, unitText, type SynthesisUnit } from "../src/speechScript";
 import {
   createWordAligner,
+  wordsBegun,
   isVoiced,
   lexicalWords,
   planAlignment,
@@ -42,6 +43,7 @@ import {
   tokenToUnit,
   unitScores,
   type AlignmentEvent,
+  type WordBegun,
   type Span,
 } from "../src/wordAlignment";
 
@@ -205,9 +207,11 @@ for (const capture of fixture.captures) {
   const aligner = createWordAligner(plan);
   let mismatches = 0;
   let frameStarts = true;
+  const begun: WordBegun[] = [];
   for (const [frameIndex, frame] of capture.frames.entries()) {
     frameStarts &&= near(ms(frame.frameStart), frameIndex * FRAME_MS);
     const events = aligner.frame(Float64Array.from(frame.scores), frame.voiced, frameIndex * FRAME_MS);
+    begun.push(...wordsBegun(plan, events));
     const same = events.length === frame.events.length && events.every((ours, i) => sameEvent(ours, frame.events[i] ?? { kind: "start", word: "", index: -1, t: NaN }));
     if (!same) mismatches++;
   }
@@ -235,6 +239,12 @@ for (const capture of fixture.captures) {
   assert(
     "finish yields the reference's word times, projected onto the manifest's words",
     times.length === expected.length && times.every((ours, i) => near(ours.startMs, expected[i]?.startMs ?? NaN) && near(ours.endMs, expected[i]?.endMs ?? NaN)),
+  );
+
+  // slopspot-read-along-a35.8o0: what streams while the unit is made is what the report says.
+  assert(
+    "every manifest word is begun once, in order, frame by frame, at the start finish reports for it",
+    begun.length === times.length && begun.every((b, i) => b.word === i && b.startMs === times[i]?.startMs),
   );
 
   const recorded = recordUnit([unit], 0, { durationMs: capture.frames.length * FRAME_MS, alignment: { kind: "words", times } });
@@ -345,6 +355,10 @@ console.log("\nspoken notation (slopspot-read-along-a35.5jv)");
   const attached = "x^2+1";
   const one = planAlignment({ ...prepareText(attached), source: attached }, ["▁X", "▁squared", "▁plus", "▁1", "."]);
   assert("the words said for symbols inside one page word are all that word", one.wordOf.join() === "0,0,0,0" && one.wordCount === 1);
+  const saying = createWordAligner(one);
+  const onePeak = (u: number): Float64Array => Float64Array.from(one.units, (_, i) => (i === u ? 0.9 : 0.02));
+  const begunOfOne = [0, 1, 2, 3].flatMap((word) => wordsBegun(one, saying.frame(onePeak(word), true, word * FRAME_MS)));
+  assert("a page word said as four words is begun once, when the first of them starts", begunOfOne.length === 1 && begunOfOne[0]?.word === 0 && begunOfOne[0].startMs === 0);
   const percent = textUnits({ ...prepareText("50%"), source: "50%" }).at(-1);
   assert("the period appended after a said word the page ends on is synthetic", percent?.kind === "punctuation" && percent.synthetic);
 }

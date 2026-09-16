@@ -79,6 +79,10 @@ export interface WordTiming {
 
 export type WordTime = WordSpan & WordTiming;
 
+// A word whose start is known and whose end is not yet: what the worker says of a word the
+// moment the model begins it, while the rest of its unit is still being made.
+export type WordStart = WordSpan & Pick<WordTiming, "startMs">;
+
 // What the worker reports for one finished unit: times in word order, one per
 // `wordsOf(unit)`, or the honest admission that it has none.
 export type ReportedAlignment =
@@ -194,6 +198,31 @@ export const recordUnit = (script: ReadonlyArray<SynthesisUnit>, index: number, 
   return { kind: "record", record: { unit, durationMs: report.durationMs, alignment: stamped.alignment } };
 };
 
+// [LAW:parse-dont-validate] The one checkpoint between the worker's word start and a word the
+// cursor may stand on while its unit streams: the word is the unit's own, begun after every
+// word already begun (words begin in order, by the aligner's construction) and no earlier
+// than the last one, at a time in the unit's audio. A start that is none of these is a worker
+// that broke the protocol, and says so rather than painting a word out of order
+// [LAW:no-silent-failure]. `begun` is the unit's starts so far, as this function returned them.
+export const beginWord = (
+  script: ReadonlyArray<SynthesisUnit>,
+  index: number,
+  begun: ReadonlyArray<WordStart>,
+  word: number,
+  startMs: number,
+): ReadonlyArray<WordStart> => {
+  const unit = script[index];
+  if (unit === undefined) throw new RangeError(`speech manifest: a word start for unit ${index} of ${script.length}`);
+  const spans = wordsOf(unit);
+  const span = spans[word];
+  const last = begun.at(-1);
+  const after = last === undefined ? -1 : spans.findIndex((s) => s.charStart === last.charStart);
+  if (span === undefined || word <= after || !(Number.isFinite(startMs) && startMs >= (last?.startMs ?? 0))) {
+    throw new RangeError(`speech manifest: unit ${index} word ${word} of ${spans.length} begun at ${startMs} ms after word ${after}`);
+  }
+  return [...begun, { ...span, startMs }];
+};
+
 // Out of order is legal — the scheduler finishes ahead of the cursor — so admission is by
 // index, not by sequence; a second report for a recorded unit is refused.
 export const addUnit = (manifest: Manifest, index: number, report: UnitReport): Admission => {
@@ -213,16 +242,19 @@ export const addUnit = (manifest: Manifest, index: number, report: UnitReport): 
 // is data for whoever wants the gap itself. A scan, not a search: a unit holds at most
 // MAX_UNIT_TOKENS tokens, so this is a few dozen comparisons per animation frame at the
 // very most.
-export const wordAt = (words: ReadonlyArray<WordTime>, offsetMs: number): WordTime | undefined =>
+export const wordAt = <W extends WordStart>(words: ReadonlyArray<W>, offsetMs: number): W | undefined =>
   words.findLast((word) => word.startMs <= offsetMs) ?? words[0];
 
-// The word under a point in a unit's audio, in utterance-text coordinates, when the
-// alignment is a measurement; null for an estimate or a unit with no word times, so a guess
-// is never painted as a measurement [LAW:types-are-the-program]. The timeline builds the
-// cursor the page paints from it: the segment's range and this word are its two tiers.
-export const wordUnder = (alignment: Alignment, offsetMs: number): WordSpan | null => {
-  if (alignment.kind !== "words") return null;
-  const word = wordAt(alignment.words, offsetMs);
+// The measured words of an alignment: every word of a `words` alignment, none of an estimate
+// or of a unit with no word times, so a guess is never painted as a measurement
+// [LAW:types-are-the-program].
+export const measuredWords = (alignment: Alignment): ReadonlyArray<WordTime> => (alignment.kind === "words" ? alignment.words : []);
+
+// The word under a point in a unit's audio, in utterance-text coordinates, among words whose
+// starts are measurements; null when there are none. The timeline builds the cursor the page
+// paints from it: the segment's range and this word are its two tiers.
+export const wordUnder = (words: ReadonlyArray<WordStart>, offsetMs: number): WordSpan | null => {
+  const word = wordAt(words, offsetMs);
   return word === undefined ? null : { charStart: word.charStart, charEnd: word.charEnd };
 };
 

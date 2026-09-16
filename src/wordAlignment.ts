@@ -290,6 +290,24 @@ export interface WordAligner {
   readonly finish: (audioEnd: number) => ReadonlyArray<WordTiming>;
 }
 
+// A manifest word the model has begun: its index into `wordsOf(unit)` and when it began.
+export interface WordBegun {
+  readonly word: number;
+  readonly startMs: number;
+}
+
+// The manifest words a frame's events begin: a manifest word begins when its first lexical
+// word starts. Lexical words open strictly in order, so that start is the one `finish`
+// reports for the manifest word, and a word begun here is never retimed by the report —
+// the report only adds its end, and the words the machine never opened
+// [LAW:one-source-of-truth].
+export const wordsBegun = (plan: AlignmentPlan, events: ReadonlyArray<AlignmentEvent>): ReadonlyArray<WordBegun> =>
+  events.flatMap((event) => {
+    if (event.kind !== "start") return [];
+    const word = at(plan.wordOf, event.word);
+    return event.word > 0 && at(plan.wordOf, event.word - 1) === word ? [] : [{ word, startMs: event.at }];
+  });
+
 // Below this score, a word the model is no longer attending to may be closed by ANY
 // later word dominating it, not only the next one; the reference's constant.
 const NON_NEXT_ATTENTION_THRESHOLD = 0.001;
