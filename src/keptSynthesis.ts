@@ -38,16 +38,21 @@
 // MADE AHEAD [LAW:single-enforcer]. This port is the one arbiter of the worker's time, so what
 // is worth making ahead (the scheduler's order, told through `ahead`) is made here: one unit at
 // a time, only while the model is ready, nothing the listen asked for is in flight, and the
-// device allows it (presynthesis.ts). A unit made ahead is `filling`: its frames are gathered
-// and kept, and none of its messages reach a listener, which never asked for it. Whatever the
-// listen asks for comes first. A request for the very unit being filled, in the same voice and
+// device allows it (presynthesis.ts). The order is the scheduler's view, which does not see
+// what the device came to hold after it was built — a voice changed to one kept in an earlier
+// listen, a unit another tab kept — so the device is asked first, and a unit it holds is
+// never made again. A unit made ahead is `filling`: its frames are gathered and kept, and
+// none of its messages reach a listener, which never asked for it. Whatever the listen asks
+// the worker for comes first. A request for the very unit being filled, in the same voice and
 // text, takes the generation over — the frames gathered so far are handed on after the send,
 // before any later frame can arrive, and the rest pass through as the worker makes them; a
-// request for anything else, a voice preview included, cancels the fill and waits for nothing.
-// A new order without the unit being filled, or the device withdrawing its allowance, cancels
-// it too. A unit the worker finishes or fails through this port is not made ahead again — a keep
-// the store refuses must not become a loop — and a cancelled one is tried again when its turn
-// comes back. Cost, stated once: a pre-empted fill discards what it had made.
+// request for anything else that goes to the worker, a voice preview included, cancels the
+// fill and waits for nothing — and one the device answers leaves it running, which is how a
+// listen walks through what was made ahead of it. A new order without the unit being filled,
+// or the device withdrawing its allowance, cancels it too. A unit the device holds, or the
+// worker finishes or fails through this port, is not made ahead again — a keep the store
+// refuses must not become a loop — and a cancelled one is tried again when its turn comes
+// back. Cost, stated once: a pre-empted fill discards what it had made.
 //
 // [LAW:no-silent-failure] A lookup that rejects breaks the cache's contract (it never rejects),
 // so it is reported on the port's error channel, where the panel hears a worker's own crash.
@@ -68,7 +73,7 @@ type Job =
 
 export interface KeptSynthesisConfig {
   readonly worker: SynthesisPort;
-  readonly cache: Pick<AudioCache, "find" | "keep" | "recallScript" | "keepScript">;
+  readonly cache: Pick<AudioCache, "find" | "holds" | "keep" | "recallScript" | "keepScript">;
   readonly now: () => number;
   // Whether the device lets units be made ahead of need, now and as it changes.
   readonly allowance: Allowance;
@@ -88,10 +93,12 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   const cutting = new Map<number, ReadonlyArray<Utterance>>();
   const held: Script[] = [];
   let ready = false;
-  // What is worth making ahead, the units the worker has finished or failed through this port —
-  // asked for or ahead, never made ahead again — and the voice previews in flight.
+  // What is worth making ahead, the units the device holds or the worker has finished or failed
+  // through this port — never made ahead again — whether the device is being asked about the
+  // next one, and the voice previews in flight.
   let order: ReadonlyArray<Synthesize> = [];
   const made = new Set<string>();
+  let asking = false;
   const previews = new Set<number>();
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
@@ -105,8 +112,10 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   };
 
   // A request the device could not answer goes to the worker: now, when its model is ready,
-  // else when it says so.
+  // else when it says so. [LAW:single-enforcer] What the listen sends the worker is the one
+  // thing a fill yields to.
   const make = (request: Synthesize, next: Synthesize | null): void => {
+    withdraw(() => false);
     jobs.set(request.unitId, { kind: "making", request, frames: [], cancelled: false, next });
     worker.send(request);
   };
@@ -124,13 +133,29 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
     fill();
   };
 
-  // The next unit worth making ahead, when the worker has nothing the listen asked for.
+  // The worker's time is free for a unit worth making ahead, and the unit still is worth it.
+  const idle = (): boolean => !ended && ready && jobs.size === 0 && previews.size === 0 && cutting.size === 0 && allowance.allowed();
+  const wanted = (request: Synthesize): boolean => !made.has(tried(request)) && order.some((ordered) => same(ordered, request));
+
+  // The next unit worth making ahead, when the worker has nothing the listen asked for: the
+  // device is asked first, and the worker's time is read again once it answers.
   const fill = (): void => {
-    if (ended || !ready || jobs.size > 0 || previews.size > 0 || cutting.size > 0 || !allowance.allowed()) return;
-    const request = order.find((wanted) => !made.has(tried(wanted)));
+    if (asking || !idle()) return;
+    const request = order.find((ordered) => !made.has(tried(ordered)));
     if (request === undefined) return;
-    jobs.set(request.unitId, { kind: "filling", request, frames: [], cancelled: false, next: null });
-    worker.send(request);
+    asking = true;
+    cache.holds(request).then(
+      (held) => {
+        asking = false;
+        if (held) made.add(tried(request));
+        else if (idle() && wanted(request)) {
+          jobs.set(request.unitId, { kind: "filling", request, frames: [], cancelled: false, next: null });
+          worker.send(request);
+        }
+        fill();
+      },
+      (error: unknown) => fail(`kept audio: the lookup ahead for unit ${request.unitId} failed: ${String(error)}`),
+    );
   };
 
   // The fills in flight that `keep` does not spare are cancelled: the worker answers each.
@@ -194,7 +219,6 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
       job.next = request;
       return;
     }
-    withdraw(() => false);
     if (job === undefined) return start(request);
     if (!job.cancelled || job.next !== null) {
       queueMicrotask(() => emit({ kind: "failed", unitId: request.unitId, reason: { kind: "duplicate-unit" } }));

@@ -30,11 +30,14 @@
 //   ahead, not allowed or not ready   -> nothing to the worker until both hold; allowance withdrawn -> the fill cancelled
 //   the listen asks for the fill's unit -> the generation handed over: gathered frames heard after the send, the rest as made
 //   asks for it in another voice      -> the fill cancelled; the request waits for its terminal, then looks up
-//   asks for anything else, a preview too -> the fill cancelled; the request goes on at once; the fill resumes after
+//   asks the worker for anything else, a preview too -> the fill cancelled; the request goes on at once; the fill resumes after
 //   a new order without the fill      -> the fill cancelled; with it -> left to finish
 //   a unit failed or finished ahead   -> not made again; a cancelled one is, when its turn comes back
 //   a scheduler over it, idle         -> every unit of the paste kept, none in the player
 //   a play and a seek during the fill -> served first; the fill finishes the paste after
+//   ahead of a unit the device holds  -> not made; the next is
+//   the listen asks for a held unit   -> answered from the device; the fill left running
+//   a play over units made ahead      -> served from the device; nothing cancelled, nothing made twice
 
 import { createCodec } from "../src/audioCodec";
 import { createAudioCache, type AudioCache, type KeptUnit, type UnitRequest } from "../src/keptAudio";
@@ -104,14 +107,22 @@ const stubWorker = (answer: (message: ToWorker, emit: (message: FromWorker) => v
   return { port, sent, emit, fail, said, counts };
 };
 
-// The cache: each lookup waits for the case to answer it; every keep is recorded.
+// The cache: each lookup waits for the case to answer it; every keep is recorded; the device
+// holds, for a fill's own question, the units the case puts in `holding`.
 const stubCache = () => {
   const lookups: { request: UnitRequest; answer: (kept: KeptUnit | null) => void; reject: (error: Error) => void }[] = [];
   const kept: { request: UnitRequest; frames: ReadonlyArray<Float32Array>; report: UnitReport }[] = [];
   const recalls: { utterances: ReadonlyArray<Utterance>; answer: (units: ReadonlyArray<SynthesisUnit> | null) => void }[] = [];
   const scripts: { utterances: ReadonlyArray<Utterance>; units: ReadonlyArray<SynthesisUnit> }[] = [];
-  const cache: Pick<AudioCache, "find" | "keep" | "recallScript" | "keepScript"> = {
+  const holding = new Set<number>();
+  const asked: number[] = [];
+  const cache: Pick<AudioCache, "find" | "holds" | "keep" | "recallScript" | "keepScript"> = {
     find: (request) => new Promise((resolve, reject) => lookups.push({ request, answer: resolve, reject })),
+    holds: async (request) => {
+      const { unitId } = request as SynthesizeRequest;
+      asked.push(unitId);
+      return holding.has(unitId);
+    },
     keep: async (request, frames, done) => {
       kept.push({ request, frames, report: done });
     },
@@ -120,7 +131,7 @@ const stubCache = () => {
       scripts.push({ utterances, units });
     },
   };
-  return { cache, lookups, kept, recalls, scripts };
+  return { cache, lookups, kept, recalls, scripts, holding, asked };
 };
 
 const heard = (port: SynthesisPort) => {
@@ -319,40 +330,87 @@ console.log("made ahead");
 {
   const { worker, store, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3), synthesize(4)]);
-  assert("one unit at a time to the worker", worker.said() === "synthesize 3");
+  assert("the device asked first, nothing to the worker inside the call", store.asked.join() === "3" && worker.said() === "");
+  await flush();
+  assert("not held: one unit at a time to the worker", worker.said() === "synthesize 3");
   worker.emit({ kind: "audio", unitId: 3, frameIndex: 0, pcm: frame(3, 0) });
   worker.emit({ kind: "done", unitId: 3, report: report(80), elapsedMs: 4 });
   assert("nothing of it heard: nobody asked", ear.messages.length === 0);
+  await flush();
   assert("kept whole, and the next goes", store.kept.length === 1 && (store.kept[0]?.request as SynthesizeRequest | undefined)?.unitId === 3 && store.kept[0]?.frames.length === 1 && worker.said() === "synthesize 3,synthesize 4");
   worker.emit({ kind: "failed", unitId: 4, reason: { kind: "frame-cap", frames: 500 } });
   port.ahead([synthesize(3), synthesize(4)]);
-  assert("a unit finished or failed ahead is not made again, and a failure is not heard", worker.said() === "synthesize 3,synthesize 4" && ear.messages.length === 0);
+  await flush();
+  assert("a unit finished or failed ahead is not made again, and a failure is not heard", worker.said() === "synthesize 3,synthesize 4" && ear.messages.length === 0 && store.asked.join() === "3,4");
+}
+{
+  const { worker, store, port } = setup({ allowed: true });
+  store.holding.add(3);
+  port.ahead([synthesize(3), synthesize(4)]);
+  await flush();
+  assert("a unit the device already holds — a voice kept in an earlier listen — is not made: the next is", store.asked.join() === "3,4" && worker.said() === "synthesize 4");
+  worker.emit({ kind: "done", unitId: 4, report: report(80), elapsedMs: 4 });
+  port.ahead([synthesize(3), synthesize(4)]);
+  await flush();
+  assert("and not asked about again", store.asked.join() === "3,4" && worker.said() === "synthesize 4");
+}
+{
+  const { worker, store, port } = setup({ allowed: true });
+  port.ahead([synthesize(3)]);
+  port.ahead([synthesize(5)]);
+  await flush();
+  assert("the order changed while the device was asked: the unit no longer wanted is not made, the new order is", store.asked.join() === "3,5" && worker.said() === "synthesize 5");
+}
+{
+  const { worker, store, port, ear } = setup({ allowed: true });
+  port.ahead([synthesize(3)]);
+  port.send(synthesize(0));
+  await flush();
+  assert("the listen asks while the device is asked about a fill: nothing made ahead", worker.said() === "" && store.lookups.length === 1);
+  answer(store, 0, null);
+  await flush();
+  worker.emit({ kind: "done", unitId: 0, report: report(80), elapsedMs: 4 });
+  await flush();
+  assert("the listen's unit made first, the fill after it", ear.said() === "done 0" && worker.said() === "synthesize 0,synthesize 3");
 }
 {
   const { worker, port, device } = setup({ ready: false });
   port.ahead([synthesize(3)]);
   worker.emit(READY);
+  await flush();
   assert("not allowed: nothing made ahead, even once the model is ready", worker.said() === "");
   device.set(true);
+  await flush();
   assert("allowed: made ahead", worker.said() === "synthesize 3");
   device.set(false);
   assert("the allowance withdrawn: the fill cancelled", worker.said() === "synthesize 3,cancel 3");
   worker.emit({ kind: "cancelled", unitId: 3 });
   device.set(true);
+  await flush();
   assert("allowed again: a cancelled unit is made again", worker.said() === "synthesize 3,cancel 3,synthesize 3");
 }
 {
   const { worker, port } = setup({ ready: false, allowed: true });
   port.ahead([synthesize(3)]);
+  await flush();
   assert("allowed, the model not ready: nothing to the worker, which would refuse it", worker.said() === "");
   worker.emit(READY);
+  await flush();
   assert("ready: made ahead", worker.said() === "synthesize 3");
+}
+{
+  const { worker, port, device } = setup({ allowed: true });
+  port.ahead([synthesize(3)]);
+  device.set(false);
+  await flush();
+  assert("the allowance withdrawn while the device was asked: nothing made ahead", worker.said() === "");
 }
 
 console.log("the listen comes first");
 {
   const { worker, store, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3), synthesize(4)]);
+  await flush();
   worker.emit({ kind: "audio", unitId: 3, frameIndex: 0, pcm: frame(3, 0) });
   port.send(synthesize(3));
   assert("the fill's own unit asked for: nothing more to the worker, and nothing heard inside the send", worker.said() === "synthesize 3" && ear.messages.length === 0 && store.lookups.length === 0);
@@ -360,20 +418,29 @@ console.log("the listen comes first");
   assert("the frames it had made are heard after the send", ear.said() === "audio 3#0");
   worker.emit({ kind: "audio", unitId: 3, frameIndex: 1, pcm: frame(3, 1) });
   worker.emit({ kind: "done", unitId: 3, report: report(160), elapsedMs: 4 });
+  await flush();
   assert("the rest as the worker makes them; kept once, and the fill goes on", ear.said() === "audio 3#0,audio 3#1,done 3" && store.kept.length === 1 && store.kept[0]?.frames.length === 2 && worker.said() === "synthesize 3,synthesize 4");
 
-  port.send(synthesize(0));
-  assert("anything else asked for: the fill cancelled at once, the request looked up", worker.said() === "synthesize 3,synthesize 4,cancel 4" && store.lookups.length === 1);
-  answer(store, 0, null);
+  port.send(synthesize(1));
+  assert("anything else asked for: looked up, the fill left running meanwhile", worker.said() === "synthesize 3,synthesize 4" && store.lookups.length === 1);
+  answer(store, 0, { frames: [frame(1, 0)], report: report(80) });
   await flush();
+  assert("the device holds it: answered, and the fill never cancelled — a listen walking through what was made ahead", ear.said().endsWith("done 3,audio 1#0,done 1") && worker.said() === "synthesize 3,synthesize 4");
+
+  port.send(synthesize(0));
+  answer(store, 1, null);
+  await flush();
+  assert("the device does not: the fill cancelled, the request to the worker behind the cancel", worker.said() === "synthesize 3,synthesize 4,cancel 4,synthesize 0");
   worker.emit({ kind: "cancelled", unitId: 4 });
-  assert("the request to the worker behind the cancel; the fill's cancel heard by nobody", worker.said() === "synthesize 3,synthesize 4,cancel 4,synthesize 0" && ear.said().endsWith("done 3"));
+  assert("the fill's cancel heard by nobody", ear.said().endsWith("done 1"));
   worker.emit({ kind: "done", unitId: 0, report: report(80), elapsedMs: 4 });
-  assert("the request answered, then the cancelled fill made again", ear.said().endsWith("done 3,done 0") && worker.said().endsWith("synthesize 0,synthesize 4"));
+  await flush();
+  assert("the request answered, then the cancelled fill made again", ear.said().endsWith("done 1,done 0") && worker.said().endsWith("synthesize 0,synthesize 4"));
 }
 {
   const { worker, store, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3)]);
+  await flush();
   port.send(synthesize(3, "marius"));
   assert("the fill's unit asked for in another voice: the fill cancelled, nothing looked up yet", worker.said() === "synthesize 3,cancel 3" && store.lookups.length === 0);
   worker.emit({ kind: "audio", unitId: 3, frameIndex: 0, pcm: frame(3, 0) });
@@ -386,24 +453,30 @@ console.log("the listen comes first");
 {
   const { worker, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3)]);
+  await flush();
   port.send({ kind: "synthesize", unitId: -1, text, voice: "marius" });
   assert("a voice preview: the fill cancelled, the preview straight through", worker.said() === "synthesize 3,cancel 3,synthesize -1");
   worker.emit({ kind: "cancelled", unitId: 3 });
   assert("nothing made ahead while the preview speaks", worker.said() === "synthesize 3,cancel 3,synthesize -1");
   worker.emit({ kind: "done", unitId: -1, report: report(80), elapsedMs: 4 });
+  await flush();
   assert("the preview heard; the fill resumes after it", ear.said() === "done -1" && worker.said().endsWith("synthesize -1,synthesize 3"));
 }
 {
   const { worker, port } = setup({ allowed: true });
   port.ahead([synthesize(3), synthesize(4)]);
+  await flush();
   port.ahead([synthesize(3)]);
+  await flush();
   assert("a new order with the fill in it: left to finish", worker.said() === "synthesize 3");
   port.ahead([synthesize(3, "marius")]);
   assert("a new order without it — its voice changed: cancelled", worker.said() === "synthesize 3,cancel 3");
   worker.emit({ kind: "cancelled", unitId: 3 });
+  await flush();
   assert("and the new order made", worker.said() === "synthesize 3,cancel 3,synthesize 3");
   port.dispose();
   port.ahead([synthesize(5)]);
+  await flush();
   assert("disposed: nothing more made", worker.said() === "synthesize 3,cancel 3,synthesize 3");
 }
 
@@ -553,6 +626,7 @@ console.log("a scheduler over it, made ahead: an idle listen fills the paste, an
   {
     const cache = cacheOver();
     const { worker, scheduler } = listenOver(cache);
+    await settleAll();
     while (worker.step()) await settleAll();
     await settleAll();
     assert("idle: every unit made ahead, from the top, one at a time", worker.said() === script.map((_, i) => `synthesize ${i}`).join());
@@ -563,6 +637,7 @@ console.log("a scheduler over it, made ahead: an idle listen fills the paste, an
   {
     const cache = cacheOver();
     const { worker, scheduler } = listenOver(cache);
+    await settleAll();
     assert("idle: the fill starts at the top", worker.said() === "synthesize 0");
     scheduler.send({ kind: "play" });
     await settleAll();
@@ -584,6 +659,24 @@ console.log("a scheduler over it, made ahead: an idle listen fills the paste, an
     while (worker.step()) await settleAll();
     await settleAll();
     assert("and the fill finishes the paste after", (await keptCount(cache)) === script.length);
+    scheduler.dispose();
+  }
+  {
+    const cache = cacheOver();
+    const { worker, scheduler } = listenOver(cache);
+    await settleAll();
+    for (let i = 0; i < 5; i++) {
+      worker.step();
+      await settleAll();
+    }
+    const made = script.slice(0, 6).map((_, i) => `synthesize ${i}`).join();
+    assert("idle: five units made ahead, the sixth in flight", worker.said() === made);
+    scheduler.send({ kind: "play" });
+    await settleAll();
+    assert("Play over what was made ahead: the window served from the device, the fill in flight left running", worker.said() === made && scheduler.view().holdings.slice(0, 4).every((holding) => holding.kind === "held"));
+    while (worker.step()) await settleAll();
+    await settleAll();
+    assert("and the paste finished with nothing cancelled and nothing made twice", worker.said() === script.map((_, i) => `synthesize ${i}`).join() && (await keptCount(cache)) === script.length);
     scheduler.dispose();
   }
 }
