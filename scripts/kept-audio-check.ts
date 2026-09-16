@@ -1,13 +1,15 @@
 // Kept audio over an in-memory store and the PCM codec: what the device keeps of a unit, what
 // it gives back, what it forgets under the cap, and what a failing store does to a listen
-// (slopspot-read-along-a35.6.5zr). Run: `tsx scripts/kept-audio-check.ts`.
+// (slopspot-read-along-a35.6.5zr, slopspot-read-along-a35.6.rub). Run: `tsx scripts/kept-audio-check.ts`.
 //
-// [LAW:behavior-not-structure] Every assertion is about what `find`, `keep` and `restore`
+// [LAW:behavior-not-structure] Every assertion is about what `find`, `holds`, `keep` and `restore`
 // answer and which units survive the cap — never about how the store is laid out.
 //
 // ─── ACCEPT TABLE ────────────────────────────────────────────────────────────────
 //   keep, then find the same request      -> the frames (to 16-bit precision) and the report
 //   find in another voice or text         -> null
+//   find or holds while a keep encodes    -> waits for it: found, held
+//   holds                                 -> held or absent; the unit not made recent
 //   restore over a script                 -> each unit's kept report, index for index, in the voices given
 //   a write past the cap                  -> the least recently played units removed until it holds
 //   find or restore of a unit             -> the unit is recent again
@@ -18,7 +20,7 @@
 //   a script's size                       -> linear in its passage, never the passage once per unit
 //   a script not cut from its utterances  -> reported, nothing kept
 //   a script under the cap                -> counted and forgotten by the same ledger as units
-//   a store that never opens              -> find null, keep settles, restore nothing; each failure reported
+//   a store that never opens              -> find null, keep settles, restore nothing, holds unreadable; each failure reported
 //   an open another tab blocks            -> refused, and the connection closed if it opens later
 //   an open the browser never answers     -> refused once its patience runs out
 //   an entry that no longer decodes       -> null, reported
@@ -92,6 +94,27 @@ console.log("keep and find");
   assert("kept: the same frames back, to 16-bit precision, and the report", found !== null && close(found.frames, frames) && found.report.durationMs === 240);
   assert("the same text in another voice is another unit: a miss", (await cache.find(requestOf(first, { ...VOICES, assistant: "azelma" }))) === null);
   assert("another text in the same voice: a miss", (await cache.find({ ...requestOf(first), text: { ...unitText(first), text: "Hello there!" } })) === null);
+}
+
+console.log("a read after a keep");
+{
+  const { store, ledger } = memoryStore();
+  // A codec whose encode takes several turns, as Opus through WebCodecs does.
+  const slow: AudioCodec = { ...pcm, encode: async (frames) => {
+    for (let i = 0; i < 5; i++) await flush();
+    return pcm.encode(frames);
+  } };
+  const { cache, clock } = cacheOver(Promise.resolve(store), { codec: slow });
+  const [zero, one] = script;
+  if (zero === undefined || one === undefined) throw new Error("fixture: no units");
+  clock.now = 7;
+  void cache.keep(requestOf(zero), framesOf(2, 0), report(160));
+  assert("asked while the keep is still encoding: found, and held", (await cache.find(requestOf(zero))) !== null && (await cache.holds(requestOf(zero))) === "held");
+  assert("a unit never kept: not held", (await cache.holds(requestOf(one))) === "absent" && (await cache.holds(requestOf(zero, { ...VOICES, assistant: "azelma" }))) === "absent");
+  await flush();
+  clock.now = 9;
+  await cache.holds(requestOf(zero));
+  assert("asking whether a unit is held does not play it", [...ledger.values()].every((entry) => entry.playedAt === 7));
 }
 
 console.log("restore");
@@ -244,7 +267,8 @@ console.log("a store that never opens");
   assert("keep settles", true);
   const restored = await cache.restore(script, VOICES);
   assert("restore keeps nothing, index for index", restored.length === script.length && restored.every((kept) => kept === undefined));
-  assert("each failure is reported by what it was doing", failures.join() === "reading a kept unit,keeping a unit,restoring kept units");
+  assert("holds cannot say: unreadable, not absent", (await cache.holds(requestOf(zero))) === "unreadable");
+  assert("each failure is reported by what it was doing", failures.join() === "reading a kept unit,keeping a unit,restoring kept units,looking for a kept unit");
 }
 
 // The one part of IndexedDB's open request the store listens to, fired by hand.

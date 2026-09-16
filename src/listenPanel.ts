@@ -160,7 +160,7 @@ import { BACKGROUND_LOOKAHEAD, LOOKAHEAD, type FailureReason, type Lookahead } f
 import type { Utterance } from "./speech";
 import { wordSpans, type UnitReport, type WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
-import type { SynthesisPort } from "./synthesisClient";
+import type { ListenPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
 import { clockText, cursorIn, estimated, landmark, landmarks, placeIn, pointAt, startAt, startIn, timeAt, timeOfStart, timelineOfUtterances, type Cursor, type Point, type Start, type Timeline } from "./timeline";
 import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
@@ -1448,7 +1448,7 @@ export interface FrameLoop {
 export interface ListenPanelConfig {
   readonly controls: ListenControls;
   readonly utterances: ReadonlyArray<Utterance>;
-  readonly spawn: () => SynthesisPort;
+  readonly spawn: () => ListenPort;
   // What the device keeps of a script's units in these voices: keptAudio's restore in the
   // page, a stub in the check.
   readonly restore: (units: ReadonlyArray<SynthesisUnit>, voices: VoiceMap) => Promise<ReadonlyArray<UnitReport | undefined>>;
@@ -1630,13 +1630,13 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // The handles effects create; an effect that needs one before it exists is a bug in
   // `step`, and says so.
   const unheard = (): void => undefined;
-  let port: SynthesisPort | null = null;
+  let port: ListenPort | null = null;
   let audio: OpenDevice | null = null;
   let unsubscribe: () => void = unheard;
   let unsubscribeErrors: () => void = unheard;
   let neural: NeuralPerformer | null = null;
   let previewer: Previewer | null = null;
-  const portOf = (): SynthesisPort => {
+  const portOf = (): ListenPort => {
     if (port === null) throw new Error("listen panel: no worker to send to");
     return port;
   };

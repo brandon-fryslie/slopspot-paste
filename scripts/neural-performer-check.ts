@@ -14,7 +14,7 @@ import type { Utterance } from "../src/speech";
 import { addUnit, emptyManifest, type Manifest, type UnitReport } from "../src/speechManifest";
 import { prepareText, type SynthesisUnit } from "../src/speechScript";
 import { DEFAULT_VOICES } from "../src/voiceChoice";
-import type { SynthesisPort } from "../src/synthesisClient";
+import type { ListenPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, openDevice } from "../src/unitPlayer";
 import { GAP_MS, cursorAt, cursorIn, speechSegments, timeAt, timelineOfScript } from "../src/timeline";
@@ -143,8 +143,9 @@ console.log("createNeuralPerformer: over the real scheduler and player");
 {
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
-  const port: SynthesisPort = {
+  const port: ListenPort = {
     send: (message) => sent.push(message),
+    ahead: () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

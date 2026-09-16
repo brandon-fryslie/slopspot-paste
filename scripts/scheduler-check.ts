@@ -41,14 +41,18 @@
 //   re-synthesis after a drop     -> the manifest record is replaced
 //   driver: reports raised by its own commands are handled after them, in order
 //   driver: dispose stops, cancels, drops, stops listening, and closes the device
+//   ahead, idle                   -> every unit with no holding and no record, from the top
+//   ahead, a cursor               -> from the unit past the window to the end, then from the top
+//   ahead of a held, requested, failed or kept unit -> left out
+//   driver: ahead                 -> told once per new order, in the voices of the moment; nothing on dispose
 
-import { BACKGROUND_LOOKAHEAD, KEEP_BEHIND, LOOKAHEAD, settledAt, createScheduler, initialState, step } from "../src/scheduler";
+import { BACKGROUND_LOOKAHEAD, KEEP_BEHIND, LOOKAHEAD, aheadOf, settledAt, createScheduler, initialState, step } from "../src/scheduler";
 import type { Command, Event, Holding, SchedulerState, SchedulerView } from "../src/scheduler";
 import { wordsOf } from "../src/speechManifest";
 import type { UnitReport } from "../src/speechManifest";
 import type { Utterance } from "../src/speech";
 import { prepareText, unitText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
-import type { SynthesisPort } from "../src/synthesisClient";
+import type { ListenPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { GAP_MS } from "../src/timeline";
 import { SCHEDULE_LEAD_S, createUnitPlayer, openDevice } from "../src/unitPlayer";
@@ -446,14 +450,33 @@ console.log("step: the reader's voices");
   assert("a voice preview's messages, ids below zero, pass by untouched — the refusals of its requests too", foreign.commands.length === 0 && foreign.state === at1.state);
 }
 
+console.log("ahead: what is worth making ahead of the listen");
+{
+  const script = scriptOf(8);
+  const fresh = initialState(script, VOICES, []);
+  const order = (state: SchedulerState, player: PlayerState): string => aheadOf(state, player).join();
+  assert("idle: every unit, from the top", order(fresh, idle) === "0,1,2,3,4,5,6,7");
+  assert("a cursor at unit 2: from past the window (3 units ahead) to the end, then from the top", order(fresh, speaking(2)) === `6,7,0,1,2,3,4,5` && LOOKAHEAD.units === 3);
+  assert("paused reads the same window", order(fresh, paused(2)) === order(fresh, speaking(2)));
+  const kept = initialState(script, VOICES, [report(500), undefined, undefined, undefined, undefined, undefined, undefined, report(500)]);
+  const busy: SchedulerState = {
+    ...kept,
+    holdings: kept.holdings.with(1, { kind: "requested" }).with(3, { kind: "failed", reason: { kind: "frame-cap", frames: 500 }, frames: "none" }).with(4, { kind: "cancelling" }),
+  };
+  assert("a kept, requested, failed or cancelling unit is left out", order(busy, idle) === "2,5,6");
+  const background: SchedulerState = { ...fresh, lookahead: BACKGROUND_LOOKAHEAD };
+  assert("a window reaching the end: the order wraps to the top", order(background, speaking(2)) === "0,1,2,3,4,5,6,7");
+}
+
 // ── the driver, over the real player ──────────────────────────────────────────────────
 
 console.log("driver: a voice change mid-unit restarts it in the new voice, over the real player");
 {
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
-  const port: SynthesisPort = {
+  const port: ListenPort = {
     send: (message) => sent.push(message),
+    ahead: () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -497,8 +520,9 @@ console.log("driver: a voice change in the gap before a unit still streaming, ov
 {
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
-  const port: SynthesisPort = {
+  const port: ListenPort = {
     send: (message) => sent.push(message),
+    ahead: () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -541,8 +565,9 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
 {
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
-  const port: SynthesisPort = {
+  const port: ListenPort = {
     send: (message) => sent.push(message),
+    ahead: () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -558,8 +583,9 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
 
   const views: SchedulerView[] = [];
   const script = scriptOf(4);
+  const told: string[] = [];
   const scheduler = createScheduler({
-    port,
+    port: { ...port, ahead: (requests) => told.push(requests.map((r) => `${r.unitId} ${r.voice}`).join(" ")) },
     script,
     voices: VOICES,
     kept: [],
@@ -570,6 +596,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
   if (device === undefined) throw new Error("the scheduler did not build its player");
 
   assert("fresh: idle, nothing sent, one subscriber", scheduler.view().player.kind === "idle" && sent.length === 0 && listeners.size === 1);
+  assert("fresh: told every unit is worth making ahead, from the top, each in its voice", told.join("|") === "0 marius 1 alba 2 marius 3 alba");
 
   scheduler.send({ kind: "play" });
   assert("play: the player waits at 0 and unit 0 is requested", describe(scheduler.view().player) === "speaking/waiting@0:0.000" && said() === "synthesize 0");
@@ -589,6 +616,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
   emit({ kind: "audio", unitId: 3, frameIndex: 0, pcm: frame(3, 0) });
   emit({ kind: "done", unitId: 3, report: report(FRAME_S * 1000), elapsedMs: 5 });
   assert("every unit requested once, in order", said() === "synthesize 0,synthesize 1,synthesize 2,synthesize 3");
+  assert("ahead: told each new order once — what the listen requests leaves it — ending with nothing left to make", told.at(-1) === "" && new Set(told).size === told.length);
   assert("all four held", scheduler.view().holdings.every((h) => h.kind === "held"));
 
   device.advance(SCHEDULE_LEAD_S + 2 * FRAME_S + 0.01);

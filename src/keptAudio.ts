@@ -38,7 +38,9 @@
 // of Claude's voice keeps the reader's units, and a unit evicted from a paste is one unit
 // synthesized again, never a paste lost. Nothing here offers a clearing control and there is
 // nothing for a reader to manage. Writes are serialized here, so each eviction counts a store
-// its own writes have settled.
+// its own writes have settled, and every read waits on the writes asked before it, so a unit
+// the worker has just finished is found while its keep is still encoding, never made again
+// [LAW:no-ambient-temporal-coupling].
 //
 // THE DEVICE'S OWN LIMIT. The browser may refuse a write before the cap is reached — the
 // origin's quota is shared with the model and with everything else the device holds. A write
@@ -162,9 +164,16 @@ export interface KeptUnit {
   readonly report: UnitReport;
 }
 
+// Whether the device holds a unit — or cannot say, because its store cannot be read.
+export type Holding = "held" | "absent" | "unreadable";
+
 export interface AudioCache {
   // The unit's frames and report when the device holds it; null otherwise. Never rejects.
   readonly find: (request: UnitRequest) => Promise<KeptUnit | null>;
+  // Whether the device holds the unit, read from its record alone: nothing decoded and nothing
+  // played, for a unit about to be made ahead. A store that cannot be read is `unreadable`, not
+  // `absent`: what the device cannot keep is not worth making ahead. Never rejects.
+  readonly holds: (request: UnitRequest) => Promise<Holding>;
   // Keeps a unit the worker finished. Never rejects.
   readonly keep: (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport) => Promise<void>;
   // For each unit of a script in these voices, its kept report, or undefined. Never rejects.
@@ -203,10 +212,19 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
     }
   };
 
+  // [LAW:single-enforcer] Every read: after the writes asked before it have settled.
+  const read = <T,>(what: string, fallback: T, run: (store: KeptStore) => Promise<T>): Promise<T> => {
+    const before = writes;
+    return attempt(what, fallback, async (store) => {
+      await before;
+      return run(store);
+    });
+  };
+
   const keyOf = (request: UnitRequest): Promise<string> => unitHash(request.text, request.voice);
 
   const find = (request: UnitRequest): Promise<KeptUnit | null> =>
-    attempt("reading a kept unit", null, async (store) => {
+    read("reading a kept unit", null, async (store) => {
       const key = await keyOf(request);
       const [record] = await store.records([key]);
       const audio = record === undefined ? undefined : await store.audio(key);
@@ -214,6 +232,13 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
       const frames = await (await config.codec).decode(audio, record.frames);
       void attempt("marking a kept unit played", undefined, (held) => held.touch([key], now()));
       return { frames, report: record.report };
+    });
+
+  // A record is put and removed with its audio, so the record alone says the unit is held.
+  const holds = (request: UnitRequest): Promise<Holding> =>
+    read<Holding>("looking for a kept unit", "unreadable", async (store) => {
+      const [record] = await store.records([await keyOf(request)]);
+      return record === undefined ? "absent" : "held";
     });
 
   // [LAW:single-enforcer] Every write, a unit's or a script's: its turn in the chain, the
@@ -249,7 +274,7 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
     });
 
   const recallScript = (utterances: ReadonlyArray<Utterance>): Promise<ReadonlyArray<SynthesisUnit> | null> =>
-    attempt("reading a kept script", null, async (store) => {
+    read("reading a kept script", null, async (store) => {
       const key = await scriptHash(utterances);
       const kept = await store.script(key);
       if (kept === undefined) return null;
@@ -267,7 +292,7 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
     });
 
   const restore = (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap): Promise<ReadonlyArray<UnitReport | undefined>> =>
-    attempt("restoring kept units", script.map(() => undefined), async (store) => {
+    read("restoring kept units", script.map(() => undefined), async (store) => {
       const keys = await Promise.all(script.map((unit) => keyOf({ text: unitText(unit), voice: voices[unit.utterance.voice] })));
       const records = await store.records(keys);
       const held = keys.filter((_, i) => records[i] !== undefined);
@@ -275,7 +300,7 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
       return records.map((record) => record?.report);
     });
 
-  return { find, keep, restore, recallScript, keepScript };
+  return { find, holds, keep, restore, recallScript, keepScript };
 };
 
 // ── the browser's store ──────────────────────────────────────────────────────────────
