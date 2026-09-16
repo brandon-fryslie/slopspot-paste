@@ -38,7 +38,7 @@
 // again is a failure like any other.
 //
 // [LAW:no-silent-failure] exception: every failure — a store the browser refuses (private
-// mode, quota), a store another tab holds at an older version, an entry that no longer
+// mode, quota), a store another tab holds at an older version or the browser never opens, an entry that no longer
 // decodes — is the cache not holding the unit: a miss,
 // synthesized as if nothing had been kept, and reported through `onFailure` so it is heard in
 // the console. A kept unit is a convenience; a refused store must not take Listen down with it
@@ -216,29 +216,42 @@ const settled = <T,>(request: IDBRequest<T>): Promise<T> =>
     request.onerror = () => reject(request.error);
   });
 
+// A failed request aborts its transaction, and only the abort is sure to carry the error: while
+// the request's own error event bubbles through, the transaction's error is not yet set.
 const done = (transaction: IDBTransaction): Promise<void> =>
   new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
     transaction.onabort = () => reject(transaction.error ?? new Error("kept audio: the transaction was aborted"));
   });
 
+// How long an open may take before the store counts as refused. An open settles in
+// milliseconds; some WebKit builds leave one unanswered for good.
+export const OPEN_PATIENCE_MS = 5_000;
+
 // The database, open — or refused when another tab holds it at an older version and will not
-// let it go, so a blocked open is a store that failed rather than a Listen that waits forever.
-// An open that succeeds after it was refused is closed at once, so it holds nothing up either.
-const opened = (factory: IDBFactory): Promise<IDBDatabase> =>
+// let it go, or when the browser does not answer within `patienceMs`, so a store that will not
+// open is a store that failed rather than a Listen that waits forever. An open that succeeds
+// after it was refused is closed at once, so it holds nothing up either.
+const opened = (factory: IDBFactory, patienceMs: number): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const opening = factory.open(DATABASE, 1);
     let refused = false;
+    const refuse = (reason: string): void => {
+      refused = true;
+      clearTimeout(patience);
+      reject(new Error(`kept audio: ${reason}`));
+    };
+    const patience = setTimeout(() => refuse(`the store did not open within ${patienceMs} ms`), patienceMs);
     opening.onupgradeneeded = () => {
       for (const name of STORES) opening.result.createObjectStore(name);
     };
-    opening.onblocked = () => {
-      refused = true;
-      reject(new Error("kept audio: another tab holds the store at an older version"));
+    opening.onblocked = () => refuse("another tab holds the store at an older version");
+    opening.onerror = () => {
+      clearTimeout(patience);
+      reject(opening.error);
     };
-    opening.onerror = () => reject(opening.error);
     opening.onsuccess = () => {
+      clearTimeout(patience);
       if (refused) return opening.result.close();
       // A newer page asking for a newer version is let through: this page's store closes, and
       // every use after it fails into a miss.
@@ -250,8 +263,8 @@ const opened = (factory: IDBFactory): Promise<IDBDatabase> =>
 // [LAW:effects-at-boundaries] The one edge to IndexedDB: three object stores under one
 // database — the ledger, the records and the audio — each keyed by the unit's hash. Opened
 // once per page.
-export const openKeptStore = async (factory: IDBFactory): Promise<KeptStore> => {
-  const db = await opened(factory);
+export const openKeptStore = async (factory: IDBFactory, patienceMs: number = OPEN_PATIENCE_MS): Promise<KeptStore> => {
+  const db = await opened(factory, patienceMs);
 
   const records = async (keys: ReadonlyArray<string>): Promise<ReadonlyArray<KeptRecord | undefined>> => {
     const store = db.transaction(RECORDS, "readonly").objectStore(RECORDS);

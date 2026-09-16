@@ -16,6 +16,7 @@
 //   refused again                         -> reported, nothing kept
 //   a store that never opens              -> find null, keep settles, restore nothing; each failure reported
 //   an open another tab blocks            -> refused, and the connection closed if it opens later
+//   an open the browser never answers     -> refused once its patience runs out
 //   an entry that no longer decodes       -> null, reported
 //   evictions                             -> oldest first, the key breaking a tie; nothing under the cap
 
@@ -183,21 +184,32 @@ console.log("a store that never opens");
   assert("each failure is reported by what it was doing", failures.join() === "reading a kept unit,keeping a unit,restoring kept units");
 }
 
-console.log("an open another tab blocks");
-{
-  // The one part of IndexedDB's open request the store listens to, fired by hand.
+// The one part of IndexedDB's open request the store listens to, fired by hand.
+const handOpened = () => {
   const opening = { onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null, result: { closed: false, close() { this.closed = true; } } } as unknown as {
     onsuccess: () => void;
     onblocked: () => void;
     result: { closed: boolean };
   };
-  const factory = { open: () => opening } as unknown as IDBFactory;
+  return { opening, factory: { open: () => opening } as unknown as IDBFactory };
+};
+
+console.log("an open another tab blocks");
+{
+  const { opening, factory } = handOpened();
   const store = openKeptStore(factory);
   opening.onblocked();
   const refused = await store.then(() => false, () => true);
   assert("a blocked open is a store that failed, not one that waits", refused);
   opening.onsuccess();
   assert("the open that succeeds after it was refused is closed at once", opening.result.closed);
+}
+
+console.log("an open the browser never answers");
+{
+  const { factory } = handOpened();
+  const refused = await openKeptStore(factory, 10).then(() => false, () => true);
+  assert("refused once its patience runs out, not waited on forever", refused);
 }
 
 console.log("an entry that no longer decodes");
