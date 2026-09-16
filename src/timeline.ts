@@ -274,12 +274,19 @@ const speechFrom = (timeline: Timeline, ms: number): SpeechSegment | undefined =
   return speech.find((candidate) => candidate.startMs + candidate.ms > ms) ?? speech.at(-1);
 };
 
-// The name of a point on the clock within a speech segment's span: the character its share
-// of the segment reaches, the first before the segment begins, the last past its end.
+// The name of a point on the clock within a speech segment's span. Where the segment's words
+// are measured, the first character of the word under the point — the word the cursor
+// paints there — so the name resolves back through `timeAt` to that word's own start, and a
+// place kept at a moment resumes on the word the reader saw [LAW:one-source-of-truth]. Where
+// they are a guess, the character the point's share of the segment reaches: the first
+// before the segment begins, the last past its end.
 const placeInSpeech = (segment: SpeechSegment, ms: number): Place => {
-  const width = segment.content.charEnd - segment.content.charStart;
+  const { utterance, charStart, charEnd, alignment } = segment.content;
+  const word = alignment === null ? null : wordUnder(alignment, ms - segment.startMs);
+  if (word !== null) return { utterance, char: word.charStart };
+  const width = charEnd - charStart;
   const into = segment.ms <= 0 ? 0 : Math.min(Math.max(ms - segment.startMs, 0), segment.ms) / segment.ms;
-  return { utterance: segment.content.utterance, char: segment.content.charStart + Math.min(Math.floor(into * width), width - 1) };
+  return { utterance, char: charStart + Math.min(Math.floor(into * width), width - 1) };
 };
 
 // The name of the place at a point on the clock: the first spoken character at or after

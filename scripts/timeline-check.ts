@@ -171,6 +171,17 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
     const spot = cursorAt(worded, 150);
     return spot?.utterance === 0 && spot.range.charStart === 0 && spot.range.charEnd === 20 && spot.word?.charStart === 6 && spot.word.charEnd === 14;
   })());
+  // The name of a moment on timed words is the word the cursor paints there, and it comes
+  // back to that word: what a resume position and a link keep (slopspot-read-along-a35.4).
+  assert("a moment inside a timed word is named by that word's first character, anywhere in the word", (() => {
+    const first = worded.segments[0];
+    return first !== undefined && [100, 150, 199].every((ms) => placeIn(worded, first, ms).char === 6) && placeAt(worded, 250)?.char === 15;
+  })());
+  assert("the name of every moment on timed words resolves to the start of the word painted at that moment", Array.from({ length: 30 }, (_, i) => i * 10).every((ms) => {
+    const named = placeAt(worded, ms);
+    const back = named === null ? undefined : cursorAt(worded, timeAt(worded, named))?.word;
+    return back !== undefined && back !== null && back.charStart === cursorAt(worded, ms)?.word?.charStart;
+  }));
 
   // A measured unit whose voice draws breath before its first word and trails off after its
   // last (slopspot-read-along-a35.iey). Painted frame by frame, no frame may fall back to

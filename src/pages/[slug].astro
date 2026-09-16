@@ -5,6 +5,7 @@ import { renderDialogueHtml } from "../renderDialogue";
 import { deriveViewableDialogue } from "../overlay";
 import { deriveSpineOutline } from "../spineOutline";
 import { deriveUtterances } from "../speech";
+import { printsOf } from "../keptPlace";
 import { extractArtifacts } from "../artifacts";
 import { renderCodeExportControl } from "../codeExport";
 import { renderContinuationControl } from "../continuation";
@@ -109,6 +110,10 @@ const outline = deriveSpineOutline(dialogue);
 // spoken than it can be read. [LAW:effects-at-boundaries] this is the pure half; the page's
 // script performs it.
 const utterances = deriveUtterances(dialogue);
+// Each utterance's print, index for index: what a resume position or a listen link checks
+// it still names before it is used (keptPlace.ts). Derived here with the utterances, so the
+// page carries exactly the prints of the text it carries.
+const prints = await printsOf(utterances);
 
 // [LAW:one-source-of-truth] Code artifacts are a THIRD projection of the SAME viewable
 // `dialogue` the renderer and outline read — extracted from its already-redacted nodes,
@@ -535,7 +540,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           {/* The voice picker's rows are built here by voicePicker.ts from the manifest's
               voices, so the markup carries no name it would have to keep in step with. */}
           <div class="speech-voices" id="speech-voices" hidden></div>
-          <pre class="speech-payload" hidden aria-hidden="true">{JSON.stringify(utterances)}</pre>
+          <pre class="speech-payload" hidden aria-hidden="true" data-prints={prints.join(" ")}>{JSON.stringify(utterances)}</pre>
         </section>
       )}
 
@@ -709,6 +714,12 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           out [LAW:one-source-of-truth]. The glyphs are the dock's own (toolDock.ts).
         */}
         <div class="listen-mini" id="listen-mini" role="group" aria-label="Listen" hidden>
+          {/* Above the face, while nothing plays and nothing is cued: the place this device
+              kept for this paste, or word that a link's moment is gone (slopspot-read-along-a35.4). */}
+          <div class="listen-mini-offer" hidden>
+            <button class="mono-pill listen-mini-resume" type="button" hidden></button>
+            <p class="listen-mini-gone" role="status" hidden></p>
+          </div>
           <div class="listen-mini-face" data-face="consent" hidden>
             <p class="listen-mini-ask"></p>
             <button class="mono-pill listen-mini-download" type="button">Download</button>
@@ -729,6 +740,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               <span class="listen-mini-glyph" data-glyph="pause" set:html={MINI_ICONS.pause} />
             </button>
             <button class="listen-mini-forward" type="button" aria-label="Next turn" title="Next turn" disabled set:html={MINI_ICONS.forward} />
+            <button class="listen-mini-share" type="button" aria-label="Copy a link to this moment" title="Copy a link to this moment" disabled>
+              <span class="listen-mini-glyph" data-glyph="link" set:html={MINI_ICONS.link} />
+              <span class="listen-mini-glyph" data-glyph="copied" set:html={MINI_ICONS.copied} />
+            </button>
           </div>
         </div>
       </div>
@@ -792,6 +807,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
     import { readPick, writePick } from "../voiceChoice";
+    import { forgetResume, fragmentOf, linked, LINK_PREFIX, readResume, writeResume, type PrintedPage } from "../keptPlace";
     import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
@@ -817,6 +833,13 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         return el;
       };
       const utterances = JSON.parse(payloadEl.textContent ?? "[]") as Utterance[];
+      // The prints the server derived with the utterances, index for index, and the paste
+      // they belong to: what a kept place is checked against and filed under.
+      const printed: PrintedPage = { utterances, prints: (payloadEl.getAttribute("data-prints") ?? "").split(" ").filter((print) => print !== "") };
+      const slug = document.querySelector<HTMLElement>(".conversation")?.dataset.slug;
+      if (printed.prints.length !== utterances.length || slug === undefined) {
+        throw new Error(`listen: the page has ${printed.prints.length} prints for ${utterances.length} utterances${slug === undefined ? " and no slug" : ""}`);
+      }
 
       // [LAW:parse-dont-validate] The tool is offered when the voice MAY work — the page
       // has WebGPU; its real answer (adapter, 16-bit floats, a device) is the worker's
@@ -880,6 +903,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               back: markPart<HTMLButtonElement>(".listen-mini-back"),
               play: markPart<HTMLButtonElement>(".listen-mini-play"),
               forward: markPart<HTMLButtonElement>(".listen-mini-forward"),
+              share: markPart<HTMLButtonElement>(".listen-mini-share"),
+              offer: markPart<HTMLElement>(".listen-mini-offer"),
+              resume: markPart<HTMLButtonElement>(".listen-mini-resume"),
+              gone: markPart<HTMLElement>(".listen-mini-gone"),
             },
           },
           utterances,
@@ -909,6 +936,19 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             cancel: (handle) => window.cancelAnimationFrame(handle),
           },
           onPosition: (at) => follower.cursor(painter.paint(at)),
+          // The place kept for this paste, in the same storage, filed under its slug and
+          // checked against the page's prints on every read.
+          resume: {
+            read: () => readResume(window.localStorage, slug, printed),
+            write: (place) => writeResume(window.localStorage, slug, printed, place),
+            forget: () => forgetResume(window.localStorage, slug),
+          },
+          // A link to the moment: this page's address with the place as its fragment, on the
+          // clipboard — which a page not served securely has none of, said as such.
+          share: async (place) => {
+            if (!navigator.clipboard) throw new Error("this page has no clipboard access");
+            await navigator.clipboard.writeText(new URL(fragmentOf(printed, place), window.location.href).href);
+          },
           // A reader who asked to be somewhere is looking where the voice is about to be, so
           // the page follows again — whether they tapped a word, dragged the scrubber,
           // nudged or skipped a turn. One rule for every door [LAW:single-enforcer].
@@ -928,6 +968,24 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         window.addEventListener("pageshow", (event) => {
           if (event.persisted) panel.wake();
         });
+
+        // A listen link opens positioned: its word cued, painted and followed, before any
+        // audio. Read at the window's load — after every script of the page has run, so the
+        // clamps are measured and the painter opens the one its word is in rather than one
+        // about to close over it, and after images have taken their room, so the word the
+        // page scrolls to stays where it was put — and again when a link is followed within
+        // the page. The load event, not the order the page's scripts happen to be written
+        // in, is what guarantees the clamps first [LAW:no-ambient-temporal-coupling]. The
+        // fragment is spent on reading: a reload afterwards resumes from where the reader got
+        // to, not from the link.
+        const openLink = (): void => {
+          if (!window.location.hash.startsWith(LINK_PREFIX)) return;
+          panel.open(linked(printed, window.location.hash));
+          history.replaceState(history.state, "", window.location.pathname + window.location.search);
+        };
+        if (document.readyState === "complete") openLink();
+        else window.addEventListener("load", openLink, { once: true });
+        window.addEventListener("hashchange", openLink);
 
         // A tap on the page's prose listens from there; readAlong.tapPlace says which taps
         // are that and which are the page's own controls, links and selections. The reader

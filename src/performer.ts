@@ -18,9 +18,6 @@ export interface Place {
   readonly char: number;
 }
 
-// The top of the conversation: where a performer stands before anyone has asked for a place.
-export const TOP: Place = { utterance: 0, char: 0 };
-
 // [LAW:types-are-the-program] `atMs` exists only while there is somewhere to be: an idle
 // performer holding a stale position is not expressible.
 export type PerformerState =

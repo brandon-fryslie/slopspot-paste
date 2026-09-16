@@ -51,14 +51,17 @@ export const LAUNCHER_ICON = icon(
 );
 export const LAUNCHER_CLOSE_ICON = icon('<path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/>');
 
-// The mini-player's three controls beside the Listen mark: the same stroke style, so the
-// player and the dock read as one instrument. `play` and `pause` are both in the one
-// button's markup; its `data-does` shows the face a tap would perform.
+// The mini-player's controls beside the Listen mark: the same stroke style, so the player
+// and the dock read as one instrument. `play` and `pause` are both in the one button's
+// markup; its `data-does` shows the face a tap would perform.
 export const MINI_ICONS = {
   back: icon('<path d="M6 4.5v11"/><path d="M15 4.5L8.5 10 15 15.5z"/>'),
   play: icon('<path d="M6.5 4.2L15.5 10l-9 5.8z"/>'),
   pause: icon('<path d="M6.5 4.5v11"/><path d="M13.5 4.5v11"/>'),
   forward: icon('<path d="M14 4.5v11"/><path d="M5 4.5L11.5 10 5 15.5z"/>'),
+  // The share control's two faces: a link to copy, and the check that says it was copied.
+  link: icon('<path d="M8.6 11.4a3.2 3.2 0 0 0 4.5 0l2.6-2.6a3.2 3.2 0 0 0-4.5-4.5l-1 1"/><path d="M11.4 8.6a3.2 3.2 0 0 0-4.5 0l-2.6 2.6a3.2 3.2 0 0 0 4.5 4.5l1-1"/>'),
+  copied: icon('<path d="M4.5 10.5l3.5 3.5 7.5-8"/>'),
 } as const;
 
 // [LAW:no-mode-explosion] The menu order is the reading order of the toolset, stated

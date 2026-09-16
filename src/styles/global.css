@@ -3581,6 +3581,60 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
 .listen-mini-back:focus-visible,
 .listen-mini-play:focus-visible,
 .listen-mini-forward:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The offer above the face (slopspot-read-along-a35.4): the kept place's Resume, or the note
+   that a link's moment is gone. A pill of its own, stacked over the face's pill, both right-
+   aligned to the mark. */
+.listen-mini:not([hidden]) { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.listen-mini-offer {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--dock-pill-shadow);
+}
+.listen-mini-offer[hidden],
+.listen-mini-resume[hidden],
+.listen-mini-gone[hidden] { display: none; }
+.listen-mini-resume {
+  max-width: min(360px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.listen-mini-gone {
+  margin: 0;
+  padding: 2px 6px;
+  max-width: min(360px, 100%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+.listen-mini-share {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  appearance: none;
+}
+.listen-mini-share:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+.listen-mini-share[disabled] { opacity: 0.35; cursor: default; background: transparent; }
+.listen-mini-share:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.listen-mini-share[data-shared="copied"] { color: var(--accent); }
+.listen-mini-share[data-shared="failed"] { color: #b91c1c; }
+.listen-mini-share:not([data-shared="copied"]) .listen-mini-glyph[data-glyph="link"],
+.listen-mini-share[data-shared="copied"] .listen-mini-glyph[data-glyph="copied"] { display: grid; }
+.listen-mini-share .listen-mini-glyph svg { width: 18px; height: 18px; }
+
 /* The one button's two glyphs: `data-does` on the button names the one that shows. */
 .listen-mini-glyph { display: none; place-items: center; }
 .listen-mini-play[data-does="play"] .listen-mini-glyph[data-glyph="play"],
