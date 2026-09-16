@@ -14,7 +14,9 @@
 //   two keeps at once                     -> the second counts the store the first left
 //   a write the device refuses for room   -> the least recently played half removed, the write kept
 //   refused again                         -> reported, nothing kept
-//   keep a script, then recall it         -> the same units; another paste's utterances -> null
+//   keep a script, then recall it         -> the same units, over the utterances asked with; another paste's -> null
+//   a script's size                       -> linear in its passage, never the passage once per unit
+//   a script not cut from its utterances  -> reported, nothing kept
 //   a script under the cap                -> counted and forgotten by the same ledger as units
 //   a store that never opens              -> find null, keep settles, restore nothing; each failure reported
 //   an open another tab blocks            -> refused, and the connection closed if it opens later
@@ -179,7 +181,10 @@ console.log("scripts");
   assert("nothing kept: no script", (await cache.recallScript(said)) === null);
   clock.now = 1;
   await cache.keepScript(said, script);
-  assert("kept: the same units back", (await cache.recallScript(said.map((u) => ({ ...u })))) === script);
+  const asked = said.map((u) => ({ ...u }));
+  const recalled = await cache.recallScript(asked);
+  assert("kept: the same units back", JSON.stringify(recalled) === JSON.stringify(script));
+  assert("each over the very utterance it was asked with", recalled !== null && recalled.every((unit, i) => unit.utterance === asked[i]));
   assert("another paste's utterances: no script", (await cache.recallScript([...said, { index: 9, anchor: "t9", voice: "user", text: "More." }])) === null);
   clock.now = 2;
   await flush();
@@ -190,6 +195,41 @@ console.log("scripts");
   clock.now = 4;
   await cache.keep(requestOf(one), framesOf(2, 1), report(160));
   assert("the script has its line in the ledger, and is forgotten first when it was played longest ago", ledger.size === 2 && (await cache.recallScript(said)) === null && (await cache.find(requestOf(zero))) !== null);
+}
+
+console.log("a script's size");
+{
+  // One utterance of `sentences` sentences, a unit each: the shape a long turn is cut into.
+  const passage = (sentences: number) => {
+    const text = Array.from({ length: sentences }, (_, i) => `Sentence number ${i} is here.`).join(" ");
+    const utterance = { index: 0, anchor: "t0", voice: "assistant" as const, text };
+    let start = 0;
+    const units = text.split(/(?<=\.) /).map((sentence): SynthesisUnit => {
+      const unit = { utterance, start, end: start + sentence.length, ...prepareText(sentence) };
+      start += sentence.length + 1;
+      return unit;
+    });
+    return { utterances: [utterance], units };
+  };
+  const bytesOf = async (sentences: number): Promise<number> => {
+    const { store, ledger } = memoryStore();
+    const { cache } = cacheOver(Promise.resolve(store));
+    const { utterances, units } = passage(sentences);
+    await cache.keepScript(utterances, units);
+    const recalled = await cache.recallScript(utterances);
+    if (JSON.stringify(recalled) !== JSON.stringify(units)) throw new Error("fixture: the passage did not come back");
+    return [...ledger.values()].reduce((sum, entry) => sum + entry.bytes, 0);
+  };
+  const [short, long] = [await bytesOf(200), await bytesOf(800)];
+  assert("four times the passage is about four times the bytes, not sixteen", long > 3 * short && long < 5 * short);
+}
+
+console.log("a script not cut from its utterances");
+{
+  const { store, ledger } = memoryStore();
+  const { cache, failures } = cacheOver(Promise.resolve(store));
+  await cache.keepScript([{ index: 7, anchor: "t7", voice: "user", text: "Elsewhere." }], script);
+  assert("reported, nothing kept", failures.join() === "keeping a script" && ledger.size === 0);
 }
 
 // ── failure ───────────────────────────────────────────────────────────────────────────

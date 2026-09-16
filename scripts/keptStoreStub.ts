@@ -4,14 +4,13 @@
 // refused as IndexedDB refuses one, with a QuotaExceededError, and nothing of it is kept.
 
 import type { EncodedAudio } from "../src/audioCodec";
-import type { KeptRecord, KeptStore, LedgerEntry } from "../src/keptAudio";
-import type { SynthesisUnit } from "../src/speechScript";
+import type { KeptRecord, KeptScriptUnit, KeptStore, LedgerEntry } from "../src/keptAudio";
 
 export const memoryStore = ({ room = Number.POSITIVE_INFINITY }: { room?: number } = {}) => {
   const ledger = new Map<string, LedgerEntry>();
   const records = new Map<string, KeptRecord>();
   const audio = new Map<string, EncodedAudio>();
-  const scripts = new Map<string, ReadonlyArray<SynthesisUnit>>();
+  const scripts = new Map<string, ReadonlyArray<KeptScriptUnit>>();
   const refused = (entry: LedgerEntry): boolean => held() - (ledger.get(entry.key)?.bytes ?? 0) + entry.bytes > room;
   const held = (): number => [...ledger.values()].reduce((sum, entry) => sum + entry.bytes, 0);
   const store: KeptStore = {
