@@ -1033,6 +1033,13 @@ const keepingText = (keeping: Keeping): string => {
   }
 };
 
+// The answer as the line shows it: once asked, and only of a store that can keep anything.
+// A store that cannot be opened keeps nothing whatever the browser answers, and the store's
+// own word already says each listen downloads — a denial's "may drop the voice" beside it
+// would promise a keeping there is none of [LAW:one-source-of-truth].
+const keptText = (state: Provisioning): ReadonlyArray<string> =>
+  state.keeping === null || state.home.kind === "unavailable" ? [] : [keepingText(state.keeping)];
+
 // The model's own sentence, as a fragment: one set of words for every phase that has one of
 // its own [LAW:one-source-of-truth]. An idle or able worker says the store's word, and a ready
 // one what the voice is waiting on — each read where the rest of the state is (`wayText`,
@@ -1332,7 +1339,7 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   // consent to `play` — so it has nothing to say once that word is held, and nothing on a
   // device that cannot run the voice.
   const retry = model.kind === "load-failed" || model.kind === "crashed";
-  const fragments = [wayText(state), ...(state.keeping === null ? [] : [keepingText(state.keeping)])];
+  const fragments = [wayText(state), ...keptText(state)];
   return {
     play: { label: retry ? "Retry" : "Listen", enabled: retry || (model.kind !== "unsupported" && granted(state) !== "play") },
     stop: { enabled: false },
