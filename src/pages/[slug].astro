@@ -811,6 +811,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
+    import { createCodec, probeCodec } from "../audioCodec";
+    import { KEPT_BYTES, createAudioCache, openKeptStore } from "../keptAudio";
+    import { withKeptAudio } from "../keptSynthesis";
+    import { MODEL_PCM } from "../unitPlayer";
     import { carrierWav, createMediaSession } from "../mediaSession";
     import type { Utterance } from "../speech";
 
@@ -885,6 +889,16 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           },
           refused: (error) => console.warn("listen: the media element refused to play; the voice plays without lock-screen controls", error),
         });
+        // The units the voice has made, kept on this device (keptAudio.ts): Opus where the
+        // browser encodes it, PCM otherwise, in IndexedDB. A store or a codec that fails is a
+        // miss, said in the console, never a broken listen.
+        const kept = createAudioCache({
+          store: openKeptStore(indexedDB),
+          codec: probeCodec(MODEL_PCM).then((form) => createCodec(form, MODEL_PCM)),
+          now: () => Date.now(),
+          cap: KEPT_BYTES,
+          onFailure: (what, error) => console.warn(`listen: ${what} failed; the unit is synthesized instead`, error),
+        });
         const panel = createListenPanel({
           controls: {
             play: control<HTMLButtonElement>(".speech-play"),
@@ -930,7 +944,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             },
           },
           utterances,
-          spawn: spawnSynthesisWorker,
+          // [LAW:single-enforcer] The one cache over both doors to it: the port answers a kept
+          // unit and keeps what the worker makes, and the restore reads the same store.
+          spawn: () => withKeptAudio({ worker: spawnSynthesisWorker(), cache: kept, now: () => performance.now() }),
+          restore: kept.restore,
           // [LAW:one-source-of-truth] The store the worker's loader writes, listed here under the
           // same keys; and the browser's own keep request, a Window-only API, so it is the
           // page's to ask (every browser with WebGPU has it).

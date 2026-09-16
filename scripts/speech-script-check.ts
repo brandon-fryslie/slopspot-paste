@@ -30,6 +30,8 @@ import {
   deriveSpeechScript,
   prepareText,
   renditionHash,
+  unitHash,
+  unitText,
   renditionVersions,
   RENDITION_VERSIONS,
   sourceSpanOf,
@@ -307,4 +309,28 @@ console.log("\nRendition hash:");
   assert("new bytes for a voice that never speaks keep the hash", same === unusedVoiceRehashed);
   assert("changing what is said changes the hash", same !== textChanged);
   assert("the hash is a SHA-256 hex digest", /^[0-9a-f]{64}$/.test(same));
+}
+
+console.log("\nUnit hash:");
+{
+  const [hi, hello] = deriveSpeechScript([utter("Hi there.", "user", 0), utter("Hi there.", "assistant", 1)], wordish);
+  if (hi === undefined || hello === undefined) throw new Error("fixture: two units");
+  const rehashed = <A extends ModelAsset>(asset: A): A => ({ ...asset, sha256: "f".repeat(64) });
+  const [same, elsewhere, otherVoice, generationChanged, pipelineChanged, voiceRehashed, otherVoiceRehashed, sourceChanged] = await Promise.all([
+    unitHash(unitText(hi), "alba"),
+    unitHash(unitText(hello), "alba"),
+    unitHash(unitText(hi), "marius"),
+    unitHash(unitText(hi), "alba", { ...RENDITION_VERSIONS, generation: `${RENDITION_VERSIONS.generation}-next` }),
+    unitHash(unitText(hi), "alba", { ...RENDITION_VERSIONS, pipeline: `${RENDITION_VERSIONS.pipeline}-next` }),
+    unitHash(unitText(hi), "alba", renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, alba: rehashed(MODEL_ASSETS.voices.alba) } })),
+    unitHash(unitText(hi), "alba", renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, fantine: rehashed(MODEL_ASSETS.voices.fantine) } })),
+    unitHash({ ...unitText(hi), source: "Hi  there." }, "alba"),
+  ]);
+  assert("the same text in the same voice is one unit wherever it is said", same === elsewhere);
+  assert("another voice is another unit", same !== otherVoice);
+  assert("a new generation is another unit", same !== generationChanged);
+  assert("a new pipeline is another unit", same !== pipelineChanged);
+  assert("new bytes for its voice make it another unit", same !== voiceRehashed);
+  assert("new bytes for a voice it is not spoken in keep it", same === otherVoiceRehashed);
+  assert("another source its words are timed against is another unit", same !== sourceChanged);
 }

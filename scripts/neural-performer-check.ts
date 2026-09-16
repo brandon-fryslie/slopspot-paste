@@ -160,7 +160,7 @@ console.log("createNeuralPerformer: over the real scheduler and player");
   const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 
   const views: NeuralView[] = [];
-  const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, device: openDevice(StubDevice), onChange: (view) => views.push(view) });
+  const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, kept: [], device: openDevice(StubDevice), onChange: (view) => views.push(view) });
   const device = StubDevice.instances.at(-1);
   if (device === undefined) throw new Error("the performer did not build a player");
   // Where a passage begins on the performer's clock right now.

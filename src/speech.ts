@@ -7,10 +7,12 @@
 //
 // Audio is a DERIVED, DISPOSABLE projection of the stored original — a sibling of the
 // HTML renderer and of deriveSpineOutline, never a stored artifact. Nothing here is
-// persisted and no audio is ever cached: a stored audio blob would be a second
+// persisted and no audio is stored beside the paste: a stored audio blob would be a second
 // representation of the paste that drifts the moment the parser or these rules improve
 // [LAW:one-source-of-truth], and it would owe a migration to every paste already stored.
-// Derived at read time, a change to this file re-voices every existing paste for free.
+// Derived at read time, a change to this file re-voices every existing paste for free. The
+// audio a reader's device keeps (keptAudio.ts) is filed under the exact text each unit said,
+// so a change here is a miss there, never a drift.
 //
 // [LAW:one-way-deps] It depends on the model (dialogue); the model never depends on it.
 

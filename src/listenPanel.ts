@@ -81,6 +81,15 @@
 // page no longer has says so there instead [LAW:no-silent-failure]. The share control hands
 // the page the moment on screen — the voice's place, or the cue — to write as a link.
 //
+// THE KEPT AUDIO. The device keeps every unit the voice makes (keptAudio.ts), and the port the
+// panel is handed answers a kept unit from it (keptSynthesis.ts) — the panel never knows which
+// answered. What the panel owns is the order: once the worker has cut the script, the device
+// is asked what it keeps of those units in the reader's voices, and the performer is built
+// over that answer, so every kept unit's measurement is on the clock before the cue is
+// resolved on it and a resume lands on its word [LAW:no-ambient-temporal-coupling]. The ask is
+// a phase, `restoring`, so a crash, a dispose or a new pick while it is out has a state to
+// meet it in: a new pick asks again, and an answer to any ask but the current one is stale.
+//
 // THE BACKGROUND. Whether the page is in view is the page's fact, told to the panel as an
 // event and carried on both arms like the speed. Out of view a listen that is on is heard
 // through the lock screen, and the scheduler is told to make audio further ahead
@@ -111,8 +120,8 @@
 //
 // THE VOICES. Which voice speaks for the reader and which for Claude is the device's pick
 // (voiceChoice.ts): read from storage at every render, like the download preference, and
-// never copied into the state. The map the performer is built with is derived from it at
-// the build, and a change while the voice is on stage is one event that becomes one effect
+// never copied into the state. The map the performer is built with is derived from it when
+// the device is asked what it keeps, and carried with the answer to the build, and a change while the voice is on stage is one event that becomes one effect
 // — the performer is told the new map, and the scheduler remakes the units of the changed
 // voice, the one under the cursor first. A voice is chosen by ear: a preview is offered
 // exactly while the voice is on stage (the model warm, the port able to synthesize) and
@@ -137,7 +146,7 @@ import { wordStart, type Linked } from "./keptPlace";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD, type FailureReason, type Lookahead } from "./scheduler";
 import type { Utterance } from "./speech";
-import { wordSpans, type WordSpan } from "./speechManifest";
+import { wordSpans, type UnitReport, type WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
@@ -154,7 +163,8 @@ import { createPreviewer, type Previewer } from "./voicePreview";
 // worker cannot see: `idle` (no worker) against `supported` (the worker's idle: probed,
 // able, the weights awaiting consent), `downloading` versus `warming` (the same `progress`
 // message, before and after the last byte), `scripting` (utterances sent, units not yet
-// back), and the two ways it ends without a voice that a Play tap retries. `downloading`
+// back), `restoring` (the units back, the device asked what it keeps of them — see THE KEPT
+// AUDIO), and the two ways it ends without a voice that a Play tap retries. `downloading`
 // carries its pace, the estimate's one source; `load-failed` carries the download where it
 // stopped, when one was under way, so the bar stays as the failure found it.
 export type NeuralPhase =
@@ -165,6 +175,7 @@ export type NeuralPhase =
   | { readonly kind: "downloading"; readonly progress: AssetProgress; readonly pace: Pace }
   | { readonly kind: "warming" }
   | { readonly kind: "scripting" }
+  | { readonly kind: "restoring"; readonly units: ReadonlyArray<SynthesisUnit> }
   | { readonly kind: "unsupported"; readonly reason: UnsupportedReason }
   | { readonly kind: "load-failed"; readonly failure: LoadFailure; readonly progress: AssetProgress | null }
   | { readonly kind: "crashed"; readonly message: string };
@@ -301,6 +312,13 @@ export type PanelEvent =
   // The store's answer to `home`, and the browser's to the keep request that `load` makes.
   | { readonly kind: "home"; readonly residency: Residency }
   | { readonly kind: "keeping"; readonly keeping: Keeping }
+  // The device's answer to `restore`: for each of those units, its kept report in those voices.
+  | {
+      readonly kind: "restored";
+      readonly units: ReadonlyArray<SynthesisUnit>;
+      readonly voices: VoiceMap;
+      readonly kept: ReadonlyArray<UnitReport | undefined>;
+    }
   | { readonly kind: "view"; readonly view: NeuralView }
   // The reader tapped a voice's preview: it is heard out, over a paused reading.
   | { readonly kind: "preview"; readonly voice: VoiceId }
@@ -324,7 +342,9 @@ export type Effect =
   // Sends `load`, and asks the browser to keep the bytes; answered by a `keeping` event.
   | { readonly kind: "load" }
   | { readonly kind: "script" }
-  | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit> }
+  // Asks the device what it keeps of these units in the reader's voices; answered by `restored`.
+  | { readonly kind: "restore"; readonly units: ReadonlyArray<SynthesisUnit> }
+  | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit>; readonly voices: VoiceMap; readonly kept: ReadonlyArray<UnitReport | undefined> }
   | { readonly kind: "perform"; readonly event: PerformerEvent }
   // The previewer says its phrase in the voice; on the tap's stack, which opens its device.
   | { readonly kind: "preview"; readonly voice: VoiceId }
@@ -414,6 +434,7 @@ const kick = (state: Provisioning): ProvisioningStep => {
     case "downloading":
     case "warming":
     case "scripting":
+    case "restoring":
       return { state, effects: [] };
   }
 };
@@ -548,9 +569,8 @@ const provision = (state: Provisioning, message: FromWorker, at: number): Step =
     case "script": {
       if (neural.kind !== "scripting") throw violation(state, "script");
       if (message.id !== SCRIPT_ID) throw new Error(`listen panel: script reply ${message.id}, sent ${SCRIPT_ID}`);
-      // The performer is built; its first view is the next event, and the step that
-      // receives it takes the stage.
-      return { state, effects: [{ kind: "build", units: message.units }] };
+      // The device is asked what it keeps of the units; its answer builds the performer.
+      return phase({ kind: "restoring", units: message.units }, [{ kind: "restore", units: message.units }]);
     }
     case "refused":
       throw new Error(`listen panel: the worker refused ${message.request.kind} in phase ${message.phase}`);
@@ -661,8 +681,21 @@ const visibility = (state: PanelState, hidden: boolean): Step => {
   return background({ ...state, visibility: state.visibility === "stalled" ? "stalled" : "hidden" });
 };
 
-const voices = (state: PanelState, map: VoiceMap): Step =>
-  state.kind === "neural" ? { state, effects: [{ kind: "revoice", voices: map }] } : stay(state);
+// A voice on stage is told the new map. A voice being restored is asked again in it, since
+// what the device keeps is kept per voice and the build takes the voices its answer was read
+// in; the first answer, superseded, is never delivered.
+const voices = (state: PanelState, map: VoiceMap): Step => {
+  if (state.kind === "neural") return { state, effects: [{ kind: "revoice", voices: map }] };
+  return state.neural.kind === "restoring" ? { state, effects: [{ kind: "restore", units: state.neural.units }] } : stay(state);
+};
+
+// The device's answer builds the performer over the units it was asked about, in the voices
+// it was read in. An answer for any other ask — a restore a crash left behind, units a retry
+// has since replaced — is stale and changes nothing.
+const restored = (state: PanelState, event: Extract<PanelEvent, { kind: "restored" }>): Step =>
+  state.kind === "provisioning" && state.neural.kind === "restoring" && state.neural.units === event.units
+    ? { state, effects: [{ kind: "build", units: event.units, voices: event.voices, kept: event.kept }] }
+    : stay(state);
 
 // The page's timeline is read when a place named by time before the voice arrives has to
 // be kept by name. Whatever the event, a step that moves the window tells the scheduler so,
@@ -696,6 +729,8 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       return home(state, event.residency);
     case "keeping":
       return keeping(state, event.keeping);
+    case "restored":
+      return restored(state, event);
     case "preview":
       return preview(state, event.voice);
     case "sounding":
@@ -712,7 +747,7 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
     }
     case "view": {
       if (state.kind === "neural") return background({ ...state, view: event.view });
-      if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
+      if (state.neural.kind !== "restoring") throw violation(state, "a scheduler view");
       // The performer's first view: the voice takes the stage at the reader's speed, sent
       // unconditionally so it never speaks a syllable at a speed it left behind, and to the
       // cue when a tap is what brought it — resolved now, on the timeline the voice brings.
@@ -906,6 +941,7 @@ const neuralText = (neural: NeuralPhase, home: Home): string => {
     case "warming":
       return "warming up the voice…";
     case "scripting":
+    case "restoring":
       return "preparing the script…";
     case "unsupported":
       return `this device can't run the voice: ${unsupportedText(neural.reason)}`;
@@ -1028,6 +1064,7 @@ export const markForm = (state: PanelState): MarkForm => {
     case "preparing":
     case "warming":
     case "scripting":
+    case "restoring":
       return { kind: "warming" };
     case "downloading":
       return { kind: "downloading", fraction: neural.progress.loadedBytes / neural.progress.totalBytes };
@@ -1092,6 +1129,7 @@ const previewOffer = (state: PanelState): PreviewOffer => {
     case "downloading":
     case "warming":
     case "scripting":
+    case "restoring":
     case "load-failed":
     case "crashed":
       return { kind: "withheld", why: "Previews play once the voice is ready on this device." };
@@ -1268,6 +1306,9 @@ export interface ListenPanelConfig {
   readonly controls: ListenControls;
   readonly utterances: ReadonlyArray<Utterance>;
   readonly spawn: () => SynthesisPort;
+  // What the device keeps of a script's units in these voices: keptAudio's restore in the
+  // page, a stub in the check.
+  readonly restore: (units: ReadonlyArray<SynthesisUnit>, voices: VoiceMap) => Promise<ReadonlyArray<UnitReport | undefined>>;
   // The store's word on the model, and the browser's on keeping it: modelResidency's two
   // edges over the real store and navigator.storage.persist in the page, stubs in the check.
   readonly home: () => Promise<Residency>;
@@ -1473,6 +1514,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // promises settle in cannot put a stale store or browser answer over a fresh entry.
   const askHome = latest<Residency>((residency) => dispatch({ kind: "home", residency }));
   const askKeep = latest<Keeping>((keeping) => dispatch({ kind: "keeping", keeping }));
+  const askKept = latest<Extract<PanelEvent, { kind: "restored" }>>((answer) => dispatch(answer));
 
   let frame: number | null = null;
   let shown: ReadAlongAt | null = null;
@@ -1597,13 +1639,22 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "script":
         portOf().send({ kind: "script", id: SCRIPT_ID, utterances });
         return;
+      case "restore": {
+        // The pick as the device holds it now, carried with the answer so the build speaks in
+        // the voices the kept reports were read in.
+        const { units } = effect;
+        const voices = voiceMapOf(config.pick.read());
+        askKept.ask(config.restore(units, voices).then((kept) => ({ kind: "restored", units, voices, kept })));
+        return;
+      }
       case "build": {
         const built = createNeuralPerformer({
           port: portOf(),
           device: device(),
           script: effect.units,
           utterances,
-          voices: voiceMapOf(config.pick.read()),
+          voices: effect.voices,
+          kept: effect.kept,
           onChange: (view) => dispatch({ kind: "view", view }),
         });
         neural = built;
@@ -1644,8 +1695,10 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         port = null;
         void audio?.device.close();
         audio = null;
-        // The keep request belonged to the load the released worker was doing.
+        // The keep request belonged to the load the released worker was doing, and the restore
+        // to the units it cut.
         askKeep.drop();
+        askKept.drop();
         return;
       }
     }

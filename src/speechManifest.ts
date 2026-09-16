@@ -34,8 +34,9 @@
 // forward [LAW:one-source-of-truth]. So a record here, a clock there, and no second answer
 // to "how long is this paste" in between.
 //
-// Nothing here is persisted and no audio is ever stored: the manifest is a client-side,
-// disposable projection of the stored original's rendition [LAW:one-way-deps].
+// Nothing here is persisted: the manifest is a client-side, disposable projection of the
+// stored original's rendition [LAW:one-way-deps]. The reports the device keeps beside a unit's
+// audio (keptAudio.ts) come back through `recordUnit`, the one door a report enters by.
 
 import { SAMPLE_RATE } from "./modelAssets";
 import { RENDITION_VERSIONS, unitText, type RenditionVersions, type SynthesisUnit } from "./speechScript";
