@@ -42,7 +42,7 @@
 //   driver: reports raised by its own commands are handled after them, in order
 //   driver: dispose stops, cancels, drops, stops listening, and closes the device
 
-import { BACKGROUND_LOOKAHEAD, KEEP_BEHIND, LOOKAHEAD, bufferedAt, createScheduler, initialState, step } from "../src/scheduler";
+import { BACKGROUND_LOOKAHEAD, KEEP_BEHIND, LOOKAHEAD, settledAt, createScheduler, initialState, step } from "../src/scheduler";
 import type { Command, Event, Holding, SchedulerState, SchedulerView } from "../src/scheduler";
 import { wordsOf } from "../src/speechManifest";
 import type { UnitReport } from "../src/speechManifest";
@@ -204,14 +204,18 @@ console.log("step: the window is the page's to widen and narrow");
   assert("back in view the window narrows, and what it made stays, contiguous from the cursor", shown.commands.length === 0 && kinds(shown.state) === "hhhhhhhh" && shown.state.lookahead === LOOKAHEAD);
 }
 
-console.log("bufferedAt: whether the unit the cursor needs is held in full");
+console.log("settledAt: whether the unit the cursor needs is held in full, or failed");
 {
   const fresh = initialState(scriptOf(4), VOICES);
   const asked = run(fresh, speaking(1), reported(speaking(1)), audio(1, 0));
-  assert("nothing is buffered for an idle player, or while the unit under the cursor streams", !bufferedAt(fresh, idle) && !bufferedAt(asked.state, speaking(1)));
+  assert("nothing is settled for an idle player, or while the unit under the cursor streams", !settledAt(fresh, idle) && !settledAt(asked.state, speaking(1)));
   const held = run(asked.state, speaking(1), done(1));
-  assert("the unit under the cursor held: buffered, speaking or paused", bufferedAt(held.state, speaking(1)) && bufferedAt(held.state, paused(1, 300)));
-  assert("in the gap before a unit, that unit is what is needed", bufferedAt(held.state, inGap(1)) && !bufferedAt(held.state, inGap(2)));
+  assert("the unit under the cursor held: settled, speaking or paused", settledAt(held.state, speaking(1)) && settledAt(held.state, paused(1, 300)));
+  assert("in the gap before a unit, that unit is what is needed", settledAt(held.state, inGap(1)) && !settledAt(held.state, inGap(2)));
+  const pausedInGap: PlayerState = { kind: "paused", at: { segment: gapBefore(2), offsetMs: 100 } };
+  const failedAhead = run(held.state, speaking(1), worker({ kind: "failed", unitId: 2, reason: { kind: "runtime", message: "x" } }));
+  assert("setup: the unit after the gap failed", kinds(failedAhead.state)[2] === "f");
+  assert("a failed unit is settled: nothing will come of waiting, so a voice paused in the gap before it goes on, and reaching it is the skip", settledAt(failedAhead.state, pausedInGap) && settledAt(failedAhead.state, inGap(2)));
 }
 
 console.log("step: seeks reprioritize");

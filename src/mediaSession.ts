@@ -67,6 +67,14 @@ export const metadataOf = (transport: Transport, title: string, speakerOf: (utte
 // Where the progress bar is: none while no voice is on stage or the clock has no length; the
 // position is clamped to the duration, which the platform requires and an estimated clock
 // can briefly overrun.
+//
+// The platform runs the bar on from each report at the rate given while the state is
+// "playing", and a listen waiting for audio — in view at the frontier, or stalled out of view —
+// is "playing" with its clock held, so the bar runs ahead until the next report puts it back.
+// The API has no way to say "playing, not moving": a rate of 0 is a TypeError, and clearing the
+// position makes Chrome show the carrier's own ten-second loop instead
+// (MediaSessionImpl::RebuildAndNotifyMediaPositionChanged). Every panel event reports again —
+// each unit the worker settles is one — so the overrun is at most one unit's synthesis.
 export const positionOf = (transport: Transport): Position | null =>
   transport.playback === "none" || !(transport.totalMs > 0)
     ? null

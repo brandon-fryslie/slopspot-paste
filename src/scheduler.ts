@@ -537,15 +537,21 @@ export interface SchedulerView {
   readonly player: PlayerState;
   readonly manifest: Manifest;
   readonly holdings: ReadonlyArray<Holding>;
-  // Whether the whole unit the cursor needs next is held: what a listen paused for want of
-  // audio waits on before it goes on.
-  readonly buffered: boolean;
+  // Whether the unit the cursor needs next is settled — nothing more will come of waiting for
+  // it: what a listen paused for want of audio waits on before it goes on.
+  readonly settled: boolean;
 }
 
-// The unit the cursor needs — under it, or after the gap it is in — is held in full. Nothing
-// is buffered for an idle player, which has no cursor.
-export const bufferedAt = (state: SchedulerState, player: PlayerState): boolean =>
-  player.kind !== "idle" && state.holdings[needed(state.layout, player.at).unit]?.kind === "held";
+// The unit the cursor needs — under it, or after the gap it is in — is held in full, or has
+// failed. A failed unit never will be held, and playing on is what reaches it: the gap
+// sounds, and the cursor entering the unit's slot is the skip past it (plan). Waiting on it
+// instead would hold a paused listen there for good. Nothing is settled for an idle player,
+// which has no cursor.
+export const settledAt = (state: SchedulerState, player: PlayerState): boolean => {
+  if (player.kind === "idle") return false;
+  const holding = state.holdings[needed(state.layout, player.at).unit];
+  return holding?.kind === "held" || holding?.kind === "failed";
+};
 
 export interface SchedulerConfig {
   readonly port: SynthesisPort;
@@ -581,7 +587,7 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
 
   const view = (): SchedulerView => {
     const now = player.state();
-    return { player: now, manifest: state.manifest, holdings: state.holdings, buffered: bufferedAt(state, now) };
+    return { player: now, manifest: state.manifest, holdings: state.holdings, settled: settledAt(state, now) };
   };
 
   const perform = (command: Command): void =>

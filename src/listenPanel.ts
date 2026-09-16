@@ -632,12 +632,12 @@ const windowOf = (state: PanelState): Lookahead =>
   state.kind === "neural" && state.visibility !== "shown" && playing(state.view.player, state.visibility) ? BACKGROUND_LOOKAHEAD : LOOKAHEAD;
 
 // The background's pause, decided on every view of a voice out of view: a voice that is
-// speaking with nothing to sound is paused and marked stalled; a stalled voice whose audio is
-// held again is played, and stays stalled until it sounds — so the listen reads as on, and
+// speaking with nothing to sound is paused and marked stalled; a stalled voice whose next unit
+// is settled — held, or failed and so skipped once reached — is played, and stays stalled until it sounds — so the listen reads as on, and
 // the window as wide, the whole way through — or until it leaves the stage, when there is
 // nothing left to wait for. Anything else stands.
 const background = (state: Extract<PanelState, { kind: "neural" }>): Step => {
-  const { player, buffered } = state.view;
+  const { player, settled } = state.view;
   if (state.visibility === "shown") return stay(state);
   switch (player.kind) {
     case "idle":
@@ -646,7 +646,7 @@ const background = (state: Extract<PanelState, { kind: "neural" }>): Step => {
       if (player.flow === "audio") return stay({ ...state, visibility: "hidden" });
       return state.visibility === "stalled" ? stay(state) : { state: { ...state, visibility: "stalled" }, effects: [perform({ kind: "pause" })] };
     case "paused":
-      return state.visibility === "stalled" && buffered ? { state, effects: [perform({ kind: "play" })] } : stay(state);
+      return state.visibility === "stalled" && settled ? { state, effects: [perform({ kind: "play" })] } : stay(state);
   }
 };
 

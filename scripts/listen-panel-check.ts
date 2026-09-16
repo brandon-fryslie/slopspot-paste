@@ -104,11 +104,11 @@ const ready: PanelEvent = worker({ kind: "ready", backend: "webgpu", modelVersio
 const scriptBack: PanelEvent = worker({ kind: "script", id: SCRIPT_ID, units });
 
 const scriptLine = timelineOfScript(emptyManifest(units), table);
-const viewOf = (player: NeuralView["player"], buffered = false): NeuralView => ({
+const viewOf = (player: NeuralView["player"], settled = false): NeuralView => ({
   player,
   manifest: emptyManifest(units),
   holdings: units.map(() => ({ kind: "absent" })),
-  buffered,
+  settled,
   timeline: scriptLine,
   units: speechSegments(scriptLine),
 });
@@ -346,7 +346,7 @@ console.log("step: out of view the voice is made further ahead, pauses when it r
 {
   const hide: PanelEvent = { kind: "visibility", hidden: true };
   const show: PanelEvent = { kind: "visibility", hidden: false };
-  const view = (player: NeuralView["player"], buffered = false): PanelEvent => ({ kind: "view", view: viewOf(player, buffered) });
+  const view = (player: NeuralView["player"], settled = false): PanelEvent => ({ kind: "view", view: viewOf(player, settled) });
   const speakingAt = (flow: "audio" | "waiting"): NeuralView["player"] => ({ kind: "speaking", at: { segment: 0, offsetMs: 100 }, flow });
   const pausedAt: NeuralView["player"] = { kind: "paused", at: { segment: 0, offsetMs: 100 } };
   const onStage = [wake("download"), supported, progress(1, 1), ready, scriptBack, { kind: "view", view: viewOf({ kind: "idle" }) } as PanelEvent, tapPlay, view(speakingAt("audio"))].reduce((state, event) => step(state, event).state, initialState());
