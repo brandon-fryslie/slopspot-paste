@@ -744,6 +744,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               <span class="listen-mini-glyph" data-glyph="link" set:html={MINI_ICONS.link} />
               <span class="listen-mini-glyph" data-glyph="copied" set:html={MINI_ICONS.copied} />
             </button>
+            <button class="listen-mini-save" type="button" aria-label="Download this conversation as audio" title="Download this conversation as audio" disabled set:html={MINI_ICONS.save} />
           </div>
         </div>
       </div>
@@ -804,6 +805,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { shortcut } from "../shortcuts";
     import { readPreference, writePreference } from "../listenConsent";
     import { deviceStore } from "../preferenceStore";
+    import { browserForm, encodeFile } from "../renditionFile";
     import { MODEL_ASSETS, allModelAssets, type ConnectionReading } from "../modelAssets";
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
@@ -949,6 +951,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               play: markPart<HTMLButtonElement>(".listen-mini-play"),
               forward: markPart<HTMLButtonElement>(".listen-mini-forward"),
               share: markPart<HTMLButtonElement>(".listen-mini-share"),
+              save: markPart<HTMLButtonElement>(".listen-mini-save"),
               offer: markPart<HTMLElement>(".listen-mini-offer"),
               resume: markPart<HTMLButtonElement>(".listen-mini-resume"),
               gone: markPart<HTMLElement>(".listen-mini-gone"),
@@ -999,6 +1002,20 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           share: async (place) => {
             if (!navigator.clipboard) throw new Error("this page has no clipboard access");
             await navigator.clipboard.writeText(new URL(fragmentOf(printed, place), window.location.href).href);
+          },
+          // The conversation as one audio file, named for the paste, in the form this browser
+          // encodes, handed to the browser's own download — a link to the bytes, tapped, and let go
+          // of once the browser has had time to take them.
+          download: {
+            name: `slopspot-${slug}`,
+            form: browserForm,
+            encode: encodeFile,
+            save: (file, name) => {
+              const href = URL.createObjectURL(new Blob([file.bytes], { type: file.mimeType }));
+              const link = Object.assign(document.createElement("a"), { href, download: name });
+              link.click();
+              setTimeout(() => URL.revokeObjectURL(href), 60_000);
+            },
           },
           // A reader who asked to be somewhere is looking where the voice is about to be, so
           // the page follows again — whether they tapped a word, dragged the scrubber,

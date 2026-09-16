@@ -41,7 +41,8 @@ import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport, type WordStart } from "../src/speechManifest";
 import { speechSegments, timeAt, timelineOfScript, timelineOfUtterances } from "../src/timeline";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
-import type { ListenPort } from "../src/synthesisClient";
+import type { ListenPort, RenderedUnit, SynthesizeRequest } from "../src/synthesisClient";
+import { encodeFile } from "../src/renditionFile";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
@@ -661,6 +662,7 @@ const MARKUP = `<!DOCTYPE html><body>
         <button class="listen-mini-play" type="button" data-does="play"></button>
         <button class="listen-mini-forward" type="button" disabled></button>
         <button class="listen-mini-share" type="button" disabled></button>
+        <button class="listen-mini-save" type="button" disabled></button>
       </div>
     </div>
   </div></body>`;
@@ -739,6 +741,8 @@ interface Rig {
   readonly share: (place: Place) => Promise<void>;
   readonly links: Place[];
   readonly clipboard: { answer: "copies" | "refuses" | "throws" };
+  readonly renders: { requests: ReadonlyArray<SynthesizeRequest>; onUnit: (unit: RenderedUnit) => void; withdrawn: boolean }[];
+  readonly saves: { name: string; bytes: number }[];
 }
 
 type Store = ReturnType<typeof memoryPreferences>;
@@ -791,10 +795,18 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const kept: { reports: ReadonlyArray<UnitReport | undefined> } = { reports: [] };
   const keeps = deferred<Keeping>();
   const refusing = { dispose: false };
+  // Every render the panel asks of the port: what it wants, who hears it, whether it was withdrawn.
+  const renders: { requests: ReadonlyArray<SynthesizeRequest>; onUnit: (unit: RenderedUnit) => void; withdrawn: boolean }[] = [];
   const port: ListenPort = {
     send: (message) => sent.push(message),
     ahead: () => undefined,
-    render: () => () => undefined,
+    render: (requests, onUnit) => {
+      const render = { requests, onUnit, withdrawn: false };
+      renders.push(render);
+      return () => {
+        render.withdrawn = true;
+      };
+    },
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -862,6 +874,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     play: el(".listen-mini-play"),
     forward: el(".listen-mini-forward"),
     share: el(".listen-mini-share"),
+    save: el(".listen-mini-save"),
     offer: el(".listen-mini-offer"),
     resume: el(".listen-mini-resume"),
     gone: el(".listen-mini-gone"),
@@ -971,6 +984,9 @@ const rig = (setup: VisitSetup = {}): Rig => {
     },
     links,
     clipboard,
+    renders,
+    // The page's side of a download: the WAV form, the real encoder, and a record of each save.
+    saves: [] as { name: string; bytes: number }[],
   };
 };
 
@@ -1015,6 +1031,12 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     },
     resume: { read: () => readResume(r.store, SLUG, printed), write: (place) => writeResume(r.store, SLUG, printed, place), forget: () => forgetResume(r.store, SLUG) },
     share: r.share,
+    download: {
+      name: "a-paste",
+      form: async () => ({ container: "wav" }),
+      encode: encodeFile,
+      save: (file, name) => r.saves.push({ name, bytes: file.bytes.byteLength }),
+    },
     onSeek: r.onSeek,
   });
 
@@ -1962,6 +1984,40 @@ console.log("createListenPanel: a link to a moment the page no longer has says s
   panel.open({ kind: "none" });
   assert("no link at all changes nothing", r.mini.gone.hidden && r.positions.length === 0);
   panel.dispose();
+}
+
+console.log("createListenPanel: the download control makes the conversation's audio file, and says how far it has got");
+{
+  const r = rig();
+  const panel = mount(r);
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  r.answer.home({ kind: "resident" });
+  await Promise.resolve();
+  r.mark.button.click();
+  assert("no voice on stage: nothing to make a file of, and the control is off", r.mini.save.disabled && r.mini.save.getAttribute("aria-label") === "Download this conversation as audio");
+  r.mini.play.click();
+  await warm(r);
+  assert("the voice on stage: the control is on", !r.mini.save.disabled);
+  r.mini.save.click();
+  const render = r.renders[0];
+  assert("a tap renders every unit of the script, in the reader's voices", r.renders.length === 1 && render !== undefined && render.requests.length === units.length && render.requests.every((request, unitId) => request.unitId === unitId && request.voice === DEFAULT_VOICES[units[unitId]!.utterance.voice]));
+  assert("and says it has begun", r.mini.save.dataset.phase === "rendering" && r.mini.save.getAttribute("aria-label") === "Making the audio file: 0% of the voice · tap to stop");
+  render?.onUnit({ kind: "made", unitId: 0, frames: [frame(0, 0)] });
+  render?.onUnit({ kind: "made", unitId: 2, frames: [frame(2, 0)] });
+  assert("each unit heard moves it on", r.mini.save.getAttribute("aria-label") === "Making the audio file: 66% of the voice · tap to stop" && r.mini.save.style.getPropertyValue("--fraction") === String(2 / 3));
+  r.mini.save.dispatchEvent(new r.doc.defaultView!.FocusEvent("blur"));
+  assert("losing focus while it runs leaves it on show", r.mini.save.dataset.phase === "rendering");
+  render?.onUnit({ kind: "failed", unitId: 1, reason: { kind: "frame-cap", frames: 500 } });
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert("the last unit heard: the file saved under its name, and a passage the voice could not say is named", r.saves.length === 1 && r.saves[0]?.name === "a-paste.wav" && r.mini.save.dataset.phase === "saved" && r.mini.save.getAttribute("aria-label") === "Saved a-paste.wav, without a passage the voice could not say");
+  r.mini.save.dispatchEvent(new r.doc.defaultView!.FocusEvent("blur"));
+  assert("losing focus puts a finished download's word away", r.mini.save.dataset.phase === undefined && r.mini.save.getAttribute("aria-label") === "Download this conversation as audio");
+  r.mini.save.click();
+  r.mini.save.click();
+  assert("a tap while one runs withdraws it, and the control is back to its question", r.renders.length === 2 && r.renders[1]?.withdrawn === true && r.mini.save.dataset.phase === undefined);
+  r.mini.save.click();
+  panel.dispose();
+  assert("a download the voice's end cuts short is withdrawn, and says why", r.renders[2]?.withdrawn === true && r.mini.save.dataset.phase === "failed" && r.mini.save.getAttribute("aria-label") === "Could not make the audio file: the voice stopped before the file was made");
 }
 
 console.log("createListenPanel: the share control hands over the moment on screen, and says whether it was copied");

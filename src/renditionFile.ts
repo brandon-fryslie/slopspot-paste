@@ -15,9 +15,13 @@
 // browser can encode AAC — the compressed form every stock player opens — and WAV (16-bit PCM)
 // otherwise. AAC has no 24 kHz encoder in Chrome (measured 2026-09-16: 44.1 kHz yes, 24 kHz
 // no), so the samples are resampled to the first rate the browser encodes. Muxing and
-// resampling are mediabunny's (MPL-2.0): an MP4's encoder delay needs an edit list to keep the
-// file's length exact, and that is a container's craft, not this program's. The library is
-// imported when a file is made, never with the page.
+// resampling are mediabunny's (MPL-2.0), a container's craft rather than this program's; the
+// library is imported when a file is made, never with the page. Cost, stated once: an M4A runs a
+// few AAC frames past the timeline — the encoder's priming at the start and its last frame's
+// padding, which Chrome's encoder does not report, so no edit list trims them. Measured in Chrome
+// 152 on macOS, 2026-09-16: a 9.400 s timeline made a file ffprobe reads as 9.472 s (afinfo:
+// 9.428 s), and a 149.100 s one a file of 149.184 s (afinfo: 149.140 s) — a few frames whatever
+// the length, since the whole paste is one continuous encode. A WAV is the timeline to the sample.
 
 import type { AudioSample, AudioSampleSource } from "mediabunny";
 import { joined } from "./audioCodec";
@@ -120,5 +124,7 @@ export const encodeFile = async (audio: FileAudio, format: PcmFormat, form: File
   await output.finalize();
   const bytes = output.target.buffer;
   if (bytes === null) throw new Error("rendition file: the encoder finished with no bytes");
-  return { bytes, extension: output.format.fileExtension, mimeType: output.format.mimeType };
+  // An MP4 holding only audio is an M4A by name; the MIME type is the output's own reading of its
+  // tracks.
+  return { bytes, extension: form.container === "m4a" ? ".m4a" : output.format.fileExtension, mimeType: await output.getMimeType() };
 };
