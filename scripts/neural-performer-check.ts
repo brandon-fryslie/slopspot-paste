@@ -210,8 +210,9 @@ console.log("createNeuralPerformer: over the real scheduler and player");
   assert("a disposed performer reports nothing more", views.length === before);
 }
 
-console.log("a unit still being made: the words the model has begun are painted as they are heard (slopspot-read-along-a35.8o0)");
-{
+// A port the check speaks for the worker through: whatever the performer sends goes nowhere,
+// and `emit` hands it a worker's message.
+const heldPort = (): { readonly port: ListenPort; readonly emit: (message: FromWorker) => void } => {
   const listeners = new Set<(message: FromWorker) => void>();
   const port: ListenPort = {
     send: () => undefined,
@@ -224,9 +225,12 @@ console.log("a unit still being made: the words the model has begun are painted 
     dispose: () => undefined,
     terminate: () => undefined,
   };
-  const emit = (message: FromWorker): void => {
-    for (const listener of listeners) listener(message);
-  };
+  return { port, emit: (message) => listeners.forEach((listener) => listener(message)) };
+};
+
+console.log("a unit still being made: the words the model has begun are painted as they are heard (slopspot-read-along-a35.8o0)");
+{
+  const { port, emit } = heldPort();
   const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, kept: [], device: openDevice(StubDevice), onChange: () => undefined });
   const device = StubDevice.instances.at(-1);
   if (device === undefined) throw new Error("the performer did not build a player");
@@ -259,6 +263,45 @@ console.log("a unit still being made: the words the model has begun are painted 
   assert("a word begun past the unit's guessed length is lit once the voice reaches it", 20 * frameMs > 20 * DEFAULT_MS_PER_CHAR && lit() === "here.");
   emit({ kind: "done", unitId: 0, report: { durationMs: 22 * frameMs, alignment: { kind: "words", times: [{ startMs: 0, endMs: 2 * frameMs }, { startMs: 2 * frameMs, endMs: 20 * frameMs }, { startMs: 20 * frameMs, endMs: 22 * frameMs }] } }, elapsedMs: 5 });
   assert("the record replaces the words begun, and the word under the voice is the same one", lit() === "here." && performer.view().holdings[0]?.kind === "held");
+  performer.dispose();
+}
+
+console.log("a failed unit that ends a turn: the gap before the next speaker still sounds (slopspot-read-along-a35.3md)");
+{
+  const { port, emit } = heldPort();
+  const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, kept: [], device: openDevice(StubDevice), onChange: () => undefined });
+  const device = StubDevice.instances.at(-1);
+  if (device === undefined) throw new Error("the performer did not build a player");
+  const frameMs = FRAME_S * 1000;
+  const report: UnitReport = { durationMs: 2 * frameMs, alignment: { kind: "unit" } };
+  // Units 0 and 1 are made, unit 2, the last of the first turn, fails, and unit 3 opens the
+  // second turn: the layout is unit 0, unit 1, unit 2, the gap, unit 3.
+  const made = (unitId: number): void => {
+    for (const index of [0, 1]) emit({ kind: "audio", unitId, frameIndex: index, pcm: frame(unitId, index) });
+    emit({ kind: "done", unitId, report, elapsedMs: 5 });
+  };
+  performer.send({ kind: "play" });
+  made(0);
+  made(1);
+  emit({ kind: "failed", unitId: 2, reason: { kind: "runtime", message: "the model gave up" } });
+  made(3);
+  const gap = performer.view().timeline.segments.findIndex((segment) => segment.content.kind === "silence");
+  // Where the voice is, sampled every 10 ms of the device's clock: the segment the player is in.
+  const heard: number[] = [];
+  device.advance(SCHEDULE_LEAD_S);
+  for (let ms = 0; ms < 4 * frameMs + GAP_MS + 200; ms += 10) {
+    const view = performer.view();
+    if (view.player.kind !== "idle") heard.push(view.player.at.segment);
+    device.advance(0.01);
+  }
+  const msIn = (segment: number): number => 10 * heard.filter((at) => at === segment).length;
+  const firstOf = (segment: number): number => heard.indexOf(segment);
+  assert("setup: the gap is the fourth segment, after the failed unit", gap === 3);
+  assert("the failed unit is skipped: the voice spends no time in it", msIn(2) === 0);
+  // The skip is a seek, and a seek re-cues the player a lead ahead of the device's clock, so
+  // the listener hears the gap's whole length and at most that lead (and a sample) beyond it.
+  assert("the gap sounds its whole length between the first turn's last audio and the next speaker", msIn(gap) >= GAP_MS && msIn(gap) <= GAP_MS + SCHEDULE_LEAD_S * 1000 + 20 && firstOf(1) < firstOf(gap) && firstOf(gap) < firstOf(4));
+  assert("and the next speaker's audio follows it", msIn(4) > 0);
   performer.dispose();
 }
 
