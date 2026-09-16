@@ -12,7 +12,7 @@ import { createNeuralPerformer, passages, segmentOffsetAt, stateOf, timeOf, utte
 import type { PerformerState } from "../src/performer";
 import type { Utterance } from "../src/speech";
 import { addUnit, emptyManifest, type Manifest, type UnitReport } from "../src/speechManifest";
-import type { SynthesisUnit } from "../src/speechScript";
+import { prepareText, type SynthesisUnit } from "../src/speechScript";
 import { DEFAULT_VOICES } from "../src/voiceChoice";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
@@ -49,7 +49,7 @@ const two: Utterance = { index: 1, anchor: "t1", voice: "narrator", text: "pytho
 const three: Utterance = { index: 2, anchor: "t2", voice: "assistant", text: "A reply." };
 const utterances = [one, two, three];
 const clone = (u: Utterance): Utterance => ({ ...u });
-const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, text: utterance.text.slice(start, end) });
+const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, ...prepareText(utterance.text.slice(start, end)) });
 const script = ((): SynthesisUnit[] => {
   const [a, b, c] = [clone(one), clone(two), clone(three)];
   return [unit(a, 0, 20), unit(a, 21, 42), unit(b, 0, 27), unit(c, 0, 8)];

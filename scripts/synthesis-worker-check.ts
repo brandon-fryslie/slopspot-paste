@@ -29,7 +29,7 @@ import { FRAME_MS, MODEL_ASSETS, MODEL_VERSION, type VoiceId } from "../src/mode
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance } from "../src/speech";
 import { wordish } from "./speechFixtures";
-import { deriveSpeechScript, type UnitText } from "../src/speechScript";
+import { deriveSpeechScript, prepareText, type UnitText } from "../src/speechScript";
 import {
   createSynthesisHandler,
   type GenerationEnd,
@@ -52,8 +52,8 @@ const assert = (label: string, cond: boolean): void => {
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-// A unit's text standing alone: fed exactly as its source reads.
-const unitOf = (text: string): UnitText => ({ text, source: text });
+// A unit's text standing alone: its whole source, prepared.
+const unitOf = (source: string): UnitText => ({ ...prepareText(source), source });
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await tick();
 };

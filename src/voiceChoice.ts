@@ -101,5 +101,5 @@ export const voiceName = (id: VoiceId): string => id.charAt(0).toUpperCase() + i
 // budget, and long enough to hear a voice's character.
 export const previewText = (id: VoiceId): UnitText => {
   const source = `Hello, this is ${voiceName(id)}. I can read this conversation to you.`;
-  return { text: prepareText(source), source };
+  return { ...prepareText(source), source };
 };
