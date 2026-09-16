@@ -183,7 +183,7 @@ console.log("step: the way to audio");
   assert("unavailable: the store's reason, and that each listen downloads the whole model", shown(step(idle, home({ kind: "unavailable", message: "private browsing", bytesToDownload: WHOLE_MODEL })).state) === `Listen | stop(off) | This browser can't keep the voice (private browsing); each listen downloads ${MB}`);
   assert("the keep request's answer is not asked of an idle voice, but shown if it arrives: denied names the consequence", shown(step(idle, kept({ kind: "denied" })).state) === "Listen | stop(off) | Looking for the voice on this device… · this browser may drop the voice when space is short; the next listen would download it again");
   const probing = step(idle, tapPlay);
-  assert("tap play from idle spends the gesture on the device and spawns the worker to probe; Play has nothing more to say", effects(probing) === "unlock,spawn" && shown(probing.state) === "Listen(off) | stop(off) | Checking this device for the voice…");
+  assert("tap play from idle spends the gesture on the device, spawns the worker to probe and asks it for the script; Play has nothing more to say", effects(probing) === "unlock,spawn,script" && shown(probing.state) === "Listen(off) | stop(off) | Checking this device for the voice…");
   const again = step(probing.state, tapPlay);
   assert("a tap while probing spends its gesture and changes nothing else", effects(again) === "unlock" && shown(again.state) === shown(probing.state) && held(again.state) === "top");
   assert("a stop tap before there is anything to stop changes nothing", step(probing.state, tapStop).state === probing.state);
@@ -215,9 +215,9 @@ console.log("step: the way to audio");
   assert("retry spends its gesture and sends load again on the same worker", effects(retried) === "unlock,load" && shown(retried.state).startsWith("Listen(off)"));
 
   const scripting = step(warming.state, ready);
-  assert("ready: the script is sent", effects(scripting) === "script" && shown(scripting.state) === "Listen(off) | stop(off) | Preparing the script…");
+  assert("ready: nothing more to send — the script was asked for at the spawn — and the script is what the voice waits on", effects(scripting) === "" && shown(scripting.state) === "Listen(off) | stop(off) | Preparing the script…");
   const restoring = step(scripting.state, scriptBack);
-  assert("the units back: the device is asked what it keeps of them, the status unchanged", restoring.state.kind === "provisioning" && restoring.state.neural.kind === "restoring" && effects(restoring) === "restore" && shown(restoring.state) === "Listen(off) | stop(off) | Preparing the script…");
+  assert("the units back: the device is asked what it keeps of them, the status unchanged", restoring.state.kind === "provisioning" && restoring.state.script.kind === "restoring" && effects(restoring) === "restore" && shown(restoring.state) === "Listen(off) | stop(off) | Preparing the script…");
   throws("a script reply with another id is not ours", () => step(scripting.state, worker({ kind: "script", id: 7, units })));
   const keptReports = [report(640), undefined, undefined];
   const answer = (asked: ReadonlyArray<SynthesisUnit>): PanelEvent => ({ kind: "restored", units: asked, voices: DEFAULT_VOICES, kept: keptReports });
@@ -267,7 +267,7 @@ console.log("step: the way to audio");
 
   // A tap on the page: the place is kept for the voice's arrival.
   const tapped = step(idle, seekTo(1, 3));
-  assert("a seek from idle spawns the worker like Play, and holds the place", effects(tapped) === "unlock,spawn" && held(tapped.state) === "1:3");
+  assert("a seek from idle spawns the worker like Play, and holds the place", effects(tapped) === "unlock,spawn,script" && held(tapped.state) === "1:3");
   const tappedTwice = step(tapped.state, seekTo(0, 21));
   assert("a later seek replaces the place, spends its gesture and spawns nothing more", effects(tappedTwice) === "unlock" && held(tappedTwice.state) === "0:21");
   const arriving = [supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, tappedTwice.state);
@@ -282,11 +282,11 @@ console.log("step: the way to audio");
   assert("a crash on stage while idle, nothing cued: released, and still nobody has named a place", effects(crashedOnStage) === "release terminate,home" && held(crashedOnStage.state) === "top");
   const fellPlaying = step(playing.state, { kind: "worker-error", message: "boom" });
   assert("a crash while playing keeps the reported place for the retry", held(fellPlaying.state) === "1:0" && shown(fellPlaying.state) === "Retry | stop(off) | The voice failed: boom");
-  const fellRewoken = [wake("none"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, fellPlaying.state);
+  const fellRewoken = [wake("none"), supported, progress(1, 1), ready].reduce((state, event) => step(state, event).state, fellPlaying.state);
   assert("a crash while playing, then a wake: the voice comes back standing at the place, not speaking — the tap's yes went with its device", held(fellRewoken) === "1:0" && effects(step(fellRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate");
   throws("a view after the crash is a violation: the released performer's last view never reaches step", () => step(crashed.state, { kind: "view", view: viewOf({ kind: "idle" }) }));
   const respawned = step(fellPlaying.state, tapPlay);
-  assert("Retry after a crash spawns a fresh worker and probes, the place still held", effects(respawned) === "unlock,spawn" && held(respawned.state) === "1:0" && shown(respawned.state).startsWith("Listen(off)"));
+  assert("Retry after a crash spawns a fresh worker and probes, the place still held — and, the script still held, asks the device what it keeps, to play it before the model is warm", effects(respawned) === "unlock,spawn,restore" && held(respawned.state) === "1:0" && shown(respawned.state).startsWith("Listen(off)"));
   const disposedMid = step(playing.state, { kind: "dispose" });
   assert("dispose, anywhere: back to the start, the live worker asked to dispose", shown(disposedMid.state) === IDLE_LINE && held(disposedMid.state) === "top" && effects(disposedMid) === "release dispose,home");
 
@@ -300,11 +300,59 @@ console.log("step: the way to audio");
   assert("a crash returns to the start with the store asked again, the last answer dropped", (() => { const s = step(kept1.state, { kind: "worker-error", message: "x" }).state; return s.kind === "provisioning" && s.home.kind === "reading" && s.keeping === null; })());
 }
 
+console.log("step: a script in hand puts the voice on stage before the model is warm, and the model loads behind it");
+{
+  const idle = initialState();
+  const offer = (state: PanelState): string => readout(state, page, ASKING).voices.preview.kind;
+  const woken = step(idle, wake("none"));
+  const scripted = step(woken.state, scriptBack);
+  assert("the script answered before the probe — from the device — with no consent: held, nothing else done", effects(scripted) === "" && shown(scripted.state) === MOUNT_LINE);
+  const played = step(scripted.state, tapPlay);
+  assert("Play: the gesture spent, and the device asked what it keeps of the script's units at once — no model to wait for", effects(played) === "unlock,restore" && shown(played.state) === "Listen(off) | stop(off) | Preparing the script…");
+  const restoring = played.state;
+  if (restoring.kind !== "provisioning" || restoring.script.kind !== "restoring") throw new Error("fixture: not restoring");
+  const built = step(restoring, { kind: "restored", units: restoring.script.units, voices: DEFAULT_VOICES, kept: [report(640), report(640), report(320)] });
+  assert("the device's answer builds the performer, with the model still probing", effects(built) === "build");
+  const onStage = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
+  assert("on stage while the model probes: sent to its place, the line saying where the model is, no preview offered", onStage.state.kind === "neural" && effects(onStage) === "perform rate,perform seek 0ms" && shown(onStage.state) === "Listen | stop(off) | Ready · checking this device for the voice…" && offer(onStage.state) === "withheld");
+  const loadingBehind = step(onStage.state, supported);
+  assert("the probe answers behind the stage: the load goes on the Play's consent", effects(loadingBehind) === "load" && loadingBehind.state.kind === "neural");
+  const kept = step(loadingBehind.state, { kind: "view", view: viewOf({ kind: "speaking", at: inUnit(0), flow: "audio" }) });
+  assert("playing what the device keeps, the model preparing behind it", shown(kept.state) === "Pause | stop | Playing · passage 1 of 2 · preparing the voice…");
+  const downloading = step(kept.state, progress(120_000_000, 239_000_000));
+  assert("the download behind a playing voice: its line and its bar", shown(downloading.state) === "Pause | stop | Playing · passage 1 of 2 · downloading the voice · 50% · 120 of 239 MB · estimating time left… | bar 120000000/239000000");
+  const waiting = step(downloading.state, { kind: "view", view: viewOf({ kind: "speaking", at: inUnit(1), flow: "waiting" }) });
+  assert("a unit the device does not keep waits for the voice, and says so — not \"synthesizing\" with no model to synthesize", shown(waiting.state) === "Pause | stop | Waiting for the voice · passage 1 of 2 · downloading the voice · 50% · 120 of 239 MB · estimating time left… | bar 120000000/239000000");
+  const warmed = [progress(1, 1), ready].reduce((state, event) => step(state, event).state, waiting.state);
+  assert("the model ready behind it: the line is the voice's alone, synthesizing ahead, and previews are offered", shown(warmed) === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && offer(warmed) === "offered");
+  assert("a preview before the model is ready does nothing", effects(step(waiting.state, { kind: "preview", voice: "marius" })) === "" && effects(step(warmed, { kind: "preview", voice: "marius" })) === "perform pause,preview");
+
+  const failed = step(downloading.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
+  assert("a load that fails behind a playing voice is on the line, where it stopped, and the voice plays on", failed.state.kind === "neural" && effects(failed) === "" && shown(failed.state) === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline | bar 120000000/239000000");
+  assert("the reader's Pause asks nothing of the model", effects(step(failed.state, tapPlay)) === "hush,perform pause");
+  const paused = step(failed.state, { kind: "view", view: viewOf({ kind: "paused", at: inUnit(0) }) }).state;
+  const replayed = step(paused, tapPlay);
+  assert("the reader's Play tries the load again", effects(replayed) === "hush,perform play,load" && shown(replayed.state).includes("preparing the voice…"));
+  assert("and so does the yes, and a wake, the Play's consent still held", effects(step(failed.state, yes)) === "load" && effects(step(failed.state, wake("none"))) === "load");
+
+  const unable = step(onStage.state, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } }));
+  assert("a device found unable behind the stage: the voice leaves it, released, the reason on the line", unable.state.kind === "provisioning" && effects(unable) === "release terminate,home" && shown(unable.state) === "Listen(off) | stop(off) | This device can't run the voice: this browser has no WebGPU");
+  const fell = step(kept.state, { kind: "worker-error", message: "boom" });
+  const retried = step(fell.state, tapPlay);
+  assert("a crash behind the stage keeps the script: Retry puts the voice back on stage without asking for it again", effects(retried) === "unlock,spawn,restore" && held(retried.state) === "0:0");
+
+  const standing = step(step(woken.state, wake("download")).state, supported);
+  const standingScripted = step(standing.state, scriptBack);
+  assert("a yes to the download alone, the script in hand: the voice waits for the model, as a voice standing ready always has", effects(standing) === "load" && effects(standingScripted) === "" && shown(standingScripted.state) === "Listen | stop(off) | Preparing the voice…");
+  assert("and takes the stage when the model is ready", effects(step(step(standingScripted.state, progress(1, 1)).state, ready)) === "restore");
+  assert("no consent at all, the script in hand, the worker able: nothing is built and nothing loads", effects(step(scripted.state, supported)) === "");
+}
+
 console.log("step: consent is the only door to the weights");
 {
   const idle = initialState();
   const woken = step(idle, wake("none"));
-  assert("the page's wake with nothing remembered: the worker is spawned to probe, no gesture spent, and Play still reads", effects(woken) === "spawn" && shown(woken.state) === MOUNT_LINE);
+  assert("the page's wake with nothing remembered: the worker is spawned to probe and asked for the script, no gesture spent, and Play still reads", effects(woken) === "spawn,script" && shown(woken.state) === MOUNT_LINE);
   assert("a second wake while probing changes nothing", effects(step(woken.state, wake("none"))) === "" && shown(step(woken.state, wake("none")).state) === MOUNT_LINE);
   const able = step(woken.state, supported);
   assert("supported with no consent: nothing is sent; the line is the store's word", effects(able) === "" && shown(able.state) === IDLE_LINE);
@@ -325,7 +373,7 @@ console.log("step: consent is the only door to the weights");
   assert("a voice that arrives after the consent was raised is sent to its place", effects(step(arrivedSpeaking, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0ms");
 
   const yesFirst = step(idle, yes);
-  assert("the hover's yes before the probe: the gesture spent and the worker spawned", effects(yesFirst) === "unlock,spawn" && shown(yesFirst.state) === MOUNT_LINE);
+  assert("the hover's yes before the probe: the gesture spent and the worker spawned", effects(yesFirst) === "unlock,spawn,script" && shown(yesFirst.state) === MOUNT_LINE);
   assert("and the consent is held for the probe's answer: supported loads at once", effects(step(yesFirst.state, supported)) === "load");
   assert("a wake while probing after a yes changes nothing", effects(step(yesFirst.state, wake("none"))) === "" && effects(step(yesFirst.state, wake("download"))) === "");
 
@@ -338,14 +386,14 @@ console.log("step: consent is the only door to the weights");
   const crashedStanding = step(step(standing.state, progress(1, 2)).state, { kind: "worker-error", message: "x" });
   assert("a crash while a remembered download runs: Retry, the consent kept", shown(crashedStanding.state) === "Retry | stop(off) | The voice failed: x");
   const rewoken = step(crashedStanding.state, wake("download"));
-  assert("a wake after the crash, the yes still standing, spawns again", effects(rewoken) === "spawn");
+  assert("a wake after the crash, the yes still standing, spawns again, and asks again for the script the fallen worker never answered", effects(rewoken) === "spawn,script");
   assert("and the standing yes loads on the probe's answer", effects(step(rewoken.state, supported)) === "load");
   const withdrawn = step(step(crashedStanding.state, wake("none")).state, supported);
   assert("a wake with the yes withdrawn — the box unchecked, the connection metered — probes and waits", effects(withdrawn) === "" && shown(withdrawn.state) === IDLE_LINE);
   const idleOnStage = step(standingReady.state, { kind: "worker-error", message: "x" });
-  const idleRetried = [tapPlay, supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
+  const idleRetried = [tapPlay, supported, progress(1, 1), ready].reduce((state, event) => step(state, event).state, idleOnStage.state);
   assert("a crash on stage while idle, then Retry: the tap is the consent, the voice arrives and speaks", effects(step(idleRetried, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate,perform seek 0ms");
-  const idleRewoken = [wake("download"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, idleOnStage.state);
+  const idleRewoken = [wake("download"), supported, progress(1, 1), ready].reduce((state, event) => step(state, event).state, idleOnStage.state);
   assert("a crash on stage while idle, then a wake: the voice comes back standing ready, not speaking", effects(step(idleRewoken, { kind: "view", view: viewOf({ kind: "idle" }) })) === "perform rate");
   // A failed load is retried on the consent still held: the standing yes while it stands, the
   // reader's own yes whatever the box says.
@@ -1012,15 +1060,15 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   const r = rig();
   const panel = mount(r);
 
-  assert("mounted: the worker is spawned to probe, the store asked, nothing sent, no device, the mark checking", r.line() === MOUNT_LINE && r.counts.homeAsked === 1 && r.counts.keepAsked === 0 && r.counts.spawned === 1 && r.sent.length === 0 && r.devices().length === 0 && r.shownMark() === MOUNT_MARK);
+  assert("mounted: the worker is spawned to probe and asked for the script, the store asked, nothing else sent, no device, the mark checking", r.line() === MOUNT_LINE && r.counts.homeAsked === 1 && r.counts.keepAsked === 0 && r.counts.spawned === 1 && r.said() === "script" && r.devices().length === 0 && r.shownMark() === MOUNT_MARK);
   assert("the mark is named for assistive tech by the status line", r.mark.button.getAttribute("aria-label") === "Listen: Checking this device for the voice…");
   r.play.click();
   const device = r.devices()[0];
   if (device === undefined) throw new Error("the tap did not open a device");
   assert("click Play while the probe runs: no second worker, the button disables — the tap is the consent", r.counts.spawned === 1 && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
-  assert("the audio device is opened AND resumed on the tap, before any worker message, and the page told of the unlock on the same stack", r.devices().length === 1 && device.calls.join() === "resume" && r.counts.unlocked === 1 && r.sent.length === 0);
+  assert("the audio device is opened AND resumed on the tap, before any worker message, and the page told of the unlock on the same stack", r.devices().length === 1 && device.calls.join() === "resume" && r.counts.unlocked === 1 && r.said() === "script");
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
-  assert("supported with the tap held: load is sent", r.said() === "load" && r.shownMark() === "warming | folded | progress ? | remember off");
+  assert("supported with the tap held: load is sent", r.said() === "script,load" && r.shownMark() === "warming | folded | progress ? | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
   assert("downloading: the bar shows and carries the bytes, the mark's ring the fraction", !r.bar.hidden && r.bar.value === 50_000_000 && r.bar.max === 200_000_000 && r.line() === "Listen(off) | stop(off) | Downloading the voice · 25% · 50 of 200 MB · estimating time left…" && r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25");
   // The driver stamps each message with the clock's reading: 50 MB more in 5 s is 10 MB/s,
@@ -1031,8 +1079,8 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   r.emit({ kind: "progress", progress: { loadedBytes: 200_000_000, totalBytes: 200_000_000 } });
   assert("warming: the bar goes, the ring is empty", r.bar.hidden && r.line() === "Listen(off) | stop(off) | Warming up the voice…" && r.mark.root.dataset.state === "warming" && r.mark.root.style.getPropertyValue("--fraction") === "0");
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
-  const script = r.sent.at(-1);
-  assert("ready: the page's utterances go to the worker under the panel's script id", script?.kind === "script" && script.id === SCRIPT_ID && script.utterances === utterances);
+  const script = r.sent[0];
+  assert("the script the voice waits on was asked for at the spawn: the page's utterances under the panel's script id", script?.kind === "script" && script.id === SCRIPT_ID && script.utterances === utterances && r.line() === "Listen(off) | stop(off) | Preparing the script…");
 
   await scripted(r);
   assert("units back: the voice plays at once from the top on the device the tap opened, and asks for unit 0", panel.state().kind === "neural" && r.devices().length === 1 && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.mark.root.dataset.state === "speaking");
@@ -1075,7 +1123,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   assert("the place the voice stood is kept as the cue, and the cursor rests on its word, the loop off", r.where() === "t1 0-5/0-5 of 1" && r.frames.pending === 0 && held(panel.state()) === "0:0");
   r.play.click();
   const second = r.devices()[1];
-  assert("Retry: a fresh worker is spawned and probed, and a fresh device opened and resumed on the tap", r.counts.spawned === 2 && second !== undefined && second !== device && second.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
+  assert("Retry: a fresh worker is spawned and probed, a fresh device opened and resumed on the tap, and the script the panel still holds is not asked for again", r.counts.spawned === 2 && second !== undefined && second !== device && second.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Preparing the script…" && r.sent.filter((m) => m.kind === "script").length === 1);
   panel.dispose();
   assert("dispose: the worker disposed (not terminated outright), unheard, the device closed, at the start", r.counts.disposed === 1 && r.counts.terminated === 1 && r.counts.listeners() === 0 && second?.calls.at(-1) === "close" && r.line() === IDLE_LINE);
 }
@@ -1149,12 +1197,12 @@ console.log("createListenPanel: the store's word before the tap, the browser's a
   const r = rig();
   const panel = mount(r);
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
-  assert("supported with nothing said: the worker waits, nothing sent, the store's answer awaited", r.sent.length === 0 && r.line() === IDLE_LINE && r.shownMark() === MOUNT_MARK);
+  assert("supported with nothing said: the worker waits, nothing sent, the store's answer awaited", r.said() === "script" && r.line() === IDLE_LINE && r.shownMark() === MOUNT_MARK);
   r.answer.home({ kind: "resident" });
   await Promise.resolve();
-  assert("the store answers: the line says the voice is on this device, the mark ready, no download offered, still nothing sent", r.line() === RESIDENT_LINE && r.shownMark() === "ready | folded | play | remember off" && r.sent.length === 0);
+  assert("the store answers: the line says the voice is on this device, the mark ready, no download offered, still nothing sent", r.line() === RESIDENT_LINE && r.shownMark() === "ready | folded | play | remember off" && r.said() === "script");
   r.play.click();
-  assert("the tap on an able voice: load is sent and the browser is asked to keep the bytes, in that order", r.sent.map((m) => m.kind).join() === "load" && r.counts.keepAsked === 1 && r.line() === "Listen(off) | stop(off) | Preparing the voice…");
+  assert("the tap on an able voice: load is sent and the browser is asked to keep the bytes, in that order", r.sent.map((m) => m.kind).join() === "script,load" && r.counts.keepAsked === 1 && r.line() === "Listen(off) | stop(off) | Preparing the voice…");
   r.answer.keep({ kind: "denied" });
   await Promise.resolve();
   assert("denied: the consequence is on the line beside the phase", r.line() === "Listen(off) | stop(off) | Preparing the voice… · this browser may drop the voice when space is short; the next listen would download it again");
@@ -1175,16 +1223,16 @@ console.log("createListenPanel: the hover's yes downloads the voice and leaves i
   const r = rig();
   const panel = mount(r);
   await ableAbsent(r);
-  assert("download needed: the mark says so, the hover asks with the size and offers the yes and the box; nothing sent, no device", r.shownMark() === ASK_MARK && r.line() === ABSENT_LINE && r.sent.length === 0 && r.devices().length === 0 && r.mark.button.getAttribute("aria-label") === "Listen: The voice downloads 239 MB once, then runs on this device");
+  assert("download needed: the mark says so, the hover asks with the size and offers the yes and the box; nothing sent, no device", r.shownMark() === ASK_MARK && r.line() === ABSENT_LINE && r.said() === "script" && r.devices().length === 0 && r.mark.button.getAttribute("aria-label") === "Listen: The voice downloads 239 MB once, then runs on this device");
   r.mini.download.click();
   const device = r.devices()[0];
-  assert("yes: the device is opened and resumed on the click, load sent, the browser asked to keep; Play still reads, since a yes is not a Play", device?.calls.join() === "resume" && r.said() === "load" && r.counts.keepAsked === 1 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember off");
+  assert("yes: the device is opened and resumed on the click, load sent, the browser asked to keep; Play still reads, since a yes is not a Play", device?.calls.join() === "resume" && r.said() === "script,load" && r.counts.keepAsked === 1 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 60_000_000, totalBytes: 240_000_000 } });
   assert("downloading: the ring fills, the question is gone", r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25" && r.shownMark() === "downloading | folded | progress 0.25 | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 240_000_000, totalBytes: 240_000_000 } });
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   await scripted(r);
-  assert("the voice arrives on the yes alone: on stage, Ready, nothing synthesized, no cursor, the mark ready", panel.state().kind === "neural" && r.said() === "load,script" && r.line() === "Listen | stop(off) | Ready" && r.shownMark() === "ready | folded | play | remember off" && r.positions.every((at) => at === null) && r.frames.pending === 0);
+  assert("the voice arrives on the yes alone: on stage, Ready, nothing synthesized, no cursor, the mark ready", panel.state().kind === "neural" && r.said() === "script,load" && r.line() === "Listen | stop(off) | Ready" && r.shownMark() === "ready | folded | play | remember off" && r.positions.every((at) => at === null) && r.frames.pending === 0);
   r.play.click();
   assert("Play on the ready voice speaks from the top on the device the yes opened", r.devices().length === 1 && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.where() === "t1 0-20 of 1");
   panel.dispose();
@@ -1196,12 +1244,12 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   const panel = mount(r);
   await ableAbsent(r);
   r.check(true);
-  assert("checking the box writes the preference, and the voice loads with no tap and no device", readPreference(r.store) && r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember on");
+  assert("checking the box writes the preference, and the voice loads with no tap and no device", readPreference(r.store) && r.said() === "script,load" && r.devices().length === 0 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember on");
   r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   await scripted(r);
   const device = r.devices()[0];
-  assert("a voice built on a standing consent opens its device outside any gesture, unresumed, and stands ready", r.devices().length === 1 && device?.calls.join() === "" && r.counts.unlocked === 0 && r.line() === "Listen | stop(off) | Ready" && r.said() === "load,script");
+  assert("a voice built on a standing consent opens its device outside any gesture, unresumed, and stands ready", r.devices().length === 1 && device?.calls.join() === "" && r.counts.unlocked === 0 && r.line() === "Listen | stop(off) | Ready" && r.said() === "script,load");
   r.play.click();
   assert("the first Play resumes that device on the tap and speaks", device?.calls.includes("resume") === true && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
   r.check(false);
@@ -1210,15 +1258,15 @@ console.log("createListenPanel: the box is the yes for this visit and every next
 
   const next = rig({ storage: { remembered: true } });
   const nextPanel = mount(next);
-  assert("a later visit with the preference: the probe first, the mark checking with nothing to ask, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "checking | folded | progress ? | remember on" && next.sent.length === 0);
+  assert("a later visit with the preference: the probe first, the mark checking with nothing to ask, the box checked, nothing sent before the worker is able", next.line() === MOUNT_LINE && next.shownMark() === "checking | folded | progress ? | remember on" && next.said() === "script");
   next.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
-  assert("supported: load is sent with no tap, the browser asked to keep, no device opened", next.said() === "load" && next.counts.keepAsked === 1 && next.devices().length === 0 && next.line() === PREPARING_LINE);
+  assert("supported: load is sent with no tap, the browser asked to keep, no device opened", next.said() === "script,load" && next.counts.keepAsked === 1 && next.devices().length === 0 && next.line() === PREPARING_LINE);
   next.answer.home(ABSENT);
   await Promise.resolve();
   assert("the store's late word does not put a question over a download in flight", next.shownMark() === "warming | folded | progress ? | remember on");
   next.emit({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
   next.check(false);
-  assert("the download fails and the reader unchecks the box: the preference is gone, nothing is sent again, the failure stays on the line", next.store.keys().length === 0 && next.said() === "load" && next.line() === "Retry | stop(off) | The voice could not load: network error fetching u: offline" && next.shownMark() === "failed | folded | note retry | remember off");
+  assert("the download fails and the reader unchecks the box: the preference is gone, nothing is sent again, the failure stays on the line", next.store.keys().length === 0 && next.said() === "script,load" && next.line() === "Retry | stop(off) | The voice could not load: network error fetching u: offline" && next.shownMark() === "failed | folded | note retry | remember off");
   nextPanel.dispose();
 }
 
@@ -1227,17 +1275,17 @@ console.log("createListenPanel: on a metered connection the remembered yes still
   const r = rig({ storage: { remembered: true }, connection: { type: "cellular" } });
   const panel = mount(r);
   await ableAbsent(r);
-  assert("nothing loads; the hover asks and says why, the box still checked", r.sent.length === 0 && r.shownMark() === "download | folded | ask Download speech model? · 239 MB · asking because this connection is metered | remember on" && r.line() === ABSENT_LINE);
+  assert("nothing loads; the hover asks and says why, the box still checked", r.said() === "script" && r.shownMark() === "download | folded | ask Download speech model? · 239 MB · asking because this connection is metered | remember on" && r.line() === ABSENT_LINE);
   r.connection.reading = { type: "wifi" };
   panel.wake();
-  assert("off the metered connection, the page's next wake gives the standing yes: load, no gesture", r.said() === "load" && r.devices().length === 0 && r.line() === PREPARING_LINE);
+  assert("off the metered connection, the page's next wake gives the standing yes: load, no gesture", r.said() === "script,load" && r.devices().length === 0 && r.line() === PREPARING_LINE);
   panel.dispose();
 
   const tapped = rig({ storage: { remembered: true }, connection: { saveData: true } });
   const tappedPanel = mount(tapped);
   await ableAbsent(tapped);
   tapped.mini.download.click();
-  assert("with save-data on, the hover's yes is the reader's own: load on the click", tapped.said() === "load" && tapped.devices()[0]?.calls.join() === "resume");
+  assert("with save-data on, the hover's yes is the reader's own: load on the click", tapped.said() === "script,load" && tapped.devices()[0]?.calls.join() === "resume");
   tappedPanel.dispose();
 }
 
@@ -1251,7 +1299,7 @@ console.log("createListenPanel: a device that cannot run the voice says so at mo
   r.mini.download.click();
   r.check(true);
   panel.send({ kind: "place", to: mark(1) });
-  assert("no tap, yes, box or word spawns anything or opens a device on it", r.counts.spawned === 1 && r.devices().length === 0 && r.sent.length === 0 && r.line().startsWith("Listen(off)"));
+  assert("no tap, yes, box or word spawns anything or opens a device on it", r.counts.spawned === 1 && r.devices().length === 0 && r.said() === "script" && r.line().startsWith("Listen(off)"));
   panel.dispose();
 }
 
@@ -1268,9 +1316,9 @@ console.log("createListenPanel: the mini-player folds on the mark's tap, and sta
   assert("a second tap folds it", folded());
   await ableAbsent(r);
   r.mark.button.click();
-  assert("download needed: the question and its two answers, no controls", r.shownMark() === "download | out | ask Download speech model? · 239 MB | remember off" && r.mini.faces.controls.hidden && r.sent.length === 0);
+  assert("download needed: the question and its two answers, no controls", r.shownMark() === "download | out | ask Download speech model? · 239 MB | remember off" && r.mini.faces.controls.hidden && r.said() === "script");
   r.mini.always.click();
-  assert("Always Download: the preference kept, the box in the panel checked, the load sent on the tap's device, the voice on its way", readPreference(r.store) && r.remember.checked && r.said() === "load" && r.devices().length === 1 && r.shownMark() === "warming | out | progress ? | remember on");
+  assert("Always Download: the preference kept, the box in the panel checked, the load sent on the tap's device, the voice on its way", readPreference(r.store) && r.remember.checked && r.said() === "script,load" && r.devices().length === 1 && r.shownMark() === "warming | out | progress ? | remember on");
   r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
   assert("downloading: the fraction on the bar, the panel's sentence on the line", r.shownMark() === "downloading | out | progress 0.25 | remember on" && r.mini.progress.textContent === "Downloading the voice · 25% · 50 of 200 MB · estimating time left…");
   r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
@@ -1300,7 +1348,7 @@ console.log("createListenPanel: the mini-player's Download keeps nothing, and it
   const panel = mount(r);
   await ableAbsent(r);
   r.mini.download.click();
-  assert("Download: the load sent on the tap, no preference kept, the box clear", r.said() === "load" && !readPreference(r.store) && !r.remember.checked && r.devices().length === 1);
+  assert("Download: the load sent on the tap, no preference kept, the box clear", r.said() === "script,load" && !readPreference(r.store) && !r.remember.checked && r.devices().length === 1);
   r.emit({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 1 } });
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   await scripted(r);
@@ -1338,7 +1386,7 @@ console.log("createListenPanel: focus never rides a hidden face out to the body"
   r.mini.download.focus();
   assert("the answer reached by keyboard holds focus", r.doc.activeElement === r.mini.download);
   r.mini.download.click();
-  assert("the answer taken: its face hides, the load is sent, focus is on the mark's button", r.said() === "load" && r.mini.faces.consent.hidden && r.doc.activeElement === r.mark.button);
+  assert("the answer taken: its face hides, the load is sent, focus is on the mark's button", r.said() === "script,load" && r.mini.faces.consent.hidden && r.doc.activeElement === r.mark.button);
   r.mark.button.click();
   assert("folded from the button: focus stays on it", r.mini.root.hidden && r.doc.activeElement === r.mark.button);
   panel.dispose();
@@ -1422,8 +1470,10 @@ console.log("createListenPanel: a crash mid-passage keeps the place, and Retry r
   r.fail("boom");
   assert("the crash keeps the reported place by name: the character under the clock in passage 1's second unit", r.devices()[0]?.calls.at(-1) === "close" && held(panel.state()) === "0:23" && r.line() === "Retry | stop(off) | The voice failed: boom");
   r.play.click();
-  await arrive(r);
-  assert("Retry: the voice arrives back where it fell, on a fresh device", r.devices().length === 2 && r.said().endsWith("synthesize 1") && r.where() === "t1 21-42 of 1");
+  await flush();
+  assert("Retry: the script still held, the voice is back on stage where it fell before the new worker has even probed, asking for that unit, on a fresh device", panel.state().kind === "neural" && r.devices().length === 2 && r.said().endsWith("synthesize 1") && r.where() === "t1 21-42 of 1");
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  assert("and the model loads behind it on the tap's consent", r.said().endsWith("synthesize 1,load"));
   panel.dispose();
 }
 
@@ -1439,7 +1489,7 @@ console.log("createListenPanel: a bug in the machine tears the panel down, loudl
   const thrown = await escaped(() => scripted(r, foreign));
   assert("a script that is not this page's is refused out of the dispatch that builds over it", thrown instanceof Error && thrown.message.includes("passage 0 of the script"));
   const after = panel.state();
-  assert("after the throw: the worker released, the device closed, no cursor ever painted, the panel at its start", r.counts.disposed === 1 && r.counts.listeners() === 0 && r.devices()[0]?.calls.at(-1) === "close" && r.positions.every((at) => at === null) && r.frames.pending === 0 && after.kind === "provisioning" && after.neural.kind === "idle" && r.line() === IDLE_LINE);
+  assert("after the throw: the worker released, the device closed, no cursor ever painted, the panel at its start", r.counts.disposed === 1 && r.counts.listeners() === 0 && r.devices()[0]?.calls.at(-1) === "close" && r.positions.every((at) => at === null) && r.frames.pending === 0 && after.kind === "provisioning" && after.model.kind === "idle" && r.line() === IDLE_LINE);
   r.play.click();
   assert("Play after the teardown starts over: a worker is spawned and a device opened", r.counts.spawned === 2 && r.devices().length === 2 && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
   panel.dispose();
@@ -1496,7 +1546,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("previews are named for assistive tech", hear("azelma").getAttribute("aria-label") === "Hear Azelma");
 
   radio("assistant", "marius").click();
-  assert("Claude's voice picked while cold: kept on the device, shown checked, reset offered, nothing sent to a worker", readPick(r.store).assistant === "marius" && checked() === "alba/marius" && !reset.disabled && r.sent.length === 0);
+  assert("Claude's voice picked while cold: kept on the device, shown checked, reset offered, nothing sent to a worker", readPick(r.store).assistant === "marius" && checked() === "alba/marius" && !reset.disabled && r.said() === "script");
   toggle.click();
   assert("the toggle closes it again; the pick stands", picker.hidden && checked() === "alba/marius");
 
@@ -1672,7 +1722,7 @@ console.log("createListenPanel: a link opens on its word before any audio exists
   const r = rig();
   const panel = mount(r);
   panel.open({ kind: "place", place: mark(0, 21) });
-  assert("the link's word is painted at once, the page asked to follow it, the mini-player out — no gesture spent, nothing fetched", r.where() === "t1 21-27/21-27 of 1" && r.seeks() === 1 && !r.mini.root.hidden && r.devices().length === 0 && r.sent.length === 0);
+  assert("the link's word is painted at once, the page asked to follow it, the mini-player out — no gesture spent, nothing fetched", r.where() === "t1 21-27/21-27 of 1" && r.seeks() === 1 && !r.mini.root.hidden && r.devices().length === 0 && r.said() === "script");
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   r.answer.home({ kind: "resident" });
   await Promise.resolve();
@@ -1703,6 +1753,37 @@ console.log("createListenPanel: over units the device keeps, a link starts on it
   const now = panel.state();
   assert("the device was asked in the reader's voices, once", r.restores.length === 1 && r.restores[0]?.user === DEFAULT_VOICES.user);
   assert("Play: the voice stands on the linked word inside the kept unit — the clock measured before the link resolved — and asks for that unit", now.kind === "neural" && r.said().endsWith("synthesize 1") && r.where() === "t1 21-42/28-36 of 1" && performerAt(now) === 400);
+  panel.dispose();
+}
+
+console.log("createListenPanel: a paste whose script and audio the device keeps plays on Play, before the model has answered anything");
+{
+  const r = rig();
+  const panel = mount(r);
+  r.kept.reports = [report(2 * FRAME_S * 1000), report(FRAME_S * 1000), report(FRAME_S * 1000)];
+  // The port answers the script from the device at once: before the probe, before any load.
+  await scripted(r);
+  assert("the script back before the probe, no consent: nothing built, nothing loaded, Listen offered", panel.state().kind === "provisioning" && r.said() === "script" && r.line() === MOUNT_LINE);
+  r.play.click();
+  await flush();
+  const device = r.devices()[0];
+  if (device === undefined) throw new Error("the tap did not open a device");
+  assert("Play: on stage at once on the tap's device, asking for unit 0, the model not even probed", panel.state().kind === "neural" && r.said() === "script,synthesize 0" && r.line() === "Pause | stop | Waiting for the voice · passage 1 of 2 · checking this device for the voice…");
+  // The port answers unit 0 from the device.
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 1, pcm: frame(0, 1) });
+  r.emit({ kind: "done", unitId: 0, report: report(2 * FRAME_S * 1000), elapsedMs: 3 });
+  device.advance(SCHEDULE_LEAD_S + 0.01);
+  assert("the kept unit plays while the line says where the model is", r.line() === "Pause | stop | Playing · passage 1 of 2 · checking this device for the voice…" && r.where() === "t1 0-20 of 1");
+  r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
+  assert("the probe answers behind it: the load goes, on the Play's consent, and the browser is asked to keep the bytes", r.said().endsWith(",load") && r.counts.keepAsked === 1 && r.line().startsWith("Pause | stop | Playing · passage 1 of 2 · preparing the voice…"));
+  r.emit({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
+  assert("the load fails behind it: said on the line, and the kept audio plays on", panel.state().kind === "neural" && r.line() === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline");
+  const loadsSaid = (): number => r.said().split(",").filter((kind) => kind === "load").length;
+  r.play.click();
+  assert("a Pause retries nothing", loadsSaid() === 1 && r.counts.keepAsked === 1);
+  r.play.click();
+  assert("the Play after it tries the load again", loadsSaid() === 2 && r.counts.keepAsked === 2);
   panel.dispose();
 }
 

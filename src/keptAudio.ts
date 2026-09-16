@@ -1,7 +1,8 @@
-// [LAW:decomposition] Kept audio: the units the voice has already made, kept on the reader's
-// device so a replay or a resume plays them from the device instead of synthesizing them
-// again. One sentence, no "and" hiding a second job: this module decides what the device keeps
-// of a unit, under which key, and for how long. It packs no audio (audioCodec.ts), talks to no
+// [LAW:decomposition] Kept audio: what the voice has already made — a paste's script and each
+// unit's audio — kept on the reader's device so a replay or a resume plays from the device
+// instead of waiting on the model to cut and synthesize it again. One sentence, no "and"
+// hiding a second job: this module decides what the device keeps of a listen, under which
+// key, and for how long. It packs no audio (audioCodec.ts), talks to no
 // worker (keptSynthesis.ts answers requests from it) and plays nothing. Its effects — the
 // store, the codec, the clock — are parameters, so scripts/kept-audio-check.ts drives every
 // arm with an in-memory store and the PCM codec [LAW:effects-at-boundaries].
@@ -10,15 +11,23 @@
 // one unit's identity (`unitHash`: the fed text and its source, the voice asset, the model,
 // the rules and the generation) and nothing else, so it is the same audio the worker would
 // make — the seed is fixed — and the device holding it or not changes only how long a unit
-// takes to arrive. An edit, a voice change or a new model is a different key and simply
-// misses; nothing is ever invalidated, because nothing can go stale under its own key.
+// takes to arrive. A kept script is the same for its utterances (`scriptHash`: the text, the
+// rules, the encoder, the tokenizer and the budget), cut once and read back wherever the
+// paste is opened again. What is kept of it is only what the cut adds — each unit's span and
+// fed text, and the position of its utterance among the ones it was cut from: the utterances
+// are the page's own, derived from the stored original and already the key's input, so a
+// recalled script is rebound to them rather than read back as a second copy of the paste. An
+// edit, a voice change or a new model is a different key and simply misses; nothing is ever
+// invalidated, because nothing can go stale under its own key.
 //
 // WHAT IS KEPT PER UNIT, in three parts under one key, each read alone: the audio in the
 // codec's form; the unit's record — its report (duration and word times) and frame count —
 // so a voice built over a script reads every kept unit's measurement in one small read
 // (`restore`) and a resume lands on its word before any audio is decoded; and its ledger
 // entry — its size and when it was last played — which is all the cap ever reads, so a
-// write near the cap never loads thousands of word timings to count bytes.
+// write near the cap never loads thousands of word timings to count bytes. A script is kept
+// as one entry with its own line in the same ledger, so it counts against the same cap and is
+// forgotten by the same rule: a paste whose script is read back is played again.
 //
 // THE CAP. At most KEPT_BYTES of audio stay on the device, counted in the kept form's bytes.
 // Every write that crosses the cap removes the least recently played units until it holds
@@ -39,14 +48,15 @@
 //
 // [LAW:no-silent-failure] exception: every failure — a store the browser refuses (private
 // mode, quota), a store another tab holds at an older version or the browser never opens, an entry that no longer
-// decodes — is the cache not holding the unit: a miss,
+// decodes — is the cache not holding the unit or the script: a miss,
 // synthesized as if nothing had been kept, and reported through `onFailure` so it is heard in
 // the console. A kept unit is a convenience; a refused store must not take Listen down with it
 // (keptPlace.ts makes the same trade for the resume position).
 
 import { bytesOf, type AudioCodec, type EncodedAudio } from "./audioCodec";
 import type { UnitReport } from "./speechManifest";
-import { unitHash, unitText, type SynthesisUnit, type UnitText, type VoiceMap } from "./speechScript";
+import type { Utterance } from "./speech";
+import { scriptHash, unitHash, unitText, type PreparedText, type SynthesisUnit, type UnitText, type VoiceMap } from "./speechScript";
 import type { VoiceId } from "./modelAssets";
 
 // 128 MiB: about eleven hours of Opus at the codec's 24 kbps, or three quarters of an hour of
@@ -59,6 +69,14 @@ export const KEPT_BYTES = 128 * 1024 * 1024;
 export interface KeptRecord {
   readonly report: UnitReport;
   readonly frames: number;
+}
+
+// [LAW:one-source-of-truth] A script unit as the device keeps it: the unit less its utterance,
+// which is named by its position among the utterances the script was cut from.
+export interface KeptScriptUnit extends PreparedText {
+  readonly utterance: number;
+  readonly start: number;
+  readonly end: number;
 }
 
 // A unit's line in the ledger: what the cap is counted over.
@@ -76,6 +94,9 @@ export interface KeptStore {
   audio(key: string): Promise<EncodedAudio | undefined>;
   // The entry, its record and its audio, together or not at all.
   put(entry: LedgerEntry, record: KeptRecord, audio: EncodedAudio): Promise<void>;
+  script(key: string): Promise<ReadonlyArray<KeptScriptUnit> | undefined>;
+  // The entry and its script, together or not at all.
+  putScript(entry: LedgerEntry, units: ReadonlyArray<KeptScriptUnit>): Promise<void>;
   touch(keys: ReadonlyArray<string>, playedAt: number): Promise<void>;
   ledger(): Promise<ReadonlyArray<LedgerEntry>>;
   remove(keys: ReadonlyArray<string>): Promise<void>;
@@ -102,6 +123,31 @@ export const evictions = (ledger: ReadonlyArray<LedgerEntry>, cap: number): Read
   return gone;
 };
 
+// The same utterance: what a unit's utterance is matched on, since the worker's reply carries a
+// copy of the page's.
+const same = (a: Utterance, b: Utterance): boolean => a.index === b.index && a.anchor === b.anchor && a.voice === b.voice && a.text === b.text;
+
+// A script as the device keeps it. Units come in their utterances' order (deriveSpeechScript),
+// so each unit's utterance is the first at or after the previous unit's that matches it; a unit
+// whose utterance is not among them is not a script of these utterances, and is thrown.
+export const keptScript = (utterances: ReadonlyArray<Utterance>, units: ReadonlyArray<SynthesisUnit>): ReadonlyArray<KeptScriptUnit> => {
+  let at = 0;
+  return units.map(({ utterance, start, end, text, sourceSpans }) => {
+    while (at < utterances.length && !same(utterances[at]!, utterance)) at++;
+    if (at === utterances.length) throw new RangeError(`kept audio: a unit of utterance ${utterance.index} is not among the ${utterances.length} it was cut from`);
+    return { utterance: at, start, end, text, sourceSpans };
+  });
+};
+
+// A kept script rebound to the utterances it was cut from; a position they lack is a store
+// that no longer holds what was written, and is thrown.
+export const recalledScript = (utterances: ReadonlyArray<Utterance>, kept: ReadonlyArray<KeptScriptUnit>): ReadonlyArray<SynthesisUnit> =>
+  kept.map(({ utterance: position, start, end, text, sourceSpans }) => {
+    const utterance = utterances[position];
+    if (utterance === undefined) throw new RangeError(`kept audio: a kept unit names utterance ${position} of ${utterances.length}`);
+    return { utterance, start, end, text, sourceSpans };
+  });
+
 // ── the cache ────────────────────────────────────────────────────────────────────────
 
 // What a synthesize request names: the one shape a unit is kept under.
@@ -123,6 +169,10 @@ export interface AudioCache {
   readonly keep: (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport) => Promise<void>;
   // For each unit of a script in these voices, its kept report, or undefined. Never rejects.
   readonly restore: (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap) => Promise<ReadonlyArray<UnitReport | undefined>>;
+  // The script cut from these utterances when the device holds it; null otherwise. Never rejects.
+  readonly recallScript: (utterances: ReadonlyArray<Utterance>) => Promise<ReadonlyArray<SynthesisUnit> | null>;
+  // Keeps the script the worker cut from these utterances. Never rejects.
+  readonly keepScript: (utterances: ReadonlyArray<Utterance>, units: ReadonlyArray<SynthesisUnit>) => Promise<void>;
 }
 
 export interface AudioCacheConfig {
@@ -166,22 +216,23 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
       return { frames, report: record.report };
     });
 
-  const keep = (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport): Promise<void> => {
-    // Played when it was made, not when its turn in the write chain comes.
+  // [LAW:single-enforcer] Every write, a unit's or a script's: its turn in the chain, the
+  // device's own limit, then the cap. `made` settles what is written — the key, its size and
+  // how to put it — and runs in the write's turn; `playedAt` is read at the ask, so a write is
+  // played when it was made, not when its turn comes.
+  const write = (what: string, made: (store: KeptStore) => Promise<{ readonly key: string; readonly bytes: number; readonly put: (entry: LedgerEntry) => Promise<void> }>): Promise<void> => {
     const playedAt = now();
     writes = writes.then(() =>
-      attempt("keeping a unit", undefined, async (store) => {
-        const key = await keyOf(request);
-        const audio = await (await config.codec).encode(frames);
-        const entry = { key, bytes: bytesOf(audio), playedAt };
-        const record = { report, frames: frames.length };
-        await store.put(entry, record, audio).catch(async (error: unknown) => {
+      attempt(what, undefined, async (store) => {
+        const { key, bytes, put } = await made(store);
+        const entry = { key, bytes, playedAt };
+        await put(entry).catch(async (error: unknown) => {
           if (!isQuota(error)) throw error;
           const ledger = await store.ledger();
           const gone = evictions(ledger, heldBytes(ledger) / 2);
           if (gone.length === 0) throw error;
           await store.remove(gone);
-          await store.put(entry, record, audio);
+          await put(entry);
         });
         const gone = evictions(await store.ledger(), cap);
         if (gone.length > 0) await store.remove(gone);
@@ -189,6 +240,31 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
     );
     return writes;
   };
+
+  const keep = (request: UnitRequest, frames: ReadonlyArray<Float32Array<ArrayBuffer>>, report: UnitReport): Promise<void> =>
+    write("keeping a unit", async (store) => {
+      const audio = await (await config.codec).encode(frames);
+      const record = { report, frames: frames.length };
+      return { key: await keyOf(request), bytes: bytesOf(audio), put: (entry) => store.put(entry, record, audio) };
+    });
+
+  const recallScript = (utterances: ReadonlyArray<Utterance>): Promise<ReadonlyArray<SynthesisUnit> | null> =>
+    attempt("reading a kept script", null, async (store) => {
+      const key = await scriptHash(utterances);
+      const kept = await store.script(key);
+      if (kept === undefined) return null;
+      const units = recalledScript(utterances, kept);
+      void attempt("marking a kept script played", undefined, (held) => held.touch([key], now()));
+      return units;
+    });
+
+  // A script's size is its kept form's JSON length: the measure that needs no encoder, and
+  // within a small factor of what the store spends on it, since the kept form shares nothing.
+  const keepScript = (utterances: ReadonlyArray<Utterance>, units: ReadonlyArray<SynthesisUnit>): Promise<void> =>
+    write("keeping a script", async (store) => {
+      const kept = keptScript(utterances, units);
+      return { key: await scriptHash(utterances), bytes: JSON.stringify(kept).length, put: (entry) => store.putScript(entry, kept) };
+    });
 
   const restore = (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap): Promise<ReadonlyArray<UnitReport | undefined>> =>
     attempt("restoring kept units", script.map(() => undefined), async (store) => {
@@ -199,7 +275,7 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
       return records.map((record) => record?.report);
     });
 
-  return { find, keep, restore };
+  return { find, keep, restore, recallScript, keepScript };
 };
 
 // ── the browser's store ──────────────────────────────────────────────────────────────
@@ -208,7 +284,11 @@ const DATABASE = "listen-kept-audio";
 const LEDGER = "ledger";
 const RECORDS = "records";
 const AUDIO = "audio";
-const STORES = [LEDGER, RECORDS, AUDIO];
+const SCRIPTS = "scripts";
+const STORES = [LEDGER, RECORDS, AUDIO, SCRIPTS];
+// Version 1 held units alone; version 2 keeps scripts beside them. An upgrade creates the
+// stores the device does not yet have, so every version before is carried forward whole.
+const VERSION = 2;
 
 const settled = <T,>(request: IDBRequest<T>): Promise<T> =>
   new Promise((resolve, reject) => {
@@ -234,7 +314,7 @@ export const OPEN_PATIENCE_MS = 5_000;
 // after it was refused is closed at once, so it holds nothing up either.
 const opened = (factory: IDBFactory, patienceMs: number): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
-    const opening = factory.open(DATABASE, 1);
+    const opening = factory.open(DATABASE, VERSION);
     let refused = false;
     const refuse = (reason: string): void => {
       refused = true;
@@ -243,7 +323,7 @@ const opened = (factory: IDBFactory, patienceMs: number): Promise<IDBDatabase> =
     };
     const patience = setTimeout(() => refuse(`the store did not open within ${patienceMs} ms`), patienceMs);
     opening.onupgradeneeded = () => {
-      for (const name of STORES) opening.result.createObjectStore(name);
+      for (const name of STORES) if (!opening.result.objectStoreNames.contains(name)) opening.result.createObjectStore(name);
     };
     opening.onblocked = () => refuse("another tab holds the store at an older version");
     opening.onerror = () => {
@@ -260,9 +340,9 @@ const opened = (factory: IDBFactory, patienceMs: number): Promise<IDBDatabase> =
     };
   });
 
-// [LAW:effects-at-boundaries] The one edge to IndexedDB: three object stores under one
-// database — the ledger, the records and the audio — each keyed by the unit's hash. Opened
-// once per page.
+// [LAW:effects-at-boundaries] The one edge to IndexedDB: four object stores under one
+// database — the ledger, the records, the audio and the scripts — each keyed by its entry's
+// hash. Opened once per page.
 export const openKeptStore = async (factory: IDBFactory, patienceMs: number = OPEN_PATIENCE_MS): Promise<KeptStore> => {
   const db = await opened(factory, patienceMs);
 
@@ -291,6 +371,13 @@ export const openKeptStore = async (factory: IDBFactory, patienceMs: number = OP
     await done(transaction);
   };
 
+  const putScript = async (entry: LedgerEntry, units: ReadonlyArray<KeptScriptUnit>): Promise<void> => {
+    const transaction = db.transaction([LEDGER, SCRIPTS], "readwrite");
+    transaction.objectStore(SCRIPTS).put(units, entry.key);
+    transaction.objectStore(LEDGER).put(entry, entry.key);
+    await done(transaction);
+  };
+
   const ledger = (): Promise<ReadonlyArray<LedgerEntry>> =>
     settled(db.transaction(LEDGER, "readonly").objectStore(LEDGER).getAll() as IDBRequest<LedgerEntry[]>);
 
@@ -306,6 +393,8 @@ export const openKeptStore = async (factory: IDBFactory, patienceMs: number = OP
     records,
     audio: (key) => settled(db.transaction(AUDIO, "readonly").objectStore(AUDIO).get(key) as IDBRequest<EncodedAudio | undefined>),
     put,
+    script: (key) => settled(db.transaction(SCRIPTS, "readonly").objectStore(SCRIPTS).get(key) as IDBRequest<ReadonlyArray<KeptScriptUnit> | undefined>),
+    putScript,
     touch,
     ledger,
     remove,

@@ -41,9 +41,10 @@ export const PIPELINE_VERSION = "2";
 
 // Bump when a change to generation makes the audio or the word times of the same fed text in
 // the same voice come out differently: the runtime's sampling (pocketTtsRuntime.ts: seed,
-// temperature, frame caps, the vendored model code) or the word read-out (wordAlignment.ts).
-// A unit the device kept under the previous generation is then simply missed, never played
-// as this one's [LAW:no-ambient-temporal-coupling].
+// temperature, frame caps, the vendored model code), its tokenizer's encoder, or the word
+// read-out (wordAlignment.ts). A unit the device kept under the previous generation is then
+// simply missed, never played as this one's; and since the encoder also counts each unit's
+// budget, a script kept under it is missed too [LAW:no-ambient-temporal-coupling].
 export const GENERATION_VERSION = "1";
 
 // [LAW:types-are-the-program] The tokenizer seam: how many text tokens the model would
@@ -327,11 +328,13 @@ export const deriveSpeechScript = (
 
 // The versions a rendition depends on, split the way units depend on them: `model` is
 // what every unit shares (weights and tokenizer); `voices` is each voice's own asset, so
-// a unit can carry the version of the one voice it is spoken in.
+// a unit can carry the version of the one voice it is spoken in; `cut` is the assets the cut
+// of a script depends on — the tokenizer its budget is counted in, and the budget itself.
 export interface RenditionVersions {
   readonly pipeline: string;
   readonly generation: string;
   readonly model: string;
+  readonly cut: string;
   readonly voices: Readonly<Record<VoiceId, string>>;
 }
 
@@ -339,6 +342,7 @@ export const renditionVersions = (manifest: ModelAssetManifest): RenditionVersio
   pipeline: PIPELINE_VERSION,
   generation: GENERATION_VERSION,
   model: [manifest.weights, manifest.tokenizer].map(assetVersion).join(","),
+  cut: `${assetVersion(manifest.tokenizer)},${manifest.weights.maxUnitTokens}`,
   voices: Object.fromEntries(VOICE_IDS.map((id) => [id, assetVersion(manifest.voices[id])])) as Record<VoiceId, string>,
 });
 
@@ -370,3 +374,12 @@ export const renditionHash = (
 // wherever it is said.
 export const unitHash = (text: UnitText, voice: VoiceId, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
   contentHash({ pipeline: versions.pipeline, generation: versions.generation, model: versions.model, voice: versions.voices[voice], text });
+
+// [LAW:one-source-of-truth] A script's identity: exactly what `deriveSpeechScript` reads — each
+// utterance's index, anchor, voice and text — under the rules that cut it, the encoder that
+// counts its tokens (the generation's), the tokenizer it encodes with and the budget it counts
+// against. The device keeps a paste's script under it (keptAudio.ts), so an edit, new rules, a
+// new encoder, tokenizer or budget is another key and simply misses. The voices a reader
+// picks are not in it: a script is cut the same whoever speaks it.
+export const scriptHash = (utterances: ReadonlyArray<Utterance>, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
+  contentHash({ pipeline: versions.pipeline, generation: versions.generation, cut: versions.cut, utterances: utterances.map((u) => [u.index, u.anchor, u.voice, u.text]) });
