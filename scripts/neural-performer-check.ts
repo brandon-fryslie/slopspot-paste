@@ -267,7 +267,9 @@ console.log("a unit still being made: the words the model has begun are painted 
 }
 
 console.log("a failed unit that ends a turn: the gap before the next speaker still sounds (slopspot-read-along-a35.3md)");
-{
+// When the failure is known: before the voice reaches the unit, or while the voice waits on
+// it, which is when synthesis most often gives up. Both are the same skip, and must stay so.
+for (const failure of ["known", "late"] as const) {
   const { port, emit } = heldPort();
   const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, kept: [], device: openDevice(StubDevice), onChange: () => undefined });
   const device = StubDevice.instances.at(-1);
@@ -280,28 +282,37 @@ console.log("a failed unit that ends a turn: the gap before the next speaker sti
     for (const index of [0, 1]) emit({ kind: "audio", unitId, frameIndex: index, pcm: frame(unitId, index) });
     emit({ kind: "done", unitId, report, elapsedMs: 5 });
   };
+  const fail = (): void => {
+    emit({ kind: "failed", unitId: 2, reason: { kind: "runtime", message: "the model gave up" } });
+    made(3);
+  };
+  // How long the voice waits on the unit before a late failure arrives.
+  const WAITED_MS = 100;
   performer.send({ kind: "play" });
   made(0);
   made(1);
-  emit({ kind: "failed", unitId: 2, reason: { kind: "runtime", message: "the model gave up" } });
-  made(3);
+  if (failure === "known") fail();
   const gap = performer.view().timeline.segments.findIndex((segment) => segment.content.kind === "silence");
   // Where the voice is, sampled every 10 ms of the device's clock: the segment the player is in.
   const heard: number[] = [];
   device.advance(SCHEDULE_LEAD_S);
-  for (let ms = 0; ms < 4 * frameMs + GAP_MS + 200; ms += 10) {
+  for (let ms = 0; ms < 4 * frameMs + WAITED_MS + GAP_MS + 200; ms += 10) {
     const view = performer.view();
     if (view.player.kind !== "idle") heard.push(view.player.at.segment);
+    if (failure === "late" && heard.filter((at) => at === 2).length === WAITED_MS / 10 && heard.at(-1) === 2) fail();
     device.advance(0.01);
   }
   const msIn = (segment: number): number => 10 * heard.filter((at) => at === segment).length;
   const firstOf = (segment: number): number => heard.indexOf(segment);
-  assert("setup: the gap is the fourth segment, after the failed unit", gap === 3);
-  assert("the failed unit is skipped: the voice spends no time in it", msIn(2) === 0);
+  assert(`${failure}: setup: the gap is the fourth segment, after the failed unit`, gap === 3);
+  assert(
+    failure === "known" ? "known: the failed unit is skipped: the voice spends no time in it" : "late: the voice waits on the unit until it fails, and no longer",
+    msIn(2) === (failure === "known" ? 0 : WAITED_MS),
+  );
   // The skip is a seek, and a seek re-cues the player a lead ahead of the device's clock, so
   // the listener hears the gap's whole length and at most that lead (and a sample) beyond it.
-  assert("the gap sounds its whole length between the first turn's last audio and the next speaker", msIn(gap) >= GAP_MS && msIn(gap) <= GAP_MS + SCHEDULE_LEAD_S * 1000 + 20 && firstOf(1) < firstOf(gap) && firstOf(gap) < firstOf(4));
-  assert("and the next speaker's audio follows it", msIn(4) > 0);
+  assert(`${failure}: the gap sounds its whole length between the first turn's last audio and the next speaker`, msIn(gap) >= GAP_MS && msIn(gap) <= GAP_MS + SCHEDULE_LEAD_S * 1000 + 20 && firstOf(1) < firstOf(gap) && firstOf(gap) < firstOf(4));
+  assert(`${failure}: and the next speaker's audio follows it`, msIn(4) > 0);
   performer.dispose();
 }
 
