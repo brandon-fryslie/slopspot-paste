@@ -30,6 +30,7 @@
 //   ahead, not allowed or not ready   -> nothing to the worker until both hold; allowance withdrawn -> the fill cancelled
 //   the listen asks for the fill's unit -> the generation handed over: gathered frames heard after the send, the rest as made
 //   asks for it in another voice      -> the fill cancelled; the request waits for its terminal, then looks up
+//   cancel of that waiting request    -> cancelled at once; nothing looked up when the fill ends
 //   asks the worker for anything else, a preview too -> the fill cancelled; the request goes on at once; the fill resumes after
 //   a new order without the fill      -> the fill cancelled; with it -> left to finish
 //   a unit failed or finished ahead   -> not made again; a cancelled one is, when its turn comes back
@@ -477,6 +478,18 @@ console.log("the listen comes first");
   answer(store, 0, null);
   await flush();
   assert("and goes to the worker", worker.said() === "synthesize 3,cancel 3,synthesize 3");
+}
+{
+  const { worker, store, port, ear } = setup({ allowed: true });
+  port.ahead([synthesize(3)]);
+  await flush();
+  port.send(synthesize(3, "marius"));
+  port.send({ kind: "cancel", unitId: 3 });
+  await flush();
+  assert("the request waiting behind the fill cancelled: cancelled at once", ear.said() === "cancelled 3");
+  worker.emit({ kind: "cancelled", unitId: 3 });
+  await flush();
+  assert("the fill's own terminal heard by nobody, and nothing looked up for the cancelled request", ear.said() === "cancelled 3" && store.lookups.length === 0);
 }
 {
   const { worker, port, ear } = setup({ allowed: true });
