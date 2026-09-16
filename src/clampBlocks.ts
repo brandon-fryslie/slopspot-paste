@@ -23,7 +23,7 @@
 
 const COLLAPSED = "is-collapsed"; // clamp applied — the CSS max-height rule reads this
 const MEASURED = "clamp-measured"; // has been evaluated at least once
-const PINNED = "clamp-pinned"; // the reader toggled it — automatic re-evaluation must not stomp it
+const PINNED = "clamp-pinned"; // set by a deliberate choice — automatic re-evaluation must not stomp it
 const EXPAND_LABEL = "Show more";
 const COLLAPSE_LABEL = "Show less";
 
@@ -42,26 +42,44 @@ const clampContent = (wrapper: HTMLElement): HTMLElement => {
 // block: from then on the reader's choice is authoritative and the width watcher
 // leaves it alone ([LAW:no-ambient-temporal-coupling] — a resize must not reset a
 // deliberate expand/collapse).
+const syncToggle = (wrapper: Element, btn: HTMLButtonElement): void => {
+  const collapsed = wrapper.classList.contains(COLLAPSED);
+  btn.textContent = collapsed ? EXPAND_LABEL : COLLAPSE_LABEL;
+  btn.setAttribute("aria-expanded", String(!collapsed));
+};
+
+// Sets the block's clamp as a deliberate choice: the reader's click, or the read-along
+// opening the block its voice is in. Either way the choice is pinned.
+const pin = (wrapper: Element, collapsed: boolean): void => {
+  wrapper.classList.add(PINNED);
+  wrapper.classList.toggle(COLLAPSED, collapsed);
+  const toggle = existingToggle(wrapper);
+  // [LAW:no-silent-failure] A block is only clamped once its toggle exists (evaluate), so a
+  // pinned block with no toggle is a broken invariant, not a block to leave unlabelled.
+  if (!toggle) throw new Error("clampable block has no .clamp-toggle");
+  syncToggle(wrapper, toggle);
+};
+
 const makeToggle = (wrapper: HTMLElement): HTMLButtonElement => {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "clamp-toggle";
-  const sync = (): void => {
-    const collapsed = wrapper.classList.contains(COLLAPSED);
-    btn.textContent = collapsed ? EXPAND_LABEL : COLLAPSE_LABEL;
-    btn.setAttribute("aria-expanded", String(!collapsed));
-  };
-  btn.addEventListener("click", () => {
-    wrapper.classList.add(PINNED);
-    wrapper.classList.toggle(COLLAPSED);
-    sync();
-  });
-  sync();
+  btn.addEventListener("click", () => pin(wrapper, !wrapper.classList.contains(COLLAPSED)));
+  syncToggle(wrapper, btn);
   return btn;
 };
 
-const existingToggle = (wrapper: HTMLElement): HTMLButtonElement | null =>
+const existingToggle = (wrapper: Element): HTMLButtonElement | null =>
   wrapper.querySelector<HTMLButtonElement>(":scope > .clamp-toggle");
+
+// [LAW:single-enforcer] Opens the clamped block holding `el`, if it is in one, exactly as
+// its Show-more toggle would: unclamped, pinned, toggle relabelled. It is how the read-along
+// opens the prose its voice is reading (readAlong.ts); an unclamped block stays open, so
+// nothing moves above the reader once the voice has passed through.
+export const expandClampAround = (el: Element): void => {
+  const wrapper = el.closest(`.clampable.${COLLAPSED}`);
+  if (wrapper) pin(wrapper, false);
+};
 
 // Evaluate a set of clampable wrappers against the CURRENT layout and bring each
 // into the state its geometry dictates: clamped + toggle when it overflows, plain
