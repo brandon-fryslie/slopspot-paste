@@ -544,15 +544,17 @@ const playing = (player: { readonly kind: PerformerState["kind"] }, visibility: 
   player.kind === "speaking" || visibility === "stalled";
 
 // On stage, every tap spends the cue: a Play from a cued idle voice is a seek to the cue,
-// which starts it there; any other tap leaves the cue behind with the moment it named. A tap
-// is also the reader's word to the model behind the stage: a load that failed is tried again.
+// which starts it there; any other tap leaves the cue behind with the moment it named. A
+// Play is also the reader's word to the model behind the stage: a load that failed is tried
+// again. A Pause or a Stop asks nothing of the model, so it retries nothing — a failure that
+// repeats would otherwise be fetched or warmed again on every pause.
 const tap = (state: PanelState, control: Tap): Step => {
   switch (state.kind) {
     case "neural": {
       const { cue, view } = state;
       const verb: Verb = control === "stop" ? "stop" : playing(view.player, state.visibility) ? "pause" : "play";
       const act = cue !== null && verb === "play" ? perform({ kind: "seek", toMs: timeOfStart(view.timeline, cue) }) : perform({ kind: verb });
-      const again = reload(state);
+      const again = verb === "play" ? reload(state) : stay(state);
       return { state: { ...again.state, cue: null, visibility: seen(state.visibility) }, effects: [HUSH, act, ...again.effects] };
     }
     case "provisioning":

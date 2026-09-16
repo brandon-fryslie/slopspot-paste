@@ -329,7 +329,10 @@ console.log("step: a script in hand puts the voice on stage before the model is 
 
   const failed = step(downloading.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
   assert("a load that fails behind a playing voice is on the line, where it stopped, and the voice plays on", failed.state.kind === "neural" && effects(failed) === "" && shown(failed.state) === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline | bar 120000000/239000000");
-  assert("the reader's next tap tries the load again", effects(step(failed.state, tapPlay)) === "hush,perform pause,load" && shown(step(failed.state, tapPlay).state).includes("preparing the voice…"));
+  assert("the reader's Pause asks nothing of the model", effects(step(failed.state, tapPlay)) === "hush,perform pause");
+  const paused = step(failed.state, { kind: "view", view: viewOf({ kind: "paused", at: inUnit(0) }) }).state;
+  const replayed = step(paused, tapPlay);
+  assert("the reader's Play tries the load again", effects(replayed) === "hush,perform play,load" && shown(replayed.state).includes("preparing the voice…"));
   assert("and so does the yes, and a wake, the Play's consent still held", effects(step(failed.state, yes)) === "load" && effects(step(failed.state, wake("none"))) === "load");
 
   const unable = step(onStage.state, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } }));
@@ -1776,6 +1779,11 @@ console.log("createListenPanel: a paste whose script and audio the device keeps 
   assert("the probe answers behind it: the load goes, on the Play's consent, and the browser is asked to keep the bytes", r.said().endsWith(",load") && r.counts.keepAsked === 1 && r.line().startsWith("Pause | stop | Playing · passage 1 of 2 · preparing the voice…"));
   r.emit({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } });
   assert("the load fails behind it: said on the line, and the kept audio plays on", panel.state().kind === "neural" && r.line() === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline");
+  const loadsSaid = (): number => r.said().split(",").filter((kind) => kind === "load").length;
+  r.play.click();
+  assert("a Pause retries nothing", loadsSaid() === 1 && r.counts.keepAsked === 1);
+  r.play.click();
+  assert("the Play after it tries the load again", loadsSaid() === 2 && r.counts.keepAsked === 2);
   panel.dispose();
 }
 
