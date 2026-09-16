@@ -217,8 +217,9 @@ export type LoadAllOutcome =
   | { readonly ok: true; readonly loaded: readonly LoadedAsset[]; readonly pruning: Pruning }
   | { readonly ok: false; readonly failure: AssetFailure };
 
-// The whole model onto the device, as one download with one progress bar: an earlier
-// build's copies are pruned first, so their quota is free before the new bytes land; then
+// The whole model onto the device, as one download with one progress bar. `assets` is the
+// build's WHOLE set, never a part of it: every other entry under the prefix is an earlier
+// build's copy, pruned first so its quota is free before the new bytes land; then
 // bytes are summed across the set so the UI shows "x of 239 MB", not ten resets, and a set
 // the store already holds shows no bar at all. Assets load in order; parts within one asset
 // load concurrently. The first failure stops the sequence and is reported as-is.
