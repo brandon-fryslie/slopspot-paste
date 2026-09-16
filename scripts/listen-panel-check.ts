@@ -185,8 +185,12 @@ console.log("step: the way to audio");
   assert("absent: the bytes still to download are named, not the whole model", shown(step(idle, home({ kind: "absent", bytesToDownload: 120_000_000 })).state) === "Listen | stop(off) | The voice downloads 120 MB once, then runs on this device");
   assert("unavailable: the store's reason, and that each listen downloads the whole model", shown(step(idle, home({ kind: "unavailable", message: "private browsing", bytesToDownload: WHOLE_MODEL })).state) === `Listen | stop(off) | This browser can't keep the voice (private browsing); each listen downloads ${MB}`);
   assert("the keep request's answer is not asked of an idle voice, but shown if it arrives: denied names the consequence", shown(step(idle, kept({ kind: "denied" })).state) === "Listen | stop(off) | Looking for the voice on this device… · this browser may drop the voice when space is short; the next listen would download it again");
-  const unkept = step(step(idle, home({ kind: "unavailable", message: "Storage directory access is denied.", bytesToDownload: WHOLE_MODEL })).state, kept({ kind: "denied" })).state;
-  assert("a store that cannot be opened keeps nothing, whatever the browser answers: no denial's consequence beside the store's word", shown(unkept) === `Listen | stop(off) | This browser can't keep the voice (Storage directory access is denied.); each listen downloads ${MB}`);
+  const unopened = step(idle, home({ kind: "unavailable", message: "Storage directory access is denied.", bytesToDownload: WHOLE_MODEL })).state;
+  const answers: ReadonlyArray<Keeping> = [{ kind: "granted" }, { kind: "denied" }, { kind: "failed", message: "no StorageManager" }];
+  assert(
+    "a store that cannot be opened keeps nothing, whatever the browser answers: no answer beside the store's word",
+    answers.every((answer) => shown(step(unopened, kept(answer)).state) === `Listen | stop(off) | This browser can't keep the voice (Storage directory access is denied.); each listen downloads ${MB}`),
+  );
   const probing = step(idle, tapPlay);
   assert("tap play from idle spends the gesture on the device, spawns the worker to probe and asks it for the script; Play has nothing more to say", effects(probing) === "unlock,spawn,script" && shown(probing.state) === "Listen(off) | stop(off) | Checking this device for the voice…");
   const again = step(probing.state, tapPlay);
