@@ -126,7 +126,8 @@ export interface PlaybackDevice {
   close(): Promise<void>;
 }
 
-// `AudioContext` in the page: what opens a device.
+// What opens a device: an AudioContext played through a media element in the page
+// (mediaDevice.ts), the stub device in the checks.
 export type DeviceFactory = new (options: { readonly sampleRate: number }) => PlaybackDevice;
 
 // [LAW:parse-dont-validate] A device is opened by `openDevice` alone, at the PCM's rate,

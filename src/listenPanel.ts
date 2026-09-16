@@ -81,6 +81,16 @@
 // page no longer has says so there instead [LAW:no-silent-failure]. The share control hands
 // the page the moment on screen — the voice's place, or the cue — to write as a link.
 //
+// THE BACKGROUND. Whether the page is in view is the page's fact, told to the panel as an
+// event and carried on both arms like the speed. Out of view the voice is heard through the
+// lock screen, and the scheduler is told to make audio further ahead (scheduler.ts), since a
+// phone may suspend the worker at any moment. A voice that runs dry there — speaking with
+// nothing left to sound — is paused rather than left playing silence behind a lock screen
+// that says it plays: the panel pauses it, marks it `stalled`, and plays it again the moment
+// the audio it needs is held, or the page is back in view, whichever comes first. The pause
+// is the background's, not the reader's, so any gesture of the reader's — Play on the lock
+// screen included — takes the listen back from it [LAW:no-silent-failure].
+//
 // WHAT THE PANEL MIRRORS. The `neural` arm carries the scheduler's view — player position,
 // manifest, holdings, and the conversation's timeline built over them — as delivered by
 // its onChange, and the voice a preview is sounding as delivered by the previewer's; the
@@ -120,7 +130,7 @@ import { createNeuralPerformer, stateOf, type NeuralPerformer, type NeuralState,
 import { NORMAL, stepSpeed, type Place, type PerformerEvent, type PerformerState, type Speed } from "./performer";
 import { wordStart, type Linked } from "./keptPlace";
 import { turnOf, type ReadAlongAt } from "./readAlong";
-import type { FailureReason } from "./scheduler";
+import { BACKGROUND_LOOKAHEAD, LOOKAHEAD, type FailureReason, type Lookahead } from "./scheduler";
 import type { Utterance } from "./speech";
 import { wordSpans, type WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
@@ -164,6 +174,11 @@ export type Consent = "none" | "download" | "play";
 const CONSENT_ORDER: Readonly<Record<Consent, number>> = { none: 0, download: 1, play: 2 };
 const raise = (held: Consent, given: Consent): Consent => (CONSENT_ORDER[given] > CONSENT_ORDER[held] ? given : held);
 
+// Whether the page is in view; on stage, also `stalled`: out of view, and paused by the panel
+// because the voice ran out of audio there.
+export type Visibility = "shown" | "hidden";
+export type StageVisibility = Visibility | "stalled";
+
 // The consent held is two words: `given` by the reader's own hand this visit — a tap, the
 // mini-player's yes — which only rises; and `standing`, what the visit grants without a tap,
 // replaced by each wake's reading, so an unchecked box withdraws what it alone granted and
@@ -191,6 +206,7 @@ export type PanelState =
       readonly keeping: Keeping | null;
       readonly consent: Consents;
       readonly speed: Speed;
+      readonly visibility: Visibility;
     }
   // The voice on stage; the view is the scheduler's, the cue where its next Play starts
   // while it stands idle, the consent kept for a fall, `sounding` the voice a preview is
@@ -203,9 +219,22 @@ export type PanelState =
       readonly consent: Consents;
       readonly sounding: VoiceId | null;
       readonly speed: Speed;
+      readonly visibility: StageVisibility;
     };
 
 export type Tap = "play" | "stop";
+
+// [LAW:types-are-the-program] The transport as the device's media controls read it
+// (mediaSession.ts): whether a voice is on stage and sounding, where it is on the
+// conversation's clock and how long that clock is, the speed, and the passage under the voice.
+export type Playback = "none" | "paused" | "playing";
+export interface Transport {
+  readonly playback: Playback;
+  readonly atMs: number;
+  readonly totalMs: number;
+  readonly speed: Speed;
+  readonly utterance: number | null;
+}
 
 // [LAW:dataflow-not-control-flow] Everything the reader can ask the transport for, as one
 // closed set of values rather than a method each: the two buttons, a tap on a word, the
@@ -269,6 +298,8 @@ export type PanelEvent =
   | { readonly kind: "view"; readonly view: NeuralView }
   // The reader tapped a voice's preview: it is heard out, over a paused reading.
   | { readonly kind: "preview"; readonly voice: VoiceId }
+  // The page went out of view, or came back into it.
+  | { readonly kind: "visibility"; readonly hidden: boolean }
   // The previewer's word on which voice is sounding, or that none is.
   | { readonly kind: "sounding"; readonly voice: VoiceId | null }
   // The device's pick changed: the map the voice on stage speaks with from now on. A voice
@@ -295,6 +326,8 @@ export type Effect =
   | { readonly kind: "hush" }
   // The performer is told the reader's voices.
   | { readonly kind: "revoice"; readonly voices: VoiceMap }
+  // The performer is told how far ahead to make audio.
+  | { readonly kind: "lookahead"; readonly to: Lookahead }
   // Releases the performer, the previewer, the device and the worker; how the worker ends is the value: a
   // dead worker is terminated, since nothing can be sent to it, a live one is asked to
   // dispose so the model is released first.
@@ -313,16 +346,16 @@ const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
 // Every entry to the start: the voice in the given phase, the cue, the consent and the
 // speed kept, and the store asked afresh what it holds.
-const enter = (neural: NeuralPhase, cue: Start | null, consent: Consents, speed: Speed): Step => ({
-  state: { kind: "provisioning", neural, cue, home: { kind: "reading" }, keeping: null, consent, speed },
+const enter = (neural: NeuralPhase, cue: Start | null, consent: Consents, speed: Speed, visibility: Visibility): Step => ({
+  state: { kind: "provisioning", neural, cue, home: { kind: "reading" }, keeping: null, consent, speed, visibility },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(NEURAL_IDLE, null, NO_CONSENT, NORMAL).state;
+export const initialState = (): PanelState => enter(NEURAL_IDLE, null, NO_CONSENT, NORMAL, "shown").state;
 // The panel's first step: the state, and the read of the store that fills its `home`. The
 // worker is not spawned here but by the `wake` that follows, so a dispose — which returns
 // here — spawns nothing on a page that is going away.
-export const start = (): Step => enter(NEURAL_IDLE, null, NO_CONSENT, NORMAL);
+export const start = (): Step => enter(NEURAL_IDLE, null, NO_CONSENT, NORMAL, "shown");
 
 // [LAW:single-enforcer] Where a cue falls on a timeline: the top when nobody named one.
 const timeOfCue = (line: Timeline, cue: Start | null): number => (cue === null ? 0 : timeOfStart(line, cue));
@@ -387,6 +420,10 @@ const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
   return { state: kicked.state, effects: [{ kind: "unlock" }, ...kicked.effects] };
 };
 
+// The page's visibility with the background's pause lifted: a gesture of the reader's is
+// theirs to make, and it takes the listen back.
+const seen = (visibility: StageVisibility): Visibility => (visibility === "stalled" ? "hidden" : visibility);
+
 // On stage, every tap spends the cue: a Play from a cued idle voice is a seek to the cue,
 // which starts it there; any other tap leaves the cue behind with the moment it named.
 const tap = (state: PanelState, control: Tap): Step => {
@@ -395,7 +432,7 @@ const tap = (state: PanelState, control: Tap): Step => {
       const { cue, view } = state;
       const verb: Verb = control === "stop" ? "stop" : view.player.kind === "speaking" ? "pause" : "play";
       const act = cue !== null && verb === "play" ? perform({ kind: "seek", toMs: timeOfStart(view.timeline, cue) }) : perform({ kind: verb });
-      return { state: { ...state, cue: null }, effects: [HUSH, act] };
+      return { state: { ...state, cue: null, visibility: seen(state.visibility) }, effects: [HUSH, act] };
     }
     case "provisioning":
       // Stop is disabled by `readout` here; a tap that reaches it anyway changes nothing.
@@ -427,7 +464,7 @@ const nameOfTarget = (line: Timeline, to: Target): Start | null => (to.kind === 
 const seek = (state: PanelState, to: Target, page: Page): Step => {
   switch (state.kind) {
     case "neural":
-      return { state: { ...state, cue: null }, effects: [HUSH, perform({ kind: "seek", toMs: timeOfTarget(state.view.timeline, to) })] };
+      return { state: { ...state, cue: null, visibility: seen(state.visibility) }, effects: [HUSH, perform({ kind: "seek", toMs: timeOfTarget(state.view.timeline, to) })] };
     case "provisioning": {
       // A conversation with nothing to say has nowhere to keep: the gesture names nothing.
       const cue = nameOfTarget(page.timeline, to);
@@ -550,7 +587,7 @@ const startOf = (state: Extract<PanelState, { kind: "neural" }>): Start | null =
 // that fell mid-word then comes back speaking there, while a wake brings it back standing.
 const outlives = (consent: Consents): Consents => ({ ...consent, given: consent.given === "none" ? "none" : "download" });
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const entered = enter(neural, state.kind === "provisioning" ? state.cue : startOf(state), outlives(state.consent), state.speed);
+  const entered = enter(neural, state.kind === "provisioning" ? state.cue : startOf(state), outlives(state.consent), state.speed, seen(state.visibility));
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -572,6 +609,37 @@ const preview = (state: PanelState, voice: VoiceId): Step =>
 const sounding = (state: PanelState, voice: VoiceId | null): Step => {
   if (state.kind !== "neural") throw violation(state, "a preview");
   return stay({ ...state, sounding: voice });
+};
+
+// [LAW:single-enforcer] How far ahead the voice is made, from whether the page is in view.
+const lookaheadFor = (visibility: StageVisibility): Effect => ({ kind: "lookahead", to: visibility === "shown" ? LOOKAHEAD : BACKGROUND_LOOKAHEAD });
+
+// The background's pause, decided on every view of a voice out of view: a voice that is
+// speaking with nothing to sound is paused and marked stalled; a stalled voice whose audio is
+// held again — or whose page is back in view — plays again. Anything else stands.
+const background = (state: Extract<PanelState, { kind: "neural" }>): Step => {
+  const { player, buffered } = state.view;
+  if (state.visibility === "hidden" && player.kind === "speaking" && player.flow === "waiting") {
+    return { state: { ...state, visibility: "stalled" }, effects: [perform({ kind: "pause" })] };
+  }
+  if (state.visibility === "stalled" && player.kind === "paused" && buffered) {
+    return { state: { ...state, visibility: "hidden" }, effects: [perform({ kind: "play" })] };
+  }
+  return stay(state);
+};
+
+// The page out of view or back: told to whoever makes the audio, and on stage the
+// background's pause decided again — lifted outright on return, where the reader sees the
+// honest "Synthesizing ahead…" instead.
+const visibility = (state: PanelState, hidden: boolean): Step => {
+  if (state.kind === "provisioning") return stay({ ...state, visibility: hidden ? "hidden" : "shown" });
+  if (!hidden) {
+    const resumed = state.visibility === "stalled" && state.view.player.kind === "paused" ? [perform({ kind: "play" })] : [];
+    return { state: { ...state, visibility: "shown" }, effects: [lookaheadFor("shown"), ...resumed] };
+  }
+  const told: Extract<PanelState, { kind: "neural" }> = { ...state, visibility: state.visibility === "stalled" ? "stalled" : "hidden" };
+  const decided = background(told);
+  return { state: decided.state, effects: [lookaheadFor("hidden"), ...decided.effects] };
 };
 
 const voices = (state: PanelState, map: VoiceMap): Step =>
@@ -607,14 +675,16 @@ export const step = (state: PanelState, event: PanelEvent, page: Page): Step => 
       return sounding(state, event.voice);
     case "voices":
       return voices(state, event.voices);
+    case "visibility":
+      return visibility(state, event.hidden);
     case "dispose": {
       const started = start();
       // The speed is the reader's, not the panel's, and a teardown is not the reader
       // changing their mind [LAW:one-source-of-truth].
-      return { state: { ...started.state, speed: state.speed }, effects: [{ kind: "release", worker: "dispose" }, ...started.effects] };
+      return { state: { ...started.state, speed: state.speed, visibility: seen(state.visibility) }, effects: [{ kind: "release", worker: "dispose" }, ...started.effects] };
     }
     case "view": {
-      if (state.kind === "neural") return stay({ ...state, view: event.view });
+      if (state.kind === "neural") return background({ ...state, view: event.view });
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
       // The performer's first view: the voice takes the stage at the reader's speed, sent
       // unconditionally so it never speaks a syllable at a speed it left behind, and to the
@@ -622,9 +692,10 @@ export const step = (state: PanelState, event: PanelEvent, page: Page): Step => 
       // A download alone leaves it standing ready, the cue kept for the reader's Play.
       const speaks = granted(state) === "play";
       return {
-        state: { kind: "neural", view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: null, speed: state.speed },
+        state: { kind: "neural", view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: null, speed: state.speed, visibility: state.visibility },
         effects: [
           perform({ kind: "rate", to: state.speed }),
+          lookaheadFor(state.visibility),
           ...(speaks ? [perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : []),
         ],
       };
@@ -827,7 +898,7 @@ const sentence = (fragment: string): string => fragment.charAt(0).toUpperCase() 
 const where = (utterance: number, total: number): string => `passage ${utterance + 1} of ${total}`;
 
 // The passage the voice's segment says — from inside a gap, the passage the gap leads into.
-const neuralStatus = (view: NeuralView, total: number): string => {
+const neuralStatus = (view: NeuralView, total: number, visibility: StageVisibility): string => {
   const unitAt = (unitIndex: number): string => {
     const segment = view.units[unitIndex];
     if (segment === undefined) throw new Error(`listen panel: unit ${unitIndex} of ${view.units.length}`);
@@ -841,7 +912,7 @@ const neuralStatus = (view: NeuralView, total: number): string => {
   const now =
     state.kind === "idle"
       ? "Ready"
-      : `${state.kind === "paused" ? "Paused" : player.kind === "speaking" && player.flow === "waiting" ? "Synthesizing ahead…" : "Playing"} · ${where(placeIn(view.timeline, state.segment, state.atMs).utterance, total)}`;
+      : `${state.kind === "paused" ? (visibility === "stalled" ? "Paused in the background until the voice catches up" : "Paused") : player.kind === "speaking" && player.flow === "waiting" ? "Synthesizing ahead…" : "Playing"} · ${where(placeIn(view.timeline, state.segment, state.atMs).utterance, total)}`;
   return [now, ...skipped].join(" · ");
 };
 
@@ -1048,7 +1119,7 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, visit);
   const offer = offerOf(state, page, mark, visit);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total), progress: null, mark, remembered, voices, mini, offer };
+    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total, state.visibility), progress: null, mark, remembered, voices, mini, offer };
   }
   const { neural } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -1187,8 +1258,9 @@ export interface ListenPanelConfig {
   // voiceChoice's two edges over window.localStorage in the page, over a Map in the check.
   readonly pick: { readonly read: () => VoicePick; readonly write: (pick: VoicePick) => void };
   readonly connection: () => ConnectionReading | undefined;
-  // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
-  // first gesture or the first build, whichever comes first; closed with the worker.
+  // What opens the audio device: an AudioContext played through a media element in the page
+  // (mediaDevice.ts). Opened by the panel on the first gesture or the first build, whichever
+  // comes first; closed with the worker.
   readonly Device: DeviceFactory;
   readonly frames: FrameLoop;
   // The clock the download's pace is read by, in milliseconds; only differences are read.
@@ -1205,6 +1277,8 @@ export interface ListenPanelConfig {
   // Writes a link to a place where the reader can paste it: the clipboard, in the page. A
   // rejection is the reader's to see, on the control.
   readonly share: (place: Place) => Promise<void>;
+  // Called with the transport after every event: what the device's media controls show.
+  readonly onTransport: (transport: Transport) => void;
   // Called when the reader asked to BE somewhere — a tap on a word, the scrubber, a nudge, a
   // turn skip — so whoever keeps the page in view looks there. One place decides this for
   // every door a seek can come through [LAW:single-enforcer]: a key and a click cannot drift
@@ -1222,6 +1296,8 @@ export interface ListenPanel {
   // disposed. The worker is spawned to probe again and the standing consent given again,
   // as at mount.
   readonly wake: () => void;
+  // The page went out of view, or came back into it.
+  readonly visibility: (hidden: boolean) => void;
   readonly state: () => PanelState;
   // Ends the listen, the device and the worker (gracefully: the model is released before
   // the worker ends); the page is left as the renderer made it, the controls show the
@@ -1407,6 +1483,18 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     const place = now.kind === "idle" ? placeOfCue(state.cue) : placeIn(timeline(), now.segment, now.atMs);
     return place === null ? null : wordStart(utterances, place);
   };
+  // The transport as the media controls read it: the live clock, not the last report, since
+  // this is read at the moment an event lands.
+  const transportNow = (): Transport => {
+    const now = stageState();
+    return {
+      playback: now.kind === "idle" ? "none" : now.kind === "paused" ? "paused" : "playing",
+      atMs: now.kind === "idle" ? 0 : now.atMs,
+      totalMs: timeline().totalMs,
+      speed: state.speed,
+      utterance: now.kind === "idle" ? null : placeIn(timeline(), now.segment, now.atMs).utterance,
+    };
+  };
   // [LAW:no-shared-mutable-globals] The last place written to the device, owned here, so a
   // look on the same word writes nothing; and whether the voice was under way at the last
   // look, so its going idle is seen once.
@@ -1509,6 +1597,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "revoice":
         performer().voices(effect.voices);
         return;
+      case "lookahead":
+        performer().lookahead(effect.to);
+        return;
       case "release": {
         // A worker can die before the performer exists (the bundle failed to load) or
         // after; either way what exists is released: the previewer and the performer, then
@@ -1581,6 +1672,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     syncFrames();
     emitPosition();
     paintClock();
+    config.onTransport(transportNow());
   };
   const dispatch = (event: PanelEvent): void => {
     queue.push(event);
@@ -1790,6 +1882,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     open: openLink,
     // The page's door back in: the wake, as at mount.
     wake: wakeUp,
+    visibility: (hidden) => dispatch({ kind: "visibility", hidden }),
     state: () => state,
     // One more event through the same machine: the idle state disarms the frame loop,
     // clears the position, and the controls say what the state says, so a page back from

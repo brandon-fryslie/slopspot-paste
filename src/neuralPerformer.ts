@@ -35,7 +35,7 @@
 // released scheduler raises from its own dispose never reaches the caller.
 
 import type { Performer, PerformerEvent } from "./performer";
-import { createScheduler, type SchedulerView } from "./scheduler";
+import { createScheduler, type Lookahead, type SchedulerView } from "./scheduler";
 import type { Utterance } from "./speech";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
@@ -141,6 +141,8 @@ export interface NeuralPerformer extends Performer {
   readonly view: () => NeuralView;
   // The reader's voices from now on; the scheduler remakes the units of a changed voice.
   readonly voices: (voices: VoiceMap) => void;
+  // How far ahead the scheduler makes audio from now on.
+  readonly lookahead: (to: Lookahead) => void;
 }
 
 export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerformer => {
@@ -177,6 +179,7 @@ export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerf
   return {
     send,
     voices: scheduler.voices,
+    lookahead: scheduler.lookahead,
     state: () => stateOf(view()),
     view,
     dispose: () => {

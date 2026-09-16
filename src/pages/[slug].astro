@@ -811,6 +811,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
+    import { mediaDevice } from "../mediaDevice";
+    import { createMediaSession } from "../mediaSession";
     import type { Utterance } from "../speech";
 
     const controls = document.querySelector(".speech-controls");
@@ -864,6 +866,17 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }),
             scrollbarAt: (x, y) => x >= document.documentElement.clientWidth || y >= document.documentElement.clientHeight,
           },
+        });
+        // The device's media controls — the lock screen, the notification, a headset — as
+        // one more door into the panel, showing the paste and who is speaking. Every browser
+        // that offers Listen (WebGPU) has the Media Session API.
+        const media = createMediaSession({
+          session: navigator.mediaSession,
+          metadata: (shown) => new MediaMetadata(shown),
+          title: document.querySelector("h1")?.textContent?.trim() || document.title,
+          // The name on the passage's turn card, as the reader sees it.
+          speakerOf: (utterance) => document.getElementById(utterances[utterance]?.anchor ?? "")?.querySelector(".role-name")?.textContent?.trim() ?? "",
+          send: (gesture) => panel.send(gesture),
         });
         const panel = createListenPanel({
           controls: {
@@ -929,13 +942,22 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             write: (pick) => writePick(window.localStorage, pick),
           },
           connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
-          Device: AudioContext,
+          // The voice leaves through a media element, which is what a phone gives a lock screen
+          // and background audio (mediaDevice.ts). A pause the platform makes — a call, another
+          // app's audio — pauses the listen as the lock screen's own pause would.
+          Device: mediaDevice({
+            Context: AudioContext,
+            element: () => new Audio(),
+            interrupted: () => media.act("pause"),
+            refused: (error) => console.warn("listen: the media element refused to play; the voice plays without lock-screen controls", error),
+          }),
           clock: () => performance.now(),
           frames: {
             request: (callback) => window.requestAnimationFrame(callback),
             cancel: (handle) => window.cancelAnimationFrame(handle),
           },
           onPosition: (at) => follower.cursor(painter.paint(at)),
+          onTransport: (transport) => media.show(transport),
           // The place kept for this paste, in the same storage, filed under its slug and
           // checked against the page's prints on every read.
           resume: {
@@ -962,6 +984,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           panel.dispose();
           follower.dispose();
         });
+        // Whether the page is in view is the page's to tell: out of view the voice makes audio
+        // further ahead and pauses rather than sounding silence when it runs dry.
+        panel.visibility(document.hidden);
+        document.addEventListener("visibilitychange", () => panel.visibility(document.hidden));
         // A page restored from the back-forward cache comes back through the same door it
         // left by: the panel that was disposed wakes, probes again, and gives the standing
         // consent again, as at mount.
