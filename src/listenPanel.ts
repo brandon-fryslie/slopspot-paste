@@ -11,8 +11,8 @@
 //
 // ONE VOICE. The neural voice is the tool, and on a first listen it is a probe and a
 // 239 MB download away. Until it is on stage the panel is `provisioning`: where the voice
-// is on its way (`NeuralPhase`) and the place it will start from (`from`) — the top, or
-// the word the reader tapped. A browser-voice stand-in spoke while the model loaded once
+// is on its way (`NeuralPhase`) and the place it will start from (`cue`) — the top when
+// nobody has named one, or the word the reader tapped. A browser-voice stand-in spoke while the model loaded once
 // (slopspot-read-along-a35.1); it went in slopspot-read-along-a35.bse: a different system
 // voice per turn and a handover mid-sentence read as a defect, not a bridge.
 //
@@ -64,6 +64,23 @@
 // "Checking this device…" forever is the silent failure the state union exists to make
 // unrepresentable [LAW:no-silent-failure].
 //
+// THE CUE. A place named for the voice to start from, before it has started there: the word
+// a tap named while the voice was on its way, the place a link opened on, the place a crash
+// left. Both arms hold it — the voice on stage holds one only while it stands idle, and its
+// Play starts there — and the read-along paints it, so a link opens with its word lit
+// before any audio exists. Null is the one honest value for "nobody named a place": the top,
+// with nothing painted [LAW:types-are-the-program].
+//
+// THE PLACE KEPT. Wherever the voice speaks, the place under it — the word the cursor paints —
+// is written to the device's storage as it moves (keptPlace.ts, through `resume`), so a
+// reader who closes the tab, or whose phone discards it without a pagehide, finds their word
+// again. Every word, not every pause: a write on pause or unload is lost to exactly the
+// kill that loses the tab. On return, while nothing plays and nothing is cued, the
+// mini-player offers the kept place by its opening words, and the offer's tap is a tap on
+// that word. A link to a place the page no longer has says so there instead
+// [LAW:no-silent-failure]. The share control hands the page the moment on screen — the
+// voice's place, or the cue — to write as a link.
+//
 // WHAT THE PANEL MIRRORS. The `neural` arm carries the scheduler's view — player position,
 // manifest, holdings, and the conversation's timeline built over them — as delivered by
 // its onChange, and the voice a preview is sounding as delivered by the previewer's; the
@@ -100,11 +117,12 @@ import { downloadNeedsTap, type ConnectionReading, type VoiceId } from "./modelA
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, stateOf, type NeuralPerformer, type NeuralState, type NeuralView } from "./neuralPerformer";
-import { NORMAL, stepSpeed, TOP, type Place, type PerformerEvent, type PerformerState, type Speed } from "./performer";
+import { NORMAL, stepSpeed, type Place, type PerformerEvent, type PerformerState, type Speed } from "./performer";
+import type { Linked } from "./keptPlace";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
-import type { WordSpan } from "./speechManifest";
+import { wordSpans, type WordSpan } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
@@ -162,21 +180,30 @@ const granted = ({ consent }: PanelState): Consent => raise(consent.given, conse
 // across a crash and the whole download. A performer that held its own copy would lose it
 // at every one of those moments.
 export type PanelState =
-  // The voice on its way, and where it starts when it arrives: the top until the reader
-  // names somewhere else — a word, or a time that may fall in a gap. `keeping` is the browser's answer to keeping the bytes, once asked.
+  // The voice on its way, and where it starts when it arrives: the top until the reader or a
+  // link names somewhere else — a word, or a time that may fall in a gap. `keeping` is the
+  // browser's answer to keeping the bytes, once asked.
   | {
       readonly kind: "provisioning";
       readonly neural: NeuralPhase;
-      readonly from: Start;
+      readonly cue: Start | null;
       readonly home: Home;
       readonly keeping: Keeping | null;
       readonly consent: Consents;
       readonly speed: Speed;
     }
-  // The voice on stage; the view is the scheduler's, the consent kept for a fall,
-  // `sounding` the voice a preview is saying its phrase in, when one is, and `speed`
-  // the panel's own pace, which outlives any performer.
-  | { readonly kind: "neural"; readonly view: NeuralView; readonly consent: Consents; readonly sounding: VoiceId | null; readonly speed: Speed };
+  // The voice on stage; the view is the scheduler's, the cue where its next Play starts
+  // while it stands idle, the consent kept for a fall, `sounding` the voice a preview is
+  // saying its phrase in, when one is, and `speed` the panel's own pace, which outlives any
+  // performer.
+  | {
+      readonly kind: "neural";
+      readonly view: NeuralView;
+      readonly cue: Start | null;
+      readonly consent: Consents;
+      readonly sounding: VoiceId | null;
+      readonly speed: Speed;
+    };
 
 export type Tap = "play" | "stop";
 
@@ -221,6 +248,9 @@ export type PanelEvent =
   | { readonly kind: "tap"; readonly control: Tap }
   // The reader named a place — a tap on a word, the scrubber, a nudge, a turn skip.
   | { readonly kind: "seek"; readonly to: Target }
+  // A link named a place, with no gesture: the voice starts there when the reader plays, and
+  // a voice already under way moves there.
+  | { readonly kind: "cue"; readonly to: Place }
   // One step along the speed list, in whichever direction.
   | { readonly kind: "speed"; readonly by: -1 | 1 }
   // The mini-player's yes: a gesture that consents to the download and no more.
@@ -281,19 +311,21 @@ export const SCRIPT_ID = 1;
 const IDLE: NeuralState = { kind: "idle" };
 const NEURAL_IDLE: NeuralPhase = { kind: "idle" };
 
-// Every entry to the start: the voice in the given phase, the place, the consent and the
+// Every entry to the start: the voice in the given phase, the cue, the consent and the
 // speed kept, and the store asked afresh what it holds.
-const AT_TOP: Start = { kind: "speech", place: TOP };
-const enter = (neural: NeuralPhase, from: Start, consent: Consents, speed: Speed): Step => ({
-  state: { kind: "provisioning", neural, from, home: { kind: "reading" }, keeping: null, consent, speed },
+const enter = (neural: NeuralPhase, cue: Start | null, consent: Consents, speed: Speed): Step => ({
+  state: { kind: "provisioning", neural, cue, home: { kind: "reading" }, keeping: null, consent, speed },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(NEURAL_IDLE, AT_TOP, NO_CONSENT, NORMAL).state;
+export const initialState = (): PanelState => enter(NEURAL_IDLE, null, NO_CONSENT, NORMAL).state;
 // The panel's first step: the state, and the read of the store that fills its `home`. The
 // worker is not spawned here but by the `wake` that follows, so a dispose — which returns
 // here — spawns nothing on a page that is going away.
-export const start = (): Step => enter(NEURAL_IDLE, AT_TOP, NO_CONSENT, NORMAL);
+export const start = (): Step => enter(NEURAL_IDLE, null, NO_CONSENT, NORMAL);
+
+// [LAW:single-enforcer] Where a cue falls on a timeline: the top when nobody named one.
+const timeOfCue = (line: Timeline, cue: Start | null): number => (cue === null ? 0 : timeOfStart(line, cue));
 
 const stay = (state: PanelState): Step => ({ state, effects: [] });
 const violation = (state: PanelState, what: string): Error =>
@@ -355,11 +387,15 @@ const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
   return { state: kicked.state, effects: [{ kind: "unlock" }, ...kicked.effects] };
 };
 
+// On stage, every tap spends the cue: a Play from a cued idle voice is a seek to the cue,
+// which starts it there; any other tap leaves the cue behind with the moment it named.
 const tap = (state: PanelState, control: Tap): Step => {
   switch (state.kind) {
     case "neural": {
-      const verb: Verb = control === "stop" ? "stop" : state.view.player.kind === "speaking" ? "pause" : "play";
-      return { state, effects: [HUSH, perform({ kind: verb })] };
+      const { cue, view } = state;
+      const verb: Verb = control === "stop" ? "stop" : view.player.kind === "speaking" ? "pause" : "play";
+      const act = cue !== null && verb === "play" ? perform({ kind: "seek", toMs: timeOfStart(view.timeline, cue) }) : perform({ kind: verb });
+      return { state: { ...state, cue: null }, effects: [HUSH, act] };
     }
     case "provisioning":
       // Stop is disabled by `readout` here; a tap that reaches it anyway changes nothing.
@@ -384,21 +420,31 @@ export const pageOf = (utterances: ReadonlyArray<Utterance>): Page => ({ utteran
 // nothing to say, which has nowhere to name.
 const nameOfTarget = (line: Timeline, to: Target): Start | null => (to.kind === "place" ? { kind: "speech", place: to.place } : startAt(line, to.ms));
 
-// A seek to a place: the voice on stage seeks to its time on the voice's own timeline;
-// the voice on its way is started as a Play tap starts it, and the place's name is kept
-// for its arrival, when it resolves to a time on the timeline the voice brings.
+// A seek to a place: the voice on stage seeks to its time on the voice's own timeline,
+// leaving any cue behind; the voice on its way is started as a Play tap starts it, and the
+// place's name is kept as the cue for its arrival, when it resolves to a time on the
+// timeline the voice brings.
 const seek = (state: PanelState, to: Target, page: Page): Step => {
   switch (state.kind) {
     case "neural":
-      return { state, effects: [HUSH, perform({ kind: "seek", toMs: timeOfTarget(state.view.timeline, to) })] };
+      return { state: { ...state, cue: null }, effects: [HUSH, perform({ kind: "seek", toMs: timeOfTarget(state.view.timeline, to) })] };
     case "provisioning": {
       // A conversation with nothing to say has nowhere to keep: the gesture names nothing.
-      const from = nameOfTarget(page.timeline, to);
-      if (from === null) return stay(state);
+      const cue = nameOfTarget(page.timeline, to);
+      if (cue === null) return stay(state);
       const kicked = gesture(state, "play");
-      return { state: { ...kicked.state, from }, effects: kicked.effects };
+      return { state: { ...kicked.state, cue }, effects: kicked.effects };
     }
   }
+};
+
+// A place a link named: no gesture, so no audio is unlocked and no consent is given. It is
+// kept as the cue wherever nothing is playing; a voice already under way moves there, as a
+// seek would move it.
+const cue = (state: PanelState, place: Place): Step => {
+  const named: Start = { kind: "speech", place };
+  if (state.kind === "provisioning" || state.view.player.kind === "idle") return stay({ ...state, cue: named });
+  return { state, effects: [HUSH, perform({ kind: "seek", toMs: timeAt(state.view.timeline, place) })] };
 };
 
 // One step along the speed list, obeyed by whoever is on stage — and by nobody at all when
@@ -487,13 +533,14 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
   }
 };
 
-// Where the voice's view says it is, as the start a retry resumes from. The last REPORT, not
+// Where the voice on stage says it is, as the cue a retry resumes from. The last REPORT, not
 // the live clock: the performer is about to be released, and a segment boundary is reported
 // one hop after the clock crosses it. Cost, stated once: a crash retry resumes from the
-// reported segment, at most one unit behind the ear. From inside a gap, that gap.
-const startOf = (view: NeuralView): Start => {
-  const at = stateOf(view);
-  return at.kind === "idle" ? AT_TOP : startIn(view.timeline, at.segment, at.atMs);
+// reported segment, at most one unit behind the ear. From inside a gap, that gap; from an
+// idle voice, its cue.
+const startOf = (state: Extract<PanelState, { kind: "neural" }>): Start | null => {
+  const at = stateOf(state.view);
+  return at.kind === "idle" ? state.cue : startIn(state.view.timeline, at.segment, at.atMs);
 };
 
 // The voice leaves the stage, or never reached it: the phase it fell to, the place kept for
@@ -503,7 +550,7 @@ const startOf = (view: NeuralView): Start => {
 // that fell mid-word then comes back speaking there, while a wake brings it back standing.
 const outlives = (consent: Consents): Consents => ({ ...consent, given: consent.given === "none" ? "none" : "download" });
 const fallback = (state: PanelState, neural: NeuralPhase): Step => {
-  const entered = enter(neural, state.kind === "provisioning" ? state.from : startOf(state.view), outlives(state.consent), state.speed);
+  const entered = enter(neural, state.kind === "provisioning" ? state.cue : startOf(state), outlives(state.consent), state.speed);
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -538,6 +585,8 @@ export const step = (state: PanelState, event: PanelEvent, page: Page): Step => 
       return tap(state, event.control);
     case "seek":
       return seek(state, event.to, page);
+    case "cue":
+      return cue(state, event.to);
     case "speed":
       return speed(state, event.by);
     case "yes":
@@ -569,13 +618,14 @@ export const step = (state: PanelState, event: PanelEvent, page: Page): Step => 
       if (state.neural.kind !== "scripting") throw violation(state, "a scheduler view");
       // The performer's first view: the voice takes the stage at the reader's speed, sent
       // unconditionally so it never speaks a syllable at a speed it left behind, and to the
-      // place the tap named when a tap is what brought it — resolved now, on the timeline
-      // the voice brings — a download alone leaves it standing ready.
+      // cue when a tap is what brought it — resolved now, on the timeline the voice brings.
+      // A download alone leaves it standing ready, the cue kept for the reader's Play.
+      const speaks = granted(state) === "play";
       return {
-        state: { kind: "neural", view: event.view, consent: state.consent, sounding: null, speed: state.speed },
+        state: { kind: "neural", view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: null, speed: state.speed },
         effects: [
           perform({ kind: "rate", to: state.speed }),
-          ...(granted(state) === "play" ? [perform({ kind: "seek", toMs: timeOfStart(event.view.timeline, state.from) })] : []),
+          ...(speaks ? [perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : []),
         ],
       };
     }
@@ -609,6 +659,11 @@ export interface Visit {
   readonly metered: boolean;
   // The device's voice pick, read from storage at every render like `remembered`.
   readonly pick: VoicePick;
+  // The place kept for this paste on this device, read from storage at every render, when
+  // it still names this page's text (keptPlace.ts).
+  readonly resume: Place | null;
+  // Whether a link this visit opened named a place this page no longer has.
+  readonly gone: boolean;
 }
 
 // [LAW:types-are-the-program] The mini-player's faces: one element beside the mark, showing
@@ -618,11 +673,17 @@ export interface Visit {
 // note faces show the status sentence itself (`Readout.status`), so they carry no copy of
 // it [LAW:one-source-of-truth]. `play` is what a tap does, so the one button's face follows
 // the voice.
+// `share` is whether there is a moment to link to: a voice under way, or a cue.
 export type MiniFace =
   | { readonly kind: "consent"; readonly ask: string }
   | { readonly kind: "progress"; readonly fraction: number | null }
   | { readonly kind: "note"; readonly retry: boolean }
-  | { readonly kind: "controls"; readonly play: "play" | "pause"; readonly back: boolean; readonly forward: boolean };
+  | { readonly kind: "controls"; readonly play: "play" | "pause"; readonly back: boolean; readonly forward: boolean; readonly share: boolean };
+
+// [LAW:types-are-the-program] What the mini-player offers above its face while nothing plays
+// and nothing is cued: the place kept on this device, by its opening words, which a tap
+// starts from; or word that a link's place is gone from the page.
+export type Offer = { readonly kind: "resume"; readonly place: Place; readonly words: string } | { readonly kind: "gone" };
 
 // What the panel shows: the two buttons' shape, the status sentence, the download when
 // there is one (under way, or where a failure stopped it), the mark's form, the
@@ -642,6 +703,7 @@ export interface Readout {
   readonly remembered: boolean;
   readonly voices: VoicesReadout;
   readonly mini: MiniFace;
+  readonly offer: Offer | null;
 }
 
 // What the scrubber and the two times show. Separate from `Readout` because it has a
@@ -796,14 +858,13 @@ const transport = (state: { readonly kind: PerformerState["kind"] }): Pick<Reado
 export const timelineOf = (state: PanelState, page: Page): Timeline => (state.kind === "neural" ? state.view.timeline : page.timeline);
 
 // Where the transport stands, from the state alone: the performer's own point when it has
-// one, the point of the place held for a performer that does not exist yet. This is the
-// last REPORT — the driver reads the live clock for the cursor and the scrubber; a button's
-// shape needs only which side of a landmark the voice is on, and every landmark sits at a
-// unit boundary, which the player reports on crossing.
+// one, the point of the cue for a voice that has not started. This is the last REPORT — the
+// driver reads the live clock for the cursor and the scrubber; a button's shape needs only
+// which side of a landmark the voice is on, and every landmark sits at a unit boundary,
+// which the player reports on crossing.
 const pointIn = (state: PanelState, line: Timeline): Point | undefined => {
-  if (state.kind === "provisioning") return pointAt(line, timeOfStart(line, state.from));
-  const at = stateOf(state.view);
-  return at.kind === "idle" ? pointAt(line, 0) : at;
+  const at = state.kind === "neural" ? stateOf(state.view) : IDLE;
+  return at.kind === "idle" ? pointAt(line, timeOfCue(line, state.cue)) : at;
 };
 
 // The scrubber and the times at a point on the clock. Takes the milliseconds rather than a
@@ -899,8 +960,8 @@ const askText = (form: Extract<MarkForm, { kind: "download" | "unavailable" }>, 
 // [LAW:dataflow-not-control-flow] Total over the mark's forms: the mini-player's face is
 // the form read once more, with the size and the skips it needs — never a second reading
 // of the state [LAW:one-source-of-truth].
-const miniFace = (form: MarkForm, skip: Readout["skip"], visit: Visit): MiniFace => {
-  const controls = (play: "play" | "pause"): MiniFace => ({ kind: "controls", play, ...skip });
+const miniFace = (form: MarkForm, skip: Readout["skip"], share: boolean, visit: Visit): MiniFace => {
+  const controls = (play: "play" | "pause"): MiniFace => ({ kind: "controls", play, ...skip, share });
   switch (form.kind) {
     case "download":
     case "unavailable":
@@ -950,6 +1011,32 @@ const voicesReadout = (state: PanelState, pick: VoicePick): VoicesReadout => ({
   reset: !samePick(pick, DEFAULT_PICK),
 });
 
+// How many of a place's words the offer quotes: enough to recognise the sentence, few enough
+// for the mini-player's width.
+const OFFER_WORDS = 5;
+const openingWords = (text: string, char: number): string => {
+  const words = wordSpans(text, 0).filter((word) => word.charEnd > char);
+  const quoted = words.slice(0, OFFER_WORDS);
+  const last = quoted.at(-1);
+  const first = quoted[0];
+  return first === undefined || last === undefined ? "" : `${text.slice(first.charStart, last.charEnd)}${words.length > OFFER_WORDS ? "…" : ""}`;
+};
+
+// Whether the voice will start where nobody has yet said: nothing playing or paused, nothing
+// cued, and no Play already given to a voice on its way.
+const unnamed = (state: PanelState): boolean =>
+  state.cue === null && (state.kind === "neural" ? state.view.player.kind === "idle" : granted(state) !== "play");
+
+// [LAW:dataflow-not-control-flow] Total over the visit: a gone link first, since it is why
+// the page opened at the top; then the kept place, on a device that can play it.
+const offerOf = (state: PanelState, page: Page, mark: MarkForm, visit: Visit): Offer | null => {
+  if (!unnamed(state) || mark.kind === "unsupported") return null;
+  if (visit.gone) return { kind: "gone" };
+  const { resume } = visit;
+  const text = resume === null ? undefined : page.utterances[resume.utterance]?.text;
+  return resume === null || text === undefined ? null : { kind: "resume", place: resume, words: openingWords(text, resume.char) };
+};
+
 // The page's utterances count is the "of N" every position reads, and `around` reads the
 // page's timeline for the turn landmarks before a voice has measured any of it.
 export const readout = (state: PanelState, page: Page, visit: Visit): Readout => {
@@ -958,9 +1045,10 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   const { remembered } = visit;
   const voices = voicesReadout(state, visit.pick);
   const rest = around(state, page);
-  const mini = miniFace(mark, rest.skip, visit);
+  const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, visit);
+  const offer = offerOf(state, page, mark, visit);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total), progress: null, mark, remembered, voices, mini };
+    return { ...transport(state.view.player), ...rest, status: neuralStatus(state.view, total), progress: null, mark, remembered, voices, mini, offer };
   }
   const { neural } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -978,6 +1066,7 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
     remembered,
     voices,
     mini,
+    offer,
   };
 };
 
@@ -990,6 +1079,21 @@ export const readAlongAt = (cursor: Cursor, utterances: ReadonlyArray<Utterance>
   if (utterance === undefined) throw new Error(`listen panel: the performer is at utterance ${cursor.utterance} of ${utterances.length}`);
   return { utterance, turn: turnOf(utterances, utterance.anchor), range: cursor.range, word: cursor.word };
 };
+
+// What the read-along paints at a cue: the word holding its character, or the first word
+// after it, as both the range and the word — a place names one word, and no voice has cut
+// the sentence around it yet. A cue in a gap paints nothing, as the gap does when spoken.
+export const cursorOfCue = (cue: Start | null, utterances: ReadonlyArray<Utterance>): Cursor | null => {
+  if (cue === null || cue.kind === "silence") return null;
+  const { utterance, char } = cue.place;
+  const text = utterances[utterance]?.text;
+  if (text === undefined) throw new Error(`listen panel: a cue at utterance ${utterance} of ${utterances.length}`);
+  const word = wordSpans(text, 0).find((span) => span.charEnd > char);
+  return word === undefined ? null : { utterance, range: word, word };
+};
+
+// The place a cue names: its own, or for a gap, the place the gap leads into.
+const placeOfCue = (cue: Start | null): Place | null => (cue === null ? null : cue.kind === "speech" ? cue.place : cue.before);
 
 // Whether the voice is speaking, from the state: exactly when the frame loop runs.
 const speaking = (state: PanelState): boolean => state.kind === "neural" && state.view.player.kind === "speaking";
@@ -1025,6 +1129,12 @@ export interface MiniControls {
   readonly back: HTMLButtonElement;
   readonly play: HTMLButtonElement;
   readonly forward: HTMLButtonElement;
+  // The link to the moment on screen, in the controls face.
+  readonly share: HTMLButtonElement;
+  // The row above the face, and its two offers: the kept place's button, the gone link's note.
+  readonly offer: HTMLElement;
+  readonly resume: HTMLButtonElement;
+  readonly gone: HTMLElement;
 }
 
 // The voice picker's markup: the button in the transport that opens and closes it, and the
@@ -1087,6 +1197,13 @@ export interface ListenPanelConfig {
   // Called with where the read-along is whenever it moves, and with null when it stops.
   // This is the panel's one outward signal; the state itself is readable through `state()`.
   readonly onPosition: (at: ReadAlongAt | null) => void;
+  // The place kept for this paste on this device: keptPlace's two edges over
+  // window.localStorage in the page, keyed by the paste and checked against its prints; over
+  // a Map in the check. Read at every render; written wherever the voice speaks.
+  readonly resume: { readonly read: () => Place | null; readonly write: (place: Place) => void };
+  // Writes a link to a place where the reader can paste it: the clipboard, in the page. A
+  // rejection is the reader's to see, on the control.
+  readonly share: (place: Place) => Promise<void>;
   // Called when the reader asked to BE somewhere — a tap on a word, the scrubber, a nudge, a
   // turn skip — so whoever keeps the page in view looks there. One place decides this for
   // every door a seek can come through [LAW:single-enforcer]: a key and a click cannot drift
@@ -1097,6 +1214,9 @@ export interface ListenPanelConfig {
 export interface ListenPanel {
   // The reader's one door: every gesture, from every control and every key, arrives here.
   readonly send: (gesture: Gesture) => void;
+  // A link's word on the listen: its place is cued, painted and followed; a place the page no
+  // longer has is said on the mini-player; no link does nothing.
+  readonly open: (link: Linked) => void;
   // The page is back: a restore from the back-forward cache after the pagehide that
   // disposed. The worker is spawned to probe again and the standing consent given again,
   // as at mount.
@@ -1128,17 +1248,23 @@ const setText = (el: Element, text: string): void => {
 // face's controls are written whether or not it is showing, so no face can carry a stale
 // word into its next showing. The progress and note faces show the status sentence; a bar
 // with no fraction is the indeterminate one.
-const renderMini = (mini: MiniControls, face: MiniFace, status: string): void => {
+const renderMini = (mini: MiniControls, face: MiniFace, offer: Offer | null, status: string): void => {
   for (const [kind, el] of Object.entries(mini.faces)) el.hidden = kind !== face.kind;
+  mini.offer.hidden = offer === null;
+  mini.resume.hidden = offer?.kind !== "resume";
+  setText(mini.resume, offer?.kind === "resume" ? `Resume “${offer.words}”` : "");
+  mini.gone.hidden = offer?.kind !== "gone";
+  setText(mini.gone, offer?.kind === "gone" ? "The linked moment is gone: this conversation has changed since the link was made." : "");
   setText(mini.ask, face.kind === "consent" ? face.ask : "");
   setText(mini.progress, face.kind === "progress" ? status : "");
   if (face.kind === "progress" && face.fraction !== null) mini.bar.value = face.fraction;
   else mini.bar.removeAttribute("value");
   setText(mini.note, face.kind === "note" ? status : "");
   mini.retry.hidden = !(face.kind === "note" && face.retry);
-  const controls = face.kind === "controls" ? face : { play: "play" as const, back: false, forward: false };
+  const controls = face.kind === "controls" ? face : { play: "play" as const, back: false, forward: false, share: false };
   mini.back.disabled = !controls.back;
   mini.forward.disabled = !controls.forward;
+  mini.share.disabled = !controls.share;
   mini.play.dataset.does = controls.play;
   mini.play.setAttribute("aria-label", controls.play === "pause" ? "Pause" : "Play");
 };
@@ -1168,7 +1294,7 @@ const render = (controls: ListenControls, picker: { readonly render: (shown: Voi
   // The sentence names the mark for assistive tech.
   mark.button.setAttribute("aria-label", `Listen: ${shown.status}`);
   const held = mini.root.ownerDocument.activeElement;
-  renderMini(mini, shown.mini, shown.status);
+  renderMini(mini, shown.mini, shown.offer, shown.status);
   mini.root.hidden = !out;
   mark.button.setAttribute("aria-expanded", String(out));
   handOff(mark, mini, held);
@@ -1273,9 +1399,27 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const clockNow = (): Clock => clockAt(timeline(), held ? Number(controls.scrub.value) : timeNow());
   const paintClock = (): void => renderClock(controls, clockNow(), held);
 
+  // The place the transport names right now: under the voice while it has a place, else the
+  // cue's. Null while nothing is playing and nothing is cued.
+  const placeNow = (): Place | null => {
+    const now = stageState();
+    return now.kind === "idle" ? placeOfCue(state.cue) : placeIn(timeline(), now.segment, now.atMs);
+  };
+  // [LAW:no-shared-mutable-globals] The last place written to the device, owned here, so a
+  // frame on the same word writes nothing.
+  let kept: Place | null = null;
+  const keepPlace = (place: Place): void => {
+    if (kept !== null && kept.utterance === place.utterance && kept.char === place.char) return;
+    kept = place;
+    config.resume.write(place);
+  };
+
+  // What is painted: the voice's cursor while it has a place — and that place kept on the
+  // device — else the cue's word, else nothing.
   const emitPosition = (): void => {
     const now = stageState();
-    const cursor = now.kind === "idle" ? null : cursorIn(now.segment, now.atMs);
+    if (now.kind !== "idle") keepPlace(placeIn(timeline(), now.segment, now.atMs));
+    const cursor = now.kind === "idle" ? cursorOfCue(state.cue, utterances) : cursorIn(now.segment, now.atMs);
     const at = cursor === null ? null : readAlongAt(cursor, utterances);
     if (samePlace(at, shown)) return;
     shown = at;
@@ -1386,15 +1530,27 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     reset: () => repick(DEFAULT_PICK),
   });
 
-  // The visit as it is now: the preferences from storage, the connection from the browser.
-  const visit = (): Visit => ({ remembered: config.preference.read(), metered: downloadNeedsTap(config.connection()), pick: config.pick.read() });
+  // [LAW:no-shared-mutable-globals] Whether a link this visit opened named a place the page
+  // no longer has: owned here, set by `open`, and spent by the reader's next gesture, which
+  // is their answer to it.
+  let gone = false;
+  // The visit as it is now: the preferences and the kept place from storage, the connection
+  // from the browser.
+  const visit = (): Visit => ({
+    remembered: config.preference.read(),
+    metered: downloadNeedsTap(config.connection()),
+    pick: config.pick.read(),
+    resume: config.resume.read(),
+    gone,
+  });
   // Whether the reader has the mini-player out: a fact of the markup alone, owned here and
-  // flipped only by the mark's tap; the machine has no state for it, as it has none for the
+  // flipped by the mark's tap; the machine has no state for it, as it has none for the
   // picker's fold [LAW:one-source-of-truth]. A voice with a place keeps the player out
   // whatever the toggle says — a listen never hides its controls — so a tap while the voice
   // is on stage changes nothing the reader can see, and its word is kept for when the
-  // listen ends.
-  let opened = false;
+  // listen ends. It starts out when the device keeps a place for this paste, so the offer to
+  // resume is seen, and a link brings it out, so its Play is; the mark's tap folds either.
+  let opened = config.resume.read() !== null;
   const out = (): boolean => opened || listening(state);
   const show = (): void => render(controls, picker, readout(state, page, visit()), out());
 
@@ -1467,10 +1623,45 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   };
 
   const send = (g: Gesture): void => {
+    gone = false;
+    unshare();
     const event = resolve(g);
-    if (event === null) return;
+    if (event === null) {
+      show();
+      return;
+    }
     dispatch(event);
     if (moves(g)) config.onSeek();
+  };
+
+  // A link's word: its place cued — painted, and followed as a seek is — or the word that it
+  // is gone. Either brings the mini-player out, where its Play or its note is.
+  const openLink = (link: Linked): void => {
+    if (link.kind === "none") return;
+    opened = true;
+    gone = link.kind === "gone";
+    if (link.kind === "gone") {
+      show();
+      return;
+    }
+    dispatch({ kind: "cue", to: link.place });
+    config.onSeek();
+  };
+
+  // The share control's word on its last tap, shown on the control until the reader's next
+  // gesture or its losing focus: the link copied, or the reason it was not
+  // [LAW:no-silent-failure].
+  const { share: shareButton } = controls.mini;
+  const SHARE_LABEL = "Copy a link to this moment";
+  const unshare = (): void => {
+    delete shareButton.dataset.shared;
+    shareButton.setAttribute("aria-label", SHARE_LABEL);
+    shareButton.title = SHARE_LABEL;
+  };
+  const shared = (outcome: "copied" | "failed", label: string): void => {
+    shareButton.dataset.shared = outcome;
+    shareButton.setAttribute("aria-label", label);
+    shareButton.title = label;
   };
 
   // The first step, performed like every other: the state shown, the store asked.
@@ -1491,6 +1682,23 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     [controls.mini.forward, { kind: "turn", by: 1 }],
   ];
   for (const [button, g] of taps) button.addEventListener("click", () => send(g));
+  // The offer's tap is a tap on the kept word: read from the device at the tap, the same read
+  // the offer was drawn from.
+  controls.mini.resume.addEventListener("click", () => {
+    const place = config.resume.read();
+    if (place !== null) send({ kind: "place", to: place });
+  });
+  // The share control names the moment at the tap — the live one while the voice speaks.
+  unshare();
+  shareButton.addEventListener("click", () => {
+    const place = placeNow();
+    if (place === null) return;
+    config.share(place).then(
+      () => shared("copied", "Link copied"),
+      (error: unknown) => shared("failed", `Could not copy the link: ${error instanceof Error ? error.message : String(error)}`),
+    );
+  });
+  shareButton.addEventListener("blur", unshare);
   // A drag is two facts, and the input reports them separately: `input` is the thumb
   // moving, which only the times follow, and `change` is the reader letting go, which is
   // the seek. Seeking on every `input` would restart the audio schedule and re-aim the
@@ -1548,6 +1756,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
 
   return {
     send,
+    open: openLink,
     // The page's door back in: the wake, as at mount.
     wake: wakeUp,
     state: () => state,
