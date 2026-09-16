@@ -42,7 +42,7 @@
 // to speak — and a dispose forgets it. The tap is also the reader's gesture, the one moment
 // a browser lets audio start [LAW:no-ambient-temporal-coupling]: a gesture on an able device
 // yields an `unlock` effect on its own stack, which opens the audio device if not yet open and
-// unlocks it there, sounding nothing, so the context is running long before the model is warm and the first
+// resumes it there, so the context is running long before the model is warm and the first
 // unit — scheduled from a worker message many seconds later — sounds. A voice that arrives
 // on a standing consent is built on a device opened outside any gesture; the reader's first
 // Play resumes it through the unit player, on the tap's stack. Costs, stated once: every
@@ -426,8 +426,8 @@ const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
   return { state: kicked.state, effects: [{ kind: "unlock" }, ...kicked.effects] };
 };
 
-// The page's visibility with the background's pause lifted: a gesture of the reader's is
-// theirs to make, and it takes the listen back.
+// The page's visibility with the background's pause lifted: by the reader's Pause or Stop,
+// which end the listen they were waiting on, or by the voice leaving the stage.
 const seen = (visibility: StageVisibility): Visibility => (visibility === "stalled" ? "hidden" : visibility);
 
 // [LAW:single-enforcer] Whether the listen is on as the reader holds it: the voice speaking, or
@@ -476,7 +476,9 @@ const nameOfTarget = (line: Timeline, to: Target): Start | null => (to.kind === 
 const seek = (state: PanelState, to: Target, page: Page): Step => {
   switch (state.kind) {
     case "neural":
-      return { state: { ...state, cue: null, visibility: seen(state.visibility) }, effects: [HUSH, perform({ kind: "seek", toMs: timeOfTarget(state.view.timeline, to) })] };
+      // A seek moves the listen and leaves it as it was: a stalled voice is still on, and
+      // plays from its new place once the audio there is held.
+      return { state: { ...state, cue: null }, effects: [HUSH, perform({ kind: "seek", toMs: timeOfTarget(state.view.timeline, to) })] };
     case "provisioning": {
       // A conversation with nothing to say has nowhere to keep: the gesture names nothing.
       const cue = nameOfTarget(page.timeline, to);
@@ -631,16 +633,21 @@ const windowOf = (state: PanelState): Lookahead =>
 
 // The background's pause, decided on every view of a voice out of view: a voice that is
 // speaking with nothing to sound is paused and marked stalled; a stalled voice whose audio is
-// held again is played, and stays stalled until it sounds, so the listen reads as on — and
-// the window as wide — the whole way through. Anything else stands.
+// held again is played, and stays stalled until it sounds — so the listen reads as on, and
+// the window as wide, the whole way through — or until it leaves the stage, when there is
+// nothing left to wait for. Anything else stands.
 const background = (state: Extract<PanelState, { kind: "neural" }>): Step => {
   const { player, buffered } = state.view;
   if (state.visibility === "shown") return stay(state);
-  if (player.kind === "speaking") {
-    if (player.flow === "audio") return stay({ ...state, visibility: "hidden" });
-    return state.visibility === "stalled" ? stay(state) : { state: { ...state, visibility: "stalled" }, effects: [perform({ kind: "pause" })] };
+  switch (player.kind) {
+    case "idle":
+      return stay({ ...state, visibility: "hidden" });
+    case "speaking":
+      if (player.flow === "audio") return stay({ ...state, visibility: "hidden" });
+      return state.visibility === "stalled" ? stay(state) : { state: { ...state, visibility: "stalled" }, effects: [perform({ kind: "pause" })] };
+    case "paused":
+      return state.visibility === "stalled" && buffered ? { state, effects: [perform({ kind: "play" })] } : stay(state);
   }
-  return state.visibility === "stalled" && player.kind === "paused" && buffered ? { state, effects: [perform({ kind: "play" })] } : stay(state);
 };
 
 // The page out of view or back: on stage, the background's pause decided again — lifted
@@ -1274,9 +1281,8 @@ export interface ListenPanelConfig {
   // voiceChoice's two edges over window.localStorage in the page, over a Map in the check.
   readonly pick: { readonly read: () => VoicePick; readonly write: (pick: VoicePick) => void };
   readonly connection: () => ConnectionReading | undefined;
-  // What opens the audio device: an AudioContext with a media element beside it in the page
-  // (mediaDevice.ts). Opened by the panel on the first gesture or the first build, whichever
-  // comes first; closed with the worker.
+  // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
+  // first gesture or the first build, whichever comes first; closed with the worker.
   readonly Device: DeviceFactory;
   readonly frames: FrameLoop;
   // The clock the download's pace is read by, in milliseconds; only differences are read.
@@ -1295,6 +1301,8 @@ export interface ListenPanelConfig {
   readonly share: (place: Place) => Promise<void>;
   // Called with the transport after every event: what the device's media controls show.
   readonly onTransport: (transport: Transport) => void;
+  // Called on the reader's gesture, on its stack, whenever the panel spends it unlocking audio.
+  readonly onUnlock: () => void;
   // Called when the reader asked to BE somewhere — a tap on a word, the scrubber, a nudge, a
   // turn skip — so whoever keeps the page in view looks there. One place decides this for
   // every door a seek can come through [LAW:single-enforcer]: a key and a click cannot drift
@@ -1575,11 +1583,12 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
         return;
       case "unlock":
-        // On the gesture's stack: opened AND unlocked inside it, which is what every browser
-        // honours; the player's own resume, on a worker message later, then sounds without
-        // one. The unlock sounds nothing, so a tap that only downloads holds none of the
-        // phone's audio (mediaDevice.ts).
-        void device().device.unlock();
+        // On the gesture's stack: opened AND resumed inside it, which is the unlock every
+        // browser honours; the player's own resume, on a worker message later, is then a
+        // no-op on a running context. The page is told on the same stack, so whatever else it
+        // plays for the listen is unlocked by the same gesture.
+        void device().device.resume();
+        config.onUnlock();
         return;
       case "load":
         portOf().send({ kind: "load" });

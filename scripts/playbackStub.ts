@@ -78,10 +78,6 @@ export class StubDevice implements PlaybackDevice {
     this.sources.push(source);
     return source;
   }
-  unlock(): Promise<void> {
-    this.calls.push("unlock");
-    return Promise.resolve();
-  }
   resume(): Promise<void> {
     this.calls.push("resume");
     return Promise.resolve();

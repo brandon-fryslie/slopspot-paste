@@ -375,6 +375,11 @@ console.log("step: out of view the voice is made further ahead, pauses when it r
   const readerPaused = step(readerPausing.state, view(pausedAt, true));
   assert("it lands: nobody is hearing the listen, so the window narrows, and audio held plays nothing", effects(readerPaused) === "lookahead near" && visibilityOf(readerPaused.state) === "hidden");
   assert("the reader plays it again out of view: once it speaks, the window widens", effects(step(step(readerPaused.state, tapPlay).state, view(speakingAt("audio")))) === "lookahead far");
+  const skipped = step(held.state, { kind: "seek", to: { kind: "time", ms: 0 } });
+  assert("a skip or scrub while stalled moves the voice and leaves the listen on: still stalled, the window wide", effects(skipped) === "hush,perform seek 0ms" && visibilityOf(skipped.state) === "stalled");
+  assert("and its audio held at the new place plays it", effects(step(skipped.state, view(pausedAt, true))) === "perform play");
+  const gone = step(held.state, view({ kind: "idle" }));
+  assert("a stalled voice that leaves the stage — its last unit failed and skipped — is no longer stalled: the window narrows, and the transport offers Listen", effects(gone) === "lookahead near" && visibilityOf(gone.state) === "hidden" && shown(gone.state).startsWith("Listen | "));
   const crashed = step(held.state, { kind: "worker-error", message: "x" });
   assert("a crash while stalled keeps that the page is out of view, and nothing of the background's pause", visibilityOf(crashed.state) === "hidden");
 
@@ -621,7 +626,7 @@ interface Rig {
   readonly sent: ToWorker[];
   readonly emit: (message: FromWorker) => void;
   readonly fail: (message: string) => void;
-  readonly counts: { spawned: number; terminated: number; disposed: number; listeners: () => number; homeAsked: number; keepAsked: number };
+  readonly counts: { spawned: number; terminated: number; disposed: number; listeners: () => number; homeAsked: number; keepAsked: number; unlocked: number };
   // The store's and the browser's answers, given by hand so their timing is the check's.
   readonly answer: { home: (residency: Residency) => void; keep: (keeping: Keeping) => void };
   readonly home: () => Promise<Residency>;
@@ -687,7 +692,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
-  const counts = { spawned: 0, terminated: 0, disposed: 0, listeners: () => listeners.size + errorListeners.size, homeAsked: 0, keepAsked: 0 };
+  const counts = { spawned: 0, terminated: 0, disposed: 0, listeners: () => listeners.size + errorListeners.size, homeAsked: 0, keepAsked: 0, unlocked: 0 };
   // Answers land on the oldest unanswered ask first, so two asks in flight settle in the
   // order they were made: the earlier one can be answered after a later one was issued.
   const deferred = <T,>() => {
@@ -914,6 +919,9 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     clock: () => r.now,
     onPosition: (at) => r.positions.push(at),
     onTransport: (transport) => r.transports.push(transport),
+    onUnlock: () => {
+      r.counts.unlocked += 1;
+    },
     resume: { read: () => readResume(r.store, SLUG, printed), write: (place) => writeResume(r.store, SLUG, printed, place), forget: () => forgetResume(r.store, SLUG) },
     share: r.share,
     onSeek: r.onSeek,
@@ -956,7 +964,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   const device = r.devices()[0];
   if (device === undefined) throw new Error("the tap did not open a device");
   assert("click Play while the probe runs: no second worker, the button disables — the tap is the consent", r.counts.spawned === 1 && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
-  assert("the audio device is opened AND unlocked on the tap, before any worker message, sounding nothing", r.devices().length === 1 && device.calls.join() === "unlock" && r.sent.length === 0);
+  assert("the audio device is opened AND resumed on the tap, before any worker message, and the page told of the unlock on the same stack", r.devices().length === 1 && device.calls.join() === "resume" && r.counts.unlocked === 1 && r.sent.length === 0);
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   assert("supported with the tap held: load is sent", r.said() === "load" && r.shownMark() === "warming | folded | progress ? | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
@@ -1013,7 +1021,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   assert("the place the voice stood is kept as the cue, and the cursor rests on its word, the loop off", r.where() === "t1 0-5/0-5 of 1" && r.frames.pending === 0 && held(panel.state()) === "0:0");
   r.play.click();
   const second = r.devices()[1];
-  assert("Retry: a fresh worker is spawned and probed, and a fresh device opened and unlocked on the tap", r.counts.spawned === 2 && second !== undefined && second !== device && second.calls.join() === "unlock" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
+  assert("Retry: a fresh worker is spawned and probed, and a fresh device opened and resumed on the tap", r.counts.spawned === 2 && second !== undefined && second !== device && second.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
   panel.dispose();
   assert("dispose: the worker disposed (not terminated outright), unheard, the device closed, at the start", r.counts.disposed === 1 && r.counts.terminated === 1 && r.counts.listeners() === 0 && second?.calls.at(-1) === "close" && r.line() === IDLE_LINE);
 }
@@ -1040,7 +1048,7 @@ console.log("createListenPanel: a tap on a word before the voice is warm is wher
   const panel = mount(r);
   panel.send({ kind: "place", to: mark(0, 21) });
   const device = r.devices()[0];
-  assert("a tap on a word while the probe runs opens the device, like Play, and holds the place", r.counts.spawned === 1 && device?.calls.join() === "unlock" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…" && held(panel.state()) === "0:21");
+  assert("a tap on a word while the probe runs opens the device, like Play, and holds the place", r.counts.spawned === 1 && device?.calls.join() === "resume" && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…" && held(panel.state()) === "0:21");
   panel.send({ kind: "place", to: mark(1) });
   assert("a second tap while the voice is on its way moves the place, nothing else", r.counts.spawned === 1 && r.devices().length === 1 && held(panel.state()) === "1:0");
   arrive(r);
@@ -1116,7 +1124,7 @@ console.log("createListenPanel: the hover's yes downloads the voice and leaves i
   assert("download needed: the mark says so, the hover asks with the size and offers the yes and the box; nothing sent, no device", r.shownMark() === ASK_MARK && r.line() === ABSENT_LINE && r.sent.length === 0 && r.devices().length === 0 && r.mark.button.getAttribute("aria-label") === "Listen: The voice downloads 239 MB once, then runs on this device");
   r.mini.download.click();
   const device = r.devices()[0];
-  assert("yes: the device is opened and unlocked on the click — nothing sounds for a download — load sent, the browser asked to keep; Play still reads, since a yes is not a Play", device?.calls.join() === "unlock" && r.said() === "load" && r.counts.keepAsked === 1 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember off");
+  assert("yes: the device is opened and resumed on the click, load sent, the browser asked to keep; Play still reads, since a yes is not a Play", device?.calls.join() === "resume" && r.said() === "load" && r.counts.keepAsked === 1 && r.line() === PREPARING_LINE && r.shownMark() === "warming | folded | progress ? | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 60_000_000, totalBytes: 240_000_000 } });
   assert("downloading: the ring fills, the question is gone", r.mark.root.dataset.state === "downloading" && r.mark.root.style.getPropertyValue("--fraction") === "0.25" && r.shownMark() === "downloading | folded | progress 0.25 | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 240_000_000, totalBytes: 240_000_000 } });
@@ -1139,7 +1147,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   r.emit({ kind: "script", id: SCRIPT_ID, units });
   const device = r.devices()[0];
-  assert("a voice built on a standing consent opens its device outside any gesture, unresumed, and stands ready", r.devices().length === 1 && device?.calls.join() === "" && r.line() === "Listen | stop(off) | Ready" && r.said() === "load,script");
+  assert("a voice built on a standing consent opens its device outside any gesture, unresumed, and stands ready", r.devices().length === 1 && device?.calls.join() === "" && r.counts.unlocked === 0 && r.line() === "Listen | stop(off) | Ready" && r.said() === "load,script");
   r.play.click();
   assert("the first Play resumes that device on the tap and speaks", device?.calls.includes("resume") === true && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
   r.check(false);
@@ -1175,7 +1183,7 @@ console.log("createListenPanel: on a metered connection the remembered yes still
   const tappedPanel = mount(tapped);
   await ableAbsent(tapped);
   tapped.mini.download.click();
-  assert("with save-data on, the hover's yes is the reader's own: load on the click", tapped.said() === "load" && tapped.devices()[0]?.calls.join() === "unlock");
+  assert("with save-data on, the hover's yes is the reader's own: load on the click", tapped.said() === "load" && tapped.devices()[0]?.calls.join() === "resume");
   tappedPanel.dispose();
 }
 
@@ -1538,39 +1546,74 @@ console.log("createListenPanel: out of view, a voice that runs dry pauses its de
   panel.dispose();
 }
 
-console.log("createListenPanel: the lock screen's pause over a voice stalled out of view is a real pause, which audio arriving does not undo");
-{
-  const r = rig();
-  const panel = mount(r);
-  // The media controls as the page wires them: shown every transport, pressing into the panel.
+// The media controls as the page wires them — shown every transport, pressing into the panel —
+// over a stub session and a carrier that only records whether it plays.
+const controlsOf = (r: Rig, panel: ReturnType<typeof createListenPanel>) => {
   const handlers = new Map<MediaAction, (details: ActionDetails) => void>();
+  const carrier = { paused: true, play: () => ((carrier.paused = false), Promise.resolve()), pause: () => void (carrier.paused = true), addEventListener: () => {} };
   const media = createMediaSession({
     session: { playbackState: "none", metadata: null, setActionHandler: (action, handler) => void handlers.set(action, handler), setPositionState: () => {} },
     metadata: (shown) => shown,
     title: "t",
     speakerOf: () => "",
     send: (gesture) => panel.send(gesture),
+    element: () => carrier,
+    refused: () => {},
   });
-  const press = (action: MediaAction): void => {
+  const sync = (): void => {
     const shown = r.transports.at(-1);
     if (shown !== undefined) media.show(shown);
-    handlers.get(action)?.({});
   };
+  const press = (action: MediaAction): void => {
+    sync();
+    handlers.get(action)?.({});
+    sync();
+  };
+  return { carrier, sync, press };
+};
+
+const stalledOutOfView = (r: Rig, panel: ReturnType<typeof createListenPanel>): StubDevice => {
   panel.visibility(true);
   r.play.click();
   arrive(r);
   const device = r.devices()[0];
   if (device === undefined) throw new Error("fixture: no device opened");
-  assert("stalled out of view: the controls are told it plays, so they offer Pause", r.transports.at(-1)?.playback === "playing" && device.calls.at(-1) === "suspend");
+  return device;
+};
+
+console.log("createListenPanel: the lock screen over a voice stalled out of view — the listen is on, its carrier plays, and a skip leaves it on");
+{
+  const r = rig();
+  const panel = mount(r);
+  const { carrier, sync, press } = controlsOf(r, panel);
+  const device = stalledOutOfView(r, panel);
+  sync();
+  assert("stalled: the controls are told it plays, so they offer Pause, and the carrier plays on — the page stays the phone's media while its audio is made", r.transports.at(-1)?.playback === "playing" && device.calls.at(-1) === "suspend" && !carrier.paused);
   press("play");
   assert("their Play over it is nothing: the voice is already on its way back", device.calls.at(-1) === "suspend" && r.line().startsWith("Pause | stop | Paused in the background"));
+  press("seekbackward");
+  assert("their skip moves it and leaves it on: still stalled, still told it plays", r.line().startsWith("Pause | stop | Paused in the background") && r.transports.at(-1)?.playback === "playing" && !carrier.paused);
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  r.emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  assert("the audio at its new place arrives: it plays", device.calls.at(-1) === "resume" && r.line() === "Pause | stop | Playing · passage 1 of 2");
+  panel.dispose();
+  sync();
+  assert("disposed: the controls are told none, and the carrier is paused", r.transports.at(-1)?.playback === "none" && carrier.paused);
+}
+
+console.log("createListenPanel: the lock screen's pause over a stalled voice is a real pause, which audio arriving does not undo");
+{
+  const r = rig();
+  const panel = mount(r);
+  const { carrier, press } = controlsOf(r, panel);
+  const device = stalledOutOfView(r, panel);
   press("pause");
-  assert("their Pause: paused by the reader now, and the controls say so", r.transports.at(-1)?.playback === "paused" && r.line().startsWith("Resume | stop | Paused ·"));
+  assert("their Pause: paused by the reader now, the controls say so, and the carrier stops", r.transports.at(-1)?.playback === "paused" && r.line().startsWith("Resume | stop | Paused ·") && carrier.paused);
   r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
   r.emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
   assert("the whole unit arrives: nothing plays, the device stays suspended", device.calls.at(-1) === "suspend" && r.line().startsWith("Resume | stop | Paused ·"));
   press("play");
-  assert("their Play: the reader's listen again", device.calls.at(-1) === "resume" && r.transports.at(-1)?.playback === "playing");
+  assert("their Play: the reader's listen again, the carrier with it", device.calls.at(-1) === "resume" && r.transports.at(-1)?.playback === "playing" && !carrier.paused);
   panel.dispose();
 }
 

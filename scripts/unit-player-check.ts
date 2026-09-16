@@ -49,7 +49,7 @@
 
 import { GAP_MS, layoutOf, type Slot } from "../src/timeline";
 import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, extend, openDevice, openSchedule, positionAt, silenceSamples } from "../src/unitPlayer";
-import type { PlayerState, UnitAudio } from "../src/unitPlayer";
+import type { DeviceFactory, PlayerState, UnitAudio } from "../src/unitPlayer";
 import { FRAME_S, FS, SR, StubBuffer, StubDevice, StubSource, describe, frame } from "./playbackStub";
 
 // A layout of `n` units on one turn: no gap anywhere, so a segment is its unit.
@@ -74,6 +74,12 @@ const throws = (label: string, fn: () => void): void => {
 };
 
 const near = (a: number, b: number, eps = 1e-6): boolean => Math.abs(a - b) <= eps;
+
+// The real AudioContext must fit the seam the player declares; this line is the proof the
+// page's wiring will rest on, checked here where the DOM lib is present.
+type RealDeviceFits = typeof AudioContext extends DeviceFactory ? true : never;
+const realDeviceFits: RealDeviceFits = true;
+assert("typeof AudioContext satisfies DeviceFactory", realDeviceFits);
 
 // The cursor is accumulated as (frameSamples - skip) / sampleRate and the stub's end time
 // as length / sampleRate - offset: the same quantity by two float formulas, compared to

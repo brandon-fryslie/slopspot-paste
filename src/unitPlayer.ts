@@ -121,16 +121,12 @@ export interface PlaybackDevice {
   readonly destination: unknown;
   createBuffer(channels: number, length: number, sampleRate: number): PcmBuffer;
   createBufferSource(): PcmSource;
-  // The reader's gesture spent on the device, before any voice is on stage: whatever lets a
-  // later `resume` sound without one, sounding nothing now.
-  unlock(): Promise<void>;
   resume(): Promise<void>;
   suspend(): Promise<void>;
   close(): Promise<void>;
 }
 
-// What opens a device: an AudioContext with a media element beside it in the page
-// (mediaDevice.ts), the stub device in the checks.
+// `AudioContext` in the page: what opens a device.
 export type DeviceFactory = new (options: { readonly sampleRate: number }) => PlaybackDevice;
 
 // [LAW:parse-dont-validate] A device is opened by `openDevice` alone, at the PCM's rate,

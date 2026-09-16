@@ -1,6 +1,6 @@
 // [LAW:decomposition] The listen as the device's media controls see it: the lock screen, the
 // notification shade, a headset's buttons. One sentence, no "and" hiding a second job: this
-// module translates between the Media Session API and the Listen panel. It plays nothing and
+// module presents the Listen panel's transport to the platform as media. It sounds nothing and
 // owns no position; what it shows is the panel's transport reading, and what it does is send
 // the panel the reader's own gestures (listenPanel.ts), so a lock-screen button is one more
 // door into the one transport, exactly as a key is (shortcuts.ts) [LAW:one-type-per-behavior].
@@ -14,6 +14,25 @@
 // "artist" — so the lock screen says who is talking — and the site as the album. No artwork:
 // the site's one icon is an SVG, which the platforms' media controls do not all draw. While
 // nothing is on stage the session says `none` and shows nothing.
+//
+// WHY A CARRIER. The platform gives its controls, and the pause a call makes, to a media
+// element, not to the AudioContext the voice sounds from — and only to one playing something
+// long enough to be content. Chrome counts an element playing a MediaStream as a one-shot
+// sound nobody controls (WebMediaPlayerMS reports kOneShot, and MediaSessionImpl::
+// IsControllable is false for a session with only those), and a file of five seconds or less
+// as transient (media::DurationToMediaContentType). So an element loops a silent file of
+// CARRIER_SECONDS while the transport says the listen is playing — a stall included, whose
+// controls offer Pause, and which a phone must keep in the foreground while its audio is made
+// — and is paused otherwise, so a voice standing ready or paused holds none of the phone's
+// audio. It is never a clock and carries no sound [LAW:one-source-of-truth].
+//
+// THE UNLOCK. Where a browser asks for a gesture per element, the element's play when the
+// voice first sounds — on a worker message, long after the tap — would be refused. So the
+// panel's unlock, on the tap's stack, primes it: made, played and paused at once, before it has
+// loaded a byte, which takes no audio focus and shows no notification. A pause the element
+// did not get from here — a call, another app's audio, headphones pulled out — is answered as
+// the controls' own Pause [LAW:no-silent-failure]; a play it refuses is said (`refused`), and
+// the voice sounds on without the lock screen.
 //
 // WHAT IT ANSWERS. Play and pause are the transport's one Play tap, sent only when it would
 // do what was asked — a play over a playing voice is nothing, not a pause. Stop is Stop. The
@@ -89,6 +108,49 @@ export const gestureOf = (action: MediaAction, details: ActionDetails, playback:
   }
 };
 
+// ── the carrier ───────────────────────────────────────────────────────────────────────
+
+// Longer than the five seconds under which Chrome counts a file as a transient sound.
+export const CARRIER_SECONDS = 10;
+const CARRIER_RATE = 8000;
+
+// The carrier: CARRIER_SECONDS of silence as an 8-bit mono PCM WAV, 80 KB, built here rather
+// than fetched, so the lock screen needs nothing from the network.
+export const carrierWav = (): ArrayBuffer => {
+  const samples = CARRIER_SECONDS * CARRIER_RATE;
+  const bytes = new ArrayBuffer(44 + samples);
+  const view = new DataView(bytes);
+  const tag = (at: number, text: string): void => {
+    for (let i = 0; i < text.length; i++) view.setUint8(at + i, text.charCodeAt(i));
+  };
+  tag(0, "RIFF");
+  view.setUint32(4, 36 + samples, true);
+  tag(8, "WAVE");
+  tag(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, CARRIER_RATE, true);
+  view.setUint32(28, CARRIER_RATE, true); // bytes per second
+  view.setUint16(32, 1, true); // bytes per frame
+  view.setUint16(34, 8, true); // bits per sample
+  tag(36, "data");
+  view.setUint32(40, samples, true);
+  // Unsigned 8-bit silence is the midpoint.
+  new Uint8Array(bytes, 44).fill(128);
+  return bytes;
+};
+
+// [LAW:types-are-the-program] Exactly the surface of HTMLMediaElement used here.
+export interface MediaElement {
+  readonly paused: boolean;
+  play(): Promise<void>;
+  pause(): void;
+  addEventListener(type: "pause", listener: () => void): void;
+}
+
+const aborted = (error: unknown): boolean => typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+
 // ── the driver ────────────────────────────────────────────────────────────────────────
 
 // [LAW:types-are-the-program] Exactly the surface of `navigator.mediaSession` used here, so
@@ -109,14 +171,17 @@ export interface MediaSessionConfig {
   readonly speakerOf: (utterance: number) => string;
   // The panel's one door.
   readonly send: (gesture: Gesture) => void;
+  // A fresh element looping the carrier (`carrierWav`): `new Audio(url)` with `loop` set.
+  readonly element: () => MediaElement;
+  // The carrier's play was refused: the voice sounds without the lock screen.
+  readonly refused: (error: unknown) => void;
 }
 
 export interface MediaSession {
   // The panel's transport, at every discontinuity.
   readonly show: (transport: Transport) => void;
-  // An action from somewhere other than the session's own handlers — the media element
-  // paused by the platform — answered the same way.
-  readonly act: (action: MediaAction) => void;
+  // The reader's gesture, on its stack: the carrier primed for a play without one.
+  readonly unlock: () => void;
 }
 
 const sameMetadata = (a: Metadata | null, b: Metadata | null): boolean =>
@@ -124,11 +189,14 @@ const sameMetadata = (a: Metadata | null, b: Metadata | null): boolean =>
 
 export const createMediaSession = (config: MediaSessionConfig): MediaSession => {
   const { session } = config;
-  // [LAW:no-shared-mutable-globals] The last reading shown, owned here: what a handler
-  // decides against, and what a repeated reading is compared with so the platform is not
-  // handed the same metadata again — a reassignment restarts the controls' artwork fetch.
+  // [LAW:no-shared-mutable-globals] Owned here: the last reading shown, which a handler
+  // decides against and a repeated reading is compared with, so the platform is not handed the
+  // same metadata again — a reassignment restarts the controls' artwork fetch; the carrier,
+  // made on first need; and how many of its pause events are this module's own.
   let playback: Playback = "none";
   let shown: Metadata | null = null;
+  let carrier: MediaElement | null = null;
+  let ownPauses = 0;
 
   const act = (action: MediaAction, details: ActionDetails = {}): void => {
     const gesture = gestureOf(action, details, playback);
@@ -146,7 +214,38 @@ export const createMediaSession = (config: MediaSessionConfig): MediaSession => 
     }
   }
 
+  const made = (): MediaElement => {
+    if (carrier !== null) return carrier;
+    const element = config.element();
+    element.addEventListener("pause", () => {
+      if (ownPauses > 0) ownPauses -= 1;
+      else act("pause");
+    });
+    carrier = element;
+    return element;
+  };
+  // A play cut short by a pause from here — the prime's, or one landing before the file
+  // loaded — is not a refusal.
+  const play = (element: MediaElement): void => {
+    element.play().catch((error: unknown) => {
+      if (!aborted(error)) config.refused(error);
+    });
+  };
+  const pause = (element: MediaElement): void => {
+    if (element.paused) return;
+    ownPauses += 1;
+    element.pause();
+  };
+
+  const unlock = (): void => {
+    if (carrier !== null) return;
+    const element = made();
+    play(element);
+    pause(element);
+  };
+
   const show = (transport: Transport): void => {
+    const was = playback;
     playback = transport.playback;
     const metadata = metadataOf(transport, config.title, config.speakerOf);
     if (!sameMetadata(metadata, shown)) {
@@ -157,9 +256,18 @@ export const createMediaSession = (config: MediaSessionConfig): MediaSession => 
     const position = positionOf(transport);
     if (position === null) session.setPositionState();
     else session.setPositionState(position);
+    // The carrier follows the reading: played as the listen starts playing, and paused while
+    // it is not. A play is asked once per start, so a refusal is said once, not on every
+    // reading; a carrier never needed is never made.
+    if (transport.playback === "playing") {
+      if (was !== "playing") play(made());
+    } else if (carrier !== null) {
+      pause(carrier);
+    }
   };
 
   // The handlers stay for the page's life: the panel's own teardown reports `none`, which is
-  // what clears the controls, and a page restored from the cache is heard again at once.
-  return { show, act: (action) => act(action) };
+  // what clears the controls and pauses the carrier, and a page restored from the cache is
+  // heard again at once.
+  return { show, unlock };
 };

@@ -811,8 +811,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
-    import { carrierWav, mediaDevice } from "../mediaDevice";
-    import { createMediaSession } from "../mediaSession";
+    import { carrierWav, createMediaSession } from "../mediaSession";
     import type { Utterance } from "../speech";
 
     const controls = document.querySelector(".speech-controls");
@@ -869,8 +868,8 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         });
         // The device's media controls — the lock screen, the notification, a headset — as
         // one more door into the panel, showing the paste and who is speaking. Every browser
-        // that offers Listen (WebGPU) has the Media Session API.
-        // The carrier every device's element loops, made once for the page.
+        // that offers Listen (WebGPU) has the Media Session API. The silent file its carrier
+        // loops is made once for the page.
         const carrier = URL.createObjectURL(new Blob([carrierWav()], { type: "audio/wav" }));
         const media = createMediaSession({
           session: navigator.mediaSession,
@@ -879,6 +878,12 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           // The name on the passage's turn card, as the reader sees it.
           speakerOf: (utterance) => document.getElementById(utterances[utterance]?.anchor ?? "")?.querySelector(".role-name")?.textContent?.trim() ?? "",
           send: (gesture) => panel.send(gesture),
+          element: () => {
+            const element = new Audio(carrier);
+            element.loop = true;
+            return element;
+          },
+          refused: (error) => console.warn("listen: the media element refused to play; the voice plays without lock-screen controls", error),
         });
         const panel = createListenPanel({
           controls: {
@@ -944,20 +949,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             write: (pick) => writePick(window.localStorage, pick),
           },
           connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
-          // Beside the voice, a silent media element plays while it sounds, which is what a
-          // browser gives a lock screen and media controls (mediaDevice.ts). A pause the
-          // platform makes — a call, another app's audio — pauses the listen as the lock
-          // screen's own pause would.
-          Device: mediaDevice({
-            Context: AudioContext,
-            element: () => {
-              const element = new Audio(carrier);
-              element.loop = true;
-              return element;
-            },
-            interrupted: () => media.act("pause"),
-            refused: (error) => console.warn("listen: the media element refused to play; the voice plays without lock-screen controls", error),
-          }),
+          Device: AudioContext,
           clock: () => performance.now(),
           frames: {
             request: (callback) => window.requestAnimationFrame(callback),
@@ -965,6 +957,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           },
           onPosition: (at) => follower.cursor(painter.paint(at)),
           onTransport: (transport) => media.show(transport),
+          onUnlock: () => media.unlock(),
           // The place kept for this paste, in the same storage, filed under its slug and
           // checked against the page's prints on every read.
           resume: {
