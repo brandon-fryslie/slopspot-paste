@@ -39,7 +39,7 @@ import { createScheduler, type Lookahead, type SchedulerView } from "./scheduler
 import type { Utterance } from "./speech";
 import type { UnitReport } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
-import type { SynthesisPort } from "./synthesisClient";
+import type { ListenPort } from "./synthesisClient";
 import { speechSegments, timelineOfScript, type Segment, type SpeechSegment, type Timeline } from "./timeline";
 import { createUnitPlayer, type OpenDevice, type SegmentOffset } from "./unitPlayer";
 
@@ -127,7 +127,7 @@ export const stateOf = (view: NeuralView): NeuralState => {
 };
 
 export interface NeuralPerformerConfig {
-  readonly port: SynthesisPort;
+  readonly port: ListenPort;
   readonly script: ReadonlyArray<SynthesisUnit>;
   readonly utterances: ReadonlyArray<Utterance>;
   readonly voices: VoiceMap;

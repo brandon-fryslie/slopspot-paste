@@ -29,6 +29,18 @@ export interface SynthesisPort {
   readonly terminate: () => void;
 }
 
+// A synthesize request: the one shape a unit is asked for, whether the cursor needs it now or
+// it is made ahead.
+export type SynthesizeRequest = Extract<ToWorker, { kind: "synthesize" }>;
+
+// [LAW:types-are-the-program] The port a listen speaks to: the protocol, and the units worth
+// making ahead of need, in the order they are worth it — each order replacing the last. What
+// is made of it, and when, is the port's (keptSynthesis.ts): a raw worker has nowhere to put
+// audio nobody asked for, so it is not a listen port.
+export interface ListenPort extends SynthesisPort {
+  readonly ahead: (requests: ReadonlyArray<SynthesizeRequest>) => void;
+}
+
 export const spawnSynthesisWorker = (): SynthesisPort => {
   const worker = new Worker(new URL("./synthesisWorker.ts", import.meta.url), { type: "module" });
   const send = (message: ToWorker): void => worker.postMessage(message);

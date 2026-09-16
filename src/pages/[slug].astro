@@ -814,6 +814,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { createCodec, probeCodec } from "../audioCodec";
     import { KEPT_BYTES, createAudioCache, openKeptStore } from "../keptAudio";
     import { withKeptAudio } from "../keptSynthesis";
+    import { watchAllowance, type DeviceSource } from "../presynthesis";
     import { MODEL_PCM } from "../unitPlayer";
     import { carrierWav, createMediaSession } from "../mediaSession";
     import type { Utterance } from "../speech";
@@ -900,6 +901,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           cap: KEPT_BYTES,
           onFailure: (what, error) => console.warn(`listen: ${what} failed; the model makes it instead`, error),
         });
+        // Whether the rest of a paste may be made ahead into that store while the voice is idle:
+        // on power or a known-unmetered connection, as the browser reports them (presynthesis.ts).
+        const allowance = watchAllowance(navigator as Navigator & DeviceSource);
         const panel = createListenPanel({
           controls: {
             play: control<HTMLButtonElement>(".speech-play"),
@@ -946,9 +950,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           },
           utterances,
           // [LAW:single-enforcer] The one cache over both doors to it: the port answers a kept
-          // script or unit, holds the rest for the model and keeps what the worker makes, and
-          // the restore reads the same store.
-          spawn: () => withKeptAudio({ worker: spawnSynthesisWorker(), cache: kept, now: () => performance.now() }),
+          // script or unit, holds the rest for the model, keeps what the worker makes and makes
+          // the rest of the paste ahead when the device allows, and the restore reads the same store.
+          spawn: () => withKeptAudio({ worker: spawnSynthesisWorker(), cache: kept, now: () => performance.now(), allowance }),
           restore: kept.restore,
           // [LAW:one-source-of-truth] The store the worker's loader writes, listed here under the
           // same keys; and the browser's own keep request, a Window-only API, so it is the

@@ -41,7 +41,7 @@ import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport } from "../src/speechManifest";
 import { speechSegments, timeAt, timelineOfScript } from "../src/timeline";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
-import type { SynthesisPort } from "../src/synthesisClient";
+import type { ListenPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
@@ -687,7 +687,7 @@ interface Rig {
   // The voice picker's markup: the toggle in the transport and the block the rows are built into.
   readonly voices: { readonly toggle: HTMLButtonElement; readonly picker: HTMLElement };
   readonly doc: Document;
-  readonly port: SynthesisPort;
+  readonly port: ListenPort;
   readonly sent: ToWorker[];
   readonly emit: (message: FromWorker) => void;
   readonly fail: (message: string) => void;
@@ -781,8 +781,9 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const kept: { reports: ReadonlyArray<UnitReport | undefined> } = { reports: [] };
   const keeps = deferred<Keeping>();
   const refusing = { dispose: false };
-  const port: SynthesisPort = {
+  const port: ListenPort = {
     send: (message) => sent.push(message),
+    ahead: () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

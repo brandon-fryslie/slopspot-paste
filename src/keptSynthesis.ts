@@ -35,35 +35,64 @@
 // kept whether or not its request was cancelled meanwhile — its audio is whole — and a unit
 // that failed or was cancelled is not.
 //
+// MADE AHEAD [LAW:single-enforcer]. This port is the one arbiter of the worker's time, so what
+// is worth making ahead (the scheduler's order, told through `ahead`) is made here: one unit at
+// a time, only while the model is ready, nothing the listen asked for is in flight, and the
+// device allows it (presynthesis.ts). A unit made ahead is `filling`: its frames are gathered
+// and kept, and none of its messages reach a listener, which never asked for it. Whatever the
+// listen asks for comes first. A request for the very unit being filled, in the same voice and
+// text, takes the generation over — the frames gathered so far are handed on after the send,
+// before any later frame can arrive, and the rest pass through as the worker makes them; a
+// request for anything else, a voice preview included, cancels the fill and waits for nothing.
+// A new order without the unit being filled, or the device withdrawing its allowance, cancels
+// it too. A unit the worker finishes or fails through this port is not made ahead again — a keep
+// the store refuses must not become a loop — and a cancelled one is tried again when its turn
+// comes back. Cost, stated once: a pre-empted fill discards what it had made.
+//
 // [LAW:no-silent-failure] A lookup that rejects breaks the cache's contract (it never rejects),
 // so it is reported on the port's error channel, where the panel hears a worker's own crash.
 
 import type { AudioCache } from "./keptAudio";
 import type { Utterance } from "./speech";
-import type { SynthesisPort } from "./synthesisClient";
+import type { Allowance } from "./presynthesis";
+import type { ListenPort, SynthesisPort, SynthesizeRequest as Synthesize } from "./synthesisClient";
 import type { FromWorker, ToWorker } from "./synthesisProtocol";
 
-type Synthesize = Extract<ToWorker, { kind: "synthesize" }>;
 type Script = Extract<ToWorker, { kind: "script" }>;
 
 type Job =
   | { readonly kind: "finding"; readonly request: Synthesize; readonly started: number; cancelled: boolean; next: Synthesize | null }
   | { readonly kind: "waiting"; readonly request: Synthesize; cancelled: boolean; next: Synthesize | null }
-  | { readonly kind: "making"; readonly request: Synthesize; readonly frames: Float32Array<ArrayBuffer>[]; cancelled: boolean; next: Synthesize | null };
+  | { readonly kind: "making"; readonly request: Synthesize; readonly frames: Float32Array<ArrayBuffer>[]; cancelled: boolean; next: Synthesize | null }
+  | { readonly kind: "filling"; readonly request: Synthesize; readonly frames: Float32Array<ArrayBuffer>[]; cancelled: boolean; next: Synthesize | null };
 
 export interface KeptSynthesisConfig {
   readonly worker: SynthesisPort;
   readonly cache: Pick<AudioCache, "find" | "keep" | "recallScript" | "keepScript">;
   readonly now: () => number;
+  // Whether the device lets units be made ahead of need, now and as it changes.
+  readonly allowance: Allowance;
 }
 
-export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): SynthesisPort => {
+// The same request: what a fill is handed over on and an order is matched against.
+const same = (a: Synthesize, b: Synthesize): boolean =>
+  a.unitId === b.unitId && a.voice === b.voice && a.text.text === b.text.text && a.text.source === b.text.source;
+
+// What a unit made ahead is remembered by, so it is not made again.
+const tried = (request: Synthesize): string => `${request.unitId}\u0000${request.voice}\u0000${request.text.source}`;
+
+export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisConfig): ListenPort => {
   // [LAW:no-shared-mutable-globals] The units in flight, the scripts the worker is cutting,
   // what is held for the model, whether it is ready, and the listeners — owned here.
   const jobs = new Map<number, Job>();
   const cutting = new Map<number, ReadonlyArray<Utterance>>();
   const held: Script[] = [];
   let ready = false;
+  // What is worth making ahead, the units the worker has finished or failed through this port —
+  // asked for or ahead, never made ahead again — and the voice previews in flight.
+  let order: ReadonlyArray<Synthesize> = [];
+  const made = new Set<string>();
+  const previews = new Set<number>();
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
   let ended = false;
@@ -87,11 +116,54 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
   };
 
   // The unit's job is over: its terminal message goes out, then the request waiting behind it
-  // starts.
+  // starts, and with nothing asked the worker's time goes to what is worth making ahead.
   const settle = (unitId: number, job: Job, terminal: FromWorker): void => {
     jobs.delete(unitId);
     emit(terminal);
     if (job.next !== null) start(job.next);
+    fill();
+  };
+
+  // The next unit worth making ahead, when the worker has nothing the listen asked for.
+  const fill = (): void => {
+    if (ended || !ready || jobs.size > 0 || previews.size > 0 || cutting.size > 0 || !allowance.allowed()) return;
+    const request = order.find((wanted) => !made.has(tried(wanted)));
+    if (request === undefined) return;
+    jobs.set(request.unitId, { kind: "filling", request, frames: [], cancelled: false, next: null });
+    worker.send(request);
+  };
+
+  // The fills in flight that `keep` does not spare are cancelled: the worker answers each.
+  const withdraw = (keep: (request: Synthesize) => boolean): void => {
+    for (const job of jobs.values()) {
+      if (job.kind !== "filling" || job.cancelled || keep(job.request)) continue;
+      job.cancelled = true;
+      worker.send({ kind: "cancel", unitId: job.request.unitId });
+    }
+  };
+
+  // A fill's own conversation, heard by nobody else: its frames gathered, its unit kept when
+  // whole, and the worker's time handed on when it is over.
+  const filled = (job: Extract<Job, { kind: "filling" }>, message: FromWorker & { unitId: number }): void => {
+    switch (message.kind) {
+      case "audio":
+        job.frames.push(message.pcm);
+        return;
+      case "done":
+        void cache.keep(job.request, job.frames, message.report);
+        made.add(tried(job.request));
+        break;
+      case "failed":
+        made.add(tried(job.request));
+        break;
+      case "cancelled":
+        break;
+      default:
+        return;
+    }
+    jobs.delete(message.unitId);
+    if (job.next !== null) start(job.next);
+    fill();
   };
 
   const start = (request: Synthesize): void => {
@@ -116,12 +188,32 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
 
   const synthesize = (request: Synthesize): void => {
     const job = jobs.get(request.unitId);
+    if (job?.kind === "filling" && !job.cancelled && same(job.request, request)) return takeOver(job);
+    if (job?.kind === "filling" && job.next === null) {
+      withdraw(() => false);
+      job.next = request;
+      return;
+    }
+    withdraw(() => false);
     if (job === undefined) return start(request);
     if (!job.cancelled || job.next !== null) {
       queueMicrotask(() => emit({ kind: "failed", unitId: request.unitId, reason: { kind: "duplicate-unit" } }));
       return;
     }
     job.next = request;
+  };
+
+  // The listen asked for the unit being made ahead: the generation becomes its request's. The
+  // frames gathered so far go out after the send that asked, and before the worker's next
+  // message can arrive; a cancel in between is the making job's, and they reach a unit the
+  // listen is already cancelling.
+  const takeOver = (job: Extract<Job, { kind: "filling" }>): void => {
+    const { request, frames } = job;
+    jobs.set(request.unitId, { kind: "making", request, frames, cancelled: false, next: null });
+    const gathered = [...frames];
+    queueMicrotask(() => {
+      if (!ended) gathered.forEach((pcm, frameIndex) => emit({ kind: "audio", unitId: request.unitId, frameIndex, pcm }));
+    });
   };
 
   const cancel = (message: Extract<ToWorker, { kind: "cancel" }>): void => {
@@ -145,6 +237,9 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
       case "making":
         worker.send(message);
         return;
+      case "filling":
+        // Nothing the listen asked for is this job's until a request waits behind it.
+        return;
     }
   };
 
@@ -165,7 +260,18 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
     if (message.kind === "synthesize" && message.unitId >= 0) return synthesize(message);
     if (message.kind === "cancel" && message.unitId >= 0) return cancel(message);
     if (message.kind === "script") return script(message);
+    if (message.kind === "synthesize") {
+      previews.add(message.unitId);
+      withdraw(() => false);
+    }
     worker.send(message);
+  };
+
+  const ahead = (requests: ReadonlyArray<Synthesize>): void => {
+    if (ended) return;
+    order = requests;
+    withdraw((filling) => requests.some((wanted) => same(wanted, filling)));
+    fill();
   };
 
   // The model is ready: what was held for it goes to the worker, scripts first, in the order
@@ -174,6 +280,7 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
     ready = true;
     for (const request of held.splice(0)) cut(request);
     for (const job of [...jobs.values()]) if (job.kind === "waiting" && !job.cancelled) make(job.request, job.next);
+    fill();
   };
 
   // What the worker says about a unit it is making is gathered on the way past: frames kept
@@ -188,9 +295,16 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
       const utterances = cutting.get(message.id);
       cutting.delete(message.id);
       if (utterances !== undefined) void cache.keepScript(utterances, message.units);
-      return emit(message);
+      emit(message);
+      return fill();
     }
-    const job = "unitId" in message && message.unitId >= 0 ? jobs.get(message.unitId) : undefined;
+    if ("unitId" in message && message.unitId < 0) {
+      if (message.kind !== "audio") previews.delete(message.unitId);
+      emit(message);
+      return fill();
+    }
+    const job = "unitId" in message ? jobs.get(message.unitId) : undefined;
+    if (job?.kind === "filling" && "unitId" in message) return filled(job, message);
     if (job?.kind !== "making") return emit(message);
     switch (message.kind) {
       case "audio":
@@ -198,21 +312,27 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
         return emit(message);
       case "done":
         void cache.keep(job.request, job.frames, message.report);
+        made.add(tried(job.request));
         return settle(message.unitId, job, message);
       case "cancelled":
         return settle(message.unitId, job, message);
       case "failed":
         // A duplicate is about a second request, which this port never forwards: the job it
         // names is still the worker's, and the scheduler judges the message.
-        return message.reason.kind === "duplicate-unit" ? emit(message) : settle(message.unitId, job, message);
+        if (message.reason.kind === "duplicate-unit") return emit(message);
+        made.add(tried(job.request));
+        return settle(message.unitId, job, message);
       default:
         return emit(message);
     }
   });
   worker.errors(fail);
+  const unheard = allowance.subscribe(() => (allowance.allowed() ? fill() : withdraw(() => false)));
 
   const end = (): void => {
     ended = true;
+    unheard();
+    order = [];
     jobs.clear();
     cutting.clear();
     held.length = 0;
@@ -220,6 +340,7 @@ export const withKeptAudio = ({ worker, cache, now }: KeptSynthesisConfig): Synt
 
   return {
     send,
+    ahead,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

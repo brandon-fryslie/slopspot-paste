@@ -89,6 +89,15 @@
 // never runs on a state a command it just issued has already moved
 // [LAW:no-ambient-temporal-coupling].
 //
+// WHAT IS WORTH MAKING AHEAD. Beyond the window, every unit this listen has no audio or
+// measurement of is worth making ahead into the device's kept audio, from the unit past the
+// window to the end and then wrapping to the top — an idle player's order starts at the top.
+// That order is a projection of the state and the position (`aheadOf`), not state: the driver
+// tells the port each new order and the port decides whether and when to spend the worker's
+// idle time on it (keptSynthesis.ts). A unit made ahead lands in the device's kept audio,
+// never in the player: when the cursor needs it, its own request is answered from there — or
+// takes over the generation already making it — like any other [LAW:one-source-of-truth].
+//
 // Nothing here is persisted: what the scheduler holds is a disposable projection of the stored
 // original's rendition, and the audio the device keeps is behind the port it is handed
 // (keptSynthesis.ts), answered as any worker answer is [LAW:one-way-deps].
@@ -96,7 +105,7 @@
 import { emptyManifest, recordUnit } from "./speechManifest";
 import type { Manifest, ManifestUnit, RecordRejection, UnitReport } from "./speechManifest";
 import { unitText, type SynthesisUnit, type VoiceMap } from "./speechScript";
-import type { SynthesisPort } from "./synthesisClient";
+import type { ListenPort, SynthesizeRequest } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
 import { layoutOf, type Slot } from "./timeline";
 import type { PlayerEvent, PlayerState, SegmentOffset, UnitPlayer, UnitPlayerConfig } from "./unitPlayer";
@@ -436,11 +445,30 @@ const plan = (state: SchedulerState, player: PlayerState): Plan => {
 
   const inFlight = (holdings ?? state.holdings).findIndex((holding) => holding.kind === "requested");
   if (inFlight !== -1) evict(inFlight);
-  const unit = state.manifest.script[next];
-  if (unit === undefined) throw new RangeError(`scheduler: no script unit ${next}`);
-  commands.push(toWorker({ kind: "synthesize", unitId: next, text: unitText(unit), voice: state.voices[unit.utterance.voice] }));
+  commands.push(toWorker(requestFor(state, next)));
   set(next, REQUESTED);
   return finish();
+};
+
+// [LAW:single-enforcer] The one request for a unit, whether the cursor needs it or it is made
+// ahead: the port matches the two field for field to hand a generation from one to the other.
+const requestFor = (state: SchedulerState, unitId: number): SynthesizeRequest => {
+  const unit = state.manifest.script[unitId];
+  if (unit === undefined) throw new RangeError(`scheduler: no script unit ${unitId}`);
+  return { kind: "synthesize", unitId, text: unitText(unit), voice: state.voices[unit.utterance.voice] };
+};
+
+// The units worth making ahead, in order (see the header): those with neither a holding nor a
+// measurement, from the unit past the window around to the one before it.
+export const aheadOf = (state: SchedulerState, player: PlayerState): ReadonlyArray<number> => {
+  const count = state.holdings.length;
+  const from = player.kind === "idle" ? 0 : reach(state.holdings, needed(state.layout, player.at), state.lookahead).hi + 1;
+  const order: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const unit = (from + i) % count;
+    if (state.holdings[unit]?.kind === "absent" && state.manifest.units[unit] === undefined) order.push(unit);
+  }
+  return order;
 };
 
 // ── the reader's voices ────────────────────────────────────────────────────────────────
@@ -576,7 +604,7 @@ export const settledAt = (state: SchedulerState, player: PlayerState): boolean =
 };
 
 export interface SchedulerConfig {
-  readonly port: SynthesisPort;
+  readonly port: ListenPort;
   readonly script: ReadonlyArray<SynthesisUnit>;
   readonly voices: VoiceMap;
   // The device's kept report for each unit in these voices, or undefined (initialState).
@@ -617,6 +645,18 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
   const perform = (command: Command): void =>
     command.kind === "worker" ? config.port.send(command.message) : player.send(command.event);
 
+  // The order last told to the port, and the voices it was told in: a new order is told once,
+  // and none once the listen is ending.
+  let told: { readonly order: ReadonlyArray<number>; readonly voices: VoiceMap } | null = null;
+  let ending = false;
+  const tell = (): void => {
+    if (ending) return;
+    const order = aheadOf(state, player.state());
+    if (told !== null && told.voices === state.voices && told.order.length === order.length && told.order.every((unit, i) => unit === order[i])) return;
+    told = { order, voices: state.voices };
+    config.port.ahead(order.map((unit) => requestFor(state, unit)));
+  };
+
   // Run to completion, in arrival order. A report the player raises while a command is
   // performed is queued behind the current event, never handled inside it.
   const dispatch = (event: Event): void => {
@@ -631,12 +671,14 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
         for (const command of planned.commands) perform(command);
         if (state !== before || next.kind === "player") config.onChange(view());
       }
+      tell();
     } finally {
       draining = false;
     }
   };
 
   const unsubscribe = config.port.subscribe((message) => dispatch({ kind: "worker", message }));
+  tell();
 
   return {
     send: (control) => player.send(control),
@@ -644,9 +686,12 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
     lookahead: (to) => dispatch({ kind: "lookahead", to }),
     view,
     dispose: () => {
-      // Stopping empties the window, which is what cancels and drops everything.
+      // Stopping empties the window, which is what cancels and drops everything; a listen that
+      // is over wants nothing made ahead.
+      ending = true;
       player.send({ kind: "stop" });
       unsubscribe();
+      config.port.ahead([]);
       player.dispose();
     },
   };
