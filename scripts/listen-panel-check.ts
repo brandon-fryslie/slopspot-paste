@@ -47,7 +47,8 @@ import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
 import { DEFAULT_PICK, DEFAULT_VOICES, readPick, writePick } from "../src/voiceChoice";
-import { FRAME_S, frame, StubDevice } from "./playbackStub";
+import { samplePath } from "../src/voiceSample";
+import { FRAME_S, frame, StubAudio, StubDevice } from "./playbackStub";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 import { forgetResume, printsOf, readResume, RESUME_PREFIX, writeResume, type PrintedPage } from "../src/keptPlace";
 
@@ -313,7 +314,7 @@ console.log("step: the way to audio");
 console.log("step: a script in hand puts the voice on stage before the model is warm, and the model loads behind it");
 {
   const idle = initialState();
-  const offer = (state: PanelState): string => readout(state, page, ASKING).voices.preview.kind;
+  const offer = (state: PanelState): string => readout(state, page, ASKING).voices.audition.kind;
   const woken = step(idle, wake("none"));
   const scripted = step(woken.state, scriptBack);
   assert("the script answered before the probe — from the device — with no consent: held, nothing else done", effects(scripted) === "" && shown(scripted.state) === MOUNT_LINE);
@@ -324,7 +325,7 @@ console.log("step: a script in hand puts the voice on stage before the model is 
   const built = step(restoring, { kind: "restored", units: restoring.script.units, voices: DEFAULT_VOICES, kept: [report(640), report(640), report(320)] });
   assert("the device's answer builds the performer, with the model still probing", effects(built) === "build");
   const onStage = step(built.state, { kind: "view", view: viewOf({ kind: "idle" }) });
-  assert("on stage while the model probes: sent to its place, the line saying where the model is, no preview offered", onStage.state.kind === "neural" && effects(onStage) === "perform rate,perform seek 0ms" && shown(onStage.state) === "Listen | stop(off) | Ready · checking this device for the voice…" && offer(onStage.state) === "withheld");
+  assert("on stage while the model probes: sent to its place, the line saying where the model is, voices heard from their samples", onStage.state.kind === "neural" && effects(onStage) === "perform rate,perform seek 0ms" && shown(onStage.state) === "Listen | stop(off) | Ready · checking this device for the voice…" && offer(onStage.state) === "sample");
   const loadingBehind = step(onStage.state, supported);
   assert("the probe answers behind the stage: the load goes on the Play's consent", effects(loadingBehind) === "load" && loadingBehind.state.kind === "neural");
   const kept = step(loadingBehind.state, { kind: "view", view: viewOf({ kind: "speaking", at: inUnit(0), flow: "audio" }) });
@@ -334,13 +335,13 @@ console.log("step: a script in hand puts the voice on stage before the model is 
   const waiting = step(downloading.state, { kind: "view", view: viewOf({ kind: "speaking", at: inUnit(1), flow: "waiting" }) });
   assert("a unit the device does not keep waits for the voice, and says so — not \"synthesizing\" with no model to synthesize", shown(waiting.state) === "Pause | stop | Waiting for the voice · passage 1 of 2 · downloading the voice · 50% · 120 of 239 MB · estimating time left… | bar 120000000/239000000");
   const warmed = [progress(1, 1), ready].reduce((state, event) => step(state, event).state, waiting.state);
-  assert("the model ready behind it: the line is the voice's alone, synthesizing ahead, and previews are offered", shown(warmed) === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && offer(warmed) === "offered");
+  assert("the model ready behind it: the line is the voice's alone, synthesizing ahead, and voices are heard live", shown(warmed) === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && offer(warmed) === "live");
   const savable = (state: PanelState): boolean => {
     const face = readout(state, page, ASKING).mini;
     return face.kind === "controls" && face.save;
   };
   assert("a download is offered once the model is ready, and not while the voice plays what the device keeps ahead of it — nothing is rendered until then", !savable(kept.state) && !savable(waiting.state) && savable(warmed));
-  assert("a preview before the model is ready does nothing", effects(step(waiting.state, { kind: "preview", voice: "marius" })) === "" && effects(step(warmed, { kind: "preview", voice: "marius" })) === "perform pause,preview");
+  assert("a voice heard before the model is ready: the reading paused, its sample played; once ready, the voice itself", effects(step(waiting.state, { kind: "preview", voice: "marius" })) === "perform pause,sample" && effects(step(warmed, { kind: "preview", voice: "marius" })) === "perform pause,preview");
 
   const failed = step(downloading.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
   assert("a load that fails behind a playing voice is on the line, where it stopped, and the voice plays on", failed.state.kind === "neural" && effects(failed) === "" && shown(failed.state) === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline | bar 120000000/239000000");
@@ -599,24 +600,29 @@ console.log("readout: the voice picker, cold, warm and mid-listen");
   const unsupported = step(probing, worker({ kind: "capability", support: { kind: "unsupported", reason: { kind: "no-webgpu" } } })).state;
   const voices = (state: PanelState, visit: Visit = ASKING): string => {
     const v = readout(state, page, visit).voices;
-    return `${v.picked.user}/${v.picked.assistant} | ${v.preview.kind === "offered" ? "offered" : `withheld: ${v.preview.why}`} | ${v.sounding ?? "silent"} | reset ${v.reset ? "on" : "off"}`;
+    return `${v.picked.user}/${v.picked.assistant} | ${v.audition.kind === "live" ? "live" : `samples: ${v.audition.note}`} | ${v.sounding ?? "silent"} | reset ${v.reset ? "on" : "off"}`;
   };
-  const COLD = "alba/javert | withheld: Previews play once the voice is ready on this device. | silent | reset off";
-  assert("cold: the defaults, previews withheld with the reason, nothing sounding, nothing to reset", voices(idle) === COLD && voices(probing) === COLD);
-  assert("a device that cannot run the voice: withheld with the honest reason", voices(unsupported) === "alba/javert | withheld: This device can't run the voice, so there is nothing to hear. | silent | reset off");
-  assert("on stage, idle or speaking: previews offered", voices(onStage) === "alba/javert | offered | silent | reset off" && voices(speaking) === "alba/javert | offered | silent | reset off");
+  const COLD = "alba/javert | samples: Samples · the voice itself plays once it is ready on this device. | silent | reset off";
+  assert("cold: the defaults, voices heard from their samples with the note saying so, nothing sounding, nothing to reset", voices(idle) === COLD && voices(probing) === COLD);
+  assert("a device that cannot run the voice: samples still, with the honest note", voices(unsupported) === "alba/javert | samples: Samples · this device can't run the voice itself. | silent | reset off");
+  assert("on stage, idle or speaking: voices heard live", voices(onStage) === "alba/javert | live | silent | reset off" && voices(speaking) === "alba/javert | live | silent | reset off");
   const chosen: Visit = { ...ASKING, pick: { user: "marius", assistant: "javert" } };
-  assert("the picker reads the device's pick, and a pick off the defaults can be reset", voices(onStage, chosen) === "marius/javert | offered | silent | reset on");
+  assert("the picker reads the device's pick, and a pick off the defaults can be reset", voices(onStage, chosen) === "marius/javert | live | silent | reset on");
 
   const tapped = step(speaking, { kind: "preview", voice: "azelma" });
   assert("a preview tapped on stage: the reading is paused, then the previewer speaks", effects(tapped) === "perform pause,preview" && tapped.state === speaking);
   const refusedPreview = step(speaking, worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: { ...prepareText("x"), source: "x" }, voice: "azelma" }, phase: "idle" }));
   assert("a refusal with the voice on stage: the performer that asked judges it, the panel stays", effects(refusedPreview) === "" && refusedPreview.state === speaking);
-  assert("a preview tapped before the voice is on stage changes nothing", effects(step(probing, { kind: "preview", voice: "azelma" })) === "" && effects(step(idle, { kind: "preview", voice: "azelma" })) === "");
+  assert("a voice tapped before the voice is on stage: its sample, nothing to pause", effects(step(probing, { kind: "preview", voice: "azelma" })) === "sample" && effects(step(idle, { kind: "preview", voice: "azelma" })) === "sample");
   const heard = step(speaking, { kind: "sounding", voice: "azelma" }).state;
-  assert("the previewer's word: the voice sounding shows", voices(heard) === "alba/javert | offered | azelma | reset off");
-  assert("and clears when it is over", voices(step(heard, { kind: "sounding", voice: null }).state) === "alba/javert | offered | silent | reset off");
-  throws("the previewer's word before the voice is on stage is a bug", () => step(probing, { kind: "sounding", voice: "azelma" }));
+  assert("the previewer's word: the voice sounding shows", voices(heard) === "alba/javert | live | azelma | reset off");
+  assert("and clears when it is over", voices(step(heard, { kind: "sounding", voice: null }).state) === "alba/javert | live | silent | reset off");
+  const sampled = step(probing, { kind: "sounding", voice: "azelma" }).state;
+  assert("the sample player's word before the voice is on stage: the voice sounding shows there too", voices(sampled) === "alba/javert | samples: Samples · the voice itself plays once it is ready on this device. | azelma | reset off");
+  const staged = step(step(step(step(step(step(sampled, supported).state, yes).state, progress(1, 1)).state, ready).state, scriptBack).state, { kind: "view", view: viewOf({ kind: "idle" }) }).state;
+  assert("a sample sounding as the voice comes on stage: still shown sounding there", voices(staged) === "alba/javert | live | azelma | reset off");
+  assert("a Play while a sample sounds hushes it before anything else", effects(step(step(sampled, supported).state, tapPlay)).startsWith("hush,unlock"));
+  assert("a Play with nothing sounding hushes nothing", !effects(step(step(probing, supported).state, tapPlay)).startsWith("hush"));
   const map = { user: "marius", assistant: "javert", system: "eponine", narrator: "javert" } as const;
   assert("the pick changes on stage: the performer is told", effects(step(speaking, { kind: "voices", voices: map })) === "revoice");
   assert("the pick changes before the voice is on stage: nothing to tell, the build reads the pick", effects(step(probing, { kind: "voices", voices: map })) === "" && effects(step(idle, { kind: "voices", voices: map })) === "");
@@ -741,6 +747,8 @@ interface Rig {
   readonly check: (on: boolean) => void;
   // The devices opened since the rig was built, newest last: each gesture or build opens one.
   readonly devices: () => StubDevice[];
+  // The page's audio element, as the panel built it at the mount.
+  readonly audio: () => StubAudio;
   // The page's clipboard: every link the share control asked for, and how the next ask is
   // answered — copied, refused, or thrown before any promise, as a page with no clipboard
   // at all does.
@@ -906,6 +914,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     }
   };
   const opened = StubDevice.instances.length;
+  const heard = StubAudio.instances.length;
   let seekCount = 0;
   const links: Place[] = [];
   const clipboard: { answer: "copies" | "refuses" | "throws" } = { answer: "copies" };
@@ -983,6 +992,11 @@ const rig = (setup: VisitSetup = {}): Rig => {
       remember.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
     },
     devices: () => StubDevice.instances.slice(opened),
+    audio: () => {
+      const built = StubAudio.instances[heard];
+      if (built === undefined) throw new Error("fixture: the panel built no audio element");
+      return built;
+    },
     share: (place) => {
       links.push(place);
       if (clipboard.answer === "throws") throw new TypeError("no clipboard");
@@ -1028,6 +1042,7 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     pick: { read: () => readPick(r.store), write: (pick) => writePick(r.store, pick) },
     connection: () => r.connection.reading,
     Device: StubDevice,
+    Audio: () => new StubAudio(),
     frames: r.frames,
     clock: () => r.now,
     onPosition: (at) => r.positions.push(at),
@@ -1622,8 +1637,13 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("two rows, six voices each, the defaults checked", picker.querySelectorAll(".voice-row").length === 2 && picker.querySelectorAll(".voice-option").length === 12 && checked() === "alba/javert");
   assert("the rows are named You and Claude", [...picker.querySelectorAll(".voice-role")].map((l) => l.textContent).join() === "You,Claude");
   assert("each name carries its attribution and licence for the hover", part<HTMLElement>(option("assistant", "javert"), ".voice-label").title === "voice-donations/Butter via Kyutai tts-voices · CC0-1.0");
-  assert("cold: every preview withheld and the note says why; nothing to reset", previews().every((b) => b.disabled) && !note.hidden && note.textContent === "Previews play once the voice is ready on this device." && reset.disabled);
-  assert("previews are named for assistive tech", hear("azelma").getAttribute("aria-label") === "Hear Azelma");
+  assert("cold: every voice can be heard, the note says they are samples; nothing to reset", previews().every((b) => !b.disabled) && !note.hidden && note.textContent === "Samples · the voice itself plays once it is ready on this device." && reset.disabled);
+  assert("plays are named for assistive tech", hear("azelma").getAttribute("aria-label") === "Hear Azelma");
+  hear("azelma").click();
+  const audio = r.audio();
+  assert("a voice heard cold: its sample played from the page's audio element, and lit in both rows", audio.plays.join() === samplePath("azelma") && soundingNow() === "Hear Azelma,Hear Azelma" && r.devices().length === 0);
+  audio.end();
+  assert("the sample ends: unlit", soundingNow() === "");
 
   radio("assistant", "marius").click();
   assert("Claude's voice picked while cold: kept on the device, shown checked, reset offered, nothing sent to a worker", readPick(r.store).assistant === "marius" && checked() === "alba/marius" && !reset.disabled && r.said() === "script");
@@ -1634,7 +1654,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   await arrive(r);
   const [stage] = r.devices();
   assert("the voice arrives with the pick made cold: unit 0, the reader's, in Alba", r.said().endsWith("synthesize 0") && r.sent.at(-1)?.kind === "synthesize" && (r.sent.at(-1) as { voice: string }).voice === "alba" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
-  assert("on stage: previews offered, the note gone", previews().every((b) => !b.disabled) && note.hidden);
+  assert("on stage: voices heard live, the note gone", note.hidden);
 
   hear("azelma").click();
   const heard = r.devices()[1];

@@ -166,8 +166,9 @@ import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProt
 import { clockText, cursorIn, estimated, landmark, landmarks, placeIn, pointAt, startAt, startIn, timeAt, timeOfStart, timelineOfUtterances, type Cursor, type Point, type Start, type Timeline } from "./timeline";
 import { MODEL_PCM, openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
-import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
+import { mountVoicePicker, type Audition, type VoicesReadout } from "./voicePicker";
 import { createPreviewer, type Previewer } from "./voicePreview";
+import { createSamplePlayer, type SampleAudio } from "./voiceSample";
 
 // ── state ──────────────────────────────────────────────────────────────────────────────
 
@@ -256,7 +257,8 @@ const granted = ({ consent }: PanelState): Consent => raise(consent.given, conse
 export type PanelState =
   // The voice on its way, and where it starts when it arrives: the top until the reader or a
   // link names somewhere else — a word, or a time that may fall in a gap. `keeping` is the
-  // browser's answer to keeping the bytes, once asked.
+  // browser's answer to keeping the bytes, once asked. `sounding` is the voice whose sample
+  // is playing, when one is: a sample needs no model, so it sounds in every phase.
   | {
       readonly kind: "provisioning";
       readonly model: ModelPhase;
@@ -265,12 +267,13 @@ export type PanelState =
       readonly home: Home;
       readonly keeping: Keeping | null;
       readonly consent: Consents;
+      readonly sounding: VoiceId | null;
       readonly speed: Speed;
       readonly visibility: Visibility;
     }
   // The voice on stage over its script's units; the view is the scheduler's, the cue where its
   // next Play starts while it stands idle, the consent kept for a fall, `sounding` the voice a
-  // preview is saying its phrase in, when one is, `speed` the panel's own pace, which outlives
+  // preview or a sample is saying its phrase in, when one is, `speed` the panel's own pace, which outlives
   // any performer, and `model` where the model is behind it — ready, or still on its way while
   // the voice plays what the device keeps.
   | {
@@ -367,11 +370,12 @@ export type PanelEvent =
       readonly kept: ReadonlyArray<UnitReport | undefined>;
     }
   | { readonly kind: "view"; readonly view: NeuralView }
-  // The reader tapped a voice's preview: it is heard out, over a paused reading.
+  // The reader tapped a voice's play: it is heard out, live or from its sample, over a paused
+  // reading.
   | { readonly kind: "preview"; readonly voice: VoiceId }
   // The page went out of view, or came back into it.
   | { readonly kind: "visibility"; readonly hidden: boolean }
-  // The previewer's word on which voice is sounding, or that none is.
+  // The previewer's or the sample player's word on which voice is sounding, or that none is.
   | { readonly kind: "sounding"; readonly voice: VoiceId | null }
   // The device's pick changed: the map the voice on stage speaks with from now on. A voice
   // on its way reads the pick at its build, so it has nothing to do here.
@@ -396,7 +400,9 @@ export type Effect =
   | { readonly kind: "perform"; readonly event: PerformerEvent }
   // The previewer says its phrase in the voice; on the tap's stack, which opens its device.
   | { readonly kind: "preview"; readonly voice: VoiceId }
-  // The previewer is silenced.
+  // The sample player plays the voice's sample; on the tap's stack, which lets it play.
+  | { readonly kind: "sample"; readonly voice: VoiceId }
+  // The previewer and the sample player are silenced.
   | { readonly kind: "hush" }
   // The performer is told the reader's voices.
   | { readonly kind: "revoice"; readonly voices: VoiceMap }
@@ -418,18 +424,18 @@ export const SCRIPT_ID = 1;
 const IDLE: NeuralState = { kind: "idle" };
 const MODEL_IDLE: ModelPhase = { kind: "idle" };
 
-// Every entry to the start: the model in the given phase, the script, the cue, the consent
-// and the speed kept, and the store asked afresh what it holds.
-const enter = (model: ModelPhase, script: Script, cue: Start | null, consent: Consents, speed: Speed, visibility: Visibility): Step => ({
-  state: { kind: "provisioning", model, script, cue, home: { kind: "reading" }, keeping: null, consent, speed, visibility },
+// Every entry to the start: the model in the given phase, the script, the cue, the consent,
+// the sample sounding and the speed kept, and the store asked afresh what it holds.
+const enter = (model: ModelPhase, script: Script, cue: Start | null, consent: Consents, sounding: VoiceId | null, speed: Speed, visibility: Visibility): Step => ({
+  state: { kind: "provisioning", model, script, cue, home: { kind: "reading" }, keeping: null, consent, sounding, speed, visibility },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, NORMAL, "shown").state;
+export const initialState = (): PanelState => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, null, NORMAL, "shown").state;
 // The panel's first step: the state, and the read of the store that fills its `home`. The
 // worker is not spawned here but by the `wake` that follows, so a dispose — which returns
 // here — spawns nothing on a page that is going away.
-export const start = (): Step => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, NORMAL, "shown");
+export const start = (): Step => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, null, NORMAL, "shown");
 
 // [LAW:single-enforcer] Where a cue falls on a timeline: the top when nobody named one.
 const timeOfCue = (line: Timeline, cue: Start | null): number => (cue === null ? 0 : timeOfStart(line, cue));
@@ -531,7 +537,8 @@ const reload = (state: Stage): Step =>
 const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
   if (state.model.kind === "unsupported") return { state, effects: [] };
   const kicked = kick({ ...state, consent: { ...state.consent, given: raise(state.consent.given, given) } });
-  return { state: kicked.state, effects: [{ kind: "unlock" }, ...kicked.effects] };
+  // A Play hushes the sample sounding first: the voice it brings must not sound over it.
+  return { state: kicked.state, effects: [...(given === "play" && state.sounding !== null ? [HUSH] : []), { kind: "unlock" }, ...kicked.effects] };
 };
 
 // The page's visibility with the background's pause lifted: by the reader's Pause or Stop,
@@ -715,7 +722,7 @@ const scriptOf = (state: PanelState): Script => (state.kind === "provisioning" ?
 // standing.
 const outlives = (consent: Consents): Consents => ({ ...consent, given: consent.given === "none" ? "none" : "download" });
 const fallback = (state: PanelState, model: ModelPhase): Step => {
-  const entered = enter(model, scriptOf(state), state.kind === "provisioning" ? state.cue : startOf(state), outlives(state.consent), state.speed, seen(state.visibility));
+  const entered = enter(model, scriptOf(state), state.kind === "provisioning" ? state.cue : startOf(state), outlives(state.consent), state.sounding, state.speed, seen(state.visibility));
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -726,19 +733,16 @@ const home = (state: PanelState, residency: Residency): Step =>
 const keeping = (state: PanelState, answer: Keeping): Step =>
   state.kind === "provisioning" ? stay({ ...state, keeping: answer }) : stay(state);
 
-// A preview is offered only with the voice on stage and its model ready; the readout disables
-// it otherwise, and a tap that reaches here anyway changes nothing. The reading is paused
-// first — a pause on a paused or idle performer is the player's own no-op — so the phrase is
-// heard alone.
+// [LAW:dataflow-not-control-flow] Total over every phase: the reader hears the voice itself
+// once its model is ready on stage, and its sample otherwise (voiceSample.ts). The reading is
+// paused first where there is one — a pause on a paused or idle performer is the player's own
+// no-op — so the phrase is heard alone.
 const preview = (state: PanelState, voice: VoiceId): Step =>
-  state.kind === "neural" && state.model.kind === "ready" ? { state, effects: [perform({ kind: "pause" }), { kind: "preview", voice }] } : stay(state);
+  state.kind === "neural"
+    ? { state, effects: [perform({ kind: "pause" }), state.model.kind === "ready" ? { kind: "preview", voice } : { kind: "sample", voice }] }
+    : { state, effects: [{ kind: "sample", voice }] };
 
-// The previewer speaks only while the voice is on stage: it is built with the performer
-// and released with it, so its word anywhere else is a bug.
-const sounding = (state: PanelState, voice: VoiceId | null): Step => {
-  if (state.kind !== "neural") throw violation(state, "a preview");
-  return stay({ ...state, sounding: voice });
-};
+const sounding = (state: PanelState, voice: VoiceId | null): Step => stay({ ...state, sounding: voice });
 
 // [LAW:single-enforcer] How far ahead the voice is made: further while the page is out of view
 // and the listen is on, the near window otherwise — which is also where every performer's
@@ -865,7 +869,7 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       // A download alone leaves it standing ready, the cue kept for the reader's Play.
       const speaks = granted(state) === "play";
       return {
-        state: { kind: "neural", model, units: script.units, view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: null, speed: state.speed, visibility: state.visibility },
+        state: { kind: "neural", model, units: script.units, view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: state.sounding, speed: state.speed, visibility: state.visibility },
         effects: [perform({ kind: "rate", to: state.speed }), ...(speaks ? [perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : [])],
       };
     }
@@ -1267,33 +1271,21 @@ const miniFace = (form: MarkForm, skip: Readout["skip"], share: boolean, save: b
   }
 };
 
-// [LAW:dataflow-not-control-flow] Total over every phase: a preview is offered exactly with
-// the voice on stage and its model ready, and withheld otherwise with the reason — the one
+// [LAW:dataflow-not-control-flow] Total over every phase: a voice is heard live exactly with
+// the voice on stage and its model ready, and from its sample otherwise — the note the one
 // honest sentence for a device that can never run the voice, and one for every other way of
 // not being there yet.
-const WHEN_READY: PreviewOffer = { kind: "withheld", why: "Previews play once the voice is ready on this device." };
-const previewOffer = (state: PanelState): PreviewOffer => {
-  if (state.kind === "neural") return state.model.kind === "ready" ? { kind: "offered" } : WHEN_READY;
-  switch (state.model.kind) {
-    case "unsupported":
-      return { kind: "withheld", why: "This device can't run the voice, so there is nothing to hear." };
-    case "idle":
-    case "probing":
-    case "supported":
-    case "preparing":
-    case "downloading":
-    case "warming":
-    case "ready":
-    case "load-failed":
-    case "crashed":
-      return WHEN_READY;
-  }
+const SAMPLES_UNTIL_READY = "Samples · the voice itself plays once it is ready on this device.";
+const SAMPLES_ONLY = "Samples · this device can't run the voice itself.";
+const audition = (state: PanelState): Audition => {
+  if (state.kind === "neural" && state.model.kind === "ready") return { kind: "live" };
+  return { kind: "sample", note: state.model.kind === "unsupported" ? SAMPLES_ONLY : SAMPLES_UNTIL_READY };
 };
 
 const voicesReadout = (state: PanelState, pick: VoicePick): VoicesReadout => ({
   picked: pick,
-  preview: previewOffer(state),
-  sounding: state.kind === "neural" ? state.sounding : null,
+  audition: audition(state),
+  sounding: state.sounding,
   reset: !samePick(pick, DEFAULT_PICK),
 });
 
@@ -1486,6 +1478,8 @@ export interface ListenPanelConfig {
   // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
   // first gesture or the first build, whichever comes first; closed with the worker.
   readonly Device: DeviceFactory;
+  // What plays a voice's sample: `() => new Audio()` in the page, a stub in the check.
+  readonly Audio: () => SampleAudio;
   readonly frames: FrameLoop;
   // The clock the download's pace is read by, in milliseconds; only differences are read.
   // performance.now in the page, a counter the check advances by hand.
@@ -1675,6 +1669,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (previewer === null) throw new Error("listen panel: no previewer to drive");
     return previewer;
   };
+  // The sample player outlives every performer: a sample needs no model and no worker.
+  const samples = createSamplePlayer({ Audio: config.Audio, onChange: (voice) => dispatch({ kind: "sounding", voice }) });
   // [LAW:no-ambient-temporal-coupling] One ask of each kind in flight, owned here: a new ask
   // supersedes the old, and only the current ask's answer is dispatched. The order two
   // promises settle in cannot put a stale store or browser answer over a fresh entry.
@@ -1834,8 +1830,12 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "preview":
         previewerOf().say(effect.voice);
         return;
+      case "sample":
+        samples.say(effect.voice);
+        return;
       case "hush":
-        previewerOf().hush();
+        previewer?.hush();
+        samples.hush();
         return;
       case "revoice":
         performer().voices(effect.voices);
@@ -2198,6 +2198,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     // One more event through the same machine: the idle state disarms the frame loop,
     // clears the position, and the controls say what the state says, so a page back from
     // the back-forward cache finds them right.
-    dispose: () => dispatch({ kind: "dispose" }),
+    dispose: () => {
+      dispatch({ kind: "dispose" });
+      samples.dispose();
+    },
   };
 };

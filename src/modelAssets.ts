@@ -54,10 +54,12 @@ const voice = (
   sha256: string,
   licence: "CC0-1.0" | "CC-BY-4.0",
   attribution: string,
-): ModelAsset => ({
+  sample: Pinned,
+): VoiceAsset => ({
   name: `voice-${id}`,
   bytes,
   sha256,
+  sample,
   source: `${KYUTAI_VOICES}/embeddings/${id}.safetensors`,
   licence,
   attribution,
@@ -85,12 +87,27 @@ export interface Checkpoint extends ModelAsset {
   readonly sampleRate: number;
   readonly frameSamples: number;
   readonly readout: Readout;
+  // The checkpoint's name in Pocket TTS's own release catalogue (its `language` argument):
+  // what renders a voice's sample on the same model the browser runs.
+  readonly release: string;
+}
+
+// [LAW:types-are-the-program] Bytes pinned by their hash, and nothing else known of them.
+export interface Pinned {
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
+// A hosted voice: its embedding, and the sample rendered from it (voiceSample.ts), pinned
+// beside it so a sample can never quietly stand for other bytes than the voice's own.
+export interface VoiceAsset extends ModelAsset {
+  readonly sample: Pinned;
 }
 
 export interface ModelAssetManifest {
   readonly weights: Checkpoint;
   readonly tokenizer: ModelAsset;
-  readonly voices: Readonly<Record<VoiceId, ModelAsset>>;
+  readonly voices: Readonly<Record<VoiceId, VoiceAsset>>;
 }
 
 // Pocket TTS build b6369a24 (Kyutai's english_2026-01 checkpoint) converted to fp16 for
@@ -107,6 +124,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     // english checkpoints (english_2026-01, which these weights are, and english_2026-04,
     // which its accuracy was measured on); the 24-layer build would be layer 14 head 10.
     readout: { layer: 3, head: 8 },
+    release: "english_2026-01",
     bytes: 235738516,
     sha256: "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
     source:
@@ -129,6 +147,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "ad234695323e4030336b6afc8a050c97e3110603e11ecd8226d9562488300a50",
       "CC-BY-4.0",
       "alba-mackenna/casual via Kyutai tts-voices",
+      { bytes: 23899, sha256: "2da410a7b0139c5cc307b08c8d52f67a7cef20e6dccda2a995efabc72e244780" },
     ),
     marius: voice(
       "marius",
@@ -136,6 +155,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "33f75e45fac0005630671f4b1bb632d51b6a083b18417de94855bbd7596a0630",
       "CC0-1.0",
       "voice-donations/Selfie via Kyutai tts-voices",
+      { bytes: 23834, sha256: "54c700dc7cee6b192672397e577f3408bde8a4daad6d2829f65048a2f3f14c63" },
     ),
     javert: voice(
       "javert",
@@ -143,6 +163,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91",
       "CC0-1.0",
       "voice-donations/Butter via Kyutai tts-voices",
+      { bytes: 35573, sha256: "6bef3e66ffbb0a12c704f6d73f7c179995d334a523e4e8126c47b6b931e2a2f0" },
     ),
     fantine: voice(
       "fantine",
@@ -150,6 +171,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "b6918a2ece002d2d9037ff53c4ea38730175e8798786658b0958443edf49d355",
       "CC-BY-4.0",
       "VCTK p244 via Kyutai tts-voices",
+      { bytes: 21285, sha256: "98cf32b18f223a6c65f2170c80fefbc259b83dbd4b5605baec1b2fa3c69afb0f" },
     ),
     eponine: voice(
       "eponine",
@@ -157,6 +179,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "bb31940f62da665391de139da2e57d740757df26b73d7ec24152c78a3b8ac0c5",
       "CC-BY-4.0",
       "VCTK p262 via Kyutai tts-voices",
+      { bytes: 28258, sha256: "75b67c0f9717a79f814ccd7814395f9e167a76bbd88f0abf529d33c9371874b6" },
     ),
     azelma: voice(
       "azelma",
@@ -164,6 +187,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "ef33fad34437cb187d2702f0a946d8ba7a01efdb8efbc8088c770d49c181ba73",
       "CC-BY-4.0",
       "VCTK p303 via Kyutai tts-voices",
+      { bytes: 25213, sha256: "f22c2107ff0892cde31cfc7c8e3425890b320f2a63d0a4d20f87b89f780e09cd" },
     ),
   },
 };

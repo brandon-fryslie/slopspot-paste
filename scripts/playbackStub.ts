@@ -9,6 +9,7 @@
 // more of Web Audio fails to compile here before it fails in a browser.
 
 import { MODEL_PCM } from "../src/unitPlayer";
+import type { SampleAudio } from "../src/voiceSample";
 import type { PcmBuffer, PcmSource, PlaybackDevice, PlayerState } from "../src/unitPlayer";
 
 export const { sampleRate: SR, frameSamples: FS } = MODEL_PCM;
@@ -117,3 +118,29 @@ export const describe = (state: PlayerState): string =>
   state.kind === "idle"
     ? "idle"
     : `${state.kind}${state.kind === "speaking" ? `/${state.flow}` : ""}@${state.at.segment}:${state.at.offsetMs.toFixed(3)}`;
+
+// A stand-in for the page's audio element (voiceSample.ts): what it was told to play, in
+// order, how often it was paused, and an `end` that plays its sample out.
+export class StubAudio implements SampleAudio {
+  static readonly instances: StubAudio[] = [];
+  src = "";
+  readonly plays: string[] = [];
+  paused = 0;
+  private readonly listeners: Record<"ended" | "error", (() => void)[]> = { ended: [], error: [] };
+  constructor(private readonly refuse: string | null = null) {
+    StubAudio.instances.push(this);
+  }
+  play(): Promise<void> {
+    this.plays.push(this.src);
+    return this.refuse === null ? Promise.resolve() : Promise.reject(new Error(this.refuse));
+  }
+  pause(): void {
+    this.paused += 1;
+  }
+  addEventListener(type: "ended" | "error", listener: () => void): void {
+    this.listeners[type].push(listener);
+  }
+  end(): void {
+    for (const listener of this.listeners.ended) listener();
+  }
+}
