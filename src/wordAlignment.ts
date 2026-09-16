@@ -19,6 +19,8 @@
 // line — the units it builds, the fractional token map, the silence threshold, the
 // "next word dominates" rule — and the check asserts equality with its captured output.
 // Deviating anywhere would mean re-measuring against a speech recogniser we do not run.
+// Changing what this module reports changes the word times the device keeps with a unit's
+// audio (keptAudio.ts), so it bumps GENERATION_VERSION (speechScript.ts).
 //
 // WHY TWO NOTIONS OF WORD. The reference segments text into LEXICAL words (runs of
 // letters and digits, joined across a hyphen or apostrophe) and separate punctuation

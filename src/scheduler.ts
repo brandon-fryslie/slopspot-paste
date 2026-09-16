@@ -89,11 +89,12 @@
 // never runs on a state a command it just issued has already moved
 // [LAW:no-ambient-temporal-coupling].
 //
-// Nothing here is persisted and no audio is ever stored: what the scheduler holds is a
-// disposable projection of the stored original's rendition [LAW:one-way-deps].
+// Nothing here is persisted: what the scheduler holds is a disposable projection of the stored
+// original's rendition, and the audio the device keeps is behind the port it is handed
+// (keptSynthesis.ts), answered as any worker answer is [LAW:one-way-deps].
 
 import { emptyManifest, recordUnit } from "./speechManifest";
-import type { Manifest, ManifestUnit, RecordRejection } from "./speechManifest";
+import type { Manifest, ManifestUnit, RecordRejection, UnitReport } from "./speechManifest";
 import { unitText, type SynthesisUnit, type VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
@@ -145,13 +146,34 @@ const ABSENT: Holding = { kind: "absent" };
 const REQUESTED: Holding = { kind: "requested" };
 const CANCELLING: Holding = { kind: "cancelling" };
 
-export const initialState = (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap): SchedulerState => ({
-  voices,
-  lookahead: LOOKAHEAD,
-  holdings: script.map(() => ABSENT),
-  manifest: emptyManifest(script),
-  layout: layoutOf(script.map((unit) => unit.utterance.anchor)),
-});
+// `kept` is the device's report for each unit it already holds in these voices
+// (keptAudio.ts): admitted as records at the start, so the clock is measured over every kept
+// unit before a place is resolved on it — a resume lands on its word, not its unit's start —
+// while nothing is held yet. A kept record is the one a request for its unit is answered
+// with, so it is the audio's own measurement; should a kept unit be gone by the time it is
+// asked for, the synthesis replaces its record like any re-synthesis after a drop. A kept
+// report the manifest rejects is left unrecorded: the unit's own request then comes back
+// with the same report, and the rejection is its `failed` holding, shown where every unit's
+// failure is [LAW:no-silent-failure].
+export const initialState = (
+  script: ReadonlyArray<SynthesisUnit>,
+  voices: VoiceMap,
+  kept: ReadonlyArray<UnitReport | undefined>,
+): SchedulerState => {
+  const empty = emptyManifest(script);
+  const units = script.map((_, index) => {
+    const report = kept[index];
+    const recorded = report === undefined ? null : recordUnit(script, index, report);
+    return recorded?.kind === "record" ? recorded.record : undefined;
+  });
+  return {
+    voices,
+    lookahead: LOOKAHEAD,
+    holdings: script.map(() => ABSENT),
+    manifest: { ...empty, units },
+    layout: layoutOf(script.map((unit) => unit.utterance.anchor)),
+  };
+};
 
 // ── reading the player's position ──────────────────────────────────────────────────────
 
@@ -557,6 +579,8 @@ export interface SchedulerConfig {
   readonly port: SynthesisPort;
   readonly script: ReadonlyArray<SynthesisUnit>;
   readonly voices: VoiceMap;
+  // The device's kept report for each unit in these voices, or undefined (initialState).
+  readonly kept: ReadonlyArray<UnitReport | undefined>;
   // Builds the player over the device the caller chooses; the scheduler supplies the
   // layout and the report callback, so the two can never disagree about the script.
   readonly player: (config: Pick<UnitPlayerConfig, "layout" | "onState">) => UnitPlayer;
@@ -579,7 +603,7 @@ export interface Scheduler {
 
 export const createScheduler = (config: SchedulerConfig): Scheduler => {
   // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch`.
-  let state = initialState(config.script, config.voices);
+  let state = initialState(config.script, config.voices, config.kept);
   const queue: Event[] = [];
   let draining = false;
 

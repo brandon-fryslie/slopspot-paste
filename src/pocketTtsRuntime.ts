@@ -26,6 +26,9 @@
 //
 // The seed is fixed, so a unit's audio is a deterministic function of its text and voice:
 // the rendition a listener resumes is the one they paused [LAW:one-source-of-truth].
+// That determinism is what the device's kept audio rests on (keptAudio.ts): a change to the
+// sampling below changes what a kept unit would be, and bumps GENERATION_VERSION
+// (speechScript.ts).
 //
 // WHY THE WORD TIMES ARE READ ONE STEP LATE. The attention read-out for step n (the logits
 // of the checkpoint's `readout` head over the unit's text tokens) is a fact about frame n,

@@ -37,6 +37,7 @@
 import type { Performer, PerformerEvent } from "./performer";
 import { createScheduler, type Lookahead, type SchedulerView } from "./scheduler";
 import type { Utterance } from "./speech";
+import type { UnitReport } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import { speechSegments, timelineOfScript, type Segment, type SpeechSegment, type Timeline } from "./timeline";
@@ -130,6 +131,8 @@ export interface NeuralPerformerConfig {
   readonly script: ReadonlyArray<SynthesisUnit>;
   readonly utterances: ReadonlyArray<Utterance>;
   readonly voices: VoiceMap;
+  // The device's kept report for each unit in these voices (scheduler.ts's initialState).
+  readonly kept: ReadonlyArray<UnitReport | undefined>;
   // The audio device, opened on the reader's gesture by the owner that also closes it.
   readonly device: OpenDevice;
   // Called after every event that changed what is held or where the player is.
@@ -165,6 +168,7 @@ export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerf
     port: config.port,
     script: config.script,
     voices: config.voices,
+    kept: config.kept,
     player: (playerConfig) => createUnitPlayer({ ...playerConfig, device: config.device }),
     onChange: (view) => {
       if (!disposed) config.onChange(withClock(view));

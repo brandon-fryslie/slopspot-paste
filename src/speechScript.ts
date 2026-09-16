@@ -26,9 +26,9 @@
 // that writes each fed character writes its entry, so the two cannot disagree
 // [LAW:types-are-the-program] [LAW:one-source-of-truth].
 //
-// Audio remains a derived, disposable projection: nothing here is persisted and no audio
-// is ever cached. The rendition hash names a rendition client-side (resume position,
-// presets) and never server state [LAW:one-way-deps].
+// Audio remains a derived, disposable projection: nothing here is persisted. The rendition
+// hash names a rendition client-side and never server state, and a unit's hash names the
+// audio the device keeps of it (keptAudio.ts) [LAW:one-way-deps].
 
 import { contentHash } from "./contentHash";
 import { MAX_UNIT_TOKENS, MODEL_ASSETS, VOICE_IDS, assetVersion, type ModelAssetManifest, type VoiceId } from "./modelAssets";
@@ -38,6 +38,13 @@ import type { Utterance, Voice } from "./speech";
 // an old resume position or per-device cache keyed on the previous rules is then simply
 // unused, never misapplied [LAW:no-ambient-temporal-coupling].
 export const PIPELINE_VERSION = "2";
+
+// Bump when a change to generation makes the audio or the word times of the same fed text in
+// the same voice come out differently: the runtime's sampling (pocketTtsRuntime.ts: seed,
+// temperature, frame caps, the vendored model code) or the word read-out (wordAlignment.ts).
+// A unit the device kept under the previous generation is then simply missed, never played
+// as this one's [LAW:no-ambient-temporal-coupling].
+export const GENERATION_VERSION = "1";
 
 // [LAW:types-are-the-program] The tokenizer seam: how many text tokens the model would
 // see for this exact string. The real answer needs the SentencePiece model, which lives
@@ -323,12 +330,14 @@ export const deriveSpeechScript = (
 // a unit can carry the version of the one voice it is spoken in.
 export interface RenditionVersions {
   readonly pipeline: string;
+  readonly generation: string;
   readonly model: string;
   readonly voices: Readonly<Record<VoiceId, string>>;
 }
 
 export const renditionVersions = (manifest: ModelAssetManifest): RenditionVersions => ({
   pipeline: PIPELINE_VERSION,
+  generation: GENERATION_VERSION,
   model: [manifest.weights, manifest.tokenizer].map(assetVersion).join(","),
   voices: Object.fromEntries(VOICE_IDS.map((id) => [id, assetVersion(manifest.voices[id])])) as Record<VoiceId, string>,
 });
@@ -336,7 +345,7 @@ export const renditionVersions = (manifest: ModelAssetManifest): RenditionVersio
 export const RENDITION_VERSIONS: RenditionVersions = renditionVersions(MODEL_ASSETS);
 
 // [LAW:one-source-of-truth] The ONE identity of a rendition: which model, under which
-// rules, said exactly which text in which voice, unit by unit. It hashes the version of
+// rules and generation, said exactly which text in which voice, unit by unit. It hashes the version of
 // the voice each unit is actually spoken in rather than the whole voice map or the whole
 // manifest, so changing — or re-recording — a voice no unit of this paste uses does not
 // orphan a listener's resume position. Client-side only — resume position, presets, an
@@ -348,6 +357,16 @@ export const renditionHash = (
 ): Promise<string> =>
   contentHash({
     pipeline: versions.pipeline,
+    generation: versions.generation,
     model: versions.model,
     units: units.map((u) => [u.utterance.index, versions.voices[voiceMap[u.utterance.voice]], u.text]),
   });
+
+// [LAW:one-source-of-truth] One unit's identity: the rendition hash's term for a single
+// generation, over exactly what a synthesize request carries — the fed text with the source
+// its words are timed against, and the voice — under the same versions. The device keeps a
+// unit's audio under it (keptAudio.ts), so an edit, another voice, a new model or new rules
+// is another key and simply misses; and the same sentence in the same voice is one entry
+// wherever it is said.
+export const unitHash = (text: UnitText, voice: VoiceId, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
+  contentHash({ pipeline: versions.pipeline, generation: versions.generation, model: versions.model, voice: versions.voices[voice], text });
