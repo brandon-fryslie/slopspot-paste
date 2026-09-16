@@ -50,14 +50,19 @@ import { expandClampAround } from "./clampBlocks";
 import type { Place } from "./performer";
 import type { Utterance } from "./speech";
 import { wordSpans, type WordSpan } from "./speechManifest";
+import { voicedNotation } from "./spokenNotation";
 import type { Cursor } from "./timeline";
 
 // ── the pure match ──────────────────────────────────────────────────────────────────
 
 // Two words are the same word when they agree letter for letter and digit for digit,
 // whatever case or attached punctuation they wear: the utterance says "cell," where a
-// table cell shows "cell", and "Hello" opens a sentence the page may set in caps.
-export const wordKey = (word: string): string => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+// table cell shows "cell", and "Hello" opens a sentence the page may set in caps. A word
+// with no letter or digit is notation the voice says ("=", "/"): it is its symbols, whatever
+// brackets, quotes or sentence punctuation it wears ("∞," is "∞"). "!" and "?" are kept: "!="
+// is not "=".
+const WORN = /[\p{Ps}\p{Pe}\p{Pi}\p{Pf}.,;:…"']/gu;
+export const wordKey = (word: string): string => word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "") || word.replace(WORN, "");
 
 // How far past the last match the scan looks for the next spoken word before calling it
 // unmatched. Wide enough to step over a heading's number or a list's marker text, narrow
@@ -109,15 +114,31 @@ const TEXT_NODE = 3;
 // one impossible arm as the card itself, which the same selector then judges.
 const unspoken = (text: Text, card: Element): boolean => (text.parentElement ?? card).closest(UNSPOKEN) !== null;
 
+// Words are cut inside each text node, but whether a symbol is said depends on its
+// neighbours, which inline markup ("<code>n</code> <= 10") and the painter's own word spans
+// put in other nodes. So notation is found over the card's spoken text joined in document
+// order — the same string wrapped or not, so a tap names what a paint lights — with a
+// character no notation context crosses where unspoken text was left out.
+const LEFT_OUT = "\u0000";
+
 export const pageWords = (card: Element): ReadonlyArray<PageWord> => {
   const walker = card.ownerDocument.createTreeWalker(card, SHOW_TEXT);
-  const words: PageWord[] = [];
+  const spoken: { readonly node: Text; readonly at: number }[] = [];
+  let joined = "";
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     const text = node as Text;
-    if (unspoken(text, card)) continue;
-    for (const span of wordSpans(text.data, 0)) words.push({ node: text, start: span.charStart, end: span.charEnd });
+    if (unspoken(text, card)) {
+      joined += LEFT_OUT;
+      continue;
+    }
+    spoken.push({ node: text, at: joined.length });
+    joined += text.data;
   }
-  return words;
+  const voiced = voicedNotation(joined);
+  return spoken.flatMap(({ node, at }) => {
+    const own = voiced.filter((v) => at <= v.begin && v.end <= at + node.data.length).map((v) => ({ ...v, begin: v.begin - at, end: v.end - at }));
+    return wordSpans(node.data, 0, own).map((span) => ({ node, start: span.charStart, end: span.charEnd }));
+  });
 };
 
 const textOf = (word: PageWord): string => word.node.data.slice(word.start, word.end);

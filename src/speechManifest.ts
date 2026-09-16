@@ -40,6 +40,7 @@
 
 import { SAMPLE_RATE } from "./modelAssets";
 import { RENDITION_VERSIONS, unitText, type RenditionVersions, type SynthesisUnit } from "./speechScript";
+import { voicedNotation, type Voiced } from "./spokenNotation";
 
 // ── words ───────────────────────────────────────────────────────────────────────────
 
@@ -52,18 +53,21 @@ export interface WordSpan {
 
 // [LAW:one-source-of-truth] THE word segmentation of a unit, shared by the attention
 // read-out's token-to-word map, the estimator and the cursor: a maximal run of non-
-// whitespace in the unit's source text that carries at least one letter or digit. A run
-// of bare punctuation (an em dash, an ellipsis) is not a word: it gets no time and no
-// cursor. Punctuation attached to a word travels with it ("world.", "(ok)").
+// whitespace in the unit's source text that carries at least one letter or digit, or
+// notation the voice says as words ("=" in "9 x 10 = 90", spokenNotation.ts). A run of
+// bare punctuation (an em dash, an ellipsis) is not a word: it gets no time and no cursor.
+// Punctuation attached to a word travels with it ("world.", "(ok)"). Whether a symbol is
+// notation depends on its neighbours, so where notation is said is found in the widest text
+// the caller has and handed in, in `text`'s coordinates.
 const RUN = /\S+/gu;
 const LEXICAL = /[\p{L}\p{N}]/u;
 
 // The rule over any text, with `offset` placing the spans in a larger string's
 // coordinates. The read-along painter (readAlong.ts) segments the page's own text nodes
 // with THIS function, so what it paints as a word is what the manifest times as one.
-export const wordSpans = (text: string, offset: number): ReadonlyArray<WordSpan> =>
+export const wordSpans = (text: string, offset: number, voiced: ReadonlyArray<Voiced> = voicedNotation(text)): ReadonlyArray<WordSpan> =>
   Array.from(text.matchAll(RUN))
-    .filter((run) => LEXICAL.test(run[0]))
+    .filter((run) => LEXICAL.test(run[0]) || voiced.some((said) => run.index <= said.begin && said.end <= run.index + run[0].length))
     .map((run) => ({ charStart: offset + run.index, charEnd: offset + run.index + run[0].length }));
 
 export const wordsOf = (unit: SynthesisUnit): ReadonlyArray<WordSpan> => wordSpans(unitText(unit).source, unit.start);

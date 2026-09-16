@@ -23,6 +23,7 @@ import { deriveDialogue, plainView } from "../src/dialogue";
 import { MAX_UNIT_TOKENS, MODEL_ASSETS, type ModelAsset } from "../src/modelAssets";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance, type Voice } from "../src/speech";
+import { NOTATION, type NotationName } from "../src/spokenNotation";
 import { wordish } from "./speechFixtures";
 import {
   CLOSERS,
@@ -70,10 +71,11 @@ const sourceOf = (u: SynthesisUnit): string => u.utterance.text.slice(u.start, u
 const endsSentence = (s: string): boolean => new RegExp(`${TERMINAL_MARK}${CLOSER_RUN}$`, "u").test(s);
 
 // The source map's theorem, over observables only: one span per fed character, in order and
-// disjoint; a fed space was made from a whitespace run; any other fed character was made
-// from one source character — itself, or the capitalised, straightened or weak-to-period form
-// of it — except a final "." made from nothing; and no non-whitespace source character is
-// left out of every span.
+// disjoint but for the run said for one stretch of notation, which shares its span; that run is
+// the words the notation table says, set off by spaces; a fed space was made from a whitespace
+// run; any other fed character was made from one source character — itself, or the
+// capitalised, straightened or weak-to-period form of it — except a final "." made from
+// nothing; and no non-whitespace source character is left out of every span.
 const EDITS: ReadonlyArray<(from: string, to: string, i: number) => boolean> = [
   (from, to) => from === to,
   (from, to, i) => i === 0 && from.toUpperCase() === to,
@@ -81,15 +83,29 @@ const EDITS: ReadonlyArray<(from: string, to: string, i: number) => boolean> = [
   (from, to) => /[“”]/.test(from) && to === '"',
   (from, to) => /[,;:\-–—]/.test(from) && to === ".",
 ];
+const SAID: ReadonlySet<string> = new Set(Object.values(NOTATION).map((row) => row.said));
+const sameSpan = (a: { begin: number; end: number } | undefined, b: { begin: number; end: number }): boolean => a?.begin === b.begin && a.end === b.end;
 const mapHolds = ({ text, sourceSpans }: PreparedText, source: string): boolean => {
   const spans = sourceSpans.map((span) => ({ ...span, from: source.slice(span.begin, span.end) }));
+  // The fed characters made from the same span as character i, as text.
+  const runAt = (i: number, span: { begin: number; end: number }): string => {
+    let begin = i;
+    let end = i + 1;
+    while (sameSpan(spans[begin - 1], span)) begin--;
+    while (sameSpan(spans[end], span)) end++;
+    return text.slice(begin, end);
+  };
+  const said = (run: string): boolean => SAID.has(run.trim().replace(/^./u, (c) => c.toLowerCase()));
   const explained = spans.every((span, i) => {
     const to = text.charAt(i);
+    if (/\S/u.test(span.from) && said(runAt(i, span))) return true;
     if (span.from === "") return i === text.length - 1 && to === "." && span.begin === (spans[i - 1]?.end ?? 0);
     if (to === " ") return /^\s+$/u.test(span.from);
     return span.from.length === 1 && EDITS.some((edit) => edit(span.from, to, i));
   });
-  const ordered = spans.every((span, i) => span.begin <= span.end && span.begin >= (spans[i - 1]?.end ?? 0) && span.end <= source.length);
+  const ordered = spans.every(
+    (span, i) => span.begin <= span.end && (span.begin >= (spans[i - 1]?.end ?? 0) || sameSpan(spans[i - 1], span)) && span.end <= source.length,
+  );
   const uncovered = source.split("").some((c, at) => /\S/u.test(c) && !spans.some((span) => span.begin <= at && at < span.end));
   return spans.length === text.length && explained && ordered && !uncovered;
 };
@@ -211,6 +227,66 @@ console.log("\nText preparation (mirrors upstream prepare_text_prompt, with a so
     "the map theorem holds for every preparation above",
     ["isn’t it", "“quoted”", "line one\nline two.", "a\r\nb\tc   d \n\t e.", " \n hello \t", "hello world —", 'he said "hi,"', "ßtraße", '")', "🙂 hi"].every((slice) => mapHolds(prepareText(slice), slice)),
   );
+}
+
+console.log("\nSpoken notation (slopspot-read-along-a35.5jv):");
+{
+  const fed = (page: string): string => prepareText(page).text;
+  // [LAW:types-are-the-program] One case per row of the table, or this check does not compile: a
+  // page text and the text the model is fed for it, and page texts where the row's symbol is
+  // not notation and is fed as written.
+  interface Case {
+    readonly says: readonly [page: string, fed: string];
+    readonly leaves: ReadonlyArray<string>;
+  }
+  const CASES: Readonly<Record<NotationName, Case>> = {
+    lessOrEqual: { says: ["n <= 10, n ≤ 10", "N is less than or equal to 10, n is less than or equal to 10."], leaves: ["use <= here", "a<=b"] },
+    greaterOrEqual: { says: ["5>=3 and x ≥ y", "5 is greater than or equal to 3 and x is greater than or equal to y."], leaves: ["a>=b"] },
+    notEqual: { says: ["1 != 2 ≠ 3", "1 is not equal to 2 is not equal to 3."], leaves: ["x!=y", "!= alone"] },
+    approximately: { says: ["π ≈ 3.14", "Pi is approximately 3.14."], leaves: ["≈ close"] },
+    equals: { says: ["9 x 10 = 90", "9 times 10 equals 90."], leaves: ["a => b", "x=y", "?a=1&b=2"] },
+    lessThan: { says: ["3 < 5", "3 is less than 5."], leaves: ["a <br> b", "<- back"] },
+    greaterThan: { says: ["a > b", "A is greater than b."], leaves: ["x -> y", "> quoted"] },
+    plusOrMinus: { says: ["5 ± 0.1 and ±2", "5 plus or minus 0.1 and plus or minus 2."], leaves: ["± alone"] },
+    plus: { says: ["(3+4)", "(3 plus 4)."], leaves: ["C++ and +1"] },
+    minus: {
+      says: ["5 - 3 = 2, x = -5 and 7 − 1 and (-2) and −4", "5 minus 3 equals 2, x equals minus 5 and 7 minus 1 and (minus 2) and minus 4."],
+      leaves: ["2026-09-16 is well-known", "pages 10-20", "a - the first", "git commit -m msg", "tail -5 log", "rm -rf x", "Chapter 1 - A new start", "Option 2 - I recommend it", "Plan A - a cheaper route"],
+    },
+    times: { says: ["9 x 10 and 2 × 3 and (4)*5", "9 times 10 and 2 times 3 and (4) times 5."], leaves: ["0x10 and x-axis and 3x faster", "**bold**"] },
+    dividedBy: { says: ["6 ÷ 2", "6 divided by 2."], leaves: ["÷ sign"] },
+    over: { says: ["3/4 and a / b", "3 over 4 and a over b."], leaves: ["I/O and/or", "on 9/16/2026", "src/2/3", "http://a.com/1/2", "10.0.0.0/8", "v1.2/3"] },
+    squared: { says: ["x^2 and y² end at x^2.", "X squared and y squared end at x squared."], leaves: ["the ^2 key", "HEAD^2", "x^2.5 grows"] },
+    cubed: { says: ["a^3 + b³", "A cubed plus b cubed."], leaves: ["the ^3 key", "x^3.5 grows"] },
+    toThePowerOf: { says: ["10^6 and 2^n and x^23 and x^2.5", "10 to the power of 6 and 2 to the power of n and x to the power of 23 and x to the power of 2.5."], leaves: ["a^ caret", "^_^", "HEAD^3 is git"] },
+    percent: { says: ["50% off", "50 percent off."], leaves: ["the %d format", "100 %"] },
+    degrees: { says: ["a 90° angle", "A 90 degrees angle."], leaves: ["° symbol"] },
+    squareRootOf: { says: ["√2 ≈ 1.414", "The square root of 2 is approximately 1.414."], leaves: ["√ symbol"] },
+    pi: { says: ["2 × π", "2 times pi."], leaves: ["πρόβλημα"] },
+    infinity: { says: ["n → ∞", "N → infinity."], leaves: [] },
+    half: { says: ["½ cup", "One half cup."], leaves: [] },
+    quarter: { says: ["¼ mile", "One quarter mile."], leaves: [] },
+    threeQuarters: { says: ["¾ done", "Three quarters done."], leaves: [] },
+  };
+  for (const [name, { says, leaves }] of Object.entries(CASES) as [NotationName, Case][]) {
+    const [page, spoken] = says;
+    const { said } = NOTATION[name];
+    assert(`${name}: ${JSON.stringify(page)} is fed as ${JSON.stringify(spoken)}, and its map holds`, fed(page) === spoken && spoken.toLowerCase().includes(said) && mapHolds(prepareText(page), page));
+    assert(`${name}: ${leaves.length === 0 ? "the symbol is notation wherever it is written" : leaves.map((l) => JSON.stringify(l)).join(", ") + ` ${leaves.length === 1 ? "is" : "are"} fed as written`}`, leaves.every((l) => !fed(l).toLowerCase().includes(said)));
+  }
+
+  const nine = prepareText("9 x 10 = 90");
+  const fedWord = (prepared: PreparedText, word: string): { begin: number; end: number } => {
+    const begin = prepared.text.indexOf(word);
+    return sourceSpanOf(prepared, { begin, end: begin + word.length });
+  };
+  assert("every character of a said word maps back to its symbol: \"times\" is the page's \"x\"", fedWord(nine, "times").begin === 2 && fedWord(nine, "times").end === 3);
+  assert("\"equals\" is the page's \"=\"", fedWord(nine, "equals").begin === 7 && fedWord(nine, "equals").end === 8);
+  assert("a symbol attached to a word is set off by a space made from the symbol", fed("x^2+1") === "X squared plus 1." && mapHolds(prepareText("x^2+1"), "x^2+1"));
+  assert("a said word before closing punctuation is not set off from it", fed("(50%)") === "(50 percent)." && fed("2^n,") === "2 to the power of n.");
+  const paste = [utter("9 x 10 = 90, and 3/4 of it is 67.5. √2 ≈ 1.414! Is x^2 + y² ≥ 0? Yes: 100% of the time, ±0.")];
+  assertInvariants("notation", paste, wordish);
+  assertInvariants("notation/per-character", paste, perCharacter);
 }
 
 console.log("\nCutting rules:");

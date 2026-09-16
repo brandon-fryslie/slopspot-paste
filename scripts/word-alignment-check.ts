@@ -325,6 +325,30 @@ console.log("\nskipped words");
   throws("a scores row of the wrong length is thrown", () => aligner.frame(score(1), true, 0));
 }
 
+// ── spoken notation ─────────────────────────────────────────────────────────────────
+
+console.log("\nspoken notation (slopspot-read-along-a35.5jv)");
+{
+  // The model says "9 times 10 equals 90."; the page shows "9 x 10 = 90". Each said word is
+  // timed as the page word its symbol is, so the cursor paints "x" while "times" is said.
+  const text = "9 x 10 = 90";
+  const unit: SynthesisUnit = { utterance: { index: 0, anchor: "t0", origin: "page", voice: "assistant", text }, start: 0, end: text.length, ...prepareText(text) };
+  const plan = planAlignment(unitText(unit), ["▁9", "▁times", "▁10", "▁equals", "▁90", "."]);
+  assert("each said word is the page word its symbol is", plan.wordOf.join() === "0,1,2,3,4" && plan.wordCount === 5);
+  const aligner = createWordAligner(plan);
+  const peak = (u: number): Float64Array => Float64Array.from(plan.units, (_, i) => (i === u ? 0.9 : 0.02));
+  for (let word = 0; word < 5; word++) aligner.frame(peak(word), true, word * FRAME_MS);
+  aligner.frame(peak(5), false, 5 * FRAME_MS);
+  const times = aligner.finish(6 * FRAME_MS);
+  assert("the page's \"x\" is timed where \"times\" is said, the page's \"=\" where \"equals\" is", times[1]?.startMs === FRAME_MS && times[1].endMs === 2 * FRAME_MS && times[3]?.startMs === 3 * FRAME_MS);
+
+  const attached = "x^2+1";
+  const one = planAlignment({ ...prepareText(attached), source: attached }, ["▁X", "▁squared", "▁plus", "▁1", "."]);
+  assert("the words said for symbols inside one page word are all that word", one.wordOf.join() === "0,0,0,0" && one.wordCount === 1);
+  const percent = textUnits({ ...prepareText("50%"), source: "50%" }).at(-1);
+  assert("the period appended after a said word the page ends on is synthetic", percent?.kind === "punctuation" && percent.synthetic);
+}
+
 if (process.exitCode === 1) {
   console.error("\nSome word-alignment checks failed.");
 } else {

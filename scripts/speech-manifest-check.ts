@@ -37,6 +37,7 @@ import {
   type WordTiming,
 } from "../src/speechManifest";
 import { deriveSpeechScript, RENDITION_VERSIONS, type SynthesisUnit } from "../src/speechScript";
+import { voicedNotation } from "../src/spokenNotation";
 import { wordish } from "./speechFixtures";
 
 const assert = (label: string, cond: boolean): void => {
@@ -141,11 +142,13 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
       manifest.units.every((u, i) => u !== undefined && u.unit === script[i]),
     );
 
-    // Words: inside their unit, non-whitespace, lexical, ascending in char and in time.
+    // Words: inside their unit, non-whitespace, lexical or said as notation, ascending in char
+    // and in time.
     const timed = all.filter((r) => r.alignment.kind !== "unit");
     const wordsSound = timed.every((r) => {
       const words = r.alignment.kind === "unit" ? [] : r.alignment.words;
       const text = r.unit.utterance.text;
+      const voiced = voicedNotation(text.slice(r.unit.start, r.unit.end)).map((v) => ({ begin: r.unit.start + v.begin, end: r.unit.start + v.end }));
       return (
         words.every(
           (w, i) =>
@@ -153,12 +156,12 @@ console.log("\nSpeech manifest — invariants over the fixture paste (slopspot-r
             w.charStart < w.charEnd &&
             w.charEnd <= r.unit.end &&
             /^\S+$/u.test(text.slice(w.charStart, w.charEnd)) &&
-            /[\p{L}\p{N}]/u.test(text.slice(w.charStart, w.charEnd)) &&
+            (/[\p{L}\p{N}]/u.test(text.slice(w.charStart, w.charEnd)) || voiced.some((v) => w.charStart <= v.begin && v.end <= w.charEnd)) &&
             (i === 0 || (words[i - 1]?.charEnd ?? Infinity) <= w.charStart),
         ) && wordsAscending(words, r.durationMs)
       );
     });
-    assert("every stamped word is a lexical non-whitespace run inside its unit, ascending in text and in time", wordsSound);
+    assert("every stamped word is a lexical or said non-whitespace run inside its unit, ascending in text and in time", wordsSound);
     assert(
       "a stamped word list is exactly wordsOf(unit) with times attached",
       timed.every((r) => {
