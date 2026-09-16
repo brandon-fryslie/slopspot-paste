@@ -12,12 +12,15 @@
 //   a write past the cap                  -> the least recently played units removed until it holds
 //   find or restore of a unit             -> the unit is recent again
 //   two keeps at once                     -> the second counts the store the first left
+//   a write the device refuses for room   -> the least recently played half removed, the write kept
+//   refused again                         -> reported, nothing kept
 //   a store that never opens              -> find null, keep settles, restore nothing; each failure reported
+//   an open another tab blocks            -> refused, and the connection closed if it opens later
 //   an entry that no longer decodes       -> null, reported
 //   evictions                             -> oldest first, the key breaking a tie; nothing under the cap
 
 import { createCodec, type AudioCodec } from "../src/audioCodec";
-import { createAudioCache, evictions, type KeptStore, type LedgerEntry } from "../src/keptAudio";
+import { createAudioCache, evictions, openKeptStore, type KeptStore, type LedgerEntry } from "../src/keptAudio";
 import type { UnitReport } from "../src/speechManifest";
 import { prepareText, unitText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import { MODEL_PCM } from "../src/unitPlayer";
@@ -41,7 +44,7 @@ const unitOf = (index: number, text: string): SynthesisUnit => ({
   end: text.length,
   ...prepareText(text),
 });
-const script = [unitOf(0, "Hello there."), unitOf(1, "General Kenobi."), unitOf(2, "You are a bold one.")];
+const script = [unitOf(0, "Hello there."), unitOf(1, "General Kenobi."), unitOf(2, "You are a bold one."), unitOf(3, "Kill him.")];
 const requestOf = (unit: SynthesisUnit, voices: VoiceMap = VOICES) => ({ text: unitText(unit), voice: voices[unit.utterance.voice] });
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 // `count` frames of a ramp that 16 bits keeps to within one step.
@@ -96,7 +99,7 @@ console.log("restore");
   await cache.keep(requestOf(two), framesOf(2, 2), report(160));
   clock.now = 50;
   const restored = await cache.restore(script, VOICES);
-  assert("each unit's kept report, index for index, undefined where none", restored.length === 3 && restored[0]?.durationMs === 160 && restored[1] === undefined && restored[2]?.durationMs === 160);
+  assert("each unit's kept report, index for index, undefined where none", restored.length === script.length && restored[0]?.durationMs === 160 && restored[1] === undefined && restored[2]?.durationMs === 160);
   const ledger = await store.ledger();
   assert("the restored units are recent again", ledger.every((entry) => entry.playedAt === 50));
   const revoiced = await cache.restore(script, { ...VOICES, assistant: "azelma" });
@@ -107,7 +110,7 @@ console.log("restore");
 
 console.log("the cap");
 {
-  const { store, records } = memoryStore();
+  const { store, ledger } = memoryStore();
   const { cache, clock } = cacheOver(Promise.resolve(store), { cap: 2 * UNIT_BYTES });
   const [zero, one, two] = script;
   if (zero === undefined || one === undefined || two === undefined) throw new Error("fixture: no units");
@@ -115,20 +118,20 @@ console.log("the cap");
   await cache.keep(requestOf(zero), framesOf(2, 0), report(160));
   clock.now = 2;
   await cache.keep(requestOf(one), framesOf(2, 1), report(160));
-  assert("two units fit the cap", records.size === 2);
+  assert("two units fit the cap", ledger.size === 2);
   clock.now = 3;
   assert("playing the older unit makes it recent", (await cache.find(requestOf(zero))) !== null);
   await flush();
   clock.now = 4;
   await cache.keep(requestOf(two), framesOf(2, 2), report(160));
-  assert("a third unit crosses the cap: the least recently played goes, and only it", records.size === 2 && (await cache.find(requestOf(one))) === null && (await cache.find(requestOf(zero))) !== null && (await cache.find(requestOf(two))) !== null);
-  const bytes = [...records.values()].reduce((sum, record) => sum + record.bytes, 0);
+  assert("a third unit crosses the cap: the least recently played goes, and only it", ledger.size === 2 && (await cache.find(requestOf(one))) === null && (await cache.find(requestOf(zero))) !== null && (await cache.find(requestOf(two))) !== null);
+  const bytes = [...ledger.values()].reduce((sum, entry) => sum + entry.bytes, 0);
   assert("the store holds the cap", bytes <= 2 * UNIT_BYTES);
 }
 
 console.log("keeps at once");
 {
-  const { store, records } = memoryStore();
+  const { store, ledger } = memoryStore();
   const { cache, clock } = cacheOver(Promise.resolve(store), { cap: UNIT_BYTES });
   const [zero, one] = script;
   if (zero === undefined || one === undefined) throw new Error("fixture: no units");
@@ -137,7 +140,32 @@ console.log("keeps at once");
   clock.now = 2;
   const second = cache.keep(requestOf(one), framesOf(2, 1), report(160));
   await Promise.all([first, second]);
-  assert("the second write counts the store the first left: one unit, the later one", records.size === 1 && (await cache.find(requestOf(one))) !== null);
+  assert("the second write counts the store the first left: one unit, the later one", ledger.size === 1 && (await cache.find(requestOf(one))) !== null);
+}
+
+console.log("the device's own limit");
+{
+  const { store, ledger } = memoryStore({ room: 3 * UNIT_BYTES });
+  const { cache, clock, failures } = cacheOver(Promise.resolve(store));
+  const [zero, one, two, three] = script;
+  if (zero === undefined || one === undefined || two === undefined || three === undefined) throw new Error("fixture: no units");
+  for (const [at, unit] of [zero, one, two].entries()) {
+    clock.now = at + 1;
+    await cache.keep(requestOf(unit), framesOf(2, at), report(160));
+  }
+  clock.now = 4;
+  await cache.keep(requestOf(three), framesOf(2, 3), report(160));
+  const kept = await Promise.all(script.map(async (unit) => (await cache.find(requestOf(unit))) !== null));
+  assert("a write refused under the cap: the least recently played half goes, and the write is kept", kept.join() === "false,false,true,true" && ledger.size === 2);
+  assert("nothing to report: the cache kept keeping", failures.length === 0);
+}
+{
+  const { store, ledger } = memoryStore({ room: UNIT_BYTES / 2 });
+  const { cache, failures } = cacheOver(Promise.resolve(store));
+  const [zero] = script;
+  if (zero === undefined) throw new Error("fixture: no unit");
+  await cache.keep(requestOf(zero), framesOf(2, 0), report(160));
+  assert("refused with nothing left to free: reported, nothing kept", failures.join() === "keeping a unit" && ledger.size === 0);
 }
 
 // ── failure ───────────────────────────────────────────────────────────────────────────
@@ -151,8 +179,25 @@ console.log("a store that never opens");
   await cache.keep(requestOf(zero), framesOf(1, 0), report(80));
   assert("keep settles", true);
   const restored = await cache.restore(script, VOICES);
-  assert("restore keeps nothing, index for index", restored.length === 3 && restored.every((kept) => kept === undefined));
+  assert("restore keeps nothing, index for index", restored.length === script.length && restored.every((kept) => kept === undefined));
   assert("each failure is reported by what it was doing", failures.join() === "reading a kept unit,keeping a unit,restoring kept units");
+}
+
+console.log("an open another tab blocks");
+{
+  // The one part of IndexedDB's open request the store listens to, fired by hand.
+  const opening = { onupgradeneeded: null, onsuccess: null, onerror: null, onblocked: null, result: { closed: false, close() { this.closed = true; } } } as unknown as {
+    onsuccess: () => void;
+    onblocked: () => void;
+    result: { closed: boolean };
+  };
+  const factory = { open: () => opening } as unknown as IDBFactory;
+  const store = openKeptStore(factory);
+  opening.onblocked();
+  const refused = await store.then(() => false, () => true);
+  assert("a blocked open is a store that failed, not one that waits", refused);
+  opening.onsuccess();
+  assert("the open that succeeds after it was refused is closed at once", opening.result.closed);
 }
 
 console.log("an entry that no longer decodes");

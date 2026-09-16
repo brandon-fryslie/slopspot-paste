@@ -13,10 +13,12 @@
 // takes to arrive. An edit, a voice change or a new model is a different key and simply
 // misses; nothing is ever invalidated, because nothing can go stale under its own key.
 //
-// WHAT IS KEPT PER UNIT: the audio in the codec's form, and the unit's record — its report
-// (duration and word times) and frame count — apart from the audio, so a voice built over a
-// script reads every kept unit's measurement in one small read (`restore`) and a resume
-// lands on its word before any audio is decoded.
+// WHAT IS KEPT PER UNIT, in three parts under one key, each read alone: the audio in the
+// codec's form; the unit's record — its report (duration and word times) and frame count —
+// so a voice built over a script reads every kept unit's measurement in one small read
+// (`restore`) and a resume lands on its word before any audio is decoded; and its ledger
+// entry — its size and when it was last played — which is all the cap ever reads, so a
+// write near the cap never loads thousands of word timings to count bytes.
 //
 // THE CAP. At most KEPT_BYTES of audio stay on the device, counted in the kept form's bytes.
 // Every write that crosses the cap removes the least recently played units until it holds
@@ -29,8 +31,15 @@
 // nothing for a reader to manage. Writes are serialized here, so each eviction counts a store
 // its own writes have settled.
 //
+// THE DEVICE'S OWN LIMIT. The browser may refuse a write before the cap is reached — the
+// origin's quota is shared with the model and with everything else the device holds. A write
+// refused for quota removes the least recently played half of what is kept and is tried once
+// more, so a full device frees room on its own and the cache keeps keeping; a write refused
+// again is a failure like any other.
+//
 // [LAW:no-silent-failure] exception: every failure — a store the browser refuses (private
-// mode, quota), an entry that no longer decodes — is the cache not holding the unit: a miss,
+// mode, quota), a store another tab holds at an older version, an entry that no longer
+// decodes — is the cache not holding the unit: a miss,
 // synthesized as if nothing had been kept, and reported through `onFailure` so it is heard in
 // the console. A kept unit is a convenience; a refused store must not take Listen down with it
 // (keptPlace.ts makes the same trade for the resume position).
@@ -46,14 +55,13 @@ export const KEPT_BYTES = 128 * 1024 * 1024;
 
 // ── the store seam ───────────────────────────────────────────────────────────────────
 
-// A unit's record: what the manifest is restored from, and what the cap is counted over.
+// A unit's record: what the manifest is restored from, and how many frames its audio decodes to.
 export interface KeptRecord {
   readonly report: UnitReport;
   readonly frames: number;
-  readonly bytes: number;
-  readonly playedAt: number;
 }
 
+// A unit's line in the ledger: what the cap is counted over.
 export interface LedgerEntry {
   readonly key: string;
   readonly bytes: number;
@@ -66,8 +74,8 @@ export interface KeptStore {
   // The records under these keys, index for index; undefined where there is none.
   records(keys: ReadonlyArray<string>): Promise<ReadonlyArray<KeptRecord | undefined>>;
   audio(key: string): Promise<EncodedAudio | undefined>;
-  // The record and its audio, together or not at all.
-  put(key: string, record: KeptRecord, audio: EncodedAudio): Promise<void>;
+  // The entry, its record and its audio, together or not at all.
+  put(entry: LedgerEntry, record: KeptRecord, audio: EncodedAudio): Promise<void>;
   touch(keys: ReadonlyArray<string>, playedAt: number): Promise<void>;
   ledger(): Promise<ReadonlyArray<LedgerEntry>>;
   remove(keys: ReadonlyArray<string>): Promise<void>;
@@ -75,10 +83,16 @@ export interface KeptStore {
 
 // ── the policy ───────────────────────────────────────────────────────────────────────
 
+const heldBytes = (ledger: ReadonlyArray<LedgerEntry>): number => ledger.reduce((sum, entry) => sum + entry.bytes, 0);
+
+// The browser's refusal of a write for want of room, as IndexedDB reports it on the aborted
+// transaction.
+const isQuota = (error: unknown): boolean => error instanceof Error && error.name === "QuotaExceededError";
+
 // The units to remove so the store holds `cap` bytes: least recently played first, the key
 // breaking a tie so the choice is a function of the ledger alone.
 export const evictions = (ledger: ReadonlyArray<LedgerEntry>, cap: number): ReadonlyArray<string> => {
-  let total = ledger.reduce((sum, entry) => sum + entry.bytes, 0);
+  let total = heldBytes(ledger);
   const gone: string[] = [];
   for (const entry of [...ledger].sort((a, b) => a.playedAt - b.playedAt || (a.key < b.key ? -1 : 1))) {
     if (total <= cap) break;
@@ -159,7 +173,16 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
       attempt("keeping a unit", undefined, async (store) => {
         const key = await keyOf(request);
         const audio = await (await config.codec).encode(frames);
-        await store.put(key, { report, frames: frames.length, bytes: bytesOf(audio), playedAt }, audio);
+        const entry = { key, bytes: bytesOf(audio), playedAt };
+        const record = { report, frames: frames.length };
+        await store.put(entry, record, audio).catch(async (error: unknown) => {
+          if (!isQuota(error)) throw error;
+          const ledger = await store.ledger();
+          const gone = evictions(ledger, heldBytes(ledger) / 2);
+          if (gone.length === 0) throw error;
+          await store.remove(gone);
+          await store.put(entry, record, audio);
+        });
         const gone = evictions(await store.ledger(), cap);
         if (gone.length > 0) await store.remove(gone);
       }),
@@ -182,8 +205,10 @@ export const createAudioCache = (config: AudioCacheConfig): AudioCache => {
 // ── the browser's store ──────────────────────────────────────────────────────────────
 
 const DATABASE = "listen-kept-audio";
+const LEDGER = "ledger";
 const RECORDS = "records";
 const AUDIO = "audio";
+const STORES = [LEDGER, RECORDS, AUDIO];
 
 const settled = <T,>(request: IDBRequest<T>): Promise<T> =>
   new Promise((resolve, reject) => {
@@ -198,15 +223,35 @@ const done = (transaction: IDBTransaction): Promise<void> =>
     transaction.onabort = () => reject(transaction.error ?? new Error("kept audio: the transaction was aborted"));
   });
 
-// [LAW:effects-at-boundaries] The one edge to IndexedDB: two object stores under one
-// database, records apart from audio, both keyed by the unit's hash. Opened once per page.
+// The database, open — or refused when another tab holds it at an older version and will not
+// let it go, so a blocked open is a store that failed rather than a Listen that waits forever.
+// An open that succeeds after it was refused is closed at once, so it holds nothing up either.
+const opened = (factory: IDBFactory): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const opening = factory.open(DATABASE, 1);
+    let refused = false;
+    opening.onupgradeneeded = () => {
+      for (const name of STORES) opening.result.createObjectStore(name);
+    };
+    opening.onblocked = () => {
+      refused = true;
+      reject(new Error("kept audio: another tab holds the store at an older version"));
+    };
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => {
+      if (refused) return opening.result.close();
+      // A newer page asking for a newer version is let through: this page's store closes, and
+      // every use after it fails into a miss.
+      opening.result.onversionchange = () => opening.result.close();
+      resolve(opening.result);
+    };
+  });
+
+// [LAW:effects-at-boundaries] The one edge to IndexedDB: three object stores under one
+// database — the ledger, the records and the audio — each keyed by the unit's hash. Opened
+// once per page.
 export const openKeptStore = async (factory: IDBFactory): Promise<KeptStore> => {
-  const opening = factory.open(DATABASE, 1);
-  opening.onupgradeneeded = () => {
-    opening.result.createObjectStore(RECORDS);
-    opening.result.createObjectStore(AUDIO);
-  };
-  const db = await settled(opening);
+  const db = await opened(factory);
 
   const records = async (keys: ReadonlyArray<string>): Promise<ReadonlyArray<KeptRecord | undefined>> => {
     const store = db.transaction(RECORDS, "readonly").objectStore(RECORDS);
@@ -214,10 +259,10 @@ export const openKeptStore = async (factory: IDBFactory): Promise<KeptStore> => 
   };
 
   const touch = async (keys: ReadonlyArray<string>, playedAt: number): Promise<void> => {
-    const transaction = db.transaction(RECORDS, "readwrite");
-    const store = transaction.objectStore(RECORDS);
+    const transaction = db.transaction(LEDGER, "readwrite");
+    const store = transaction.objectStore(LEDGER);
     for (const key of keys) {
-      const reading = store.get(key) as IDBRequest<KeptRecord | undefined>;
+      const reading = store.get(key) as IDBRequest<LedgerEntry | undefined>;
       reading.onsuccess = () => {
         if (reading.result !== undefined) store.put({ ...reading.result, playedAt }, key);
       };
@@ -225,24 +270,21 @@ export const openKeptStore = async (factory: IDBFactory): Promise<KeptStore> => 
     await done(transaction);
   };
 
-  const put = async (key: string, record: KeptRecord, audio: EncodedAudio): Promise<void> => {
-    const transaction = db.transaction([RECORDS, AUDIO], "readwrite");
-    transaction.objectStore(AUDIO).put(audio, key);
-    transaction.objectStore(RECORDS).put(record, key);
+  const put = async (entry: LedgerEntry, record: KeptRecord, audio: EncodedAudio): Promise<void> => {
+    const transaction = db.transaction(STORES, "readwrite");
+    transaction.objectStore(AUDIO).put(audio, entry.key);
+    transaction.objectStore(RECORDS).put(record, entry.key);
+    transaction.objectStore(LEDGER).put(entry, entry.key);
     await done(transaction);
   };
 
-  const ledger = async (): Promise<ReadonlyArray<LedgerEntry>> => {
-    const store = db.transaction(RECORDS, "readonly").objectStore(RECORDS);
-    const [keys, values] = await Promise.all([settled(store.getAllKeys()), settled(store.getAll() as IDBRequest<KeptRecord[]>)]);
-    return values.map((record, i) => ({ key: String(keys[i]), bytes: record.bytes, playedAt: record.playedAt }));
-  };
+  const ledger = (): Promise<ReadonlyArray<LedgerEntry>> =>
+    settled(db.transaction(LEDGER, "readonly").objectStore(LEDGER).getAll() as IDBRequest<LedgerEntry[]>);
 
   const remove = async (keys: ReadonlyArray<string>): Promise<void> => {
-    const transaction = db.transaction([RECORDS, AUDIO], "readwrite");
+    const transaction = db.transaction(STORES, "readwrite");
     for (const key of keys) {
-      transaction.objectStore(RECORDS).delete(key);
-      transaction.objectStore(AUDIO).delete(key);
+      for (const name of STORES) transaction.objectStore(name).delete(key);
     }
     await done(transaction);
   };
