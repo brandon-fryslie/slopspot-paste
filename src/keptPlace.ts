@@ -28,6 +28,7 @@ import { contentHash } from "./contentHash";
 import type { Place } from "./performer";
 import type { PreferenceStore } from "./preferenceStore";
 import type { Utterance } from "./speech";
+import { wordSpans } from "./speechManifest";
 
 // ── the print ───────────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,16 @@ export const resolveKept = (page: PrintedPage, kept: KeptPlace): Place | null =>
   return page.prints[utterance] === kept.print && text !== undefined && char < text.length ? kept.place : null;
 };
 
+// [LAW:single-enforcer] What a place is kept as: the first character of its word — the word
+// holding it, or the last one begun before it — so a place kept while the voice is under way
+// changes once a word, whatever the voice knows of its own timing, and resumes on the word
+// the reader heard. A place before its utterance's first word, or in an utterance with no
+// words, is kept as it is.
+export const wordStart = (utterances: ReadonlyArray<Utterance>, place: Place): Place => {
+  const word = wordSpans(utterances[place.utterance]?.text ?? "", 0).findLast((span) => span.charStart <= place.char);
+  return word === undefined ? place : { utterance: place.utterance, char: word.charStart };
+};
+
 // ── the device's storage ────────────────────────────────────────────────────────────
 
 // One key per paste: the slug names the paste, the print names the text inside it.
@@ -111,6 +122,15 @@ export const writeResume = (store: PreferenceStore, slug: string, page: PrintedP
     store.setItem(resumeKey(slug), kept);
   } catch {
     /* storage refused — the place is not kept; the listen under way is unaffected */
+  }
+};
+
+// A listen that ran to its end has nothing to resume.
+export const forgetResume = (store: PreferenceStore, slug: string): void => {
+  try {
+    store.removeItem(resumeKey(slug));
+  } catch {
+    /* storage refused — what it holds is not read back as a place either way */
   }
 };
 

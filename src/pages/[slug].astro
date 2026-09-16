@@ -807,7 +807,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
     import { readPick, writePick } from "../voiceChoice";
-    import { fragmentOf, linked, LINK_PREFIX, readResume, writeResume, type PrintedPage } from "../keptPlace";
+    import { forgetResume, fragmentOf, linked, LINK_PREFIX, readResume, writeResume, type PrintedPage } from "../keptPlace";
     import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
@@ -941,10 +941,14 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           resume: {
             read: () => readResume(window.localStorage, slug, printed),
             write: (place) => writeResume(window.localStorage, slug, printed, place),
+            forget: () => forgetResume(window.localStorage, slug),
           },
           // A link to the moment: this page's address with the place as its fragment, on the
-          // clipboard.
-          share: (place) => navigator.clipboard.writeText(new URL(fragmentOf(printed, place), window.location.href).href),
+          // clipboard — which a page not served securely has none of, said as such.
+          share: async (place) => {
+            if (!navigator.clipboard) throw new Error("this page has no clipboard access");
+            await navigator.clipboard.writeText(new URL(fragmentOf(printed, place), window.location.href).href);
+          },
           // A reader who asked to be somewhere is looking where the voice is about to be, so
           // the page follows again — whether they tapped a word, dragged the scrubber,
           // nudged or skipped a turn. One rule for every door [LAW:single-enforcer].

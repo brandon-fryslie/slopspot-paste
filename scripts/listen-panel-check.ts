@@ -45,7 +45,7 @@ import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { DEFAULT_PICK, readPick, writePick } from "../src/voiceChoice";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 import { memoryPreferences } from "./preferenceStub";
-import { printsOf, readResume, writeResume, type PrintedPage } from "../src/keptPlace";
+import { forgetResume, printsOf, readResume, RESUME_PREFIX, writeResume, type PrintedPage } from "../src/keptPlace";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -597,11 +597,12 @@ interface Rig {
   readonly check: (on: boolean) => void;
   // The devices opened since the rig was built, newest last: each gesture or build opens one.
   readonly devices: () => StubDevice[];
-  // The page's clipboard: every link the share control asked for, and whether the next ask
-  // is refused.
+  // The page's clipboard: every link the share control asked for, and how the next ask is
+  // answered — copied, refused, or thrown before any promise, as a page with no clipboard
+  // at all does.
   readonly share: (place: Place) => Promise<void>;
   readonly links: Place[];
-  readonly clipboard: { refusing: boolean };
+  readonly clipboard: { answer: "copies" | "refuses" | "throws" };
 }
 
 type Store = ReturnType<typeof memoryPreferences>;
@@ -746,7 +747,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const opened = StubDevice.instances.length;
   let seekCount = 0;
   const links: Place[] = [];
-  const clipboard = { refusing: false };
+  const clipboard: { answer: "copies" | "refuses" | "throws" } = { answer: "copies" };
   return {
     play,
     stop,
@@ -816,7 +817,8 @@ const rig = (setup: VisitSetup = {}): Rig => {
     devices: () => StubDevice.instances.slice(opened),
     share: (place) => {
       links.push(place);
-      return clipboard.refusing ? Promise.reject(new Error("clipboard refused")) : Promise.resolve();
+      if (clipboard.answer === "throws") throw new TypeError("no clipboard");
+      return clipboard.answer === "refuses" ? Promise.reject(new Error("clipboard refused")) : Promise.resolve();
     },
     links,
     clipboard,
@@ -857,7 +859,7 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     frames: r.frames,
     clock: () => r.now,
     onPosition: (at) => r.positions.push(at),
-    resume: { read: () => readResume(r.store, SLUG, printed), write: (place) => writeResume(r.store, SLUG, printed, place) },
+    resume: { read: () => readResume(r.store, SLUG, printed), write: (place) => writeResume(r.store, SLUG, printed, place), forget: () => forgetResume(r.store, SLUG) },
     share: r.share,
     onSeek: r.onSeek,
   });
@@ -1502,6 +1504,70 @@ console.log("createListenPanel: the word under the voice is kept as it moves; a 
   unchanged.dispose();
 }
 
+console.log("createListenPanel: with only an estimate of the words' times, the device is still written once a word");
+{
+  // A store that counts what is written to the kept place's key.
+  const inner = memoryPreferences();
+  const written: string[] = [];
+  const store = { ...inner, setItem: (key: string, value: string) => (key.startsWith(RESUME_PREFIX) && written.push(value), inner.setItem(key, value)) };
+  const r = rig({ storage: { store } });
+  const panel = mount(r);
+  r.play.click();
+  arrive(r);
+  const unitMs = 3 * FRAME_S * 1000;
+  for (const index of [0, 1, 2]) r.emit({ kind: "audio", unitId: 0, frameIndex: index, pcm: frame(0, index) });
+  // Unit 0, "First sentence here.", with its word times estimated, not measured.
+  const third = unitMs / 3;
+  r.emit({
+    kind: "done",
+    unitId: 0,
+    report: { durationMs: unitMs, alignment: { kind: "estimated", times: [{ startMs: 0, endMs: third }, { startMs: third, endMs: 2 * third }, { startMs: 2 * third, endMs: unitMs }] } },
+    elapsedMs: 5,
+  });
+  const device = r.devices()[0];
+  if (device === undefined) throw new Error("fixture: no device opened");
+  device.advance(SCHEDULE_LEAD_S);
+  // Sixty looks across the unit: a character moves under the voice every few of them.
+  for (let i = 0; i < 60; i++) {
+    device.advance(unitMs / 60 / 1000);
+    r.frames.tick();
+  }
+  const chars = written.map((value) => Number(value.split(".")[1]));
+  assert("one write per word the voice crossed, each at its word's first character — the last the next unit's first, as the voice reaches it", chars.join() === "0,6,15,21");
+  panel.dispose();
+}
+
+console.log("createListenPanel: a listen heard to its end forgets its place; the reader's Stop keeps it");
+{
+  const r = rig();
+  const panel = mount(r);
+  panel.send({ kind: "place", to: mark(1, 2) });
+  arrive(r);
+  r.emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });
+  r.emit({ kind: "audio", unitId: 2, frameIndex: 1, pcm: frame(2, 1) });
+  r.emit({ kind: "done", unitId: 2, report: report(2 * FRAME_S * 1000), elapsedMs: 5 });
+  const device = r.devices()[0];
+  device?.advance(SCHEDULE_LEAD_S + FRAME_S / 2);
+  r.frames.tick();
+  assert("under way in the last passage: its word is kept", readResume(r.store, SLUG, printed)?.char === 2);
+  device?.advance(FRAME_S * 2);
+  assert("the last unit ends, no frame between: the kept place is forgotten, and nothing is offered", r.line() === "Listen | stop(off) | Ready" && readResume(r.store, SLUG, printed) === null && !r.store.keys().some((key) => key.startsWith(RESUME_PREFIX)) && r.mini.offer.hidden);
+  panel.dispose();
+
+  const s = rig();
+  const stopped = mount(s);
+  stopped.send({ kind: "place", to: mark(1, 2) });
+  arrive(s);
+  s.emit({ kind: "audio", unitId: 2, frameIndex: 0, pcm: frame(2, 0) });
+  s.emit({ kind: "audio", unitId: 2, frameIndex: 1, pcm: frame(2, 1) });
+  s.emit({ kind: "done", unitId: 2, report: report(2 * FRAME_S * 1000), elapsedMs: 5 });
+  s.devices()[0]?.advance(SCHEDULE_LEAD_S + FRAME_S / 2);
+  s.frames.tick();
+  s.stop.click();
+  assert("the reader's Stop: the voice idle, its word still kept and offered", s.line() === "Listen | stop(off) | Ready" && readResume(s.store, SLUG, printed)?.char === 2 && !s.mini.offer.hidden && s.mini.resume.textContent === "Resume “reply.”");
+  stopped.dispose();
+}
+
 console.log("createListenPanel: a link to a moment the page no longer has says so, until the reader's next gesture");
 {
   const r = rig({ storage: { store: (() => { const store = memoryPreferences(); writeResume(store, SLUG, printed, mark(1, 2)); return store; })() } });
@@ -1540,10 +1606,15 @@ console.log("createListenPanel: the share control hands over the moment on scree
   assert("under way: the link is to the place under the voice — the place the device keeps — and the control says it was copied", r.links.length === 1 && link !== undefined && link.utterance === 0 && link.char >= 21 && link.char === readResume(r.store, SLUG, printed)?.char && r.mini.share.dataset.shared === "copied" && r.mini.share.getAttribute("aria-label") === "Link copied");
   r.mini.share.dispatchEvent(new r.doc.defaultView!.FocusEvent("blur"));
   assert("losing focus puts the control back to its question", r.mini.share.dataset.shared === undefined && r.mini.share.getAttribute("aria-label") === "Copy a link to this moment");
-  r.clipboard.refusing = true;
+  r.clipboard.answer = "refuses";
   r.mini.share.click();
   await settle();
   assert("a refused clipboard is said on the control, with the reason", r.mini.share.dataset.shared === "failed" && r.mini.share.getAttribute("aria-label") === "Could not copy the link: clipboard refused");
+  r.mini.share.dispatchEvent(new r.doc.defaultView!.FocusEvent("blur"));
+  r.clipboard.answer = "throws";
+  r.mini.share.click();
+  await settle();
+  assert("a page with no clipboard at all, whose share throws before any promise: said on the control the same way", r.mini.share.dataset.shared === "failed" && r.mini.share.getAttribute("aria-label") === "Could not copy the link: no clipboard");
   r.mini.play.click();
   assert("the reader's next gesture clears it too", r.mini.share.dataset.shared === undefined);
   panel.dispose();

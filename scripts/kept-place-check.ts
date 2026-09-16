@@ -10,6 +10,7 @@
 // not write is read as a place. Storage is the Map the other preference checks use.
 
 import {
+  forgetResume,
   formatKept,
   fragmentOf,
   keptOf,
@@ -20,6 +21,7 @@ import {
   readResume,
   resolveKept,
   RESUME_PREFIX,
+  wordStart,
   writeResume,
   type PrintedPage,
 } from "../src/keptPlace";
@@ -103,6 +105,15 @@ console.log("resolveKept: a kept place names its word exactly while the utteranc
   assert("an index past the page: nothing", resolveKept(page, { place: place(9, 0), print: kept.print }) === null);
 }
 
+console.log("wordStart: a place is kept at the first character of its word");
+{
+  assert("inside a word: that word's first character", same(wordStart(utterances, place(1, "The loop never adv".length)), ADVANCES));
+  assert("on a word's first character: itself", same(wordStart(utterances, ADVANCES), ADVANCES));
+  assert("in the space or stop after a word: that word, the last begun", same(wordStart(utterances, place(1, "The loop never".length)), place(1, "The loop ".length)) && same(wordStart(utterances, place(1, "The loop never advances its cursor.".length - 1)), place(1, "The loop never advances its ".length)));
+  const quoted: ReadonlyArray<Utterance> = [{ index: 0, anchor: "t0", voice: "user", text: "“Why?”" }, { index: 1, anchor: "t1", voice: "user", text: "…" }];
+  assert("before an utterance's first word, or in one with no words: kept as it is", same(wordStart(quoted, place(0, 0)), place(0, 0)) && same(wordStart(quoted, place(1, 0)), place(1, 0)));
+}
+
 // ── the storage ───────────────────────────────────────────────────────────────────────
 
 console.log("readResume and writeResume: the place kept for this paste on this device");
@@ -118,6 +129,8 @@ console.log("readResume and writeResume: the place kept for this paste on this d
   assert("another paste has nothing kept", readResume(store, "other1", page) === null);
   const reprinted = await printed(utterances.map((u, i) => (i === 3 ? { ...u, text: "That fixed it for good." } : u)));
   assert("a print mismatch — the utterance re-derived since — reads as nothing kept, so there is no resume offer", readResume(store, SLUG, reprinted) === null);
+  forgetResume(store, SLUG);
+  assert("forgotten: nothing kept, and the key is gone", readResume(store, SLUG, page) === null && store.keys().length === 0);
   store.setItem(`${RESUME_PREFIX}${SLUG}`, "not a place");
   assert("a value this module did not write reads as nothing kept", readResume(store, SLUG, page) === null);
   const refusing: PreferenceStore = {
@@ -127,9 +140,11 @@ console.log("readResume and writeResume: the place kept for this paste on this d
     setItem: () => {
       throw new Error("QuotaExceededError");
     },
-    removeItem: () => undefined,
+    removeItem: () => {
+      throw new Error("SecurityError");
+    },
   };
-  assert("a store that refuses reads as nothing kept, and a write to it is dropped without a throw", readResume(refusing, SLUG, page) === null && (writeResume(refusing, SLUG, page, ADVANCES), true));
+  assert("a store that refuses reads as nothing kept, and a write or a forget on it is dropped without a throw", readResume(refusing, SLUG, page) === null && (writeResume(refusing, SLUG, page, ADVANCES), forgetResume(refusing, SLUG), true));
 }
 
 // ── the link ──────────────────────────────────────────────────────────────────────────

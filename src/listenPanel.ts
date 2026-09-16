@@ -75,11 +75,11 @@
 // is written to the device's storage as it moves (keptPlace.ts, through `resume`), so a
 // reader who closes the tab, or whose phone discards it without a pagehide, finds their word
 // again. Every word, not every pause: a write on pause or unload is lost to exactly the
-// kill that loses the tab. On return, while nothing plays and nothing is cued, the
-// mini-player offers the kept place by its opening words, and the offer's tap is a tap on
-// that word. A link to a place the page no longer has says so there instead
-// [LAW:no-silent-failure]. The share control hands the page the moment on screen — the
-// voice's place, or the cue — to write as a link.
+// kill that loses the tab. A listen heard to its end forgets it; the reader's Stop does not.
+// On return, while nothing plays and nothing is cued, the mini-player offers the kept place
+// by its opening words, and the offer's tap is a tap on that word. A link to a place the
+// page no longer has says so there instead [LAW:no-silent-failure]. The share control hands
+// the page the moment on screen — the voice's place, or the cue — to write as a link.
 //
 // WHAT THE PANEL MIRRORS. The `neural` arm carries the scheduler's view — player position,
 // manifest, holdings, and the conversation's timeline built over them — as delivered by
@@ -118,7 +118,7 @@ import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, stateOf, type NeuralPerformer, type NeuralState, type NeuralView } from "./neuralPerformer";
 import { NORMAL, stepSpeed, type Place, type PerformerEvent, type PerformerState, type Speed } from "./performer";
-import type { Linked } from "./keptPlace";
+import { wordStart, type Linked } from "./keptPlace";
 import { turnOf, type ReadAlongAt } from "./readAlong";
 import type { FailureReason } from "./scheduler";
 import type { Utterance } from "./speech";
@@ -1197,10 +1197,11 @@ export interface ListenPanelConfig {
   // Called with where the read-along is whenever it moves, and with null when it stops.
   // This is the panel's one outward signal; the state itself is readable through `state()`.
   readonly onPosition: (at: ReadAlongAt | null) => void;
-  // The place kept for this paste on this device: keptPlace's two edges over
+  // The place kept for this paste on this device: keptPlace's edges over
   // window.localStorage in the page, keyed by the paste and checked against its prints; over
-  // a Map in the check. Read at every render; written wherever the voice speaks.
-  readonly resume: { readonly read: () => Place | null; readonly write: (place: Place) => void };
+  // a Map in the check. Read at every render; written wherever the voice speaks; forgotten
+  // when a listen runs to its end.
+  readonly resume: { readonly read: () => Place | null; readonly write: (place: Place) => void; readonly forget: () => void };
   // Writes a link to a place where the reader can paste it: the clipboard, in the page. A
   // rejection is the reader's to see, on the control.
   readonly share: (place: Place) => Promise<void>;
@@ -1399,26 +1400,42 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const clockNow = (): Clock => clockAt(timeline(), held ? Number(controls.scrub.value) : timeNow());
   const paintClock = (): void => renderClock(controls, clockNow(), held);
 
-  // The place the transport names right now: under the voice while it has a place, else the
-  // cue's. Null while nothing is playing and nothing is cued.
+  // The place the transport names right now, at its word's start: under the voice while it
+  // has a place, else the cue's. Null while nothing is playing and nothing is cued.
   const placeNow = (): Place | null => {
     const now = stageState();
-    return now.kind === "idle" ? placeOfCue(state.cue) : placeIn(timeline(), now.segment, now.atMs);
+    const place = now.kind === "idle" ? placeOfCue(state.cue) : placeIn(timeline(), now.segment, now.atMs);
+    return place === null ? null : wordStart(utterances, place);
   };
   // [LAW:no-shared-mutable-globals] The last place written to the device, owned here, so a
-  // frame on the same word writes nothing.
+  // look on the same word writes nothing; and whether the voice was under way at the last
+  // look, so its going idle is seen once.
   let kept: Place | null = null;
-  const keepPlace = (place: Place): void => {
-    if (kept !== null && kept.utterance === place.utterance && kept.char === place.char) return;
-    kept = place;
-    config.resume.write(place);
+  let underWay = false;
+  // The device keeps the place under the voice at every look — each frame, each event. A
+  // voice that goes idle without the reader's Stop ran out — the last unit settled, or a
+  // failed last unit was skipped past the end — and a listen heard to its end has nothing
+  // to resume, so the kept place is forgotten; the reader's Stop keeps it, for the offer.
+  // `by` is the event this look follows, null for a frame. Looked before the render, so
+  // the offer the render draws reads the storage this look left.
+  const keep = (by: PanelEvent | null): void => {
+    const now = stageState();
+    const stopped = by?.kind === "tap" && by.control === "stop";
+    if (now.kind !== "idle") {
+      const place = placeNow();
+      if (place !== null && (kept === null || kept.utterance !== place.utterance || kept.char !== place.char)) config.resume.write(place);
+      kept = place;
+    } else if (underWay && !stopped && state.kind === "neural") {
+      kept = null;
+      config.resume.forget();
+    }
+    underWay = now.kind !== "idle";
   };
 
-  // What is painted: the voice's cursor while it has a place — and that place kept on the
-  // device — else the cue's word, else nothing.
+  // What is painted: the voice's cursor while it has a place, else the cue's word, else
+  // nothing.
   const emitPosition = (): void => {
     const now = stageState();
-    if (now.kind !== "idle") keepPlace(placeIn(timeline(), now.segment, now.atMs));
     const cursor = now.kind === "idle" ? cursorOfCue(state.cue, utterances) : cursorIn(now.segment, now.atMs);
     const at = cursor === null ? null : readAlongAt(cursor, utterances);
     if (samePlace(at, shown)) return;
@@ -1431,6 +1448,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (running && frame === null) {
       frame = frames.request(() => {
         frame = null;
+        keep(null);
         emitPosition();
         paintClock();
         syncFrames();
@@ -1558,6 +1576,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     const planned = step(state, event, page);
     state = planned.state;
     for (const effect of planned.effects) performEffect(effect);
+    keep(event);
     show();
     syncFrames();
     emitPosition();
@@ -1693,10 +1712,14 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   shareButton.addEventListener("click", () => {
     const place = placeNow();
     if (place === null) return;
-    config.share(place).then(
-      () => shared("copied", "Link copied"),
-      (error: unknown) => shared("failed", `Could not copy the link: ${error instanceof Error ? error.message : String(error)}`),
-    );
+    // Whatever the page's share does — a clipboard that is not there throws before any
+    // promise exists — reaches the reader on the control [LAW:no-silent-failure].
+    Promise.resolve()
+      .then(() => config.share(place))
+      .then(
+        () => shared("copied", "Link copied"),
+        (error: unknown) => shared("failed", `Could not copy the link: ${error instanceof Error ? error.message : String(error)}`),
+      );
   });
   shareButton.addEventListener("blur", unshare);
   // A drag is two facts, and the input reports them separately: `input` is the thumb
