@@ -111,7 +111,7 @@ console.log("stateOf: the position in the conversation's time");
 {
   const view = (player: NeuralView["player"], manifest: Manifest = emptyManifest(script)): NeuralView => {
     const timeline = timelineOfScript(manifest, table);
-    return { player, manifest, holdings: script.map(() => ({ kind: "absent" })), timeline, units: speechSegments(timeline) };
+    return { player, manifest, holdings: script.map(() => ({ kind: "absent" })), settled: false, timeline, units: speechSegments(timeline) };
   };
   assert("idle is idle", describe(stateOf(view({ kind: "idle" }))) === "idle");
   const unmeasured = view({ kind: "speaking", at: { segment: 1, offsetMs: 0 }, flow: "waiting" });

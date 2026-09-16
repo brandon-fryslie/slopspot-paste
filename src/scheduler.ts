@@ -55,6 +55,14 @@
 // away to remake it); islands left behind by seeks are. Memory is therefore bounded by one
 // window plus one contiguous run, whatever the reader does [LAW:no-ambient-temporal-coupling].
 //
+// THE WINDOW IS STATE. How far ahead is a value the page sets, not a constant: while the
+// page is in the background the reader can reach the page only through the lock screen, and
+// a phone may suspend the worker at any moment, so the window widens to BACKGROUND_LOOKAHEAD
+// and the worker makes as much of the listen as it is allowed to before that happens; back
+// in view it narrows to LOOKAHEAD, and what the wider window made stays while it is
+// contiguous from the cursor, by the rule above. Cost, stated once: minutes of PCM held
+// while hidden — at 24 kHz, about 29 MB for five minutes.
+//
 // FAILURE IS A TYPED STATE, NOT A STALL. A unit whose synthesis ends in `failed`, or whose
 // report the manifest rejects, becomes `failed{reason}` for the life of the scheduler: it is
 // never retried (a frame-cap is the model looping on that text and would loop again), its
@@ -74,7 +82,8 @@
 // unit under the cursor first, from its start [LAW:one-source-of-truth].
 //
 // WHAT WAKES IT. Worker messages, the player's `onState` (every discontinuity and every
-// unit boundary the clock crosses), the reader's voices and nothing else: no timer, no polling. The driver owns
+// unit boundary the clock crosses), the reader's voices, the page's window and nothing else:
+// no timer, no polling. The driver owns
 // the ordering — events are processed to completion one at a time, in arrival order, and a
 // report the player raises while a command is being performed waits its turn — so the plan
 // never runs on a state a command it just issued has already moved
@@ -99,6 +108,7 @@ export interface Lookahead {
 }
 
 export const LOOKAHEAD: Lookahead = { units: 3, ms: 30_000 };
+export const BACKGROUND_LOOKAHEAD: Lookahead = { units: 60, ms: 300_000 };
 export const KEEP_BEHIND = 1;
 
 // ── state ──────────────────────────────────────────────────────────────────────────────
@@ -123,6 +133,8 @@ export type Holding =
 export interface SchedulerState {
   // Which model voice each role is synthesized in: every request reads it here.
   readonly voices: VoiceMap;
+  // How far ahead of the cursor audio is wanted: LOOKAHEAD in view, wider in the background.
+  readonly lookahead: Lookahead;
   readonly holdings: ReadonlyArray<Holding>;
   readonly manifest: Manifest;
   // The sequence the player plays: the timeline's layout over this script, built once.
@@ -135,6 +147,7 @@ const CANCELLING: Holding = { kind: "cancelling" };
 
 export const initialState = (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap): SchedulerState => ({
   voices,
+  lookahead: LOOKAHEAD,
   holdings: script.map(() => ABSENT),
   manifest: emptyManifest(script),
   layout: layoutOf(script.map((unit) => unit.utterance.anchor)),
@@ -178,7 +191,9 @@ export type Event =
   | { readonly kind: "worker"; readonly message: FromWorker }
   | { readonly kind: "player"; readonly state: PlayerState }
   // The reader's voices changed: the map every request reads from now on.
-  | { readonly kind: "voices"; readonly voices: VoiceMap };
+  | { readonly kind: "voices"; readonly voices: VoiceMap }
+  // The page went into or out of the background: the window every plan reads from now on.
+  | { readonly kind: "lookahead"; readonly to: Lookahead };
 
 export type Command =
   | { readonly kind: "worker"; readonly message: ToWorker }
@@ -307,14 +322,14 @@ interface Reach {
 
 const EMPTY: Reach = { lo: 0, hi: -1, keepHi: -1, frontier: -1 };
 
-const reach = (holdings: ReadonlyArray<Holding>, at: UnitOffset): Reach => {
+const reach = (holdings: ReadonlyArray<Holding>, at: UnitOffset, lookahead: Lookahead): Reach => {
   const count = holdings.length;
   const cursor = holdings[at.unit];
   const lo = Math.max(0, at.unit - KEEP_BEHIND);
   let hi = at.unit;
   let unitsAhead = 0;
   let msAhead = cursor?.kind === "held" ? cursor.record.durationMs - at.offsetMs : 0;
-  while (hi + 1 < count && unitsAhead < LOOKAHEAD.units && msAhead < LOOKAHEAD.ms) {
+  while (hi + 1 < count && unitsAhead < lookahead.units && msAhead < lookahead.ms) {
     hi++;
     const holding = holdings[hi];
     if (holding?.kind === "held") msAhead += holding.record.durationMs;
@@ -382,7 +397,7 @@ const plan = (state: SchedulerState, player: PlayerState): Plan => {
   // Outside the window everything goes; inside it a failed unit's void frames go too. The
   // frontier alone is untouchable: the player is cueing its frames as they arrive.
   const at = player.kind === "idle" ? null : needed(state.layout, player.at);
-  const window = at === null ? EMPTY : reach(state.holdings, at);
+  const window = at === null ? EMPTY : reach(state.holdings, at, state.lookahead);
   for (let unit = 0; unit < count; unit++) {
     if (unit === window.frontier) continue;
     if (unit < window.lo || unit > window.keepHi || current(unit).kind === "failed") evict(unit);
@@ -482,9 +497,28 @@ const revoice = (state: SchedulerState, voices: VoiceMap, player: PlayerState): 
 // [LAW:single-enforcer] The one function that changes the scheduler's state: what the
 // worker said, or the reader's new voices, is applied, then the plan is redrawn against
 // where the player is now.
+// The very same state object when the window is the window already: nothing changed.
+const widen = (state: SchedulerState, to: Lookahead): Plan => ({
+  state: state.lookahead.units === to.units && state.lookahead.ms === to.ms ? state : { ...state, lookahead: to },
+  commands: [],
+});
+
+// [LAW:dataflow-not-control-flow] One application per event kind; the plan after it is the same for all.
+const applyEvent = (state: SchedulerState, event: Event, player: PlayerState): Plan => {
+  switch (event.kind) {
+    case "worker":
+      return apply(state, event.message);
+    case "voices":
+      return revoice(state, event.voices, player);
+    case "lookahead":
+      return widen(state, event.to);
+    case "player":
+      return { state, commands: [] };
+  }
+};
+
 export const step = (state: SchedulerState, event: Event, player: PlayerState): Plan => {
-  const applied =
-    event.kind === "worker" ? apply(state, event.message) : event.kind === "voices" ? revoice(state, event.voices, player) : { state, commands: [] };
+  const applied = applyEvent(state, event, player);
   const planned = plan(applied.state, player);
   return { state: planned.state, commands: [...applied.commands, ...planned.commands] };
 };
@@ -503,7 +537,21 @@ export interface SchedulerView {
   readonly player: PlayerState;
   readonly manifest: Manifest;
   readonly holdings: ReadonlyArray<Holding>;
+  // Whether the unit the cursor needs next is settled — nothing more will come of waiting for
+  // it: what a listen paused for want of audio waits on before it goes on.
+  readonly settled: boolean;
 }
+
+// The unit the cursor needs — under it, or after the gap it is in — is held in full, or has
+// failed. A failed unit never will be held, and playing on is what reaches it: the gap
+// sounds, and the cursor entering the unit's slot is the skip past it (plan). Waiting on it
+// instead would hold a paused listen there for good. Nothing is settled for an idle player,
+// which has no cursor.
+export const settledAt = (state: SchedulerState, player: PlayerState): boolean => {
+  if (player.kind === "idle") return false;
+  const holding = state.holdings[needed(state.layout, player.at).unit];
+  return holding?.kind === "held" || holding?.kind === "failed";
+};
 
 export interface SchedulerConfig {
   readonly port: SynthesisPort;
@@ -520,6 +568,8 @@ export interface Scheduler {
   readonly send: (control: Control) => void;
   // The reader's voices from now on: the units of a changed voice are made again in it.
   readonly voices: (voices: VoiceMap) => void;
+  // The window from now on: how far ahead the worker is asked to make audio.
+  readonly lookahead: (to: Lookahead) => void;
   readonly view: () => SchedulerView;
   // Ends the listen: stops the player, withdraws the request in flight, stops listening to
   // the worker. Call it before the worker is disposed, so the worker's cancellations land
@@ -535,7 +585,10 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
 
   const player = config.player({ layout: state.layout, onState: (reported) => dispatch({ kind: "player", state: reported }) });
 
-  const view = (): SchedulerView => ({ player: player.state(), manifest: state.manifest, holdings: state.holdings });
+  const view = (): SchedulerView => {
+    const now = player.state();
+    return { player: now, manifest: state.manifest, holdings: state.holdings, settled: settledAt(state, now) };
+  };
 
   const perform = (command: Command): void =>
     command.kind === "worker" ? config.port.send(command.message) : player.send(command.event);
@@ -564,6 +617,7 @@ export const createScheduler = (config: SchedulerConfig): Scheduler => {
   return {
     send: (control) => player.send(control),
     voices: (voices) => dispatch({ kind: "voices", voices }),
+    lookahead: (to) => dispatch({ kind: "lookahead", to }),
     view,
     dispose: () => {
       // Stopping empties the window, which is what cancels and drops everything.

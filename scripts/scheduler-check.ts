@@ -42,7 +42,7 @@
 //   driver: reports raised by its own commands are handled after them, in order
 //   driver: dispose stops, cancels, drops, stops listening, and closes the device
 
-import { KEEP_BEHIND, LOOKAHEAD, createScheduler, initialState, step } from "../src/scheduler";
+import { BACKGROUND_LOOKAHEAD, KEEP_BEHIND, LOOKAHEAD, settledAt, createScheduler, initialState, step } from "../src/scheduler";
 import type { Command, Event, Holding, SchedulerState, SchedulerView } from "../src/scheduler";
 import { wordsOf } from "../src/speechManifest";
 import type { UnitReport } from "../src/speechManifest";
@@ -186,6 +186,36 @@ console.log("step: the time bound");
   assert(`${LOOKAHEAD.ms / 1000} s held ahead stops requests under ${LOOKAHEAD.units} units`, long.commands.join() === "synthesize 0,complete 0,synthesize 1,complete 1" && kinds(long.state) === "hhaa");
   const spent = run(long.state, speaking(0, 15_000, "audio"), reported(speaking(0, 15_000, "audio")));
   assert("the cursor unit's remaining audio counts: 25 s ahead at 15 s in requests again", spent.commands.join() === "synthesize 2");
+}
+
+console.log("step: the window is the page's to widen and narrow");
+{
+  const fresh = initialState(scriptOf(8), VOICES);
+  const full = run(fresh, speaking(0, 0, "audio"), reported(speaking(0, 0, "audio")), done(0), done(1), done(2), done(3));
+  assert("setup: in view, three units held ahead and nothing more asked", kinds(full.state) === "hhhhaaaa" && !full.commands.includes("synthesize 4"));
+  const lookahead = (to: typeof LOOKAHEAD): Event => ({ kind: "lookahead", to });
+  const hidden = run(full.state, speaking(0, 0, "audio"), lookahead(BACKGROUND_LOOKAHEAD));
+  assert("the page in the background: the window widens and the next unit is asked for at once", hidden.commands.join() === "synthesize 4" && hidden.state.lookahead === BACKGROUND_LOOKAHEAD);
+  const same = step(hidden.state, lookahead({ ...BACKGROUND_LOOKAHEAD }), speaking(0, 0, "audio"));
+  assert("the same window again changes nothing, and keeps the state object", same.commands.length === 0 && same.state === hidden.state);
+  const made = run(hidden.state, speaking(0, 0, "audio"), done(4), done(5), done(6), done(7));
+  assert("in the background the worker makes on to the end of the script", kinds(made.state) === "hhhhhhhh");
+  const shown = run(made.state, speaking(0, 0, "audio"), lookahead(LOOKAHEAD));
+  assert("back in view the window narrows, and what it made stays, contiguous from the cursor", shown.commands.length === 0 && kinds(shown.state) === "hhhhhhhh" && shown.state.lookahead === LOOKAHEAD);
+}
+
+console.log("settledAt: whether the unit the cursor needs is held in full, or failed");
+{
+  const fresh = initialState(scriptOf(4), VOICES);
+  const asked = run(fresh, speaking(1), reported(speaking(1)), audio(1, 0));
+  assert("nothing is settled for an idle player, or while the unit under the cursor streams", !settledAt(fresh, idle) && !settledAt(asked.state, speaking(1)));
+  const held = run(asked.state, speaking(1), done(1));
+  assert("the unit under the cursor held: settled, speaking or paused", settledAt(held.state, speaking(1)) && settledAt(held.state, paused(1, 300)));
+  assert("in the gap before a unit, that unit is what is needed", settledAt(held.state, inGap(1)) && !settledAt(held.state, inGap(2)));
+  const pausedInGap: PlayerState = { kind: "paused", at: { segment: gapBefore(2), offsetMs: 100 } };
+  const failedAhead = run(held.state, speaking(1), worker({ kind: "failed", unitId: 2, reason: { kind: "runtime", message: "x" } }));
+  assert("setup: the unit after the gap failed", kinds(failedAhead.state)[2] === "f");
+  assert("a failed unit is settled: nothing will come of waiting, so a voice paused in the gap before it goes on, and reaching it is the skip", settledAt(failedAhead.state, pausedInGap) && settledAt(failedAhead.state, inGap(2)));
 }
 
 console.log("step: seeks reprioritize");

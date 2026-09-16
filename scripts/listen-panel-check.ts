@@ -28,9 +28,11 @@ import {
   type PanelEvent,
   type PanelState,
   type ListenControls,
+  type Transport,
   type Visit,
 } from "../src/listenPanel";
 import type { ConnectionReading } from "../src/modelAssets";
+import { createMediaSession, type ActionDetails, type MediaAction } from "../src/mediaSession";
 import { utteranceTable, type NeuralView } from "../src/neuralPerformer";
 import type { Keeping, Residency } from "../src/modelResidency";
 import type { Place, Speed } from "../src/performer";
@@ -42,6 +44,7 @@ import { prepareText, type SynthesisUnit } from "../src/speechScript";
 import type { SynthesisPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
+import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
 import { DEFAULT_PICK, readPick, writePick } from "../src/voiceChoice";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 import { memoryPreferences } from "./preferenceStub";
@@ -101,10 +104,11 @@ const ready: PanelEvent = worker({ kind: "ready", backend: "webgpu", modelVersio
 const scriptBack: PanelEvent = worker({ kind: "script", id: SCRIPT_ID, units });
 
 const scriptLine = timelineOfScript(emptyManifest(units), table);
-const viewOf = (player: NeuralView["player"]): NeuralView => ({
+const viewOf = (player: NeuralView["player"], settled = false): NeuralView => ({
   player,
   manifest: emptyManifest(units),
   holdings: units.map(() => ({ kind: "absent" })),
+  settled,
   timeline: scriptLine,
   units: speechSegments(scriptLine),
 });
@@ -122,7 +126,9 @@ const effects = (s: ReturnType<typeof step>): string =>
         ? `perform ${e.event.kind}${e.event.kind === "seek" ? ` ${Math.round(e.event.toMs)}ms` : ""}`
         : e.kind === "release"
           ? `release ${e.worker}`
-          : e.kind,
+          : e.kind === "lookahead"
+            ? `lookahead ${e.to === LOOKAHEAD ? "near" : e.to === BACKGROUND_LOOKAHEAD ? "far" : "?"}`
+            : e.kind,
     )
     .join();
 // A visit that remembered nothing, on a connection nobody metered: what every reader is
@@ -334,6 +340,55 @@ console.log("step: consent is the only door to the weights");
   const disposed = step(standing.state, { kind: "dispose" });
   const disposedWoken = step(step(disposed.state, wake("none")).state, supported);
   assert("a dispose forgets the consent: the next wake probes and waits", effects(disposedWoken) === "" && shown(disposedWoken.state) === IDLE_LINE);
+}
+
+console.log("step: out of view the voice is made further ahead, pauses when it runs dry, and plays again when its audio is held or the page is back");
+{
+  const hide: PanelEvent = { kind: "visibility", hidden: true };
+  const show: PanelEvent = { kind: "visibility", hidden: false };
+  const view = (player: NeuralView["player"], settled = false): PanelEvent => ({ kind: "view", view: viewOf(player, settled) });
+  const speakingAt = (flow: "audio" | "waiting"): NeuralView["player"] => ({ kind: "speaking", at: { segment: 0, offsetMs: 100 }, flow });
+  const pausedAt: NeuralView["player"] = { kind: "paused", at: { segment: 0, offsetMs: 100 } };
+  const onStage = [wake("download"), supported, progress(1, 1), ready, scriptBack, { kind: "view", view: viewOf({ kind: "idle" }) } as PanelEvent, tapPlay, view(speakingAt("audio"))].reduce((state, event) => step(state, event).state, initialState());
+  const visibilityOf = (state: PanelState): string => state.visibility;
+
+  const hidden = step(onStage, hide);
+  assert("the page out of view mid-listen: the audio is made further ahead, nothing else", effects(hidden) === "lookahead far" && visibilityOf(hidden.state) === "hidden");
+  assert("in view, a voice waiting on its audio is left to wait, as it always was", effects(step(onStage, view(speakingAt("waiting")))) === "" && visibilityOf(step(onStage, view(speakingAt("waiting"))).state) === "shown");
+  const dry = step(hidden.state, view(speakingAt("waiting")));
+  assert("out of view, the voice runs dry: paused, and marked stalled; the listen is still on, so the window stays wide", effects(dry) === "perform pause" && visibilityOf(dry.state) === "stalled");
+  assert("a view before the pause lands asks for no second pause", effects(step(dry.state, view(speakingAt("waiting")))) === "" && visibilityOf(step(dry.state, view(speakingAt("waiting"))).state) === "stalled");
+  const held = step(dry.state, view(pausedAt));
+  assert("the pause lands with nothing held yet: it stands, the line says why, and the transport offers Pause — to the reader the listen is on", effects(held) === "" && visibilityOf(held.state) === "stalled" && shown(held.state) === "Pause | stop | Paused in the background until the voice catches up · passage 1 of 2");
+  assert("hidden again while stalled changes nothing", effects(step(held.state, hide)) === "" && visibilityOf(step(held.state, hide).state) === "stalled");
+  const caught = step(held.state, view(pausedAt, true));
+  assert("the audio it needs is held: it plays again, still stalled until it sounds, the window wide throughout", effects(caught) === "perform play" && visibilityOf(caught.state) === "stalled");
+  const sounding = step(caught.state, view(speakingAt("audio")));
+  assert("it sounds: the stall is over, out of view, nothing more to do", effects(sounding) === "" && visibilityOf(sounding.state) === "hidden");
+  const back = step(held.state, show);
+  assert("or the page is back first: it plays again, to wait in view, and the window narrows", effects(back) === "perform play,lookahead near" && visibilityOf(back.state) === "shown");
+  const taken = step(held.state, tapPlay);
+  assert("the reader's tap — the lock screen's pause, a headset's — is a real pause of a stalled voice: the window narrows", effects(taken) === "hush,perform pause,lookahead near" && visibilityOf(taken.state) === "hidden" && shown(taken.state).startsWith("Resume | stop | Paused ·"));
+  assert("and audio held after it plays nothing: the pause is the reader's", effects(step(taken.state, view(pausedAt, true))) === "");
+  const readerPausing = step(hidden.state, tapPlay);
+  assert("a pause the reader makes out of view is sent, the window wide until it lands", effects(readerPausing) === "hush,perform pause");
+  const readerPaused = step(readerPausing.state, view(pausedAt, true));
+  assert("it lands: nobody is hearing the listen, so the window narrows, and audio held plays nothing", effects(readerPaused) === "lookahead near" && visibilityOf(readerPaused.state) === "hidden");
+  assert("the reader plays it again out of view: once it speaks, the window widens", effects(step(step(readerPaused.state, tapPlay).state, view(speakingAt("audio")))) === "lookahead far");
+  const skipped = step(held.state, { kind: "seek", to: { kind: "time", ms: 0 } });
+  assert("a skip or scrub while stalled moves the voice and leaves the listen on: still stalled, the window wide", effects(skipped) === "hush,perform seek 0ms" && visibilityOf(skipped.state) === "stalled");
+  assert("and its audio held at the new place plays it", effects(step(skipped.state, view(pausedAt, true))) === "perform play");
+  const gone = step(held.state, view({ kind: "idle" }));
+  assert("a stalled voice that leaves the stage — its last unit failed and skipped — is no longer stalled: the window narrows, and the transport offers Listen", effects(gone) === "lookahead near" && visibilityOf(gone.state) === "hidden" && shown(gone.state).startsWith("Listen | "));
+  const crashed = step(held.state, { kind: "worker-error", message: "x" });
+  assert("a crash while stalled keeps that the page is out of view, and nothing of the background's pause", visibilityOf(crashed.state) === "hidden");
+
+  const early = step(initialState(), hide);
+  assert("out of view before any voice: remembered, nothing to tell", effects(early) === "" && visibilityOf(early.state) === "hidden");
+  const arrivedHidden = [wake("download"), supported, progress(1, 1), ready, scriptBack].reduce((state, event) => step(state, event).state, early.state);
+  const standing = step(arrivedHidden, { kind: "view", view: viewOf({ kind: "idle" }) });
+  assert("a voice that takes the stage out of view and stands ready is made no further ahead than in view", effects(standing) === "perform rate");
+  assert("played out of view: once it speaks, it is made far ahead", effects(step(step(standing.state, tapPlay).state, view(speakingAt("audio")))) === "lookahead far");
 }
 
 console.log("step: a link's cue is where the voice starts, and the offer to resume stands while nobody has named a place");
@@ -571,7 +626,7 @@ interface Rig {
   readonly sent: ToWorker[];
   readonly emit: (message: FromWorker) => void;
   readonly fail: (message: string) => void;
-  readonly counts: { spawned: number; terminated: number; disposed: number; listeners: () => number; homeAsked: number; keepAsked: number };
+  readonly counts: { spawned: number; terminated: number; disposed: number; listeners: () => number; homeAsked: number; keepAsked: number; unlocked: number };
   // The store's and the browser's answers, given by hand so their timing is the check's.
   readonly answer: { home: (residency: Residency) => void; keep: (keeping: Keeping) => void };
   readonly home: () => Promise<Residency>;
@@ -587,6 +642,8 @@ interface Rig {
   // The clock the driver stamps worker messages with, in ms; the check sets it by hand.
   now: number;
   readonly positions: (ReadAlongAt | null)[];
+  // Every transport the panel reported, oldest first: what the media controls were shown.
+  readonly transports: Transport[];
   readonly where: () => string;
   readonly line: () => string;
   readonly transport: () => string;
@@ -635,7 +692,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const sent: ToWorker[] = [];
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
-  const counts = { spawned: 0, terminated: 0, disposed: 0, listeners: () => listeners.size + errorListeners.size, homeAsked: 0, keepAsked: 0 };
+  const counts = { spawned: 0, terminated: 0, disposed: 0, listeners: () => listeners.size + errorListeners.size, homeAsked: 0, keepAsked: 0, unlocked: 0 };
   // Answers land on the oldest unanswered ask first, so two asks in flight settle in the
   // order they were made: the earlier one can be answered after a later one was issued.
   const deferred = <T,>() => {
@@ -685,6 +742,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
   };
   const store = storeOf(setup.storage ?? { remembered: false });
   const positions: (ReadAlongAt | null)[] = [];
+  const transports: Transport[] = [];
   const play = el<HTMLButtonElement>(".speech-play");
   const stop = el<HTMLButtonElement>(".speech-stop");
   const back = el<HTMLButtonElement>(".speech-back");
@@ -795,6 +853,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     said: () => sent.map((m) => (m.kind === "synthesize" ? `synthesize ${m.unitId}` : m.kind === "cancel" ? `cancel ${m.unitId}` : m.kind)).join(),
     frames,
     positions,
+    transports,
     where: () => {
       const at = positions.at(-1);
       return at === null || at === undefined
@@ -859,6 +918,10 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     frames: r.frames,
     clock: () => r.now,
     onPosition: (at) => r.positions.push(at),
+    onTransport: (transport) => r.transports.push(transport),
+    onUnlock: () => {
+      r.counts.unlocked += 1;
+    },
     resume: { read: () => readResume(r.store, SLUG, printed), write: (place) => writeResume(r.store, SLUG, printed, place), forget: () => forgetResume(r.store, SLUG) },
     share: r.share,
     onSeek: r.onSeek,
@@ -901,7 +964,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   const device = r.devices()[0];
   if (device === undefined) throw new Error("the tap did not open a device");
   assert("click Play while the probe runs: no second worker, the button disables — the tap is the consent", r.counts.spawned === 1 && r.line() === "Listen(off) | stop(off) | Checking this device for the voice…");
-  assert("the audio device is opened AND resumed on the tap, before any worker message", r.devices().length === 1 && device.calls.join() === "resume" && r.sent.length === 0);
+  assert("the audio device is opened AND resumed on the tap, before any worker message, and the page told of the unlock on the same stack", r.devices().length === 1 && device.calls.join() === "resume" && r.counts.unlocked === 1 && r.sent.length === 0);
   r.emit({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
   assert("supported with the tap held: load is sent", r.said() === "load" && r.shownMark() === "warming | folded | progress ? | remember off");
   r.emit({ kind: "progress", progress: { loadedBytes: 50_000_000, totalBytes: 200_000_000 } });
@@ -1084,7 +1147,7 @@ console.log("createListenPanel: the box is the yes for this visit and every next
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   r.emit({ kind: "script", id: SCRIPT_ID, units });
   const device = r.devices()[0];
-  assert("a voice built on a standing consent opens its device outside any gesture, unresumed, and stands ready", r.devices().length === 1 && device?.calls.join() === "" && r.line() === "Listen | stop(off) | Ready" && r.said() === "load,script");
+  assert("a voice built on a standing consent opens its device outside any gesture, unresumed, and stands ready", r.devices().length === 1 && device?.calls.join() === "" && r.counts.unlocked === 0 && r.line() === "Listen | stop(off) | Ready" && r.said() === "load,script");
   r.play.click();
   assert("the first Play resumes that device on the tap and speaks", device?.calls.includes("resume") === true && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2");
   r.check(false);
@@ -1438,6 +1501,120 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   part<HTMLButtonElement>(again.voices.picker, '.voice-row[data-role="user"] .voice-option[data-voice="alba"] .voice-preview').click();
   assert("a preview with the voice on stage but idle: nothing to pause, the phrase asked", again.line() === "Listen | stop(off) | Ready" && again.said().endsWith("synthesize -1"));
   reloaded.dispose();
+}
+
+console.log("createListenPanel: the media controls are told the transport at every event");
+{
+  const r = rig();
+  const panel = mount(r);
+  const last = (): string => {
+    const t = r.transports.at(-1);
+    return t === undefined ? "nothing" : `${t.playback} ${Math.round(t.atMs)}/${Math.round(t.totalMs)} x${t.speed} u${t.utterance}`;
+  };
+  assert("before any voice: none, at the top", last().startsWith("none 0/") && last().endsWith("x1 unull"));
+  r.play.click();
+  arrive(r);
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  assert("the voice under way: playing, in the first passage", last().startsWith("playing ") && last().endsWith("x1 u0"));
+  panel.send({ kind: "speed", by: 1 });
+  assert("a speed step: the rate the platform runs the progress bar at", last().endsWith("x1.25 u0"));
+  panel.send({ kind: "place", to: mark(1, 2) });
+  assert("a seek into the reply: its passage", last().endsWith("u1"));
+  r.play.click();
+  assert("paused: paused", last().startsWith("paused "));
+  r.stop.click();
+  assert("stopped: none", last().startsWith("none 0/"));
+  panel.dispose();
+}
+
+console.log("createListenPanel: out of view, a voice that runs dry pauses its device, and plays when its audio arrives");
+{
+  const r = rig();
+  const panel = mount(r);
+  panel.visibility(true);
+  r.play.click();
+  arrive(r);
+  const device = r.devices()[0];
+  if (device === undefined) throw new Error("fixture: no device opened");
+  assert("the voice arrives out of view with nothing made: paused at once, the device suspended, the line says why", device.calls.at(-1) === "suspend" && r.line() === "Pause | stop | Paused in the background until the voice catches up · passage 1 of 2" && r.said().endsWith("synthesize 0"));
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  assert("part of the unit made: still paused", device.calls.at(-1) === "suspend" && r.line().startsWith("Pause | stop | Paused in the background"));
+  r.emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  assert("the whole unit held: the voice plays again, the device resumed", device.calls.at(-1) === "resume" && r.line() === "Pause | stop | Playing · passage 1 of 2");
+  panel.visibility(false);
+  assert("back in view while playing: nothing to lift", r.line() === "Pause | stop | Playing · passage 1 of 2");
+  panel.dispose();
+}
+
+// The media controls as the page wires them — shown every transport, pressing into the panel —
+// over a stub session and a carrier that only records whether it plays.
+const controlsOf = (r: Rig, panel: ReturnType<typeof createListenPanel>) => {
+  const handlers = new Map<MediaAction, (details: ActionDetails) => void>();
+  const carrier = { paused: true, play: () => ((carrier.paused = false), Promise.resolve()), pause: () => void (carrier.paused = true), addEventListener: () => {} };
+  const media = createMediaSession({
+    session: { playbackState: "none", metadata: null, setActionHandler: (action, handler) => void handlers.set(action, handler), setPositionState: () => {} },
+    metadata: (shown) => shown,
+    title: "t",
+    speakerOf: () => "",
+    send: (gesture) => panel.send(gesture),
+    element: () => carrier,
+    refused: () => {},
+  });
+  const sync = (): void => {
+    const shown = r.transports.at(-1);
+    if (shown !== undefined) media.show(shown);
+  };
+  const press = (action: MediaAction): void => {
+    sync();
+    handlers.get(action)?.({});
+    sync();
+  };
+  return { carrier, sync, press };
+};
+
+const stalledOutOfView = (r: Rig, panel: ReturnType<typeof createListenPanel>): StubDevice => {
+  panel.visibility(true);
+  r.play.click();
+  arrive(r);
+  const device = r.devices()[0];
+  if (device === undefined) throw new Error("fixture: no device opened");
+  return device;
+};
+
+console.log("createListenPanel: the lock screen over a voice stalled out of view — the listen is on, its carrier plays, and a skip leaves it on");
+{
+  const r = rig();
+  const panel = mount(r);
+  const { carrier, sync, press } = controlsOf(r, panel);
+  const device = stalledOutOfView(r, panel);
+  sync();
+  assert("stalled: the controls are told it plays, so they offer Pause, and the carrier plays on — the page stays the phone's media while its audio is made", r.transports.at(-1)?.playback === "playing" && device.calls.at(-1) === "suspend" && !carrier.paused);
+  press("play");
+  assert("their Play over it is nothing: the voice is already on its way back", device.calls.at(-1) === "suspend" && r.line().startsWith("Pause | stop | Paused in the background"));
+  press("seekbackward");
+  assert("their skip moves it and leaves it on: still stalled, still told it plays", r.line().startsWith("Pause | stop | Paused in the background") && r.transports.at(-1)?.playback === "playing" && !carrier.paused);
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  r.emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  assert("the audio at its new place arrives: it plays", device.calls.at(-1) === "resume" && r.line() === "Pause | stop | Playing · passage 1 of 2");
+  panel.dispose();
+  sync();
+  assert("disposed: the controls are told none, and the carrier is paused", r.transports.at(-1)?.playback === "none" && carrier.paused);
+}
+
+console.log("createListenPanel: the lock screen's pause over a stalled voice is a real pause, which audio arriving does not undo");
+{
+  const r = rig();
+  const panel = mount(r);
+  const { carrier, press } = controlsOf(r, panel);
+  const device = stalledOutOfView(r, panel);
+  press("pause");
+  assert("their Pause: paused by the reader now, the controls say so, and the carrier stops", r.transports.at(-1)?.playback === "paused" && r.line().startsWith("Resume | stop | Paused ·") && carrier.paused);
+  r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  r.emit({ kind: "done", unitId: 0, report: report(FRAME_S * 1000), elapsedMs: 5 });
+  assert("the whole unit arrives: nothing plays, the device stays suspended", device.calls.at(-1) === "suspend" && r.line().startsWith("Resume | stop | Paused ·"));
+  press("play");
+  assert("their Play: the reader's listen again, the carrier with it", device.calls.at(-1) === "resume" && r.transports.at(-1)?.playback === "playing" && !carrier.paused);
+  panel.dispose();
 }
 
 console.log("createListenPanel: a link opens on its word before any audio exists, and Play starts there");
