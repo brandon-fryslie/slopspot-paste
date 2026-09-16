@@ -1617,6 +1617,12 @@ console.log("createListenPanel: the share control hands over the moment on scree
   assert("a page with no clipboard at all, whose share throws before any promise: said on the control the same way", r.mini.share.dataset.shared === "failed" && r.mini.share.getAttribute("aria-label") === "Could not copy the link: no clipboard");
   r.mini.play.click();
   assert("the reader's next gesture clears it too", r.mini.share.dataset.shared === undefined);
+  r.mini.play.click();
+  r.clipboard.answer = "copies";
+  r.mini.share.click();
+  r.mini.play.click();
+  await settle();
+  assert("an answer that lands after the reader moved on relabels nothing", r.mini.share.dataset.shared === undefined && r.mini.share.getAttribute("aria-label") === "Copy a link to this moment");
   panel.dispose();
 }
 

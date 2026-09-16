@@ -1672,12 +1672,19 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // [LAW:no-silent-failure].
   const { share: shareButton } = controls.mini;
   const SHARE_LABEL = "Copy a link to this moment";
+  // [LAW:no-ambient-temporal-coupling] The share's answer belongs to the tap that asked for
+  // it: every tap and every reset counts here, and an answer lands only while no later one
+  // has — a clipboard slow behind its permission prompt never relabels a control the reader
+  // has since moved past.
+  let asks = 0;
   const unshare = (): void => {
+    asks += 1;
     delete shareButton.dataset.shared;
     shareButton.setAttribute("aria-label", SHARE_LABEL);
     shareButton.title = SHARE_LABEL;
   };
-  const shared = (outcome: "copied" | "failed", label: string): void => {
+  const shared = (ask: number, outcome: "copied" | "failed", label: string): void => {
+    if (ask !== asks) return;
     shareButton.dataset.shared = outcome;
     shareButton.setAttribute("aria-label", label);
     shareButton.title = label;
@@ -1714,11 +1721,12 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     if (place === null) return;
     // Whatever the page's share does — a clipboard that is not there throws before any
     // promise exists — reaches the reader on the control [LAW:no-silent-failure].
+    const ask = (asks += 1);
     Promise.resolve()
       .then(() => config.share(place))
       .then(
-        () => shared("copied", "Link copied"),
-        (error: unknown) => shared("failed", `Could not copy the link: ${error instanceof Error ? error.message : String(error)}`),
+        () => shared(ask, "copied", "Link copied"),
+        (error: unknown) => shared(ask, "failed", `Could not copy the link: ${error instanceof Error ? error.message : String(error)}`),
       );
   });
   shareButton.addEventListener("blur", unshare);
