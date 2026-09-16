@@ -105,6 +105,11 @@ export const layoutOf = (anchors: ReadonlyArray<string>): ReadonlyArray<Slot> =>
     { kind: "speech", span },
   ]);
 
+// The layout of a script: the turn each unit belongs to decides where the gaps fall. The one
+// layout the player plays and a rendition file is laid along [LAW:single-enforcer].
+export const scriptLayout = (script: ReadonlyArray<{ readonly utterance: { readonly anchor: string } }>): ReadonlyArray<Slot> =>
+  layoutOf(script.map((unit) => unit.utterance.anchor));
+
 // ── the timeline ────────────────────────────────────────────────────────────────────
 
 // [LAW:types-are-the-program] What is known of when a segment's speech is said: a guess —

@@ -13,7 +13,7 @@
 // read as FromWorker without a runtime parse. Both ends import synthesisProtocol.ts, so the
 // compiler checks what the worker may post; structured clone carries exactly that.
 
-import type { FromWorker, ToWorker } from "./synthesisProtocol";
+import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
 
 export interface SynthesisPort {
   readonly send: (message: ToWorker) => void;
@@ -33,12 +33,21 @@ export interface SynthesisPort {
 // it is made ahead.
 export type SynthesizeRequest = Extract<ToWorker, { kind: "synthesize" }>;
 
-// [LAW:types-are-the-program] The port a listen speaks to: the protocol, and the units worth
-// making ahead of need, in the order they are worth it — each order replacing the last. What
-// is made of it, and when, is the port's (keptSynthesis.ts): a raw worker has nowhere to put
-// audio nobody asked for, so it is not a listen port.
+// One unit of a rendition, as a render hears it: the unit's whole audio, or why there is none.
+// A duplicate is about a second request, never about a unit, so it is not a render's reason.
+export type RenderedUnit =
+  | { readonly kind: "made"; readonly unitId: number; readonly frames: ReadonlyArray<Float32Array<ArrayBuffer>> }
+  | { readonly kind: "failed"; readonly unitId: number; readonly reason: Exclude<UnitFailure, { kind: "duplicate-unit" }> };
+
+// [LAW:types-are-the-program] The port a listen speaks to: the protocol; the units worth
+// making ahead of need, in the order they are worth it — each order replacing the last; and a
+// render, every unit of a rendition heard once by its listener, whatever the listen does
+// meanwhile — each render replacing the last, and withdrawn by the function it returns. What
+// is made of either, and when, is the port's (keptSynthesis.ts): a raw worker has nowhere to
+// put audio nobody asked for, so it is not a listen port.
 export interface ListenPort extends SynthesisPort {
   readonly ahead: (requests: ReadonlyArray<SynthesizeRequest>) => void;
+  readonly render: (requests: ReadonlyArray<SynthesizeRequest>, onUnit: (unit: RenderedUnit) => void) => () => void;
 }
 
 export const spawnSynthesisWorker = (): SynthesisPort => {

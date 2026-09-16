@@ -62,6 +62,8 @@ export const MINI_ICONS = {
   // The share control's two faces: a link to copy, and the check that says it was copied.
   link: icon('<path d="M8.6 11.4a3.2 3.2 0 0 0 4.5 0l2.6-2.6a3.2 3.2 0 0 0-4.5-4.5l-1 1"/><path d="M11.4 8.6a3.2 3.2 0 0 0-4.5 0l-2.6 2.6a3.2 3.2 0 0 0 4.5 4.5l1-1"/>'),
   copied: icon('<path d="M4.5 10.5l3.5 3.5 7.5-8"/>'),
+  // The download control: the conversation saved as an audio file.
+  save: icon('<path d="M10 3.5v9"/><path d="M6 9l4 4 4-4"/><path d="M4.5 16h11"/>'),
 } as const;
 
 // [LAW:no-mode-explosion] The menu order is the reading order of the toolset, stated

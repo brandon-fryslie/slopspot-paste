@@ -57,13 +57,23 @@
 // unit only to lose it would spend the GPU on nothing. Cost, stated once: a pre-empted fill
 // discards what it had made.
 //
+// RENDERED WHOLE [LAW:single-enforcer]. A render (the paste as one file, a35.8) wants every unit
+// of a rendition, and this port is where every unit's audio passes, so each is heard by the
+// render the moment it is whole, whichever way it came: answered from the device, made for the
+// listen, or made ahead. What none of those brings, the render makes itself on the worker's free
+// time, before anything is made ahead, as a fill does — asking the device first, yielding to
+// whatever the listen sends the worker, tried again once the worker is free — with two
+// differences, both because the reader asked for it: the device's allowance does not gate it,
+// and a store that cannot be read does not stop it; a unit it makes is kept like any other, and
+// a keep the store refuses costs the render nothing. Each unit is heard once, made or failed.
+//
 // [LAW:no-silent-failure] A lookup that rejects breaks the cache's contract (it never rejects),
 // so it is reported on the port's error channel, where the panel hears a worker's own crash.
 
 import type { AudioCache } from "./keptAudio";
 import type { Utterance } from "./speech";
 import type { Allowance } from "./presynthesis";
-import type { ListenPort, SynthesisPort, SynthesizeRequest as Synthesize } from "./synthesisClient";
+import type { ListenPort, RenderedUnit, SynthesisPort, SynthesizeRequest as Synthesize } from "./synthesisClient";
 import type { FromWorker, ToWorker } from "./synthesisProtocol";
 
 type Script = Extract<ToWorker, { kind: "script" }>;
@@ -113,6 +123,9 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   let asking = false;
   let keeping = true;
   const previews = new Set<number>();
+  // The render under way, when there is one: its requests not yet heard, in its own order, and
+  // who hears each.
+  let rendition: { readonly pending: Synthesize[]; readonly onUnit: (unit: RenderedUnit) => void } | null = null;
   const listeners = new Set<(message: FromWorker) => void>();
   const errorListeners = new Set<(message: string) => void>();
   let ended = false;
@@ -146,14 +159,60 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
     fill();
   };
 
-  // The worker's time is free for a unit worth making ahead, and the unit still is worth it.
-  const idle = (): boolean => !ended && ready && jobs.size === 0 && previews.size === 0 && cutting.size === 0 && allowance.allowed();
+  // The worker's time is free: for a render's unit, and, when the device allows, for a unit
+  // worth making ahead that still is worth it.
+  const free = (): boolean => !ended && ready && jobs.size === 0 && previews.size === 0 && cutting.size === 0;
+  const idle = (): boolean => free() && allowance.allowed();
   const wanted = (request: Synthesize): boolean => !made.has(tried(request)) && order.some((ordered) => same(ordered, request));
+  // Whether a fill in flight is still wanted by someone: the order ahead, or the render.
+  const spared = (request: Synthesize): boolean =>
+    order.some((ordered) => same(ordered, request)) || (rendition?.pending.some((pending) => same(pending, request)) ?? false);
+
+  // A unit is whole or has failed, however it came: the render hears it once, if it wants it,
+  // and a render with nothing left to hear is over.
+  const rendered = (request: Synthesize, unit: RenderedUnit): void => {
+    const current = rendition;
+    const at = current === null ? -1 : current.pending.findIndex((pending) => same(pending, request));
+    if (current === null || at === -1) return;
+    current.pending.splice(at, 1);
+    if (current.pending.length === 0) rendition = null;
+    current.onUnit(unit);
+  };
+  const failedUnit = (request: Synthesize, reason: Extract<FromWorker, { kind: "failed" }>["reason"]): RenderedUnit | null =>
+    reason.kind === "duplicate-unit" ? null : { kind: "failed", unitId: request.unitId, reason };
+
+  // The render's next unit, on the worker's free time: the device is asked first. A lookup that
+  // rejects breaks the cache's contract and is said as every such break is, on the error channel.
+  const renderNext = (current: NonNullable<typeof rendition>): void => {
+    const request = current.pending[0];
+    if (request === undefined) return;
+    asking = true;
+    cache.find(request).then(
+      (kept) => {
+        asking = false;
+        if (ended) return;
+        if (kept !== null) {
+          rendered(request, { kind: "made", unitId: request.unitId, frames: kept.frames });
+        } else if (free() && rendition === current && current.pending.includes(request)) {
+          jobs.set(request.unitId, { kind: "filling", request, frames: [], words: [], cancelled: false, next: null });
+          worker.send(request);
+          return;
+        }
+        fill();
+      },
+      (error: unknown) => {
+        asking = false;
+        fail(`kept audio: the lookup for rendering unit ${request.unitId} failed: ${String(error)}`);
+      },
+    );
+  };
 
   // The next unit worth making ahead, when the worker has nothing the listen asked for: the
   // device is asked first, and the worker's time is read again once it answers.
   const fill = (): void => {
-    if (asking || !keeping || !idle()) return;
+    if (asking || !free()) return;
+    if (rendition !== null) return renderNext(rendition);
+    if (!keeping || !allowance.allowed()) return;
     const request = order.find((ordered) => !made.has(tried(ordered)));
     if (request === undefined) return;
     asking = true;
@@ -165,14 +224,16 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
             made.add(tried(request));
             break;
           case "absent":
-            if (!idle() || !wanted(request)) break;
+            // A render begun while the device was asked comes before this unit.
+            if (rendition !== null || !idle() || !wanted(request)) break;
             jobs.set(request.unitId, { kind: "filling", request, frames: [], words: [], cancelled: false, next: null });
             worker.send(request);
             break;
           case "unreadable":
-            // The cache has reported why.
+            // The cache has reported why. Nothing more is made ahead, and a render waiting behind
+            // the answer is not stopped by it.
             keeping = false;
-            return;
+            break;
         }
         fill();
       },
@@ -206,10 +267,14 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
       case "done":
         void cache.keep(job.request, job.frames, message.report);
         made.add(tried(job.request));
+        rendered(job.request, { kind: "made", unitId: message.unitId, frames: job.frames });
         break;
-      case "failed":
+      case "failed": {
         made.add(tried(job.request));
+        const unit = failedUnit(job.request, message.reason);
+        if (unit !== null) rendered(job.request, unit);
         break;
+      }
       case "cancelled":
         break;
       default:
@@ -234,6 +299,7 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
           return;
         }
         kept.frames.forEach((pcm, frameIndex) => emit({ kind: "audio", unitId, frameIndex, pcm }));
+        rendered(request, { kind: "made", unitId, frames: kept.frames });
         settle(unitId, job, { kind: "done", unitId, report: kept.report, elapsedMs: now() - job.started });
       },
       (error: unknown) => fail(`kept audio: the lookup for unit ${request.unitId} failed: ${String(error)}`),
@@ -327,8 +393,22 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   const ahead = (requests: ReadonlyArray<Synthesize>): void => {
     if (ended) return;
     order = requests;
-    withdraw((filling) => requests.some((wanted) => same(wanted, filling)));
+    withdraw(spared);
     fill();
+  };
+
+  const render = (requests: ReadonlyArray<Synthesize>, onUnit: (unit: RenderedUnit) => void): (() => void) => {
+    if (ended) return () => undefined;
+    const current = { pending: [...requests], onUnit };
+    rendition = current.pending.length === 0 ? null : current;
+    withdraw(spared);
+    fill();
+    return () => {
+      if (rendition !== current) return;
+      rendition = null;
+      withdraw(spared);
+      fill();
+    };
   };
 
   // The model is ready: what was held for it goes to the worker, scripts first, in the order
@@ -370,6 +450,7 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
       case "done":
         void cache.keep(job.request, job.frames, message.report);
         made.add(tried(job.request));
+        rendered(job.request, { kind: "made", unitId: message.unitId, frames: job.frames });
         return settle(message.unitId, job, message);
       case "cancelled":
         return settle(message.unitId, job, message);
@@ -378,18 +459,21 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
         // names is still the worker's, and the scheduler judges the message.
         if (message.reason.kind === "duplicate-unit") return emit(message);
         made.add(tried(job.request));
+        rendered(job.request, { kind: "failed", unitId: message.unitId, reason: message.reason });
         return settle(message.unitId, job, message);
       default:
         return emit(message);
     }
   });
   worker.errors(fail);
-  const unheard = allowance.subscribe(() => (allowance.allowed() ? fill() : withdraw(() => false)));
+  // A withdrawn allowance cancels what is made ahead, never what the render makes.
+  const unheard = allowance.subscribe(() => (allowance.allowed() ? fill() : withdraw((filling) => rendition?.pending.some((pending) => same(pending, filling)) ?? false)));
 
   const end = (): void => {
     ended = true;
     unheard();
     order = [];
+    rendition = null;
     jobs.clear();
     cutting.clear();
     held.length = 0;
@@ -398,6 +482,7 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   return {
     send,
     ahead,
+    render,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

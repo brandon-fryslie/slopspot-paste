@@ -107,7 +107,7 @@ import type { Manifest, ManifestUnit, RecordRejection, UnitReport, WordStart } f
 import { unitText, type SynthesisUnit, type VoiceMap } from "./speechScript";
 import type { ListenPort, SynthesizeRequest } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
-import { layoutOf, type Slot } from "./timeline";
+import { scriptLayout, type Slot } from "./timeline";
 import type { PlayerEvent, PlayerState, SegmentOffset, UnitPlayer, UnitPlayerConfig } from "./unitPlayer";
 
 // ── the window ─────────────────────────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ export const initialState = (
     lookahead: LOOKAHEAD,
     holdings: script.map(() => ABSENT),
     manifest: { ...empty, units },
-    layout: layoutOf(script.map((unit) => unit.utterance.anchor)),
+    layout: scriptLayout(script),
   };
 };
 
@@ -465,13 +465,15 @@ const plan = (state: SchedulerState, player: PlayerState): Plan => {
   return finish();
 };
 
-// [LAW:single-enforcer] The one request for a unit, whether the cursor needs it or it is made
-// ahead: the port matches the two field for field to hand a generation from one to the other.
-const requestFor = (state: SchedulerState, unitId: number): SynthesizeRequest => {
-  const unit = state.manifest.script[unitId];
+// [LAW:single-enforcer] The one request for a unit, whether the cursor needs it, it is made
+// ahead or a render wants it: the port matches them field for field to hand a generation from
+// one to another, and to hear a unit once for a render whichever of them made it.
+export const unitRequest = (script: ReadonlyArray<SynthesisUnit>, voices: VoiceMap, unitId: number): SynthesizeRequest => {
+  const unit = script[unitId];
   if (unit === undefined) throw new RangeError(`scheduler: no script unit ${unitId}`);
-  return { kind: "synthesize", unitId, text: unitText(unit), voice: state.voices[unit.utterance.voice] };
+  return { kind: "synthesize", unitId, text: unitText(unit), voice: voices[unit.utterance.voice] };
 };
+const requestFor = (state: SchedulerState, unitId: number): SynthesizeRequest => unitRequest(state.manifest.script, state.voices, unitId);
 
 // The units worth making ahead, in order (see the header): those with neither a holding nor a
 // measurement, from the unit past the window around to the one before it.

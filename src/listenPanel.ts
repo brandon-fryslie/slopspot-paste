@@ -156,6 +156,7 @@ import { createNeuralPerformer, stateOf, type NeuralPerformer, type NeuralState,
 import { NORMAL, stepSpeed, type Place, type PerformerEvent, type PerformerState, type Speed } from "./performer";
 import { wordStart, type Linked } from "./keptPlace";
 import { turnOf, type ReadAlongAt } from "./readAlong";
+import { startDownload, type DownloadConfig, type DownloadPhase } from "./renditionDownload";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD, type FailureReason, type Lookahead } from "./scheduler";
 import type { Utterance } from "./speech";
 import { wordSpans, type UnitReport, type WordSpan } from "./speechManifest";
@@ -163,7 +164,7 @@ import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { ListenPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
 import { clockText, cursorIn, estimated, landmark, landmarks, placeIn, pointAt, startAt, startIn, timeAt, timeOfStart, timelineOfUtterances, type Cursor, type Point, type Start, type Timeline } from "./timeline";
-import { openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
+import { MODEL_PCM, openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
 import { mountVoicePicker, type PreviewOffer, type VoicesReadout } from "./voicePicker";
 import { createPreviewer, type Previewer } from "./voicePreview";
@@ -912,12 +913,13 @@ export interface Visit {
 // note faces show the status sentence itself (`Readout.status`), so they carry no copy of
 // it [LAW:one-source-of-truth]. `play` is what a tap does, so the one button's face follows
 // the voice.
-// `share` is whether there is a moment to link to: a voice under way, or a cue.
+// `share` is whether there is a moment to link to: a voice under way, or a cue. `save` is
+// whether there is a rendition to make a file of (`savable`).
 export type MiniFace =
   | { readonly kind: "consent"; readonly ask: string }
   | { readonly kind: "progress"; readonly fraction: number | null }
   | { readonly kind: "note"; readonly retry: boolean }
-  | { readonly kind: "controls"; readonly play: "play" | "pause"; readonly back: boolean; readonly forward: boolean; readonly share: boolean };
+  | { readonly kind: "controls"; readonly play: "play" | "pause"; readonly back: boolean; readonly forward: boolean; readonly share: boolean; readonly save: boolean };
 
 // [LAW:types-are-the-program] What the mini-player offers above its face while nothing plays
 // and nothing is cued: the place kept on this device, by its opening words, which a tap
@@ -1242,8 +1244,8 @@ const askText = (form: Extract<MarkForm, { kind: "download" | "unavailable" }>, 
 // [LAW:dataflow-not-control-flow] Total over the mark's forms: the mini-player's face is
 // the form read once more, with the size and the skips it needs — never a second reading
 // of the state [LAW:one-source-of-truth].
-const miniFace = (form: MarkForm, skip: Readout["skip"], share: boolean, visit: Visit): MiniFace => {
-  const controls = (play: "play" | "pause"): MiniFace => ({ kind: "controls", play, ...skip, share });
+const miniFace = (form: MarkForm, skip: Readout["skip"], share: boolean, save: boolean, visit: Visit): MiniFace => {
+  const controls = (play: "play" | "pause"): MiniFace => ({ kind: "controls", play, ...skip, share, save });
   switch (form.kind) {
     case "download":
     case "unavailable":
@@ -1321,6 +1323,11 @@ const offerOf = (state: PanelState, page: Page, mark: MarkForm, visit: Visit): O
   return resume === null || text === undefined ? null : { kind: "resume", place: resume, words: openingWords(text, resume.char) };
 };
 
+// [LAW:single-enforcer] Whether there is a rendition to make a file of: a voice on stage over
+// its script, with its model ready. A render is made on a ready worker's time alone, so a
+// download offered while the model loads would wait on a load that may fail and never say so.
+const savable = (state: PanelState): state is Stage => state.kind === "neural" && state.model.kind === "ready";
+
 // The page's utterances count is the "of N" every position reads, and `around` reads the
 // page's timeline for the turn landmarks before a voice has measured any of it.
 export const readout = (state: PanelState, page: Page, visit: Visit): Readout => {
@@ -1329,7 +1336,7 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   const { remembered } = visit;
   const voices = voicesReadout(state, visit.pick);
   const rest = around(state, page);
-  const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, visit);
+  const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, savable(state), visit);
   const offer = offerOf(state, page, mark, visit);
   if (state.kind === "neural") {
     return { ...transport(state.view.player, state.visibility), ...rest, status: neuralStatus(state, total), progress: progressOf(state.model), mark, remembered, voices, mini, offer };
@@ -1413,8 +1420,9 @@ export interface MiniControls {
   readonly back: HTMLButtonElement;
   readonly play: HTMLButtonElement;
   readonly forward: HTMLButtonElement;
-  // The link to the moment on screen, in the controls face.
+  // The link to the moment on screen, and the conversation as an audio file, in the controls face.
   readonly share: HTMLButtonElement;
+  readonly save: HTMLButtonElement;
   // The row above the face, and its two offers: the kept place's button, the gone link's note.
   readonly offer: HTMLElement;
   readonly resume: HTMLButtonElement;
@@ -1493,6 +1501,10 @@ export interface ListenPanelConfig {
   // Writes a link to a place where the reader can paste it: the clipboard, in the page. A
   // rejection is the reader's to see, on the control.
   readonly share: (place: Place) => Promise<void>;
+  // The conversation as one audio file (renditionDownload.ts): the file's name without its
+  // extension, the form this browser encodes, the encoder, and the save that hands the file to
+  // the reader — a link's download in the page, a record in the check.
+  readonly download: Pick<DownloadConfig, "name" | "form" | "encode" | "save">;
   // Called with the transport after every event: what the device's media controls show.
   readonly onTransport: (transport: Transport) => void;
   // Called on the reader's gesture, on its stack, whenever the panel spends it unlocking audio.
@@ -1556,10 +1568,11 @@ const renderMini = (mini: MiniControls, face: MiniFace, offer: Offer | null, sta
   else mini.bar.removeAttribute("value");
   setText(mini.note, face.kind === "note" ? status : "");
   mini.retry.hidden = !(face.kind === "note" && face.retry);
-  const controls = face.kind === "controls" ? face : { play: "play" as const, back: false, forward: false, share: false };
+  const controls = face.kind === "controls" ? face : { play: "play" as const, back: false, forward: false, share: false, save: false };
   mini.back.disabled = !controls.back;
   mini.forward.disabled = !controls.forward;
   mini.share.disabled = !controls.share;
+  mini.save.disabled = !controls.save;
   mini.play.dataset.does = controls.play;
   mini.play.setAttribute("aria-label", controls.play === "pause" ? "Pause" : "Play");
 };
@@ -1834,6 +1847,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         // A worker can die before the performer exists (the bundle failed to load) or
         // after; either way what exists is released: the previewer and the performer, then
         // the worker, then the device the performer borrowed.
+        stopDownload("the voice stopped before the file was made");
         const releasing = neural;
         const hushing = previewer;
         neural = null;
@@ -2014,6 +2028,47 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     shareButton.title = label;
   };
 
+  // The download control: a tap on it makes the conversation's audio file, and its word on the
+  // download is shown on the control — the percentage made while it runs, then the name saved or
+  // why not, until the reader's next gesture or its losing focus [LAW:no-silent-failure]. A tap
+  // while a download runs withdraws it. A download needs the voice on stage and ready, and ends
+  // with the voice.
+  const { save: saveButton } = controls.mini;
+  const SAVE_LABEL = "Download this conversation as audio";
+  // [LAW:no-shared-mutable-globals] The download under way, by its withdrawal; owned here. A
+  // phase lands only while its own download is the one under way.
+  let downloading: { withdraw: () => void } | null = null;
+  const percent = (fraction: number): string => `${Math.floor(fraction * 100)}%`;
+  const saveLabel = (phase: DownloadPhase | null): string => {
+    if (phase === null) return SAVE_LABEL;
+    switch (phase.kind) {
+      case "rendering":
+        return `Making the audio file: ${percent(phase.total === 0 ? 1 : phase.made / phase.total)} of the voice · tap to stop`;
+      case "encoding":
+        return `Encoding the audio file: ${percent(phase.fraction)} · tap to stop`;
+      case "saved":
+        return phase.missing.length === 0 ? `Saved ${phase.name}` : `Saved ${phase.name}, without ${phase.missing.length === 1 ? "a passage" : `${phase.missing.length} passages`} the voice could not say`;
+      case "failed":
+        return `Could not make the audio file: ${phase.message}`;
+    }
+  };
+  const showDownload = (phase: DownloadPhase | null): void => {
+    const label = saveLabel(phase);
+    if (phase === null) delete saveButton.dataset.phase;
+    else saveButton.dataset.phase = phase.kind;
+    const fraction = phase?.kind === "rendering" ? (phase.total === 0 ? 1 : phase.made / phase.total) : phase?.kind === "encoding" ? phase.fraction : 0;
+    saveButton.style.setProperty("--fraction", String(fraction));
+    saveButton.setAttribute("aria-label", label);
+    saveButton.title = label;
+  };
+  function stopDownload(why: string | null): void {
+    if (downloading === null) return;
+    const { withdraw } = downloading;
+    downloading = null;
+    withdraw();
+    showDownload(why === null ? null : { kind: "failed", message: why });
+  }
+
   // The first step, performed like every other: the state shown, the store asked.
   for (const effect of start().effects) performEffect(effect);
   show();
@@ -2054,6 +2109,30 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       );
   });
   shareButton.addEventListener("blur", unshare);
+  showDownload(null);
+  saveButton.addEventListener("click", () => {
+    if (downloading !== null) return stopDownload(null);
+    if (!savable(state)) return;
+    // Under way before it starts: its first phase is said inside the start.
+    const run = { withdraw: (): void => undefined };
+    downloading = run;
+    run.withdraw = startDownload({
+      ...config.download,
+      port: portOf(),
+      script: state.units,
+      voices: voiceMapOf(config.pick.read()),
+      format: MODEL_PCM,
+      onPhase: (phase) => {
+        if (downloading !== run) return;
+        if (phase.kind === "saved" || phase.kind === "failed") downloading = null;
+        showDownload(phase);
+      },
+    });
+  });
+  // A finished download's word stays until the reader moves on; one under way stays on show.
+  saveButton.addEventListener("blur", () => {
+    if (downloading === null) showDownload(null);
+  });
   // A drag is two facts, and the input reports them separately: `input` is the thumb
   // moving, which only the times follow, and `change` is the reader letting go, which is
   // the seek. Seeking on every `input` would restart the audio schedule and re-aim the

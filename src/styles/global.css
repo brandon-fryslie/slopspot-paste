@@ -3613,7 +3613,8 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
-.listen-mini-share {
+.listen-mini-share,
+.listen-mini-save {
   display: grid;
   place-items: center;
   width: 30px;
@@ -3626,9 +3627,21 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   cursor: pointer;
   appearance: none;
 }
-.listen-mini-share:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
-.listen-mini-share[disabled] { opacity: 0.35; cursor: default; background: transparent; }
-.listen-mini-share:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.listen-mini-share:hover,
+.listen-mini-save:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+.listen-mini-share[disabled],
+.listen-mini-save[disabled] { opacity: 0.35; cursor: default; background: transparent; }
+.listen-mini-share:focus-visible,
+.listen-mini-save:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.listen-mini-save svg { width: 18px; height: 18px; }
+/* A download under way fills the control as a pie, by the fraction listenPanel.ts writes. */
+.listen-mini-save[data-phase="rendering"],
+.listen-mini-save[data-phase="encoding"] {
+  color: var(--accent);
+  background: conic-gradient(color-mix(in srgb, var(--accent) 28%, transparent) calc(var(--fraction, 0) * 1turn), color-mix(in srgb, var(--fg) 6%, transparent) 0);
+}
+.listen-mini-save[data-phase="saved"] { color: var(--accent); }
+.listen-mini-save[data-phase="failed"] { color: #b91c1c; }
 .listen-mini-share[data-shared="copied"] { color: var(--accent); }
 .listen-mini-share[data-shared="failed"] { color: #b91c1c; }
 .listen-mini-share:not([data-shared="copied"]) .listen-mini-glyph[data-glyph="link"],

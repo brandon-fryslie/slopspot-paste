@@ -149,6 +149,7 @@ console.log("createNeuralPerformer: over the real scheduler and player");
   const port: ListenPort = {
     send: (message) => sent.push(message),
     ahead: () => undefined,
+    render: () => () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -217,6 +218,7 @@ const heldPort = (): { readonly port: ListenPort; readonly emit: (message: FromW
   const port: ListenPort = {
     send: () => undefined,
     ahead: () => undefined,
+    render: () => () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

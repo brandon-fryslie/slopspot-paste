@@ -492,6 +492,7 @@ console.log("driver: a voice change mid-unit restarts it in the new voice, over 
   const port: ListenPort = {
     send: (message) => sent.push(message),
     ahead: () => undefined,
+    render: () => () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -538,6 +539,7 @@ console.log("driver: a voice change in the gap before a unit still streaming, ov
   const port: ListenPort = {
     send: (message) => sent.push(message),
     ahead: () => undefined,
+    render: () => () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -583,6 +585,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
   const port: ListenPort = {
     send: (message) => sent.push(message),
     ahead: () => undefined,
+    render: () => () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
