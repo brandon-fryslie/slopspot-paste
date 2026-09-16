@@ -43,6 +43,10 @@ const rig = (overrides: { encode?: typeof encodeFile; form?: () => Promise<FileF
   const renders: { requests: ReadonlyArray<SynthesizeRequest>; onUnit: (unit: RenderedUnit) => void; withdrawn: boolean }[] = [];
   const phases: DownloadPhase[] = [];
   const saved: { file: AudioFile; name: string }[] = [];
+  // [LAW:no-ambient-temporal-coupling] The download's last word, awaited as an event: how many
+  // turns a real encoder takes is the runtime's (Node 22 first imports mediabunny in hundreds).
+  let ended: () => void = () => undefined;
+  const over = new Promise<void>((resolve) => (ended = resolve));
   const withdraw = startDownload({
     port: {
       render: (requests, onUnit) => {
@@ -60,7 +64,10 @@ const rig = (overrides: { encode?: typeof encodeFile; form?: () => Promise<FileF
     form: overrides.form ?? (async () => ({ container: "wav" })),
     encode: overrides.encode ?? encodeFile,
     save: (file, name) => saved.push({ file, name }),
-    onPhase: (phase) => phases.push(phase),
+    onPhase: (phase) => {
+      phases.push(phase);
+      if (phase.kind === "saved" || phase.kind === "failed") ended();
+    },
   });
   const shown = (): string =>
     phases
@@ -68,7 +75,7 @@ const rig = (overrides: { encode?: typeof encodeFile; form?: () => Promise<FileF
       .filter((p, i, all) => i === 0 || p !== all[i - 1])
       .join(" > ");
   const heard = (unit: RenderedUnit): void => renders[0]?.onUnit(unit);
-  return { renders, phases, saved, withdraw, shown, heard };
+  return { renders, phases, saved, withdraw, shown, heard, over };
 };
 
 console.log("a download from tap to file");
@@ -80,7 +87,7 @@ console.log("a download from tap to file");
   r.heard(made(0, 2));
   assert("each unit counted as it is heard, in whatever order", r.shown() === "rendering 0/3 > rendering 1/3 > rendering 2/3" && r.saved.length === 0);
   r.heard(made(1, 3));
-  await settle();
+  await r.over;
   assert("the last heard: encoded, saved under its form's name, and nothing missing", r.shown() === "rendering 0/3 > rendering 1/3 > rendering 2/3 > rendering 3/3 > encoding 0 > encoding part > encoding 1 > saved a-paste.wav missing[]");
   const samples = (2 + 3 + 1) * MODEL_PCM.frameSamples + (GAP_MS * MODEL_PCM.sampleRate) / 1000;
   assert("one file saved: the timeline's samples, the gap between the turns included", r.saved.length === 1 && r.saved[0]?.name === "a-paste.wav" && r.saved[0].file.bytes.byteLength === 44 + 2 * samples);
@@ -90,13 +97,13 @@ console.log("a download from tap to file");
   r.heard(made(0, 1));
   r.heard({ kind: "failed", unitId: 1, reason: { kind: "frame-cap", frames: 500 } });
   r.heard(made(2, 1));
-  await settle();
+  await r.over;
   assert("a unit the voice failed on: the file saved without it, and it is named", r.shown().endsWith("saved a-paste.wav missing[1]") && r.saved.length === 1);
 }
 {
   const r = rig({ encode: async () => Promise.reject(new Error("the encoder closed")) });
   [0, 1, 2].forEach((unitId) => r.heard(made(unitId, 1)));
-  await settle();
+  await r.over;
   assert("an encoder that fails: failed, with its reason, nothing saved", r.shown().endsWith("encoding 0 > failed the encoder closed") && r.saved.length === 0);
 }
 {
@@ -128,7 +135,7 @@ console.log("a download from tap to file");
 {
   const withdrawing = { now: (): void => undefined };
   let runs = 0;
-  let outcome = "pending";
+  let encoded: Promise<string> = Promise.resolve("never encoded");
   const r = rig({
     encode: (audio, format, form, onProgress, signal) => {
       const encoding = encodeFile(audio, format, form, (fraction) => {
@@ -136,15 +143,17 @@ console.log("a download from tap to file");
         onProgress(fraction);
         withdrawing.now();
       }, signal);
-      encoding.then(
-        () => (outcome = "finished"),
-        () => (outcome = "stopped"),
+      encoded = encoding.then(
+        () => "finished",
+        () => "stopped",
       );
       return encoding;
     },
   });
   withdrawing.now = r.withdraw;
   [0, 1, 2].forEach((unitId) => r.heard(made(unitId, 1)));
+  await settle();
+  const outcome = await encoded;
   await settle();
   assert("withdrawn while encoding: the encode stopped at its next run, nothing saved, and nothing said after", outcome === "stopped" && runs === 1 && r.shown().endsWith("encoding 0 > encoding part") && r.saved.length === 0);
 }

@@ -2016,7 +2016,9 @@ console.log("createListenPanel: the download control makes the conversation's au
   r.mini.save.dispatchEvent(new r.doc.defaultView!.FocusEvent("blur"));
   assert("losing focus while it runs leaves it on show", r.mini.save.dataset.phase === "rendering");
   render?.onUnit({ kind: "failed", unitId: 1, reason: { kind: "frame-cap", frames: 500 } });
-  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  // [LAW:no-ambient-temporal-coupling] Until the file is saved or failed, not a count of turns:
+  // how long the real encoder takes is the runtime's (Node 22 first imports mediabunny in hundreds).
+  for (let turn = 0; turn < 100_000 && r.mini.save.dataset.phase !== "saved" && r.mini.save.dataset.phase !== "failed"; turn++) await new Promise((resolve) => setImmediate(resolve));
   assert("the last unit heard: the file saved under its name, and a passage the voice could not say is named", r.saves.length === 1 && r.saves[0]?.name === "a-paste.wav" && r.mini.save.dataset.phase === "saved" && r.mini.save.getAttribute("aria-label") === "Saved a-paste.wav, without a passage the voice could not say");
   r.mini.save.dispatchEvent(new r.doc.defaultView!.FocusEvent("blur"));
   assert("losing focus puts a finished download's word away", r.mini.save.dataset.phase === undefined && r.mini.save.getAttribute("aria-label") === "Download this conversation as audio");
