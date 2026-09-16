@@ -15,7 +15,7 @@
 // [LAW:one-way-deps] It depends on the model (dialogue); the model never depends on it.
 
 import type { DisplayNode, ViewableDialogue, AssistantBlock } from "./dialogue";
-import { blockVisibility, blockText, turnAnchorId, spineNodeLabel } from "./dialogue";
+import { blockVisibility, blockText, turnAnchorId } from "./dialogue";
 
 // [LAW:types-are-the-program] Who is speaking — and the ONE discriminator that carries
 // the difference between the author's words and ours. `narrator` marks every utterance
@@ -508,17 +508,14 @@ const assistantUtterances = (
 // node has no blocks to interleave, so it stays a single speakableSegments pass over its
 // own content; an assistant node hands off to assistantUtterances above, which owns the
 // ordering an assistant turn actually needs.
-const nodeUtterances = ({ index, node, collapsed }: DisplayNode): ReadonlyArray<Utterance> => {
+//
+// A node an overlay folded (`collapsed`, drawn behind a native <details>) is spoken exactly
+// as it would be unfolded: the fold is how the page SHOWS a turn, not whether the turn was
+// said. The read-along opens the fold when the voice reaches it (readAlong.ts), so what
+// is heard is always what the reader can see.
+const nodeUtterances = ({ index, node }: DisplayNode): ReadonlyArray<Utterance> => {
   const anchor = turnAnchorId(index);
   const at = (voice: Voice, text: string): Utterance => ({ index, anchor, voice, text });
-
-  // [LAW:one-source-of-truth] A collapsed spine node sits behind a native <details>,
-  // shown only on demand — the SAME fold the renderer already applies for feature/
-  // highlight-reel overlays. Speech mirrors it exactly the way it mirrors the detail
-  // fold inside an assistant turn: announced by the node's own label, the SAME text the
-  // visual <summary> reads, rather than read in full. Reusing spineNodeLabel is what
-  // keeps the two from ever naming the same fold two different ways.
-  if (collapsed) return [at("narrator", `Folded: ${spineNodeLabel(node)}.`)];
 
   if (node.kind === "spoken") {
     return speakableSegments(node.content).map((seg) => at(seg.kind === "quoted" ? node.role : "narrator", seg.text));

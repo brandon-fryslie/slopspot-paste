@@ -9,7 +9,8 @@
 //      its URL and keep its label. Getting one rule wrong produces audio that is merely
 //      unpleasant rather than broken, so nothing but assertions will catch it.
 //   2. deriveUtterances — that speech is a projection of the SAME viewable dialogue the
-//      renderer draws: carried indices, spine-only prose, folded detail announced.
+//      renderer draws: carried indices, spine-only prose, folded detail announced, a
+//      folded turn read in full.
 //
 // [LAW:behavior-not-structure] Every assertion is about an observable: the text handed to
 // the synthesizer, the voice on an utterance, the state after an event. A different
@@ -318,20 +319,20 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   );
   assert("several usage blocks are counted and pluralized", multiUsage.some((u) => u.text === "3 token usage notes not read aloud"));
 
-  // [LAW:one-source-of-truth] A collapsed spine node (an authored feature/highlight-reel
-  // fold) sits behind a native <details>, shown only on demand — the SAME fold the
-  // rendered page applies. Speech mirrors it: announced by the node's own label rather
-  // than read in full, exactly like folded detail inside a turn.
+  // A collapsed spine node (an authored feature/highlight-reel fold) sits behind a native
+  // <details> on the page, which the read-along opens when the voice reaches it. The fold
+  // is how the turn is SHOWN, not whether it is said: it is read in full, in its own voices,
+  // exactly as the same node unfolded.
   const longContent =
     "This is a much longer message than the label truncation length allows, so the full " +
     "text would run well past what a folded turn's summary line is meant to show, and it " +
     "keeps going for a while yet.";
   const foldedNode: SpineNode = { kind: "spoken", role: "user", content: longContent };
   const folded = deriveUtterances([{ index: 3, node: foldedNode, collapsed: true }]);
-  assert("a collapsed node yields exactly one utterance, not its full content", folded.length === 1);
-  assert("a collapsed node's announcement is truncated, not the full text", folded[0]!.text.length < longContent.length);
-  assert("a collapsed node is announced by its own rendered label", folded[0]?.text === `Folded: ${spineNodeLabel(foldedNode)}.`);
-  assert("the fold announcement is narrated, not attributed to the folded speaker", folded[0]?.voice === "narrator");
+  const unfolded = deriveUtterances([{ index: 3, node: foldedNode, collapsed: false }]);
+  assert("a collapsed node is spoken exactly as the same node unfolded", JSON.stringify(folded) === JSON.stringify(unfolded));
+  assert("a collapsed node is read in full, in its speaker's voice", folded.length === 1 && folded[0]?.text === longContent && folded[0]?.voice === "user");
+  assert("a collapsed node is never stood in for by its label", !folded.some((u) => u.text.includes(spineNodeLabel(foldedNode))));
   assert("a collapsed node still anchors to its own carried index", folded[0]?.anchor === "t3");
 }
 

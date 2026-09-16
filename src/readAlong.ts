@@ -12,7 +12,7 @@
 // has no address in the page until the words are matched up. The match is on WORDS, the
 // one unit both texts share: the utterance's words in order (the manifest's own rule,
 // `wordSpans`, so a painted word is exactly a timed word [LAW:one-source-of-truth]) against
-// the card's words in document order, with fenced code, folded details and usage asides
+// the card's words in document order, with fenced code, detail folds and usage asides
 // left out because speech.ts never reads those aloud — it announces them, and an
 // announcement has no words on the page to paint. ONE match, `matchCard`, serves both
 // directions: the words it wraps for painting are the words a tap can name
@@ -23,9 +23,9 @@
 // stays unpainted, never snapped to the nearest lookalike; the turn mark on the card still
 // says where we are. Cost, stated once: a run of page words longer than the window that
 // speech skipped (an image's alt text, say) desyncs the rest of that card, which shows as
-// no word paint until the next card. A tap on text nothing says — a code block, a fold,
-// the usage aside — names no place; the announcement that stands in for a code block has
-// no words on the page to tap.
+// no word paint until the next card. A tap on text nothing says — a code block, a detail
+// fold, the usage aside — names no place; the announcement that stands in for a code block
+// has no words on the page to tap.
 //
 // HOW IT PAINTS. On first entry to a card, every matched word of that card is wrapped in a
 // span and the card takes the turn class; painting a cursor is toggling two classes on the
@@ -36,7 +36,15 @@
 // the DOM and is not used yet: it needs this same match plus a Range per word, and the
 // spans double as the elements the follow-scroll measures; that refinement is deferred,
 // its cost being one wrap and unwrap per card entered [LAW:carrying-cost].
+//
+// WHAT IS PAINTED IS SHOWN. The page hides prose the voice reads in two ways: a turn an
+// overlay folded behind a <details>, and long prose clamped under Show more. A word painted
+// there would be a cursor nobody can see, and a follower measuring its empty rect scrolls
+// the page to nowhere. So the painter opens every fold and clamp around what it paints
+// before handing it on; they stay open, so nothing above the reader moves again once the
+// voice has passed.
 
+import { expandClampAround } from "./clampBlocks";
 import type { Place } from "./performer";
 import type { Utterance } from "./speech";
 import { wordSpans, type WordSpan } from "./speechManifest";
@@ -85,13 +93,16 @@ export interface PageWord {
   readonly end: number;
 }
 
-// What the narrator's voice covers on the page: fenced code (<pre>), every native fold
-// (<details>, which is both the detail blocks and a collapsed turn), the usage aside, the
-// turn-summary aside, and anything hidden. None of it is in the spoken pool below, so none
-// of it is a match target. The turn-summary is the one block here the narrator does read,
-// verbatim; it is left unpainted until an utterance says whether its text is the page's own
-// (slopspot-read-along-a35.wqz) rather than matched by a voice that also names what is not.
-const UNSPOKEN = "pre, details, aside.bubble-usage, aside.bubble-turn-summary, [hidden], [aria-hidden='true']";
+// What the narrator's voice covers on the page: fenced code (<pre>), the detail folds
+// (thinking, tool calls, subagents — every one a details.condensed), every fold's summary
+// label, a control's label (a clamp's Show more), the usage aside, the turn-summary aside,
+// and anything hidden. None of it is in the spoken pool below, so none of it is a match
+// target. A turn an overlay folded is a <details> too, but its body is the turn itself and
+// is read in full, so only its summary is here. The turn-summary is the one block here the
+// narrator does read, verbatim; it is left unpainted until an utterance says whether its
+// text is the page's own (slopspot-read-along-a35.wqz) rather than matched by a voice that
+// also names what is not.
+const UNSPOKEN = "pre, details.condensed, summary, button, aside.bubble-usage, aside.bubble-turn-summary, [hidden], [aria-hidden='true']";
 const SHOW_TEXT = 4;
 const TEXT_NODE = 3;
 
@@ -193,6 +204,16 @@ export const RANGE_CLASS = "ra-in";
 // word of the card can be placed.
 export const TURN_CLASS = "speaking";
 
+// Opens every closed fold around `el`, innermost first, and the clamp it sits in: after
+// this, what the painter hands on is laid out where the reader can see it.
+const unfold = (el: Element): Element => {
+  for (let fold = el.closest("details:not([open])"); fold !== null; fold = fold.closest("details:not([open])")) {
+    fold.setAttribute("open", "");
+  }
+  expandClampAround(el);
+  return el;
+};
+
 const intersects = (a: WordSpan, b: WordSpan): boolean => a.charStart < b.charEnd && b.charStart < a.charEnd;
 
 // Wrap every matched word of the card. Page words are grouped by text node and each node
@@ -272,7 +293,7 @@ export const createPainter = (doc: Document): Painter => {
       }
     }
     const el = onWord ?? inRange ?? current.card;
-    return el === null ? null : { anchor: current.anchor, el };
+    return el === null ? null : { anchor: current.anchor, el: unfold(el) };
   };
 
   return { paint };

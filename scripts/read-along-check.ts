@@ -10,6 +10,8 @@
 // punctuation-blind, honest about what it cannot place.
 
 import { JSDOM } from "jsdom";
+import { enhanceClampBlocks } from "../src/clampBlocks";
+import type { ViewableDialogue } from "../src/dialogue";
 import type { Place } from "../src/performer";
 import {
   alignWords,
@@ -24,8 +26,11 @@ import {
   type Caret,
   type Painted,
   type ReadAlongAt,
+  turnOf,
+  wordKey,
 } from "../src/readAlong";
-import type { Utterance } from "../src/speech";
+import { renderDialogueHtml } from "../src/renderDialogue";
+import { deriveUtterances, type Utterance } from "../src/speech";
 import { wordSpans, type WordSpan } from "../src/speechManifest";
 
 const assert = (label: string, cond: boolean): void => {
@@ -207,6 +212,91 @@ console.log("placeOfCaret");
   const inSpan = doc.querySelector(`.${CURSOR_CLASS}`)?.firstChild;
   assert("while the card is wrapped, a caret in a word span's text still names the word", inSpan !== null && inSpan !== undefined && mark(inSpan, 1) === `0:${charOf(first, "fix")}`);
   painter.paint(null);
+}
+
+// ── the page's hidden prose: a folded turn and a clamped message ─────────────────────
+
+// Rendered by the page's own renderer, clamped by the page's own enhancer, spoken by the
+// page's own speech: what is proved is what a reader of a real page would meet.
+console.log("folds and clamps");
+{
+  const view: ViewableDialogue = [
+    {
+      index: 0,
+      node: { kind: "spoken", role: "user", content: "Why does the parser stall?\n\nIt reads every line twice.\n\nThe second pass never ends." },
+      collapsed: false,
+    },
+    {
+      index: 1,
+      node: { kind: "assistant", blocks: [{ kind: "text", content: "The loop never *advances* its cursor.\n\n```ts\nwhile (i < n) {}\n```\n\nMove the increment inside." }] },
+      collapsed: true,
+    },
+  ];
+  const foldDom = new JSDOM(`<!DOCTYPE html><body><section class="conversation">${renderDialogueHtml(view)}</section></body>`);
+  const foldDoc = foldDom.window.document;
+  const conversation = foldDoc.querySelector<HTMLElement>(".conversation");
+  if (conversation === null) throw new Error("fixture: no conversation");
+  // jsdom lays nothing out, so the clamp's one measured fact — the prose overflows its
+  // height — is stated for the message's prose; the enhancer then clamps it for real.
+  Object.assign(globalThis, { window: foldDom.window, document: foldDoc });
+  for (const content of conversation.querySelectorAll(".clamp-content")) Object.defineProperty(content, "scrollHeight", { value: 1000 });
+  enhanceClampBlocks(conversation);
+
+  const clamp = foldDoc.querySelector("#t0 .clampable");
+  const fold = foldDoc.querySelector<HTMLDetailsElement>("details#t1");
+  const toggle = foldDoc.querySelector("#t0 .clamp-toggle");
+  if (clamp === null || fold === null || toggle === null) throw new Error("fixture: no clamped message, fold or toggle");
+  assert("the fixture starts hidden: the message is clamped and the turn is folded", clamp.classList.contains("is-collapsed") && !fold.open);
+
+  const utterances = deriveUtterances(view);
+  assert("the folded turn is spoken as its prose, never as its label", turnOf(utterances, "t1").some((u) => u.text.includes("Move the increment")) && !utterances.some((u) => u.text.startsWith("Folded")));
+
+  const foldWords = (root: Element): string => pageWords(root).map((w) => w.node.data.slice(w.start, w.end)).join(" ");
+  assert(
+    "a fold's summary label and a clamp's toggle are not words of the page; the fold's body and the clamped prose are",
+    foldWords(fold) === "Assistant The loop never advances its cursor. Move the increment inside." &&
+      foldWords(clamp) === "Why does the parser stall? It reads every line twice. The second pass never ends.",
+  );
+
+  const foldPainter = createPainter(foldDoc);
+  const hidden = (el: Element): boolean => el.closest("details:not([open])") !== null || el.closest(".clampable.is-collapsed") !== null;
+  const unpaintable: string[] = [];
+  const unshown: string[] = [];
+  for (const utterance of utterances) {
+    const turn = turnOf(utterances, utterance.anchor);
+    const words = wordSpans(utterance.text, 0);
+    // A narrator utterance is ours — an announcement standing in for a code block — and is
+    // deliberately not on the page; it paints the card, which must be shown all the same.
+    const cursors: ReadonlyArray<WordSpan | null> = utterance.voice === "narrator" ? [null] : words;
+    for (const word of cursors) {
+      const painted = foldPainter.paint(at(utterance, turn, whole(utterance), word));
+      const lit = Array.from(foldDoc.querySelectorAll(`.${CURSOR_CLASS}`), (el) => wordKey(el.textContent ?? "")).join(" ");
+      const said = word === null ? "" : wordKey(utterance.text.slice(word.charStart, word.charEnd));
+      if (lit !== said) unpaintable.push(`${utterance.anchor} "${said}" lit "${lit}"`);
+      if (painted === null || hidden(painted.el)) unshown.push(`${utterance.anchor} "${said}"`);
+    }
+  }
+  assert(`every spoken word of the clamped message and the folded turn lights its own word on the page${unpaintable.length === 0 ? "" : `: ${unpaintable.join("; ")}`}`, unpaintable.length === 0);
+  assert(`and what is painted is never inside a closed fold or a collapsed clamp${unshown.length === 0 ? "" : `: ${unshown.join("; ")}`}`, unshown.length === 0);
+  assert("the clamp the voice read through is open, pinned, and its toggle says so", !clamp.classList.contains("is-collapsed") && clamp.classList.contains("clamp-pinned") && toggle.textContent === "Show less" && toggle.getAttribute("aria-expanded") === "true");
+  assert("the fold the voice read through is open", fold.open);
+
+  foldPainter.paint(null);
+  assert("both stay open once the voice has left: nothing above the reader moves", fold.open && !clamp.classList.contains("is-collapsed"));
+
+  const inFold = (snippet: string): Text => {
+    const walker = foldDoc.createTreeWalker(fold, 4);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) if ((node as Text).data.includes(snippet)) return node as Text;
+    throw new Error(`fixture: no text node in the fold holding "${snippet}"`);
+  };
+  const increment = utterances.findIndex((u) => u.text.includes("Move the increment"));
+  const incrementUtterance = utterances[increment];
+  if (incrementUtterance === undefined) throw new Error("fixture: no increment utterance");
+  assert(
+    "a tap in an opened fold names the place it shows",
+    placeOf(placeOfCaret(utterances, caret(inFold("Move the increment"), "Move the incr".length))) === `${increment}:${incrementUtterance.text.indexOf("increment")}`,
+  );
+  assert("a tap on the fold's summary label names nothing", placeOf(placeOfCaret(utterances, caret(inFold(fold.dataset["topic"] ?? "\u0000"), 1))) === "none");
 }
 
 console.log("caretSource");
