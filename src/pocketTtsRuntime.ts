@@ -36,7 +36,9 @@
 // PCM is voiced. That PCM is read back a step later, in `pending`, so the step's unit
 // scores travel with the readback and the machine sees the pair the moment the frame is
 // yielded [LAW:no-ambient-temporal-coupling]. One readback per step carries both the EOS
-// bit and the logits, so the read-out adds no round trip to the device.
+// bit and the logits, so the read-out adds no round trip to the device. The words the
+// machine begins at that frame are yielded with its PCM, so the page knows a word has begun
+// before it can play a sample of it — a unit still being made is painted word by word.
 
 import { defaultDevice, init, numpy as np, random, tree } from "@jax-js/jax";
 import { safetensors } from "@jax-js/loaders";
@@ -45,7 +47,7 @@ import { ModelProtoSchema, ModelProto_SentencePiece_Type, TrainerSpec_ModelType 
 import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { UnitText } from "./speechScript";
-import type { GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
+import type { GeneratedFrame, GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
 import type { Support } from "./synthesisProtocol";
 import {
   createFlowLMState,
@@ -55,7 +57,7 @@ import {
   runMimiDecode,
   type PocketTTS,
 } from "./vendor/pocket-tts";
-import { createWordAligner, isVoiced, planAlignment, unitScores } from "./wordAlignment";
+import { createWordAligner, isVoiced, planAlignment, unitScores, wordsBegun } from "./wordAlignment";
 
 // The bound on one unit's generation loop. A unit holds at most MAX_UNIT_TOKENS (50) text
 // tokens — a dozen seconds of speech, about 150 frames — so a loop still running at 500
@@ -291,7 +293,7 @@ async function* generate(
   { model, encode, pieces, voices }: Hydrated,
   unit: UnitText,
   voice: VoiceId,
-): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd> {
+): AsyncGenerator<GeneratedFrame, GenerationEnd> {
   const ids = encode(unit.text);
   const plan = planAlignment(unit, ids.map((id) => pieceOf(pieces, id)));
   const aligner = createWordAligner(plan);
@@ -313,11 +315,11 @@ async function* generate(
 
   // The frame in flight, once its PCM has landed: the alignment machine sees it exactly
   // when it is handed on, so a cancel between frames leaves no frame half-processed.
-  const settle = async (frame: PendingFrame): Promise<Float32Array<ArrayBuffer>> => {
+  const settle = async (frame: PendingFrame): Promise<GeneratedFrame> => {
     const pcm = await frame.pcm;
-    aligner.frame(frame.scores, isVoiced(pcm), frames * FRAME_MS);
+    const begun = wordsBegun(plan, aligner.frame(frame.scores, isVoiced(pcm), frames * FRAME_MS));
     frames++;
-    return pcm;
+    return { pcm, begun };
   };
 
   try {

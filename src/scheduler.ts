@@ -102,8 +102,8 @@
 // original's rendition, and the audio the device keeps is behind the port it is handed
 // (keptSynthesis.ts), answered as any worker answer is [LAW:one-way-deps].
 
-import { emptyManifest, recordUnit } from "./speechManifest";
-import type { Manifest, ManifestUnit, RecordRejection, UnitReport } from "./speechManifest";
+import { beginWord, emptyManifest, recordUnit } from "./speechManifest";
+import type { Manifest, ManifestUnit, RecordRejection, UnitReport, WordStart } from "./speechManifest";
 import { unitText, type SynthesisUnit, type VoiceMap } from "./speechScript";
 import type { ListenPort, SynthesizeRequest } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
@@ -132,10 +132,12 @@ export type VoidFrames = "player" | "none";
 export type FailureReason = Exclude<UnitFailure, { kind: "duplicate-unit" }> | Exclude<RecordRejection, { kind: "unknown-unit" }>;
 
 // [LAW:types-are-the-program] What the scheduler knows about one unit, and by the mirror
-// above, what the player holds of it.
+// above, what the player holds of it. A requested unit also holds the words the model has
+// begun so far: the player may be sounding them before the unit is done, and they go with the
+// request — replaced by the record when it is done, void when it is cancelled or fails.
 export type Holding =
   | { readonly kind: "absent" }
-  | { readonly kind: "requested" }
+  | { readonly kind: "requested"; readonly begun: ReadonlyArray<WordStart> }
   | { readonly kind: "cancelling" }
   | { readonly kind: "held"; readonly record: ManifestUnit }
   | { readonly kind: "failed"; readonly reason: FailureReason; readonly frames: VoidFrames };
@@ -152,7 +154,7 @@ export interface SchedulerState {
 }
 
 const ABSENT: Holding = { kind: "absent" };
-const REQUESTED: Holding = { kind: "requested" };
+const REQUESTED: Holding = { kind: "requested", begun: [] };
 const CANCELLING: Holding = { kind: "cancelling" };
 
 // `kept` is the device's report for each unit it already holds in these voices
@@ -279,6 +281,19 @@ const apply = (state: SchedulerState, message: FromWorker): Plan => {
       switch (holding.kind) {
         case "requested":
           return { state, commands: [toPlayer({ kind: "frame", unit: message.unitId, frameIndex: message.frameIndex, pcm: message.pcm })] };
+        case "cancelling":
+          return { state, commands: [] };
+        default:
+          throw unexpected(message, holding);
+      }
+    }
+    case "word": {
+      const holding = holdingOf(state, message.unitId);
+      switch (holding.kind) {
+        case "requested": {
+          const begun = beginWord(state.manifest.script, message.unitId, holding.begun, message.word, message.startMs);
+          return { state: withHolding(state, message.unitId, { kind: "requested", begun }), commands: [] };
+        }
         case "cancelling":
           return { state, commands: [] };
         default:

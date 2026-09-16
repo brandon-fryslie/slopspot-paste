@@ -30,6 +30,7 @@
 import type { AssetProgress } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_VERSION, type VoiceId } from "./modelAssets";
 import type { ReportedAlignment } from "./speechManifest";
+import type { WordBegun } from "./wordAlignment";
 import { deriveSpeechScript, type TokenCount, type UnitText } from "./speechScript";
 import type {
   Backend,
@@ -53,13 +54,19 @@ export type GenerationEnd =
   // a runtime never produces it.
   | { readonly kind: "cancelled" };
 
+// One decoded step: FRAME_MS of PCM, and the words of the unit the model began in it.
+export interface GeneratedFrame {
+  readonly pcm: Float32Array<ArrayBuffer>;
+  readonly begun: ReadonlyArray<WordBegun>;
+}
+
 // A loaded model: the two things the protocol asks of it. `generate` yields one decoded
-// frame of FRAME_MS PCM per step and returns how it ended; it must release device memory
-// in a `finally`, because the handler ends it early through `return()` on cancel.
+// frame per step and returns how it ended; it must release device memory in a `finally`,
+// because the handler ends it early through `return()` on cancel.
 export interface LoadedModel {
   readonly backend: Backend;
   readonly countTokens: TokenCount;
-  generate(unit: UnitText, voice: VoiceId): AsyncGenerator<Float32Array<ArrayBuffer>, GenerationEnd>;
+  generate(unit: UnitText, voice: VoiceId): AsyncGenerator<GeneratedFrame, GenerationEnd>;
   dispose(): void;
 }
 
@@ -200,7 +207,9 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
               return { kind: "cancelled", unitId };
           }
         }
-        post({ kind: "audio", unitId, frameIndex: frames, pcm: step.value }, [step.value.buffer]);
+        const { pcm, begun } = step.value;
+        for (const { word, startMs } of begun) post({ kind: "word", unitId, word, startMs }, []);
+        post({ kind: "audio", unitId, frameIndex: frames, pcm }, [pcm.buffer]);
         frames++;
       }
     } catch (e) {

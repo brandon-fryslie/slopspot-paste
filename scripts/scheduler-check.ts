@@ -166,6 +166,21 @@ console.log("step: from idle to the first audio");
   const streamed = run(played.state, speaking(0), audio(0, 0), audio(0, 1));
   assert("audio for the requested unit goes to the player as frames; the state object is unchanged", streamed.commands.join() === "frame 0#0,frame 0#1" && streamed.state === played.state);
   throws("audio for a unit never requested", () => step(played.state, audio(3, 0), speaking(0)));
+
+  // slopspot-read-along-a35.8o0: "Unit 0 says hello." — the words the model begins, held with the request.
+  const word = (unitId: number, index: number, startMs: number): Event => worker({ kind: "word", unitId, word: index, startMs });
+  const begun = run(played.state, speaking(0), word(0, 0, 0), audio(0, 0), word(0, 1, 160));
+  const heldBegun = begun.state.holdings[0];
+  assert(
+    "a word begun is held with the request, stamped on the unit's own word; the player hears nothing of it",
+    begun.commands.join() === "frame 0#0" && heldBegun?.kind === "requested" && heldBegun.begun.map((w) => `${w.charStart}-${w.charEnd}@${w.startMs}`).join() === "0-4@0,5-6@160",
+  );
+  throws("a word begun twice", () => step(begun.state, word(0, 1, 240), speaking(0)));
+  throws("a word begun before the last one began", () => step(begun.state, word(0, 2, 80), speaking(0)));
+  throws("a word the unit does not have", () => step(begun.state, word(0, 4, 400), speaking(0)));
+  throws("a word begun for a unit never requested", () => step(played.state, word(3, 0, 0), speaking(0)));
+  const recordedBegun = run(begun.state, speaking(0), done(0));
+  assert("done: the record replaces the words begun", recordedBegun.state.holdings[0]?.kind === "held");
   throws("audio for a unit the worker never had", () => step(played.state, audio(9, 0), speaking(0)));
 
   const first = run(played.state, speaking(0, 0, "audio"), done(0, 1500));
@@ -461,7 +476,7 @@ console.log("ahead: what is worth making ahead of the listen");
   const kept = initialState(script, VOICES, [report(500), undefined, undefined, undefined, undefined, undefined, undefined, report(500)]);
   const busy: SchedulerState = {
     ...kept,
-    holdings: kept.holdings.with(1, { kind: "requested" }).with(3, { kind: "failed", reason: { kind: "frame-cap", frames: 500 }, frames: "none" }).with(4, { kind: "cancelling" }),
+    holdings: kept.holdings.with(1, { kind: "requested", begun: [] }).with(3, { kind: "failed", reason: { kind: "frame-cap", frames: 500 }, frames: "none" }).with(4, { kind: "cancelling" }),
   };
   assert("a kept, requested, failed or cancelling unit is left out", order(busy, idle) === "2,5,6");
   const background: SchedulerState = { ...fresh, lookahead: BACKGROUND_LOOKAHEAD };

@@ -105,8 +105,9 @@ const mailbox = () => {
 };
 
 // A stub model: `n` frames per unit, each a fresh Float32Array of one frame's samples
-// filled with frameIndex + 1; ends as configured; can throw at a frame. Every frame is
-// preceded by a real await so a cancel sent while a unit runs lands between frames.
+// filled with frameIndex + 1, every even frame beginning word frameIndex / 2; ends as
+// configured; can throw at a frame. Every frame is preceded by a real await so a cancel sent
+// while a unit runs lands between frames.
 interface StubModelConfig {
   readonly frames: number;
   readonly end: GenerationEnd;
@@ -124,7 +125,8 @@ const stubModel = (config: StubModelConfig) => {
         for (let i = 0; i < config.frames; i++) {
           await tick();
           if (config.throwAt === i) throw new Error(`stub runtime blew up at frame ${i}`);
-          yield new Float32Array(new ArrayBuffer(MODEL_ASSETS.weights.frameSamples * 4)).fill(i + 1);
+          const pcm = new Float32Array(new ArrayBuffer(MODEL_ASSETS.weights.frameSamples * 4)).fill(i + 1);
+          yield { pcm, begun: i % 2 === 0 ? [{ word: i / 2, startMs: i * FRAME_MS }] : [] };
         }
         return config.end;
       } finally {
@@ -285,6 +287,9 @@ console.log("synthesize:");
   assert("done carries the elapsed time off the injected clock", done.elapsedMs === 10);
   assert("the model saw the text and voice", stub.log.started.join() === "marius:Hello there.");
   assert("all frames precede done", box.posted.findIndex((p) => p.message.kind === "done") > box.posted.map((p) => p.message.kind).lastIndexOf("audio"));
+  // slopspot-read-along-a35.8o0: a word is known on the page before a sample of it can play.
+  const said = box.posted.map((p) => p.message).filter((m) => m.kind === "audio" || m.kind === "word").map((m) => (m.kind === "audio" ? `a${m.frameIndex}` : `w${m.word}@${m.startMs}`));
+  assert("each word the model begins is posted just before the frame it begins in", said.join() === `w0@0,a0,a1,w1@${2 * FRAME_MS},a2,a3`);
   assert("exactly one terminal message for the unit", box.posted.filter((p) => ["done", "cancelled", "failed"].includes(p.message.kind)).length === 1);
   assert("the generator was finalised once", stub.log.finalised === 1);
 
@@ -441,7 +446,7 @@ console.log("dispose:");
 // kind has no row, so a new message kind cannot land without one — and the tally says
 // whether the scenarios above actually exercised it.
 const TO_KINDS: Record<ToWorker["kind"], true> = { load: true, script: true, synthesize: true, cancel: true, dispose: true };
-const FROM_KINDS: Record<FromWorker["kind"], true> = { capability: true, progress: true, ready: true, "load-failed": true, script: true, audio: true, done: true, cancelled: true, failed: true, refused: true, disposed: true };
+const FROM_KINDS: Record<FromWorker["kind"], true> = { capability: true, progress: true, ready: true, "load-failed": true, script: true, audio: true, word: true, done: true, cancelled: true, failed: true, refused: true, disposed: true };
 const unexercised = [
   ...Object.keys(TO_KINDS).filter((kind) => !exercised.to.has(kind as ToWorker["kind"])),
   ...Object.keys(FROM_KINDS).filter((kind) => !exercised.from.has(kind as FromWorker["kind"])),

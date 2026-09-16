@@ -21,8 +21,13 @@
 //  - A fresh worker probes on its own; its first message is always `capability`, and no
 //    byte of model is fetched before the page says `load`.
 //  - Every `synthesize` gets exactly one terminal message — `done`, `cancelled` or `failed` —
-//    after zero or more `audio` frames for the same unitId. Frames before a `failed` are
-//    void: the unit's audio is the frames before a `done`, and nothing else.
+//    after zero or more `audio` frames and `word` starts for the same unitId. Frames before a
+//    `failed` are void: the unit's audio is the frames before a `done`, and nothing else.
+//  - A `word` start comes before the frame the word begins in, in word order, and is the
+//    start the `done` report gives that word: it is how a cursor stands on a word the listener
+//    hears before the unit is finished. A start is optional — a unit answered from the
+//    device's kept audio has its report at once and sends none — and the report stays the
+//    unit's timing [LAW:one-source-of-truth].
 //  - `cancel` is idempotent: a cancel for a unit that already has its terminal message is
 //    the ordinary race of asynchronous messaging (the page cancels as `done` is in flight)
 //    and produces nothing.
@@ -97,6 +102,8 @@ export type FromWorker =
   | { readonly kind: "script"; readonly id: number; readonly units: ReadonlyArray<SynthesisUnit> }
   // One decoded generation step: FRAME_MS of PCM at SAMPLE_RATE, transferred, not copied.
   | { readonly kind: "audio"; readonly unitId: number; readonly frameIndex: number; readonly pcm: Float32Array<ArrayBuffer> }
+  // The model began a word of the unit: its index into `wordsOf(unit)`, and when in the unit's audio.
+  | { readonly kind: "word"; readonly unitId: number; readonly word: number; readonly startMs: number }
   // `report` is exactly what speechManifest.addUnit admits; `elapsedMs` is how long the
   // generation took, so the page can read the real-time factor off the first unit.
   | { readonly kind: "done"; readonly unitId: number; readonly report: UnitReport; readonly elapsedMs: number }

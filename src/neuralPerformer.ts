@@ -37,7 +37,7 @@
 import type { Performer, PerformerEvent } from "./performer";
 import { createScheduler, type Lookahead, type SchedulerView } from "./scheduler";
 import { sameUtterance, type Utterance } from "./speech";
-import type { UnitReport } from "./speechManifest";
+import type { UnitReport, WordStart } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { ListenPort } from "./synthesisClient";
 import { speechSegments, timelineOfScript, type Segment, type SpeechSegment, type Timeline } from "./timeline";
@@ -75,6 +75,12 @@ export const utteranceTable = (utterances: ReadonlyArray<Utterance>, script: Rea
   });
 };
 
+// The words the model has begun of a unit it is still making: none of any other unit.
+export const begunOf = (holdings: SchedulerView["holdings"], unit: number): ReadonlyArray<WordStart> => {
+  const holding = holdings[unit];
+  return holding?.kind === "requested" ? holding.begun : [];
+};
+
 // The segment a player position is in. A segment the timeline does not have is a player
 // built over another layout and throws [LAW:no-silent-failure].
 const segmentOf = (timeline: Timeline, at: SegmentOffset): Segment => {
@@ -85,7 +91,8 @@ const segmentOf = (timeline: Timeline, at: SegmentOffset): Segment => {
 
 // Where an offset into a segment falls on the conversation's clock: the segment's start
 // plus the offset, read no further than the segment — a unit streaming past its guessed
-// length holds the clock at the segment's end until its record recuts the timeline.
+// length holds the clock at the segment's end, which reaches its last begun word, until its
+// next word or its record recuts the timeline.
 const timeIn = (segment: Segment, offsetMs: number): number => segment.startMs + Math.min(offsetMs, segment.ms);
 
 // Where the player's position falls on the conversation's clock.
@@ -93,7 +100,7 @@ export const timeOf = (timeline: Timeline, at: SegmentOffset): number => timeIn(
 
 // How far into a segment a seek may land: anywhere in silence, which is exact; in speech
 // as far as has been heard — its length when measured, nothing when a guess.
-const heard = (segment: Segment): number => (segment.content.kind === "speech" && segment.content.alignment === null ? 0 : segment.ms);
+const heard = (segment: Segment): number => (segment.content.kind === "speech" && segment.content.timing.kind === "guess" ? 0 : segment.ms);
 
 // The player position a time seeks to: the segment the time is in — the first that has
 // not ended by then, speech or silence alike — and the time past its start, never below
@@ -147,14 +154,16 @@ export interface NeuralPerformer extends Performer {
 
 export const createNeuralPerformer = (config: NeuralPerformerConfig): NeuralPerformer => {
   const utteranceOf = utteranceTable(config.utterances, config.script);
-  // [LAW:one-source-of-truth] The clock is a projection of the manifest, rebuilt exactly
-  // when the manifest is replaced — the scheduler replaces it on every record — and read
-  // back otherwise: one owner, one key.
-  let clock: { readonly manifest: SchedulerView["manifest"]; readonly timeline: Timeline; readonly units: ReadonlyArray<SpeechSegment> } | null = null;
+  // [LAW:one-source-of-truth] The clock is a projection of the manifest and of the words the
+  // unit in flight has begun, rebuilt exactly when either is replaced — the scheduler replaces
+  // the manifest on every record and the holdings on every begun word — and read back
+  // otherwise: one owner, one key.
+  let clock: { readonly manifest: SchedulerView["manifest"]; readonly holdings: SchedulerView["holdings"]; readonly timeline: Timeline; readonly units: ReadonlyArray<SpeechSegment> } | null = null;
   const withClock = (view: SchedulerView): NeuralView => {
-    if (clock === null || clock.manifest !== view.manifest) {
-      const timeline = timelineOfScript(view.manifest, utteranceOf);
-      clock = { manifest: view.manifest, timeline, units: speechSegments(timeline) };
+    if (clock === null || clock.manifest !== view.manifest || clock.holdings !== view.holdings) {
+      const { holdings } = view;
+      const timeline = timelineOfScript(view.manifest, utteranceOf, (unit) => begunOf(holdings, unit));
+      clock = { manifest: view.manifest, holdings, timeline, units: speechSegments(timeline) };
     }
     return { ...view, timeline: clock.timeline, units: clock.units };
   };

@@ -14,7 +14,7 @@
 
 import type { Place } from "../src/performer";
 import type { Utterance } from "../src/speech";
-import { addUnit, emptyManifest, type Manifest, type UnitReport } from "../src/speechManifest";
+import { addUnit, emptyManifest, type Manifest, type UnitReport, type WordStart } from "../src/speechManifest";
 import { prepareText, type SynthesisUnit } from "../src/speechScript";
 import {
   clockText,
@@ -31,6 +31,7 @@ import {
   startAt,
   timeOfStart,
   cursorAt,
+  cursorIn,
   timeAt,
   timelineOfScript,
   timelineOfUtterances,
@@ -70,6 +71,8 @@ const utterances = [one, two, three, four];
 const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, ...prepareText(utterance.text.slice(start, end)) });
 const script: SynthesisUnit[] = [unit(one, 0, 20), unit(one, 21, 42), unit(two, 0, 27), unit(three, 0, 8), unit(four, 0, 25)];
 const utteranceOf = [0, 0, 1, 2, 3];
+// No unit is being made: the model has begun no word of any.
+const nothingBegun = (): ReadonlyArray<WordStart> => [];
 
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 const recorded = (indices: ReadonlyArray<number>, ms: (index: number) => number, manifest: Manifest = emptyManifest(script)): Manifest =>
@@ -88,7 +91,7 @@ const mark = (utterance: number, char = 0): Place => ({ utterance, char });
 // Each segment as "utterance:chars" with m/e for measured/estimated, or "gap" for silence.
 const legsOf = (timeline: Timeline): string =>
   timeline.segments
-    .map((leg) => (leg.content.kind === "silence" ? `gap${leg.ms}` : `${leg.content.utterance}:${leg.content.charStart}-${leg.content.charEnd}${leg.content.alignment === null ? "e" : "m"}`))
+    .map((leg) => (leg.content.kind === "silence" ? `gap${leg.ms}` : `${leg.content.utterance}:${leg.content.charStart}-${leg.content.charEnd}${leg.content.timing.kind === "guess" ? "e" : "m"}`))
     .join();
 // A layout as "s" per speech slot and "g" per gap.
 const shapeOf = (anchors: ReadonlyArray<string>): string => layoutOf(anchors).map((slot) => (slot.kind === "silence" ? "g" : "s")).join("");
@@ -128,7 +131,7 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
 {
   // Unit 0 measured at 40 ms a character, which is faster than the default.
   const RATE = 40;
-  const partly = timelineOfScript(recorded([0], (i) => chars(i) * RATE), utteranceOf);
+  const partly = timelineOfScript(recorded([0], (i) => chars(i) * RATE), utteranceOf, nothingBegun);
   assert("the measured unit is a measured leg; the rest are estimates; the gaps sit before units 3 and 4", legsOf(partly) === `0:0-20m,0:21-42e,1:0-27e,gap${GAP_MS},2:0-8m`.replace("2:0-8m", "2:0-8e") + `,gap${GAP_MS},3:0-25e`);
   const first = partly.segments[0];
   assert("the measured leg carries the worker's own duration", first?.ms === chars(0) * RATE);
@@ -140,13 +143,13 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
   assert("the passage a segment says is the PAGE's utterance, from the performer's table", speechSegments(partly).map((leg) => leg.content.utterance).join() === utteranceOf.join());
   assert("the speech segments are the units in order: the performer's table from unit to segment", speechSegments(partly).map((leg) => leg.content.charStart).join() === script.map((u) => u.start).join());
 
-  const whole = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf);
+  const whole = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf, nothingBegun);
   assert("with everything measured the clock is the sum of the durations and the gaps", whole.totalMs === script.reduce((sum, u) => sum + (u.end - u.start) * RATE, 0) + 2 * GAP_MS);
   assert("nothing is a guess any more, so no time remaining says 'about'", [0, whole.totalMs / 2, whole.totalMs].every((ms) => !estimated(whole, ms)));
   assert(
     "'about' is scoped to what is still unmeasured: true before the gap, false after it",
     (() => {
-      const gapped = timelineOfScript(recorded([0, 1, 2], (i) => chars(i) * RATE), utteranceOf);
+      const gapped = timelineOfScript(recorded([0, 1, 2], (i) => chars(i) * RATE), utteranceOf, nothingBegun);
       const tail = timeAt(gapped, mark(2));
       return estimated(gapped, 0) && estimated(gapped, tail) && !estimated(gapped, gapped.totalMs);
     })(),
@@ -165,7 +168,7 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
     alignment: { kind: "words", times: [{ startMs: 0, endMs: 100 }, { startMs: 100, endMs: 200 }, { startMs: 200, endMs: 300 }] },
   });
   if (timed.kind !== "added") throw new Error("fixture: the words report was rejected");
-  const worded = timelineOfScript(timed.manifest, utteranceOf);
+  const worded = timelineOfScript(timed.manifest, utteranceOf, nothingBegun);
   assert("a character inside a timed word resolves to when that word begins", timeAt(worded, mark(0, 8)) === 100 && timeAt(worded, mark(0, 17)) === 200 && timeAt(worded, mark(0, 3)) === 0);
   assert("the cursor under a timed word is that word, inside the segment's range", (() => {
     const spot = cursorAt(worded, 150);
@@ -183,6 +186,23 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
     return back !== undefined && back !== null && back.charStart === cursorAt(worded, ms)?.word?.charStart;
   }));
 
+  // A unit still being made (slopspot-read-along-a35.8o0): the words the model has begun are
+  // painted and named like measured ones, while its length and a seek into it stay a guess.
+  // "First sentence here.": "First" and "sentence" begun, "here." not yet.
+  const making = timelineOfScript(emptyManifest(script), utteranceOf, (unit) => (unit === 0 ? [{ charStart: 0, charEnd: 5, startMs: 0 }, { charStart: 6, charEnd: 14, startMs: 400 }] : []));
+  const streaming = making.segments[0];
+  assert("a unit being made paints the last word begun by the time, and past it stays on it", cursorAt(making, 100)?.word?.charStart === 0 && cursorAt(making, 450)?.word?.charStart === 6 && cursorAt(making, 1200)?.word?.charStart === 6);
+  assert("a unit being made names a moment by the word begun there", streaming !== undefined && placeIn(making, streaming, 450).char === 6);
+  assert("its length is still a guess: 'about', and a place in it resolves to its start", estimated(making, 0) && timeAt(making, mark(0, 6)) === 0 && streaming?.ms === chars(0) * DEFAULT_MS_PER_CHAR);
+  assert("a unit nothing has begun paints its range and no word", cursorAt(making, (making.segments[1]?.startMs ?? 0) + 10)?.word === null);
+  // A unit whose voice runs past its guess: "here." begun at 2000 ms of a 1320 ms guess. A
+  // begun word is heard, so the guess is never shorter than it, and the voice's clock, held
+  // at the segment's end, stands on that word.
+  const overrun = timelineOfScript(emptyManifest(script), utteranceOf, (unit) => (unit === 0 ? [{ charStart: 0, charEnd: 5, startMs: 0 }, { charStart: 15, charEnd: 20, startMs: 2000 }] : []));
+  const long = overrun.segments[0];
+  assert("a guess is no shorter than the last word begun, and the clock at its end paints that word", 2000 > chars(0) * DEFAULT_MS_PER_CHAR && long?.ms === 2000 && cursorIn(long, long.startMs + long.ms)?.word?.charStart === 15);
+  assert("it is still a guess, and the segments after it start later by the overrun", estimated(overrun, 0) && overrun.segments[1]?.startMs === (making.segments[1]?.startMs ?? 0) + 2000 - chars(0) * DEFAULT_MS_PER_CHAR);
+
   // A measured unit whose voice draws breath before its first word and trails off after its
   // last (slopspot-read-along-a35.iey). Painted frame by frame, no frame may fall back to
   // the whole sentence group: a word-less cursor on a measured unit is that fallback.
@@ -191,7 +211,7 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
     alignment: { kind: "words", times: [{ startMs: 180, endMs: 260 }, { startMs: 260, endMs: 380 }, { startMs: 380, endMs: 440 }] },
   });
   if (breathing.kind !== "added") throw new Error("fixture: the breathing words report was rejected");
-  const breathed = timelineOfScript(breathing.manifest, utteranceOf);
+  const breathed = timelineOfScript(breathing.manifest, utteranceOf, nothingBegun);
   const frames = Array.from({ length: Math.floor(600 / 16) + 1 }, (_, i) => i * 16);
   const cursors = frames.map((ms) => cursorAt(breathed, ms));
   assert("a measured unit with leading and trailing silence paints a word on every frame, never the whole unit alone", cursors.every((spot) => spot !== null && spot.word !== null));
@@ -204,7 +224,7 @@ console.log("timelineOfScript: measured legs are the worker's, the rest its own 
 console.log("placeAt, placeIn and cursorAt: a time on the clock names a place, and paints it or nothing");
 {
   const RATE = 40;
-  const line = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf);
+  const line = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf, nothingBegun);
   const gapStart = timeAt(line, mark(1)) + chars(2) * RATE;
   const gapEnd = gapStart + GAP_MS;
   assert("the gap begins where the previous turn's audio ends, and the next turn begins at its end", timeAt(line, mark(2)) === gapEnd);
@@ -258,7 +278,7 @@ console.log("placeAt, placeIn and cursorAt: a time on the clock names a place, a
 console.log("landmarks and landmark: back and forward at every boundary");
 {
   const RATE = 40;
-  const line = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf);
+  const line = timelineOfScript(recorded([0, 1, 2, 3, 4], (i) => chars(i) * RATE), utteranceOf, nothingBegun);
   const marks = landmarks(line);
   const g1 = timeAt(line, mark(2)) - GAP_MS;
   const g2 = timeAt(line, mark(3)) - GAP_MS;
@@ -305,7 +325,7 @@ console.log("landmarks and landmark: back and forward at every boundary");
   assert("a conversation with no passages has no landmarks", landmarks(timelineOfUtterances([])).length === 0);
   assert("the page's own clock has the same landmarks as the voice's, before anything is measured", (() => {
     const page = landmarks(timelineOfUtterances(utterances));
-    const voice = landmarks(timelineOfScript(emptyManifest(script), utteranceOf));
+    const voice = landmarks(timelineOfScript(emptyManifest(script), utteranceOf, nothingBegun));
     return page.length === voice.length && page[0]?.startMs === voice[0]?.startMs;
   })());
 }
@@ -316,15 +336,15 @@ console.log("the edges: nothing to say, and a span that says nothing");
 {
   const empty = timelineOfUtterances([]);
   assert("a conversation with nothing to say has no clock, names no place and paints nothing", empty.totalMs === 0 && timeAt(empty, mark(0)) === 0 && placeAt(empty, 0) === null && cursorAt(empty, 0) === null && !estimated(empty, 0));
-  throws("a unit covering no characters is a bug in whoever cut the text", () => timelineOfScript(emptyManifest([unit(one, 5, 5)]), [0]));
+  throws("a unit covering no characters is a bug in whoever cut the text", () => timelineOfScript(emptyManifest([unit(one, 5, 5)]), [0], nothingBegun));
   assert(
     "every unit measured at nothing is a clock of the gaps alone: the measurements are believed",
-    timelineOfScript(recorded([0, 1, 2, 3, 4], () => 0), utteranceOf).totalMs === 2 * GAP_MS,
+    timelineOfScript(recorded([0, 1, 2, 3, 4], () => 0), utteranceOf, nothingBegun).totalMs === 2 * GAP_MS,
   );
   assert(
     "but a zero measurement does not collapse the tail it cannot speak for: the unmeasured legs take the default rate",
     (() => {
-      const line = timelineOfScript(recorded([0], () => 0), utteranceOf);
+      const line = timelineOfScript(recorded([0], () => 0), utteranceOf, nothingBegun);
       const tail = speechSegments(line).slice(1);
       return line.segments[0]?.ms === 0 && tail.every((leg) => near(leg.ms, (leg.content.charEnd - leg.content.charStart) * DEFAULT_MS_PER_CHAR));
     })(),

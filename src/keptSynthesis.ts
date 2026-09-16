@@ -72,7 +72,16 @@ type Job =
   | { readonly kind: "finding"; readonly request: Synthesize; readonly started: number; cancelled: boolean; next: Synthesize | null }
   | { readonly kind: "waiting"; readonly request: Synthesize; cancelled: boolean; next: Synthesize | null }
   | { readonly kind: "making"; readonly request: Synthesize; readonly frames: Float32Array<ArrayBuffer>[]; cancelled: boolean; next: Synthesize | null }
-  | { readonly kind: "filling"; readonly request: Synthesize; readonly frames: Float32Array<ArrayBuffer>[]; cancelled: boolean; next: Synthesize | null };
+  | {
+      readonly kind: "filling";
+      readonly request: Synthesize;
+      readonly frames: Float32Array<ArrayBuffer>[];
+      readonly words: WordMessage[];
+      cancelled: boolean;
+      next: Synthesize | null;
+    };
+
+type WordMessage = Extract<FromWorker, { kind: "word" }>;
 
 export interface KeptSynthesisConfig {
   readonly worker: SynthesisPort;
@@ -157,7 +166,7 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
             break;
           case "absent":
             if (!idle() || !wanted(request)) break;
-            jobs.set(request.unitId, { kind: "filling", request, frames: [], cancelled: false, next: null });
+            jobs.set(request.unitId, { kind: "filling", request, frames: [], words: [], cancelled: false, next: null });
             worker.send(request);
             break;
           case "unreadable":
@@ -184,12 +193,15 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
     }
   };
 
-  // A fill's own conversation, heard by nobody else: its frames gathered, its unit kept when
-  // whole, and the worker's time handed on when it is over.
+  // A fill's own conversation, heard by nobody else: its frames and word starts gathered, its
+  // unit kept when whole, and the worker's time handed on when it is over.
   const filled = (job: Extract<Job, { kind: "filling" }>, message: FromWorker & { unitId: number }): void => {
     switch (message.kind) {
       case "audio":
         job.frames.push(message.pcm);
+        return;
+      case "word":
+        job.words.push(message);
         return;
       case "done":
         void cache.keep(job.request, job.frames, message.report);
@@ -245,15 +257,19 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
   };
 
   // The listen asked for the unit being made ahead: the generation becomes its request's. The
-  // frames gathered so far go out after the send that asked, and before the worker's next
-  // message can arrive; a cancel in between is the making job's, and they reach a unit the
-  // listen is already cancelling.
+  // word starts and frames gathered so far go out after the send that asked, and before the
+  // worker's next message can arrive — the starts first, so every word is known before a
+  // frame of it; a cancel in between is the making job's, and they reach a unit the listen is
+  // already cancelling.
   const takeOver = (job: Extract<Job, { kind: "filling" }>): void => {
-    const { request, frames } = job;
+    const { request, frames, words } = job;
     jobs.set(request.unitId, { kind: "making", request, frames, cancelled: false, next: null });
     const gathered = [...frames];
+    const begun = [...words];
     queueMicrotask(() => {
-      if (!ended) gathered.forEach((pcm, frameIndex) => emit({ kind: "audio", unitId: request.unitId, frameIndex, pcm }));
+      if (ended) return;
+      begun.forEach(emit);
+      gathered.forEach((pcm, frameIndex) => emit({ kind: "audio", unitId: request.unitId, frameIndex, pcm }));
     });
   };
 
@@ -340,7 +356,7 @@ export const withKeptAudio = ({ worker, cache, now, allowance }: KeptSynthesisCo
       return fill();
     }
     if ("unitId" in message && message.unitId < 0) {
-      if (message.kind !== "audio") previews.delete(message.unitId);
+      if (message.kind !== "audio" && message.kind !== "word") previews.delete(message.unitId);
       emit(message);
       return fill();
     }

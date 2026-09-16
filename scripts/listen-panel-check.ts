@@ -38,7 +38,7 @@ import type { Keeping, Residency } from "../src/modelResidency";
 import type { Place, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
-import { emptyManifest, type UnitReport } from "../src/speechManifest";
+import { emptyManifest, type UnitReport, type WordStart } from "../src/speechManifest";
 import { speechSegments, timeAt, timelineOfScript } from "../src/timeline";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { ListenPort } from "../src/synthesisClient";
@@ -49,6 +49,9 @@ import { DEFAULT_PICK, DEFAULT_VOICES, readPick, writePick } from "../src/voiceC
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
 import { memoryPreferences } from "./preferenceStub";
 import { forgetResume, printsOf, readResume, RESUME_PREFIX, writeResume, type PrintedPage } from "../src/keptPlace";
+
+// No unit is being made: the model has begun no word of any.
+const nothingBegun = (): ReadonlyArray<WordStart> => [];
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -98,12 +101,12 @@ const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { k
 const mark = (utterance: number, char = 0): Place => ({ utterance, char });
 const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to: { kind: "place", place: mark(utterance, char) } });
 // Where a mark falls on the voice's clock before anything is measured, as the effect prints it.
-const atMs = (utterance: number, char = 0): string => `${Math.round(timeAt(timelineOfScript(emptyManifest(units), table), mark(utterance, char)))}ms`;
+const atMs = (utterance: number, char = 0): string => `${Math.round(timeAt(timelineOfScript(emptyManifest(units), table, nothingBegun), mark(utterance, char)))}ms`;
 const supported: PanelEvent = worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
 const ready: PanelEvent = worker({ kind: "ready", backend: "webgpu", modelVersion: "v" });
 const scriptBack: PanelEvent = worker({ kind: "script", id: SCRIPT_ID, units });
 
-const scriptLine = timelineOfScript(emptyManifest(units), table);
+const scriptLine = timelineOfScript(emptyManifest(units), table, nothingBegun);
 const viewOf = (player: NeuralView["player"], settled = false): NeuralView => ({
   player,
   manifest: emptyManifest(units),

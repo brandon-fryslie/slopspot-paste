@@ -11,14 +11,17 @@
 import { createNeuralPerformer, passages, segmentOffsetAt, stateOf, timeOf, utteranceTable, type NeuralView } from "../src/neuralPerformer";
 import type { PerformerState } from "../src/performer";
 import type { Utterance } from "../src/speech";
-import { addUnit, emptyManifest, type Manifest, type UnitReport } from "../src/speechManifest";
+import { addUnit, emptyManifest, type Manifest, type UnitReport, type WordStart } from "../src/speechManifest";
 import { prepareText, type SynthesisUnit } from "../src/speechScript";
 import { DEFAULT_VOICES } from "../src/voiceChoice";
 import type { ListenPort } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, openDevice } from "../src/unitPlayer";
-import { GAP_MS, cursorAt, cursorIn, speechSegments, timeAt, timelineOfScript } from "../src/timeline";
+import { DEFAULT_MS_PER_CHAR, GAP_MS, cursorAt, cursorIn, speechSegments, timeAt, timelineOfScript } from "../src/timeline";
 import { FRAME_S, frame, StubDevice } from "./playbackStub";
+
+// No unit is being made: the model has begun no word of any.
+const nothingBegun = (): ReadonlyArray<WordStart> => [];
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -79,7 +82,7 @@ console.log("timeOf and segmentOffsetAt: the player's segment and offset against
     if (added.kind !== "added") throw new Error(`fixture: unit ${index} was ${added.kind}`);
     return added.manifest;
   }, emptyManifest(script));
-  const line = timelineOfScript(measured, table);
+  const line = timelineOfScript(measured, table, nothingBegun);
   assert("the fixture's clock is as described", line.totalMs === 4000 + GAP_MS && timeAt(line, { utterance: 2, char: 0 }) === 3000 + GAP_MS && line.segments[3]?.content.kind === "silence");
   assert("a segment's offset is its start plus the offset", timeOf(line, { segment: 1, offsetMs: 250 }) === 1250 && timeOf(line, { segment: 4, offsetMs: 0 }) === 3000 + GAP_MS);
   assert("an offset into the gap is a time inside the gap: the timeline's own, no unit's, and nothing is painted there", timeOf(line, { segment: 3, offsetMs: 200 }) === 3200 && cursorAt(line, 3200) === null);
@@ -100,9 +103,9 @@ console.log("timeOf and segmentOffsetAt: the player's segment and offset against
     const added = addUnit(manifest, index, { durationMs: 1000, alignment: { kind: "unit" } });
     if (added.kind !== "added") throw new Error(`fixture: unit ${index} was ${added.kind}`);
     return added.manifest;
-  }, emptyManifest(script)), table);
+  }, emptyManifest(script)), table, nothingBegun);
   const guessed = speechSegments(partly)[2];
-  if (guessed === undefined || guessed.content.alignment !== null) throw new Error("fixture: unit 2 should be a guess");
+  if (guessed === undefined || guessed.content.timing.kind !== "guess") throw new Error("fixture: unit 2 should be a guess");
   const gapped = segmentOffsetAt(partly, guessed.startMs + guessed.ms + 100);
   assert("a time inside an unmeasured segment seeks its start, as a place there resolves to it; a time in the gap after it is 100 ms into the gap, since silence is never a guess", segmentOffsetAt(partly, guessed.startMs + guessed.ms / 2).offsetMs === 0 && gapped.segment === 3 && gapped.offsetMs === 100);
 }
@@ -110,7 +113,7 @@ console.log("timeOf and segmentOffsetAt: the player's segment and offset against
 console.log("stateOf: the position in the conversation's time");
 {
   const view = (player: NeuralView["player"], manifest: Manifest = emptyManifest(script)): NeuralView => {
-    const timeline = timelineOfScript(manifest, table);
+    const timeline = timelineOfScript(manifest, table, nothingBegun);
     return { player, manifest, holdings: script.map(() => ({ kind: "absent" })), settled: false, timeline, units: speechSegments(timeline) };
   };
   assert("idle is idle", describe(stateOf(view({ kind: "idle" }))) === "idle");
@@ -205,6 +208,58 @@ console.log("createNeuralPerformer: over the real scheduler and player");
   performer.dispose();
   assert("dispose stops the player and suspends the device; its owner closes it", performer.view().player.kind === "idle" && device.calls.at(-1) === "suspend");
   assert("a disposed performer reports nothing more", views.length === before);
+}
+
+console.log("a unit still being made: the words the model has begun are painted as they are heard (slopspot-read-along-a35.8o0)");
+{
+  const listeners = new Set<(message: FromWorker) => void>();
+  const port: ListenPort = {
+    send: () => undefined,
+    ahead: () => undefined,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    errors: () => () => undefined,
+    dispose: () => undefined,
+    terminate: () => undefined,
+  };
+  const emit = (message: FromWorker): void => {
+    for (const listener of listeners) listener(message);
+  };
+  const performer = createNeuralPerformer({ port, script, utterances, voices: DEFAULT_VOICES, kept: [], device: openDevice(StubDevice), onChange: () => undefined });
+  const device = StubDevice.instances.at(-1);
+  if (device === undefined) throw new Error("the performer did not build a player");
+  // The word the page paints right now, as its text in the utterance, or "-" for none.
+  const lit = (): string => {
+    const state = performer.state();
+    const word = state.kind === "idle" ? null : cursorIn(state.segment, state.atMs)?.word;
+    return word === null || word === undefined ? "-" : one.text.slice(word.charStart, word.charEnd);
+  };
+  const frameMs = FRAME_S * 1000;
+
+  // "First sentence here.": the model begins "First" in frame 0 and "sentence" in frame 2.
+  performer.send({ kind: "play" });
+  emit({ kind: "word", unitId: 0, word: 0, startMs: 0 });
+  for (const index of [0, 1]) emit({ kind: "audio", unitId: 0, frameIndex: index, pcm: frame(0, index) });
+  device.advance(SCHEDULE_LEAD_S + frameMs / 2000);
+  assert("the first word of a unit with no record yet is lit while it is heard", lit() === "First");
+  emit({ kind: "word", unitId: 0, word: 1, startMs: 2 * frameMs });
+  emit({ kind: "audio", unitId: 0, frameIndex: 2, pcm: frame(0, 2) });
+  device.advance(frameMs / 1000);
+  assert("between a word's start and the next word's, the cursor stays on it", lit() === "First");
+  device.advance(frameMs / 1000);
+  assert("the next word begun is lit once the voice reaches its start", lit() === "sentence");
+  // "here." begins in frame 20, past the guess of the whole unit's length (20 characters at
+  // the default rate): the clock must reach it while the unit is still being made.
+  for (let index = 3; index < 20; index++) emit({ kind: "audio", unitId: 0, frameIndex: index, pcm: frame(0, index) });
+  emit({ kind: "word", unitId: 0, word: 2, startMs: 20 * frameMs });
+  for (const index of [20, 21]) emit({ kind: "audio", unitId: 0, frameIndex: index, pcm: frame(0, index) });
+  device.advance((18 * frameMs) / 1000);
+  assert("a word begun past the unit's guessed length is lit once the voice reaches it", 20 * frameMs > 20 * DEFAULT_MS_PER_CHAR && lit() === "here.");
+  emit({ kind: "done", unitId: 0, report: { durationMs: 22 * frameMs, alignment: { kind: "words", times: [{ startMs: 0, endMs: 2 * frameMs }, { startMs: 2 * frameMs, endMs: 20 * frameMs }, { startMs: 20 * frameMs, endMs: 22 * frameMs }] } }, elapsedMs: 5 });
+  assert("the record replaces the words begun, and the word under the voice is the same one", lit() === "here." && performer.view().holdings[0]?.kind === "held");
+  performer.dispose();
 }
 
 console.log(process.exitCode === 1 ? "neural-performer-check: FAILED" : "neural-performer-check: ok");
