@@ -36,9 +36,9 @@
 // bit and the logits, so the read-out adds no round trip to the device.
 
 import { defaultDevice, init, numpy as np, random, tree } from "@jax-js/jax";
-import { safetensors, tokenizers } from "@jax-js/loaders";
+import { safetensors } from "@jax-js/loaders";
 import { fromBinary } from "@bufbuild/protobuf";
-import { ModelProtoSchema, ModelProto_SentencePiece_Type } from "sentencepiece-buf/model";
+import { ModelProtoSchema, ModelProto_SentencePiece_Type, TrainerSpec_ModelType } from "sentencepiece-buf/model";
 import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { UnitText } from "./speechScript";
@@ -131,37 +131,54 @@ export const promptFrames = (id: VoiceId, prompt: np.Array): number => {
 };
 
 // [LAW:one-source-of-truth] The tokenizer and the piece string of every token id, from ONE
-// parse of the model file: jax-js builds its tokenizer from the proto and exposes ids only,
-// and an id is an index into that proto's pieces — what `tokenSpans` walks over the text.
+// parse of the model file: an id is an index into that proto's pieces — what `tokenSpans`
+// walks over the text.
 export interface Tokenizer {
   readonly encode: (text: string) => number[];
   readonly pieces: ReadonlyArray<string>;
 }
 
-// TEMPORARY, until jax-js walks text by code point. Its Unigram encoder indexes the string
-// by UTF-16 unit, so each half of a surrogate pair reaches the byte fallback as a lone
-// surrogate and comes out as U+FFFD's bytes, where SentencePiece emits the character's own.
-// So `encode` hands jax-js one U+FFFD per astral character — a character no piece contains,
-// so the lattice is cut around it exactly as around the real one — and writes the real
-// character's byte pieces where the stand-in's come out; a U+FFFD the text itself holds
-// comes out as itself. scripts/tokenizer-check.ts proves the ids against the reference's.
-const STAND_IN = "\uFFFD";
-const STAND_IN_OR_ASTRAL = /\uFFFD|[\u{10000}-\u{10FFFF}]/gu;
+// The amount SentencePiece's Unigram model subtracts from its lowest piece score to price a
+// character no piece spells (kUnkPenalty in unigram_model.cc).
+const UNKNOWN_PENALTY = 10;
 
+interface LatticeNode {
+  score: number;
+  start: number;
+  ids: ReadonlyArray<number>;
+}
+
+// SentencePiece's Unigram encoder (Model::Encode in unigram_model.cc), owned here rather than
+// taken from jax-js, whose encoder walks the text by UTF-16 unit and so spells an emoji as
+// U+FFFD's bytes. This one walks by code point, as the reference walks by UTF-8 character, and
+// keeps the reference's tie-breaks: the first path to reach a position holds it until a
+// strictly better one arrives, and scores add in float32 as the reference's do.
+// scripts/tokenizer-check.ts proves the ids against the reference's.
 export const parseTokenizer = (bytes: Uint8Array): Tokenizer => {
   const proto = fromBinary(ModelProtoSchema, bytes);
-  // [LAW:single-enforcer] `tokenSpans` walks text the way this model's tokenizer normalises
-  // it — a boundary prepended, every space a boundary, nothing else — and that assumption is
-  // checked here, once, against the model file.
+  // [LAW:single-enforcer] The encoder below is SentencePiece's for one kind of model file — a
+  // Unigram model with byte fallback and no user-defined or unused pieces — and `tokenSpans`
+  // walks text the way that file normalises it: a boundary prepended, every space a boundary,
+  // nothing else. Both are checked here, once, against the model file.
+  const trainer = proto.trainerSpec;
   const spec = proto.normalizerSpec;
-  if (spec?.name !== "identity" || spec.addDummyPrefix !== true || spec.removeExtraWhitespaces !== false) {
-    throw new Error(`the tokenizer normalises text (${spec?.name}, dummy prefix ${spec?.addDummyPrefix}, extra whitespace removed ${spec?.removeExtraWhitespaces}) in a way tokenSpans does not walk`);
+  if (
+    trainer?.modelType !== TrainerSpec_ModelType.UNIGRAM || trainer.byteFallback !== true || trainer.treatWhitespaceAsSuffix !== false ||
+    spec?.name !== "identity" || spec.addDummyPrefix !== true || spec.removeExtraWhitespaces !== false || spec.escapeWhitespaces !== true
+  ) {
+    throw new Error(`the tokenizer is not a byte-fallback Unigram model normalising text as tokenSpans walks it (model type ${trainer?.modelType}, byte fallback ${trainer?.byteFallback}, whitespace as suffix ${trainer?.treatWhitespaceAsSuffix}, normaliser ${spec?.name}, whitespace escaped ${spec?.escapeWhitespaces}, dummy prefix ${spec?.addDummyPrefix}, extra whitespace removed ${spec?.removeExtraWhitespaces})`);
+  }
+  if (proto.pieces.some((piece) => piece.type === ModelProto_SentencePiece_Type.USER_DEFINED || piece.type === ModelProto_SentencePiece_Type.UNUSED)) {
+    throw new Error("the tokenizer has user-defined or unused pieces, which this encoder neither scores nor skips");
   }
   const pieces = proto.pieces.map((piece) => piece.piece);
-  if (pieces.some((piece) => piece.match(STAND_IN_OR_ASTRAL) !== null)) {
-    throw new Error("the tokenizer has a piece containing U+FFFD or an astral character; the stand-in would not be exact");
-  }
-  const jax = new tokenizers.SentencePiece(proto);
+  // [LAW:parse-dont-validate] The pieces a segmentation is made of, by spelling.
+  const normal = new Map(
+    proto.pieces.flatMap((piece, id): [string, { id: number; score: number }][] =>
+      piece.type === ModelProto_SentencePiece_Type.NORMAL ? [[piece.piece, { id, score: piece.score }]] : []),
+  );
+  const longest = Math.max(...Array.from(normal.keys(), (piece) => Array.from(piece).length));
+  const unknownScore = Math.fround(Math.min(...Array.from(normal.values(), (piece) => piece.score)) - UNKNOWN_PENALTY);
   // [LAW:parse-dont-validate] The id of each byte's fallback piece, keyed by the value its
   // "<0xNN>" spelling names; the model file types the byte pieces, so their spelling is read,
   // not matched. A model without one piece per byte cannot spell every character, thrown.
@@ -178,22 +195,35 @@ export const parseTokenizer = (bytes: Uint8Array): Tokenizer => {
       if (id === undefined) throw new RangeError(`byte ${byte} outside the 256 proven above`);
       return id;
     });
-  const standIn = bytesOf(STAND_IN);
   const encode = (text: string): number[] => {
-    const chars = Array.from(text.matchAll(STAND_IN_OR_ASTRAL), (match) => match[0]);
-    const ids: number[] = [];
-    let next = 0;
-    for (const id of jax.encode(text.replace(STAND_IN_OR_ASTRAL, STAND_IN))) {
-      ids.push(id);
-      const tail = ids.length - standIn.length;
-      if (tail >= 0 && standIn.every((byte, j) => ids[tail + j] === byte)) {
-        const char = chars[next++];
-        if (char === undefined) throw new Error(`stand-in bytes at token ${tail} of ${JSON.stringify(text)} match no character`);
-        ids.splice(tail, standIn.length, ...bytesOf(char));
+    const chars = text === "" ? [] : Array.from(`▁${text.replaceAll(" ", "▁")}`);
+    // lattice[end]: the best path over chars[0, end) — its score, where its last piece starts,
+    // and that piece's ids. Every position is reached from the one before it, by a one-character
+    // piece or as an unknown character, so the walk back only visits nodes a path has set.
+    const lattice = Array.from({ length: chars.length + 1 }, (): LatticeNode => ({ score: 0, start: -1, ids: [] }));
+    const at = (position: number): LatticeNode => {
+      const node = lattice[position];
+      if (node === undefined) throw new RangeError(`position ${position} is outside the ${chars.length}-character lattice`);
+      return node;
+    };
+    for (const [start, char] of chars.entries()) {
+      const here = at(start).score;
+      const offer = (end: number, score: number, ids: ReadonlyArray<number>): void => {
+        const node = at(end);
+        const candidate = Math.fround(here + score);
+        if (node.start === -1 || candidate > node.score) Object.assign(node, { score: candidate, start, ids });
+      };
+      let spelling = "";
+      for (const [length, next] of chars.slice(start, start + longest).entries()) {
+        spelling += next;
+        const piece = normal.get(spelling);
+        if (piece !== undefined) offer(start + length + 1, piece.score, [piece.id]);
       }
+      if (!normal.has(char)) offer(start + 1, unknownScore, bytesOf(char));
     }
-    if (next !== chars.length) throw new Error(`${chars.length - next} of the characters of ${JSON.stringify(text)} were not tokenized`);
-    return ids;
+    const path: ReadonlyArray<number>[] = [];
+    for (let end = chars.length; end > 0; end = at(end).start) path.push(at(end).ids);
+    return path.reverse().flat();
   };
   return { encode, pieces };
 };
