@@ -1165,7 +1165,7 @@ console.log("createListenPanel: a scrub let go in a gap before the voice arrives
   assert("the thumb stays where it was let go, and does not hop to the turn's start", Number(r.scrub.value) === dropMs);
   await arrive(r);
   const voiceGap = (panel.state() as Extract<PanelState, { kind: "neural" }>).view.timeline.segments.find((segment) => segment.content.kind === "silence");
-  assert("the voice arrives that far into the gap on its own clock: the rest of the gap sounds before the turn", r.where() === "silent" && voiceGap !== undefined && Math.abs(performerAt(panel.state()) - (voiceGap.startMs + into)) < 1e-6);
+  assert("the voice arrives that far into the gap on its own clock: the rest of the gap sounds before the turn", r.where() === "silent" && r.line() === "Pause | stop | Playing · passage 2 of 2" && r.said().endsWith("synthesize 2") && voiceGap !== undefined && Math.abs(performerAt(panel.state()) - (voiceGap.startMs + into)) < 1e-6);
   panel.dispose();
 }
 
