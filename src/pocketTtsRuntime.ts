@@ -44,7 +44,7 @@ import { defaultDevice, init, numpy as np, random, tree } from "@jax-js/jax";
 import { safetensors } from "@jax-js/loaders";
 import { fromBinary } from "@bufbuild/protobuf";
 import { ModelProtoSchema, ModelProto_SentencePiece_Type, TrainerSpec_ModelType } from "sentencepiece-buf/model";
-import { loadAssets, pruneStaleAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
+import { loadAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { UnitText } from "./speechScript";
 import type { GeneratedFrame, GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
@@ -380,13 +380,12 @@ export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
   probe: probeWebGpu,
   load: async (onProgress: (progress: AssetProgress) => void, signal: AbortSignal): Promise<LoadResult> => {
     const assets = allModelAssets(MODEL_ASSETS);
-    // Stale copies of an earlier model build go first, so their quota is free before the
-    // new bytes land.
-    await pruneStaleAssets(io.store, assets);
     // The handler's abort joins the loader's own per-asset abort on every part's fetch.
     const fetch: FetchLike = (url, init) => io.fetch(url, { signal: AbortSignal.any([init.signal, signal]) });
     const outcome = await loadAssets(assets, { ...io, fetch }, onProgress);
     if (!outcome.ok) return { ok: false, failure: outcome.failure };
+    // [LAW:no-silent-failure] A refused prune costs quota, never the voice: said, and loaded past.
+    if (outcome.pruning.kind === "refused") console.warn("listen: an earlier model build's copies could not be cleared; the voice loads without clearing them", outcome.pruning.message);
     // [LAW:parse-dont-validate] loadAssets returns one LoadedAsset per asset it was given,
     // as the same asset objects; a miss here is a broken loader, not a case to skip.
     const bytesOf = (asset: ModelAsset): Uint8Array<ArrayBuffer> => {

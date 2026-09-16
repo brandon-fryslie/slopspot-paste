@@ -25,9 +25,11 @@
 // [LAW:no-silent-failure] Nothing here defaults past a problem. A part that fails to
 // fetch, a short read, or a hash that does not match the manifest is a typed failure with
 // no bytes attached — the runtime cannot be handed unverified weights. A store that cannot
-// be read (quota, private mode) is NOT a failure of the download: the read's throw is the
-// `unreadable` miss, the bytes are downloaded and returned, and `persisted` carries the
-// store's message so the UI can say the next visit will download again.
+// be opened at all (private mode, a browser blocking site data) is NOT a failure of the
+// download: the voice loads in memory. Every step that touches the store says its refusal
+// as a value — the prune's `refused`, the read's `unreadable` miss, the write's `failed`
+// persisted — and none of them throws past `loadAssets`, so the page's word for that store
+// ("each listen downloads", modelResidency.ts) is a path the load really takes.
 
 import { opfs } from "@jax-js/loaders";
 import { type ModelAsset, MODEL_ASSET_PREFIX, assetKey, shardPlan } from "./modelAssets";
@@ -212,18 +214,20 @@ export const loadAsset = async (
 };
 
 export type LoadAllOutcome =
-  | { readonly ok: true; readonly loaded: readonly LoadedAsset[] }
+  | { readonly ok: true; readonly loaded: readonly LoadedAsset[]; readonly pruning: Pruning }
   | { readonly ok: false; readonly failure: AssetFailure };
 
-// Several assets as one download with one progress bar: bytes are summed across the set
-// so the UI shows "x of 239 MB", not ten resets, and a set the store already holds shows
-// no bar at all. Assets load in order; parts within one asset load concurrently. The first
-// failure stops the sequence and is reported as-is.
+// The whole model onto the device, as one download with one progress bar: an earlier
+// build's copies are pruned first, so their quota is free before the new bytes land; then
+// bytes are summed across the set so the UI shows "x of 239 MB", not ten resets, and a set
+// the store already holds shows no bar at all. Assets load in order; parts within one asset
+// load concurrently. The first failure stops the sequence and is reported as-is.
 export const loadAssets = async (
   assets: readonly ModelAsset[],
   io: AssetIo,
   onProgress: (p: AssetProgress) => void,
 ): Promise<LoadAllOutcome> => {
+  const pruning = await pruneStaleAssets(io.store, assets);
   const totalBytes = assets.reduce((sum, a) => sum + a.bytes, 0);
   // [LAW:single-enforcer] Each count is reported once: a network asset's last chunk and
   // the set's last word, a store hit's silence and the next asset's zero, each say a count
@@ -245,20 +249,29 @@ export const loadAssets = async (
   // The last byte, on every path: the bar's end, and the panel's word that the warm-up is
   // next.
   report(totalBytes);
-  return { ok: true, loaded };
+  return { ok: true, loaded, pruning };
 };
+
+// [LAW:types-are-the-program] What a prune did: the stale keys it removed, or the store's
+// refusal to be listed or cleared. A refusal costs quota at most — the stale copies stay
+// until the browser evicts them — and never the load, so it is a value, not a throw
+// [LAW:no-silent-failure].
+export type Pruning =
+  | { readonly kind: "pruned"; readonly removed: readonly string[] }
+  | { readonly kind: "refused"; readonly message: string };
 
 // [LAW:carrying-cost] A new model build is a new key; the old 236 MB would otherwise sit
 // in OPFS until the browser evicts it. Remove every entry under our prefix that the
-// current manifest does not name. Returns what was removed so the caller can log it.
-export const pruneStaleAssets = async (
-  store: AssetStore,
-  keep: readonly ModelAsset[],
-): Promise<readonly string[]> => {
+// current manifest does not name. Never rejects.
+export const pruneStaleAssets = async (store: AssetStore, keep: readonly ModelAsset[]): Promise<Pruning> => {
   const live = new Set(keep.map(assetKey));
-  const stale = (await store.list())
-    .map((entry) => entry.name)
-    .filter((name) => name.startsWith(MODEL_ASSET_PREFIX) && !live.has(name));
-  await Promise.all(stale.map((name) => store.remove(name)));
-  return stale;
+  try {
+    const stale = (await store.list())
+      .map((entry) => entry.name)
+      .filter((name) => name.startsWith(MODEL_ASSET_PREFIX) && !live.has(name));
+    await Promise.all(stale.map((name) => store.remove(name)));
+    return { kind: "pruned", removed: stale };
+  } catch (e) {
+    return { kind: "refused", message: e instanceof Error ? e.message : String(e) };
+  }
 };

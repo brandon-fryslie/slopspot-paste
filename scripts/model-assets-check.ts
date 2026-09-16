@@ -36,6 +36,12 @@
 //   every asset listed at its size     -> resident
 //   one asset short (or absent)        -> absent, bytesToDownload = that asset's bytes
 //   a stale key beside the live ones   -> resident; prune removes the stale key only
+//
+// ─── loadAssets (the set) ────────────────────────────────────────────────────
+//   a stale key beside the set         -> pruned first, naming only that key
+//   the store refuses everything       -> ok in memory: prune refused, every asset miss
+//                                         unreadable, persisted failed
+//   the store refuses a removal        -> ok and kept: prune refused
 //   the store throws on list           -> unavailable with the store's message
 //   persist resolves true / false /    -> keeping granted / denied / failed{message}
 //   throws
@@ -301,7 +307,7 @@ console.log("residency:");
   assert("every asset listed at its size: resident", (await readResidency(store, both)).kind === "resident");
   store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
   assert("a stale key beside the live ones changes nothing", (await readResidency(store, both)).kind === "resident");
-  assert("and prune removes only the stale key", (await pruneStaleAssets(store, both)).join() === `${MODEL_ASSET_PREFIX}weights-000000000000` && (await readResidency(store, both)).kind === "resident");
+  assert("and prune removes only the stale key", JSON.stringify(await pruneStaleAssets(store, both)) === JSON.stringify({ kind: "pruned", removed: [`${MODEL_ASSET_PREFIX}weights-000000000000`] }) && (await readResidency(store, both)).kind === "resident");
   assert("the pure derivation is the same answer over the same listing", JSON.stringify(residencyOf(await store.list(), both)) === JSON.stringify({ kind: "resident" }));
   store.fault = "SecurityError: private browsing";
   assert("a store that cannot be listed: unavailable with its message", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "unavailable", message: "SecurityError: private browsing", bytesToDownload: 4096 + SYNTH_BYTES }));
@@ -327,8 +333,30 @@ console.log("residency:");
 
   store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
   store.files.set("unrelated", new Uint8Array(new ArrayBuffer(1)));
-  const removed = await pruneStaleAssets(store, [small, synth]);
-  assert("prune removes only stale entries under the prefix", removed.join() === `${MODEL_ASSET_PREFIX}weights-000000000000` && store.files.has("unrelated") && store.files.has(assetKey(synth)));
+  const reloaded = await loadAssets([small, synth], { fetch: fetchBoth, store }, () => {});
+  assert(
+    "the set's load prunes first, and only stale entries under the prefix",
+    reloaded.ok && JSON.stringify(reloaded.pruning) === JSON.stringify({ kind: "pruned", removed: [`${MODEL_ASSET_PREFIX}weights-000000000000`] }) && store.files.has("unrelated") && store.files.has(assetKey(synth)),
+  );
+
+  // slopspot-read-along-a35.azu: a browser blocking site data refuses the whole store, and
+  // the page's word for it is "each listen downloads" — so the set's load must be a path
+  // that ends in bytes, not in the store's refusal.
+  store.fault = "Storage directory access is denied.";
+  const refused = await loadAssets([small, synth], { fetch: fetchBoth, store }, () => {});
+  const refusal = { kind: "failed", message: "Storage directory access is denied." };
+  assert("a store that refuses everything: the set downloads and is handed on in memory", refused.ok && Buffer.compare(refused.loaded[1]!.data, synthData) === 0);
+  assert(
+    "and every refusal is a value on the outcome: the prune refused, each asset unreadable and not kept",
+    refused.ok &&
+      JSON.stringify(refused.pruning) === JSON.stringify({ kind: "refused", message: refusal.message }) &&
+      refused.loaded.every((l) => JSON.stringify(l.origin) === JSON.stringify({ kind: "network", miss: { kind: "unreadable", message: refusal.message }, persisted: refusal })),
+  );
+  store.fault = null;
+  const locked = Object.assign(new MemoryStore(), { remove: async () => { throw new Error("NoModificationAllowedError: the file is locked"); } });
+  locked.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
+  const unpruned = await loadAssets([small, synth], { fetch: fetchBoth, store: locked }, () => {});
+  assert("a store that lists but refuses a removal: the prune refused, the set still loads and is kept", unpruned.ok && unpruned.pruning.kind === "refused" && locked.files.has(assetKey(synth)));
 }
 
 // ── 3. mirror ─────────────────────────────────────────────────────────────────
