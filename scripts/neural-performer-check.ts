@@ -298,8 +298,12 @@ for (const failure of ["known", "late"] as const) {
   device.advance(SCHEDULE_LEAD_S);
   for (let ms = 0; ms < 4 * frameMs + WAITED_MS + GAP_MS + 200; ms += 10) {
     const view = performer.view();
-    if (view.player.kind !== "idle") heard.push(view.player.at.segment);
-    if (failure === "late" && heard.filter((at) => at === 2).length === WAITED_MS / 10 && heard.at(-1) === 2) fail();
+    if (view.player.kind !== "idle") {
+      heard.push(view.player.at.segment);
+      // Judged only on a sample just taken, so the count reaches the wait on exactly one tick
+      // and the failure arrives once.
+      if (failure === "late" && view.player.at.segment === 2 && heard.filter((at) => at === 2).length === WAITED_MS / 10) fail();
+    }
     device.advance(0.01);
   }
   const msIn = (segment: number): number => 10 * heard.filter((at) => at === segment).length;
