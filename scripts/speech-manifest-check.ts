@@ -48,7 +48,7 @@ const assert = (label: string, cond: boolean): void => {
   }
 };
 
-const utter = (text: string, index = 0): Utterance => ({ index, anchor: `t${index}`, voice: "assistant", text });
+const utter = (text: string, index = 0): Utterance => ({ index, anchor: `t${index}`, origin: "page", voice: "assistant", text });
 const scriptOf = (...texts: string[]): ReadonlyArray<SynthesisUnit> =>
   deriveSpeechScript(
     texts.map((t, i) => utter(t, i)),

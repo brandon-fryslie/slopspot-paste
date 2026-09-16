@@ -67,14 +67,15 @@ console.log("alignWords");
 // ── the page's words ──────────────────────────────────────────────────────────────────
 
 // A turn card in the renderer's shape: prose with inline markup, a fenced block the
-// speech announces, a detail fold, and the usage aside — three things never read aloud.
+// speech announces, a detail fold and the usage aside — three things never read aloud —
+// and the turn summary, which the narrator reads as it stands.
 const CARD = `
   <article class="bubble bubble-assistant" id="t3" data-index="3">
     <div class="turn-text"><p>Here is the <strong>fix</strong>, in <code>parser.ts</code>:</p>
     <pre><code>const x = 1;\nreturn x;</code></pre>
     <p>Then it works. Ship it.</p></div>
     <details class="condensed"><summary>2 tool calls</summary><div>Bash ls -la</div></details>
-    <aside class="bubble-turn-summary">Then it summarized.</aside>
+    <aside class="bubble-turn-summary"><span>Then it summarized.</span></aside>
     <aside class="bubble-usage">1,024 tokens</aside>
   </article>
   <article class="bubble bubble-user" id="t4" data-index="4"><p>Thanks!</p></article>`;
@@ -88,24 +89,27 @@ console.log("pageWords");
 {
   const words = pageWords(card).map((w) => w.node.data.slice(w.start, w.end));
   assert(
-    "prose and inline code are words; fenced code, folds, the turn summary and the usage aside are not",
+    "prose, inline code and the turn summary are words; fenced code, folds and the usage aside are not",
     // The comma and colon sit in their own text nodes beside the inline elements, so they
     // are punctuation runs, not words — exactly the manifest's rule.
-    words.join(" ") === "Here is the fix in parser.ts Then it works. Ship it.",
+    words.join(" ") === "Here is the fix in parser.ts Then it works. Ship it. Then it summarized.",
   );
 }
 
 // ── the painter ───────────────────────────────────────────────────────────────────────
 
 // The utterances speech.ts derives from that card: two quoted paragraphs around one
-// announcement, all on anchor t3; and the next card's one line.
-const say = (index: number, voice: Utterance["voice"], text: string): Utterance => ({ index, anchor: `t${index}`, voice, text });
+// announcement, then the turn summary in the narrator's voice, all on anchor t3; and the
+// next card's one line.
+const say = (index: number, voice: Utterance["voice"], text: string): Utterance => ({ index, anchor: `t${index}`, origin: "page", voice, text });
+const announce = (index: number, text: string): Utterance => ({ index, anchor: `t${index}`, origin: "announcement", voice: "narrator", text });
 const first = say(3, "assistant", "Here is the fix, in parser.ts:");
-const announced = say(3, "narrator", "Code block, 2 lines.");
+const announced = announce(3, "Code block, 2 lines.");
 const second = say(3, "assistant", "Then it works. Ship it.");
-const turn = [first, announced, second];
+const summary = say(3, "narrator", "Then it summarized.");
+const turn = [first, announced, second, summary];
 const thanks = say(4, "user", "Thanks!");
-const page = [first, announced, second, thanks];
+const page = [first, announced, second, summary, thanks];
 
 const texts = (cls: string): string => Array.from(doc.querySelectorAll(`.${cls}`), (el) => el.textContent ?? "").join(" ");
 const lit = (): string => texts(CURSOR_CLASS);
@@ -133,7 +137,7 @@ console.log("createPainter");
   assert("the card carries the turn class", speaking() === "t3");
   assert("what was painted names the card and the lit word", painted(onFix) === "t3 span fix");
   assert("the card still reads the same", card.textContent === text);
-  assert("every matched word of the card is wrapped once", wrapped() === 11);
+  assert("every matched word of the card is wrapped once", wrapped() === 14);
 
   const onCode = painter.paint(at(first, turn, whole(first), wordOf(first, 5)));
   assert("moving the cursor moves the light: the code span's word", lit() === "parser.ts" && painted(onCode) === "t3 span parser.ts");
@@ -150,6 +154,13 @@ console.log("createPainter");
   const onShip = painter.paint(at(second, turn, ship, wordOf(second, 3)));
   assert("a segment narrower than the utterance covers only its words", inRange() === "Ship it." && lit() === "Ship" && painted(onShip) === "t3 span Ship");
 
+  const summarized = wordOf(summary, 2);
+  const onSummary = painter.paint(at(summary, turn, whole(summary), summarized));
+  assert(
+    "the turn summary, the page's own words in the narrator's voice, lights its word in the summary aside",
+    lit() === "summarized." && inRange() === "Then it summarized." && painted(onSummary)?.startsWith("t3 span") === true && doc.querySelector(`.bubble-turn-summary .${CURSOR_CLASS}`) !== null,
+  );
+
   const onThanks = painter.paint(at(thanks, [thanks], whole(thanks), wordOf(thanks, 0)));
   assert("entering another card unwraps the last: its markup is exactly as rendered", card.innerHTML === original);
   assert("and the new card is lit and carries the turn class alone", lit() === "Thanks!" && speaking() === "t4" && painted(onThanks) === "t4 span Thanks!");
@@ -162,12 +173,12 @@ console.log("createPainter");
   assert("an utterance whose card is not in the document paints nothing, returns nothing to follow, does not throw", offPage === null && wrapped() === 0);
   painter.paint(null);
 
-  // A narrator utterance whose wording shares a word with the prose: it is not in the
-  // spoken pool, so the prose word stays with the prose utterance that says it.
-  const decoy = say(3, "narrator", "Then a code block.");
+  // An announcement whose wording shares a word with the prose: it is not in the spoken
+  // pool, so the prose word stays with the prose utterance that says it.
+  const decoy = announce(3, "Then a code block.");
   const decoyed = [first, decoy, second];
-  painter.paint(at(decoy, decoyed, whole(decoy), null));
-  assert("a narrator utterance sharing a word with the prose paints nothing", lit() === "" && inRange() === "");
+  painter.paint(at(decoy, decoyed, whole(decoy), wordOf(decoy, 0)));
+  assert("an announcement sharing a word with the prose paints nothing", lit() === "" && inRange() === "");
   painter.paint(at(second, decoyed, whole(second), null));
   assert("and the prose utterance keeps its every word", inRange() === "Then it works. Ship it.");
   painter.paint(null);
@@ -200,9 +211,10 @@ console.log("placeOfCaret");
   assert("a caret in the second paragraph names a word of the second utterance", mark(textNodeWith(card, "Ship it"), 15) === `2:${charOf(second, "Ship")}`);
   assert("a caret in a fenced code block names nothing: the block is announced, not read", mark(textNodeWith(card, "const x"), 2) === "none");
   assert("a caret in a fold's summary names nothing", mark(textNodeWith(card, "2 tool calls"), 1) === "none");
-  const afterProse = card.querySelector(".turn-text")?.nextSibling;
-  assert("a caret past the last spoken word of the card names nothing", afterProse !== null && afterProse !== undefined && mark(afterProse, 0) === "none");
-  assert("a caret in another card names that card's utterance", mark(textNodeWith(doc.getElementById("t4") ?? card, "Thanks"), 2) === "3:0");
+  assert("a caret in the turn summary names its word: the narrator reads it as the page shows it", mark(textNodeWith(card, "it summarized"), 8) === `3:${charOf(summary, "summarized")}`);
+  const afterSpoken = card.querySelector(".bubble-usage")?.nextSibling;
+  assert("a caret past the last spoken word of the card names nothing", afterSpoken !== null && afterSpoken !== undefined && mark(afterSpoken, 0) === "none");
+  assert("a caret in another card names that card's utterance", mark(textNodeWith(doc.getElementById("t4") ?? card, "Thanks"), 2) === "4:0");
   doc.body.append("stray body text");
   assert("a caret in text outside every card names nothing", mark(textNodeWith(doc.body, "stray body"), 3) === "none");
   assert("a caret in an element, not text, names nothing", mark(card, 0) === "none");
@@ -228,7 +240,13 @@ console.log("folds and clamps");
     },
     {
       index: 1,
-      node: { kind: "assistant", blocks: [{ kind: "text", content: "The loop never *advances* its cursor.\n\n```ts\nwhile (i < n) {}\n```\n\nMove the increment inside." }] },
+      node: {
+        kind: "assistant",
+        blocks: [
+          { kind: "text", content: "The loop never *advances* its cursor.\n\n```ts\nwhile (i < n) {}\n```\n\nMove the increment inside." },
+          { kind: "turn-summary", text: "Fixed the `loop` in one edit." },
+        ],
+      },
       collapsed: true,
     },
   ];
@@ -254,7 +272,7 @@ console.log("folds and clamps");
   const foldWords = (root: Element): string => pageWords(root).map((w) => w.node.data.slice(w.start, w.end)).join(" ");
   assert(
     "a fold's summary label and a clamp's toggle are not words of the page; the fold's body and the clamped prose are",
-    foldWords(fold) === "Assistant The loop never advances its cursor. Move the increment inside." &&
+    foldWords(fold) === "Assistant The loop never advances its cursor. Move the increment inside. Fixed the `loop` in one edit." &&
       foldWords(clamp) === "Why does the parser stall? It reads every line twice. The second pass never ends.",
   );
 
@@ -265,9 +283,9 @@ console.log("folds and clamps");
   for (const utterance of utterances) {
     const turn = turnOf(utterances, utterance.anchor);
     const words = wordSpans(utterance.text, 0);
-    // A narrator utterance is ours — an announcement standing in for a code block — and is
-    // deliberately not on the page; it paints the card, which must be shown all the same.
-    const cursors: ReadonlyArray<WordSpan | null> = utterance.voice === "narrator" ? [null] : words;
+    // An announcement is ours — standing in for a code block — and is deliberately not on
+    // the page; it paints the card, which must be shown all the same.
+    const cursors: ReadonlyArray<WordSpan | null> = utterance.origin === "announcement" ? [null] : words;
     for (const word of cursors) {
       const painted = foldPainter.paint(at(utterance, turn, whole(utterance), word));
       const lit = Array.from(foldDoc.querySelectorAll(`.${CURSOR_CLASS}`), (el) => wordKey(el.textContent ?? "")).join(" ");
@@ -276,7 +294,11 @@ console.log("folds and clamps");
       if (painted === null || hidden(painted.el)) unshown.push(`${utterance.anchor} "${said}"`);
     }
   }
-  assert(`every spoken word of the clamped message and the folded turn lights its own word on the page${unpaintable.length === 0 ? "" : `: ${unpaintable.join("; ")}`}`, unpaintable.length === 0);
+  assert(
+    "the turn summary is spoken as the page's own words in the narrator's voice",
+    utterances.some((u) => u.origin === "page" && u.voice === "narrator" && u.text === "Fixed the `loop` in one edit."),
+  );
+  assert(`every spoken word of the clamped message, the folded turn and its summary lights its own word on the page${unpaintable.length === 0 ? "" : `: ${unpaintable.join("; ")}`}`, unpaintable.length === 0);
   assert(`and what is painted is never inside a closed fold or a collapsed clamp${unshown.length === 0 ? "" : `: ${unshown.join("; ")}`}`, unshown.length === 0);
   assert("the clamp the voice read through is open, pinned, and its toggle says so", !clamp.classList.contains("is-collapsed") && clamp.classList.contains("clamp-pinned") && toggle.textContent === "Show less" && toggle.getAttribute("aria-expanded") === "true");
   assert("the fold the voice read through is open", fold.open);

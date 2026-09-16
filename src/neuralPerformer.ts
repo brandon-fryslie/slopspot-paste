@@ -36,7 +36,7 @@
 
 import type { Performer, PerformerEvent } from "./performer";
 import { createScheduler, type Lookahead, type SchedulerView } from "./scheduler";
-import type { Utterance } from "./speech";
+import { sameUtterance, type Utterance } from "./speech";
 import type { UnitReport } from "./speechManifest";
 import type { SynthesisUnit, VoiceMap } from "./speechScript";
 import type { ListenPort } from "./synthesisClient";
@@ -54,9 +54,6 @@ export interface NeuralView extends SchedulerView {
 // units, so a passage boundary is where the reference changes.
 export const passages = (script: ReadonlyArray<SynthesisUnit>): ReadonlyArray<Utterance> =>
   script.flatMap((unit, i) => (unit.utterance === script[i - 1]?.utterance ? [] : [unit.utterance]));
-
-const sameUtterance = (a: Utterance, b: Utterance): boolean =>
-  a.index === b.index && a.anchor === b.anchor && a.voice === b.voice && a.text === b.text;
 
 // For each unit of the script, the index of the page utterance it says. Throws when the
 // script's passages are not the page's utterances, one for one.

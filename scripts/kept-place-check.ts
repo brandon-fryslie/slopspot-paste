@@ -52,10 +52,10 @@ const throws = (label: string, f: () => unknown): void => {
 // ── fixtures ──────────────────────────────────────────────────────────────────────────
 
 const utterances: ReadonlyArray<Utterance> = [
-  { index: 0, anchor: "t0", voice: "user", text: "Why does the parser stall on the second pass?" },
-  { index: 1, anchor: "t1", voice: "assistant", text: "The loop never advances its cursor." },
-  { index: 1, anchor: "t1", voice: "narrator", text: "typescript code block, 3 lines." },
-  { index: 2, anchor: "t2", voice: "user", text: "That fixed it, thanks." },
+  { index: 0, anchor: "t0", origin: "page", voice: "user", text: "Why does the parser stall on the second pass?" },
+  { index: 1, anchor: "t1", origin: "page", voice: "assistant", text: "The loop never advances its cursor." },
+  { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "typescript code block, 3 lines." },
+  { index: 2, anchor: "t2", origin: "page", voice: "user", text: "That fixed it, thanks." },
 ];
 const printed = async (list: ReadonlyArray<Utterance>): Promise<PrintedPage> => ({ utterances: list, prints: await printsOf(list) });
 const page = await printed(utterances);
@@ -70,7 +70,7 @@ console.log("printsOf: a short print per utterance, of its anchor and its text")
 {
   assert("one print per utterance, each PRINT_LENGTH hex characters", page.prints.length === utterances.length && page.prints.every((print) => print.length === PRINT_LENGTH && /^[0-9a-f]+$/.test(print)));
   assert("the same utterance prints the same on every render", (await printsOf(utterances)).join() === page.prints.join());
-  const [again] = await printsOf([{ ...utterances[1]!, voice: "user" }]);
+  const [again] = await printsOf([{ ...utterances[1]!, origin: "page", voice: "user" }]);
   assert("the voice is not in the print: a new voice reads the same word", again === page.prints[1]);
   const [edited] = await printsOf([{ ...utterances[1]!, text: "The loop never moves its cursor." }]);
   const [moved] = await printsOf([{ ...utterances[1]!, anchor: "t4" }]);
@@ -110,7 +110,7 @@ console.log("wordStart: a place is kept at the first character of its word");
   assert("inside a word: that word's first character", same(wordStart(utterances, place(1, "The loop never adv".length)), ADVANCES));
   assert("on a word's first character: itself", same(wordStart(utterances, ADVANCES), ADVANCES));
   assert("in the space or stop after a word: that word, the last begun", same(wordStart(utterances, place(1, "The loop never".length)), place(1, "The loop ".length)) && same(wordStart(utterances, place(1, "The loop never advances its cursor.".length - 1)), place(1, "The loop never advances its ".length)));
-  const quoted: ReadonlyArray<Utterance> = [{ index: 0, anchor: "t0", voice: "user", text: "“Why?”" }, { index: 1, anchor: "t1", voice: "user", text: "…" }];
+  const quoted: ReadonlyArray<Utterance> = [{ index: 0, anchor: "t0", origin: "page", voice: "user", text: "“Why?”" }, { index: 1, anchor: "t1", origin: "page", voice: "user", text: "…" }];
   assert("before an utterance's first word, or in one with no words: kept as it is", same(wordStart(quoted, place(0, 0)), place(0, 0)) && same(wordStart(quoted, place(1, 0)), place(1, 0)));
 }
 

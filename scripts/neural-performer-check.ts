@@ -44,9 +44,9 @@ const throws = (label: string, f: () => unknown): void => {
 // Three utterances on two turns; the first is long enough for two units. The script's
 // units hold CLONES of the utterances, as the worker's structured clone hands them back:
 // the same values, never the same objects.
-const one: Utterance = { index: 1, anchor: "t1", voice: "user", text: "First sentence here. Second sentence here." };
-const two: Utterance = { index: 1, anchor: "t1", voice: "narrator", text: "python code block, 2 lines." };
-const three: Utterance = { index: 2, anchor: "t2", voice: "assistant", text: "A reply." };
+const one: Utterance = { index: 1, anchor: "t1", origin: "page", voice: "user", text: "First sentence here. Second sentence here." };
+const two: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "python code block, 2 lines." };
+const three: Utterance = { index: 2, anchor: "t2", origin: "page", voice: "assistant", text: "A reply." };
 const utterances = [one, two, three];
 const clone = (u: Utterance): Utterance => ({ ...u });
 const unit = (utterance: Utterance, start: number, end: number): SynthesisUnit => ({ utterance, start, end, ...prepareText(utterance.text.slice(start, end)) });

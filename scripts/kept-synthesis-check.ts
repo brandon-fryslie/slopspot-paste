@@ -71,8 +71,8 @@ const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { k
 const text = { ...prepareText("Hello there."), source: "Hello there." };
 const synthesize = (unitId: number, voice: SynthesizeRequest["voice"] = "alba"): SynthesizeRequest => ({ kind: "synthesize", unitId, text, voice });
 const READY: FromWorker = { kind: "ready", backend: "webgpu", modelVersion: "v" };
-const said: ReadonlyArray<Utterance> = [{ index: 0, anchor: "t0", voice: "user", text: "Hello there." }];
-const cutUnits: ReadonlyArray<SynthesisUnit> = [{ utterance: { index: 0, anchor: "t0", voice: "user", text: "Hello there." }, start: 0, end: 12, ...prepareText("Hello there.") }];
+const said: ReadonlyArray<Utterance> = [{ index: 0, anchor: "t0", origin: "page", voice: "user", text: "Hello there." }];
+const cutUnits: ReadonlyArray<SynthesisUnit> = [{ utterance: { index: 0, anchor: "t0", origin: "page", voice: "user", text: "Hello there." }, start: 0, end: 12, ...prepareText("Hello there.") }];
 
 // The worker: what it is told, and a hand to speak for it — or, given `answer`, a worker that
 // answers each request itself.
@@ -558,7 +558,7 @@ console.log("a scheduler over it, twice over one cache: the second listen needs 
 {
   const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
   const unitOf = (index: number, said: string): SynthesisUnit => ({
-    utterance: { index, anchor: "t0", voice: "assistant", text: said },
+    utterance: { index, anchor: "t0", origin: "page", voice: "assistant", text: said },
     start: 0,
     end: said.length,
     ...prepareText(said),
@@ -613,7 +613,7 @@ console.log("a scheduler over it, made ahead: an idle listen fills the paste, an
   // One turn of eight sentences, a unit each: one speech segment per unit, no gaps.
   const words = ["One.", "Two.", "Three.", "Four.", "Five.", "Six.", "Seven.", "Eight."];
   const passage = words.join(" ");
-  const utterance: Utterance = { index: 0, anchor: "t0", voice: "assistant", text: passage };
+  const utterance: Utterance = { index: 0, anchor: "t0", origin: "page", voice: "assistant", text: passage };
   const script: ReadonlyArray<SynthesisUnit> = words.map((word) => {
     const start = passage.indexOf(word);
     return { utterance, start, end: start + word.length, ...prepareText(word) };

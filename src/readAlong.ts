@@ -12,9 +12,10 @@
 // has no address in the page until the words are matched up. The match is on WORDS, the
 // one unit both texts share: the utterance's words in order (the manifest's own rule,
 // `wordSpans`, so a painted word is exactly a timed word [LAW:one-source-of-truth]) against
-// the card's words in document order, with fenced code, detail folds and usage asides
-// left out because speech.ts never reads those aloud — it announces them, and an
-// announcement has no words on the page to paint. ONE match, `matchCard`, serves both
+// the card's words in document order. Only an utterance whose origin is the page is matched,
+// whatever its voice: an announcement (a code block, the folded detail) has no words on the
+// page, and the page text it stands in for (fenced code, detail folds, the usage aside) is
+// left out of the card's words to match. ONE match, `matchCard`, serves both
 // directions: the words it wraps for painting are the words a tap can name
 // [LAW:single-enforcer].
 //
@@ -96,14 +97,11 @@ export interface PageWord {
 
 // What the narrator's voice covers on the page: fenced code (<pre>), the detail folds
 // (thinking, tool calls, subagents — every one a details.condensed), every fold's summary
-// label, a control's label (a clamp's Show more), the usage aside, the turn-summary aside,
-// and anything hidden. None of it is in the spoken pool below, so none of it is a match
-// target. A turn an overlay folded is a <details> too, but its body is the turn itself and
-// is read in full, so only its summary is here. The turn-summary is the one block here the
-// narrator does read, verbatim; it is left unpainted until an utterance says whether its
-// text is the page's own (slopspot-read-along-a35.wqz) rather than matched by a voice that
-// also names what is not.
-const UNSPOKEN = "pre, details.condensed, summary, button, aside.bubble-usage, aside.bubble-turn-summary, [hidden], [aria-hidden='true']";
+// label, a control's label (a clamp's Show more), the usage aside, and anything hidden. None
+// of it is page prose an utterance says, so none of it is a match target. A turn an overlay
+// folded is a <details> too, but its body is the turn itself and is read in full, so only
+// its summary is here. The turn-summary aside is not: the narrator reads it verbatim.
+const UNSPOKEN = "pre, details.condensed, summary, button, aside.bubble-usage, [hidden], [aria-hidden='true']";
 const SHOW_TEXT = 4;
 const TEXT_NODE = 3;
 
@@ -137,14 +135,12 @@ interface Match {
   readonly word: WordSpan;
 }
 
-// The card's words matched against its turn, in page order. Narrator utterances —
-// announcements, folded-detail counts, the turn summary — are exactly the text
-// `pageWords` leaves out (UNSPOKEN, above), so they are not in the spoken pool: a word they
-// share with the prose ("code", "then") must not pull that prose word to them
-// [LAW:one-source-of-truth].
+// The card's words matched against its turn, in page order. Announcements are not in the
+// spoken pool: a word they share with the prose ("code", "then") must not pull that prose
+// word to them [LAW:one-source-of-truth].
 const matchCard = (card: Element, turn: ReadonlyArray<Utterance>): ReadonlyArray<Match> => {
   const spoken = turn
-    .filter((utterance) => utterance.voice !== "narrator")
+    .filter((utterance) => utterance.origin === "page")
     .flatMap((utterance) => wordSpans(utterance.text, 0).map((word) => ({ utterance, word })));
   const page = pageWords(card);
   const matched = alignWords(

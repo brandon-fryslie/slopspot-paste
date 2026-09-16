@@ -84,7 +84,7 @@ const throws = (label: string, fn: () => void): void => {
 const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
 
 const unitOf = (index: number, text: string, voice: Utterance["voice"] = "assistant"): SynthesisUnit => ({
-  utterance: { index, anchor: `t${index}`, voice, text },
+  utterance: { index, anchor: `t${index}`, origin: "page", voice, text },
   start: 0,
   end: text.length,
   ...prepareText(text),

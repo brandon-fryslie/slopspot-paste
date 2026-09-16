@@ -57,7 +57,7 @@
 
 import { bytesOf, type AudioCodec, type EncodedAudio } from "./audioCodec";
 import type { UnitReport } from "./speechManifest";
-import type { Utterance } from "./speech";
+import { sameUtterance, type Utterance } from "./speech";
 import { scriptHash, unitHash, unitText, type PreparedText, type SynthesisUnit, type UnitText, type VoiceMap } from "./speechScript";
 import type { VoiceId } from "./modelAssets";
 
@@ -125,17 +125,13 @@ export const evictions = (ledger: ReadonlyArray<LedgerEntry>, cap: number): Read
   return gone;
 };
 
-// The same utterance: what a unit's utterance is matched on, since the worker's reply carries a
-// copy of the page's.
-const same = (a: Utterance, b: Utterance): boolean => a.index === b.index && a.anchor === b.anchor && a.voice === b.voice && a.text === b.text;
-
 // A script as the device keeps it. Units come in their utterances' order (deriveSpeechScript),
 // so each unit's utterance is the first at or after the previous unit's that matches it; a unit
 // whose utterance is not among them is not a script of these utterances, and is thrown.
 export const keptScript = (utterances: ReadonlyArray<Utterance>, units: ReadonlyArray<SynthesisUnit>): ReadonlyArray<KeptScriptUnit> => {
   let at = 0;
   return units.map(({ utterance, start, end, text, sourceSpans }) => {
-    while (at < utterances.length && !same(utterances[at]!, utterance)) at++;
+    while (at < utterances.length && !sameUtterance(utterances[at]!, utterance)) at++;
     if (at === utterances.length) throw new RangeError(`kept audio: a unit of utterance ${utterance.index} is not among the ${utterances.length} it was cut from`);
     return { utterance: at, start, end, text, sourceSpans };
   });

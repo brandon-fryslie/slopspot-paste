@@ -19,12 +19,8 @@
 import type { DisplayNode, ViewableDialogue, AssistantBlock } from "./dialogue";
 import { blockVisibility, blockText, turnAnchorId } from "./dialogue";
 
-// [LAW:types-are-the-program] Who is speaking — and the ONE discriminator that carries
-// the difference between the author's words and ours. `narrator` marks every utterance
-// this module composed rather than quoted (a code block announced, folded detail counted),
-// and it is simultaneously what selects a different synthesis voice at the edge. A
-// separate `source: "author" | "narrator"` field beside a role would be the same fact
-// twice, free to disagree; there is one field because there is one fact.
+// [LAW:types-are-the-program] Who is heard: the discriminator that selects a synthesis voice
+// at the edge. `narrator` is our voice, for words neither party said.
 export const VOICES = ["user", "assistant", "system", "narrator"] as const;
 export type Voice = (typeof VOICES)[number];
 
@@ -33,12 +29,23 @@ export type Voice = (typeof VOICES)[number];
 // t<N> string the renderer emitted as that node's id — which is what lets the player
 // highlight the turn being spoken without inventing a second addressing scheme
 // [LAW:one-source-of-truth].
-export interface Utterance {
-  readonly index: number;
-  readonly anchor: string;
-  readonly voice: Voice;
-  readonly text: string;
-}
+//
+// `origin` is whether the words are on the page. A `page` utterance's text is the page's own
+// prose, spoken from a rendered node, so the read-along can find its words there; an
+// `announcement` is ours, standing in for what the page shows and the voice does not read (a
+// code block, the folded detail), and has no words on the page. Origin and voice are two
+// facts, not one: the turn summary is the page's own words in the narrator's voice. Only the
+// narrator announces.
+type Said = { readonly text: string } & (
+  | { readonly origin: "page"; readonly voice: Voice }
+  | { readonly origin: "announcement"; readonly voice: "narrator" }
+);
+export type Utterance = { readonly index: number; readonly anchor: string } & Said;
+
+// The same utterance, field for field: how a copy that crossed a worker, or was kept on the
+// device, is recognised as the page's [LAW:single-enforcer].
+export const sameUtterance = (a: Utterance, b: Utterance): boolean =>
+  a.index === b.index && a.anchor === b.anchor && a.origin === b.origin && a.voice === b.voice && a.text === b.text;
 
 // ── markdown → speech ────────────────────────────────────────────────────────────────
 //
@@ -462,6 +469,16 @@ const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
   return parts.length === 0 ? "" : `${parts.join(", ")} not read aloud`;
 };
 
+const onPage = (voice: Voice, text: string): Said => ({ origin: "page", voice, text });
+const announced = (text: string): Said => ({ origin: "announcement", voice: "narrator", text });
+
+// A segment of a speaker's markdown: their own words on the page, or our announcement of
+// what stands there unread.
+const segmentSaid =
+  (voice: Voice) =>
+  (seg: Segment): Said =>
+    seg.kind === "quoted" ? onPage(voice, seg.text) : announced(seg.text);
+
 // [LAW:one-source-of-truth] An assistant node's blocks, spoken in ONE pass over their
 // ACTUAL array order — not spine text followed by turn-summary followed by a detail
 // count, three groups concatenated regardless of where each really sits. deriveDialogue
@@ -475,7 +492,7 @@ const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
 // turn-summary is the one "meta" block kind that carries real, page-visible prose —
 // rendered as a visible <aside> — so it is SPOKEN, in the narrator voice, because it is
 // the source's OWN annotation about the conversation, not a line either party actually
-// said. It is spoken VERBATIM (collapsed whitespace only), NOT through speakableSegments'
+// said; and its origin is the page, so the read-along paints its words as they are read. It is spoken VERBATIM (collapsed whitespace only), NOT through speakableSegments'
 // markdown-stripping pipeline: renderDialogueHtml draws it with escapeHtml alone, never
 // renderMarkdown — unlike text/insight blocks, whose renderer counterpart genuinely does
 // call renderMarkdown, which is what makes speakableSegments the right transform for
@@ -488,22 +505,17 @@ const detailAnnouncement = (blocks: ReadonlyArray<AssistantBlock>): string => {
 // through the turn every time one occurs — because detailAnnouncement's per-kind map
 // already answers "how many of each", which speaking each occurrence in place would not
 // improve.
-const assistantUtterances = (
-  blocks: ReadonlyArray<AssistantBlock>,
-  at: (voice: Voice, text: string) => Utterance,
-): ReadonlyArray<Utterance> => {
-  const spoken = blocks.flatMap((b) => {
-    if (blockVisibility(b) === "spine") {
-      return speakableSegments(blockText(b)).map((seg) => at(seg.kind === "quoted" ? "assistant" : "narrator", seg.text));
-    }
+const assistantUtterances = (blocks: ReadonlyArray<AssistantBlock>): ReadonlyArray<Said> => {
+  const spoken = blocks.flatMap((b): ReadonlyArray<Said> => {
+    if (blockVisibility(b) === "spine") return speakableSegments(blockText(b)).map(segmentSaid("assistant"));
     if (b.kind === "turn-summary") {
       const text = collapse(b.text);
-      return text === "" ? [] : [at("narrator", text)];
+      return text === "" ? [] : [onPage("narrator", text)];
     }
     return [];
   });
   const detail = detailAnnouncement(blocks);
-  return detail === "" ? spoken : [...spoken, at("narrator", detail)];
+  return detail === "" ? spoken : [...spoken, announced(detail)];
 };
 
 // [LAW:dataflow-not-control-flow] One node in, its utterances out. A spoken (user/system)
@@ -517,13 +529,8 @@ const assistantUtterances = (
 // is heard is always what the reader can see.
 const nodeUtterances = ({ index, node }: DisplayNode): ReadonlyArray<Utterance> => {
   const anchor = turnAnchorId(index);
-  const at = (voice: Voice, text: string): Utterance => ({ index, anchor, voice, text });
-
-  if (node.kind === "spoken") {
-    return speakableSegments(node.content).map((seg) => at(seg.kind === "quoted" ? node.role : "narrator", seg.text));
-  }
-
-  return assistantUtterances(node.blocks, at);
+  const said = node.kind === "spoken" ? speakableSegments(node.content).map(segmentSaid(node.role)) : assistantUtterances(node.blocks);
+  return said.map((s): Utterance => ({ index, anchor, ...s }));
 };
 
 // [LAW:one-source-of-truth] The spoken projection of the SAME ViewableDialogue the
