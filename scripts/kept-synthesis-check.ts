@@ -40,17 +40,27 @@
 //   a store that cannot be read       -> nothing made ahead for the rest of the listen; a rejected lookup said too
 //   the listen asks for a held unit   -> answered from the device; the fill left running
 //   a play over units made ahead      -> served from the device; nothing cancelled, nothing made twice
+//   render, a unit the device holds   -> heard with its frames; nothing to the worker; the allowance not asked
+//   render, a unit it does not        -> made on the worker's free time, kept, heard once whole; the listen hears none of it
+//   render before the model is ready  -> nothing asked until it is
+//   render over a store that cannot be read -> still made
+//   a unit the listen makes or fails  -> heard by the render from the listen's own generation, in the render's voice only
+//   the listen asks the worker for anything else -> the render's unit cancelled, made again once the worker is free
+//   the allowance or the order ahead withdrawn -> the render's unit left to finish
+//   a lookup for the render rejects   -> said, and the unit made
+//   the render withdrawn              -> its unit cancelled, nothing more asked, nothing heard
+//   a render over a scheduler playing -> every unit heard once, whole; the listen served first; nothing made twice
 
 import { createHash } from "node:crypto";
 import { createCodec } from "../src/audioCodec";
 import { createAudioCache, type AudioCache, type KeptUnit, type UnitRequest } from "../src/keptAudio";
 import { withKeptAudio } from "../src/keptSynthesis";
 import type { Allowance } from "../src/presynthesis";
-import { createScheduler } from "../src/scheduler";
+import { createScheduler, unitRequest } from "../src/scheduler";
 import type { Utterance } from "../src/speech";
 import type { UnitReport } from "../src/speechManifest";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
-import type { SynthesisPort, SynthesizeRequest } from "../src/synthesisClient";
+import type { RenderedUnit, SynthesisPort, SynthesizeRequest } from "../src/synthesisClient";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { MODEL_PCM, SCHEDULE_LEAD_S, createUnitPlayer, openDevice } from "../src/unitPlayer";
 import { FRAME_S, StubDevice, describe, frame } from "./playbackStub";
@@ -539,6 +549,133 @@ console.log("the listen comes first");
   assert("disposed: nothing more made", worker.said() === "synthesize 3,cancel 3,synthesize 3");
 }
 
+console.log("rendered whole");
+// What a render heard, in order: each unit made with its frame count, or failed with its reason.
+const hearer = () => {
+  const units: RenderedUnit[] = [];
+  const said = (): string => units.map((unit) => (unit.kind === "made" ? `made ${unit.unitId} x${unit.frames.length}` : `failed ${unit.unitId} ${unit.reason.kind}`)).join();
+  return { onUnit: (unit: RenderedUnit) => units.push(unit), units, said };
+};
+{
+  const { worker, store, port, ear } = setup();
+  const render = hearer();
+  port.render([synthesize(3), synthesize(4)], render.onUnit);
+  assert("the device asked first, though it allows nothing made ahead; nothing to the worker inside the call", store.lookups.map((l) => (l.request as SynthesizeRequest).unitId).join() === "3" && worker.said() === "");
+  answer(store, 0, { frames: [frame(3, 0)], report: report(80) });
+  await flush();
+  assert("a unit the device holds: heard with its frames, not made; the next asked", render.said() === "made 3 x1" && worker.said() === "" && store.lookups.length === 2);
+  answer(store, 1, null);
+  await flush();
+  assert("one it does not: made on the worker's free time", worker.said() === "synthesize 4");
+  worker.emit({ kind: "audio", unitId: 4, frameIndex: 0, pcm: frame(4, 0) });
+  worker.emit({ kind: "word", unitId: 4, word: 0, startMs: 0 });
+  worker.emit({ kind: "audio", unitId: 4, frameIndex: 1, pcm: frame(4, 1) });
+  assert("nothing heard until it is whole", render.said() === "made 3 x1");
+  worker.emit({ kind: "done", unitId: 4, report: report(160), elapsedMs: 4 });
+  await flush();
+  assert("heard once, whole; kept; nothing of it heard by the listen", render.said() === "made 3 x1,made 4 x2" && store.kept.length === 1 && ear.messages.length === 0);
+  assert("every unit heard: nothing more asked", store.lookups.length === 2 && worker.said() === "synthesize 4");
+}
+{
+  const { worker, store, port, ear } = setup();
+  const render = hearer();
+  port.render([synthesize(0)], render.onUnit);
+  port.send(synthesize(0));
+  answer(store, 1, { frames: [frame(0, 0)], report: report(80) });
+  await flush();
+  answer(store, 0, null);
+  await flush();
+  assert("the listen answered from the device: the render hears that answer, and its own miss makes nothing", render.said() === "made 0 x1" && ear.said() === "audio 0#0,done 0" && worker.said() === "");
+}
+{
+  const { worker, store, port } = setup({ ready: false });
+  const render = hearer();
+  port.render([synthesize(3)], render.onUnit);
+  await flush();
+  assert("before the model is ready: nothing asked", store.lookups.length === 0 && worker.said() === "");
+  worker.emit(READY);
+  answer(store, 0, null);
+  await flush();
+  assert("once it is: asked, and made", worker.said() === "synthesize 3");
+}
+{
+  const { worker, store, port } = setup({ allowed: true });
+  store.reads.unreadable = true;
+  port.ahead([synthesize(5)]);
+  await flush();
+  const render = hearer();
+  port.render([synthesize(3)], render.onUnit);
+  answer(store, 0, null);
+  await flush();
+  assert("a store that cannot be read stops what is made ahead, never the render", store.asked.join() === "5" && worker.said() === "synthesize 3");
+}
+{
+  const { worker, store, port, ear } = setup();
+  port.send(synthesize(0));
+  answer(store, 0, null);
+  await flush();
+  const render = hearer();
+  port.render([synthesize(0), synthesize(1), synthesize(2, "marius")], render.onUnit);
+  await flush();
+  assert("the worker busy with the listen: the render waits", store.lookups.length === 1 && worker.said() === "synthesize 0");
+  worker.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
+  worker.emit({ kind: "done", unitId: 0, report: report(80), elapsedMs: 4 });
+  await flush();
+  assert("the listen's own generation heard by the render and the listen alike, and the render's next asked", render.said() === "made 0 x1" && ear.said() === "audio 0#0,done 0" && (store.lookups[1]?.request as SynthesizeRequest | undefined)?.unitId === 1);
+  port.send(synthesize(1));
+  answer(store, 1, null);
+  answer(store, 2, null);
+  await flush();
+  assert("the listen asks for the same unit meanwhile: it goes to the worker once, as the listen's", worker.said() === "synthesize 0,synthesize 1");
+  worker.emit({ kind: "failed", unitId: 1, reason: { kind: "frame-cap", frames: 500 } });
+  await flush();
+  assert("a failure heard by the render too, with its reason", render.said() === "made 0 x1,failed 1 frame-cap" && ear.said().endsWith("failed 1 frame-cap"));
+  answer(store, 3, null);
+  await flush();
+  assert("the render's own voice asked for next", worker.said() === "synthesize 0,synthesize 1,synthesize 2");
+  port.send(synthesize(2));
+  assert("the listen asks for that unit in another voice: the render's generation cancelled for it", worker.said() === "synthesize 0,synthesize 1,synthesize 2,cancel 2");
+  worker.emit({ kind: "cancelled", unitId: 2 });
+  answer(store, 4, null);
+  await flush();
+  worker.emit({ kind: "done", unitId: 2, report: report(80), elapsedMs: 4 });
+  await flush();
+  assert("the listen's unit in its own voice is not the render's, which asks for its own again", render.said() === "made 0 x1,failed 1 frame-cap" && ear.said().endsWith("done 2") && store.lookups.length === 6);
+}
+{
+  const { worker, store, port, device } = setup({ allowed: true });
+  const render = hearer();
+  port.render([synthesize(3)], render.onUnit);
+  answer(store, 0, null);
+  await flush();
+  device.set(false);
+  port.ahead([synthesize(9)]);
+  assert("the allowance withdrawn and a new order ahead: the render's unit left to finish", worker.said() === "synthesize 3");
+  port.send(synthesize(1));
+  answer(store, 1, null);
+  await flush();
+  assert("the listen asks the worker for anything else: the render's unit cancelled, the request behind it", worker.said() === "synthesize 3,cancel 3,synthesize 1");
+  worker.emit({ kind: "cancelled", unitId: 3 });
+  worker.emit({ kind: "done", unitId: 1, report: report(80), elapsedMs: 4 });
+  await flush();
+  assert("the worker free again: the render's unit asked of the device again", (store.lookups[2]?.request as SynthesizeRequest | undefined)?.unitId === 3 && render.units.length === 0);
+  store.lookups[2]?.reject(new Error("broken"));
+  await flush();
+  assert("a lookup for the render that rejects: said, and the unit made", store.lookups.length === 3 && worker.said() === "synthesize 3,cancel 3,synthesize 1,synthesize 3");
+}
+{
+  const { worker, store, port, ear } = setup();
+  const render = hearer();
+  const withdraw = port.render([synthesize(3), synthesize(4)], render.onUnit);
+  answer(store, 0, null);
+  await flush();
+  withdraw();
+  assert("the render withdrawn: its unit cancelled", worker.said() === "synthesize 3,cancel 3");
+  worker.emit({ kind: "cancelled", unitId: 3 });
+  await flush();
+  assert("nothing more asked, nothing heard", store.lookups.length === 1 && worker.said() === "synthesize 3,cancel 3" && render.units.length === 0 && ear.messages.length === 0);
+}
+
 console.log("everything else passes through");
 {
   const { worker, store, port, ear } = setup();
@@ -738,4 +875,56 @@ console.log("a scheduler over it, made ahead: an idle listen fills the paste, an
     assert("and the paste finished with nothing cancelled and nothing made twice", worker.said() === script.map((_, i) => `synthesize ${i}`).join() && (await keptCount(cache)) === script.length);
     scheduler.dispose();
   }
+}
+
+console.log("a scheduler over it, rendered whole: every unit heard once while the listen plays");
+{
+  const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+  const words = ["One.", "Two.", "Three.", "Four.", "Five.", "Six."];
+  const passage = words.join(" ");
+  const utterance: Utterance = { index: 0, anchor: "t0", origin: "page", voice: "assistant", text: passage };
+  const script: ReadonlyArray<SynthesisUnit> = words.map((word) => {
+    const start = passage.indexOf(word);
+    return { utterance, start, end: start + word.length, ...prepareText(word) };
+  });
+  const { store } = memoryStore();
+  const cache = createAudioCache({ store: Promise.resolve(store), codec: Promise.resolve(createCodec("pcm-s16", MODEL_PCM)), now: () => 0, cap: Number.MAX_SAFE_INTEGER, onFailure: () => undefined });
+  const queue: number[] = [];
+  const cancelled = new Set<number>();
+  const worker = stubWorker((message) => {
+    if (message.kind === "synthesize") queue.push(message.unitId);
+    if (message.kind === "cancel" && queue.includes(message.unitId)) cancelled.add(message.unitId);
+  });
+  const step = (): boolean => {
+    const unitId = queue.shift();
+    if (unitId === undefined) return false;
+    if (cancelled.delete(unitId)) {
+      worker.emit({ kind: "cancelled", unitId });
+      return true;
+    }
+    worker.emit({ kind: "audio", unitId, frameIndex: 0, pcm: frame(unitId, 0) });
+    worker.emit({ kind: "audio", unitId, frameIndex: 1, pcm: frame(unitId, 1) });
+    worker.emit({ kind: "done", unitId, report: report(2 * FRAME_S * 1000), elapsedMs: 5 });
+    return true;
+  };
+  const settleAll = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await flush();
+  };
+  // The device allows nothing made ahead: whatever is made beyond the listen's window is the render's.
+  const port = withKeptAudio({ worker: worker.port, cache, now: () => 0, allowance: stubAllowance(false).allowance });
+  worker.emit(READY);
+  const scheduler = createScheduler({ port, script, voices: VOICES, kept: script.map(() => undefined), player: (config) => createUnitPlayer({ ...config, device: openDevice(StubDevice) }), onChange: () => undefined });
+  const render = hearer();
+  scheduler.send({ kind: "play" });
+  await settleAll();
+  port.render(script.map((_, unitId) => unitRequest(script, VOICES, unitId)), render.onUnit);
+  await settleAll();
+  assert("the listen asked first: its unit, and nothing of the render's before it", worker.said() === "synthesize 0");
+  while (step()) await settleAll();
+  await settleAll();
+  const units = render.units.map((unit) => unit.unitId).sort((a, b) => a - b).join();
+  assert("every unit of the paste heard once by the render", units === script.map((_, i) => i).join() && render.units.length === script.length);
+  assert("each whole, with the frames the worker made for it", render.units.every((unit) => unit.kind === "made" && unit.frames.length === 2 && unit.frames.every((pcm, i) => pcm.every((x, at) => x === frame(unit.unitId, i)[at]))));
+  assert("nothing made twice, nothing cancelled", worker.said() === script.map((_, i) => `synthesize ${i}`).join() && (await cache.restore(script, VOICES)).every((kept) => kept !== undefined));
+  scheduler.dispose();
 }

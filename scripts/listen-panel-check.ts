@@ -794,6 +794,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
   const port: ListenPort = {
     send: (message) => sent.push(message),
     ahead: () => undefined,
+    render: () => () => undefined,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
