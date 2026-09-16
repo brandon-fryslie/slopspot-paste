@@ -20,10 +20,9 @@
 // [LAW:effects-at-boundaries] The audio element is a parameter, so the check drives the
 // player over a stub; the page hands it `() => new Audio()`.
 
-import { MODEL_ASSETS, type VoiceId } from "./modelAssets";
+import { MODEL_ASSETS, SHA_PREFIX_CHARS, type VoiceId } from "./modelAssets";
 
 export const SAMPLE_PREFIX = "/voices/";
-const SHA_PREFIX_CHARS = 12;
 
 // The sample's file name from its voice and its bytes' hash: what the renderer writes and
 // what the page asks for, one rule.
@@ -74,8 +73,11 @@ export const createSamplePlayer = ({ Audio, onChange }: SamplePlayerConfig): Sam
       audio.src = samplePath(voice);
       settle(voice);
       // A play the browser refuses — no gesture behind it, a network the sample never came
-      // over — is said, and the voice is unlit [LAW:no-silent-failure].
+      // over — is said, and the voice is unlit [LAW:no-silent-failure]. A play superseded
+      // before it began (the pause or the new src of the next `say` rejects it) is not a
+      // refusal of the voice sounding now: only the voice still sounding is unlit.
       audio.play().catch((error: unknown) => {
+        if (sounding !== voice) return;
         console.warn(`voice sample: ${voice} could not play`, error);
         settle(null);
       });

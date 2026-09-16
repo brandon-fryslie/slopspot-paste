@@ -7,6 +7,10 @@
 # flow model with it; Pocket TTS's own `.safetensors` voices hold the prompted state instead,
 # so this script does the prompting itself.
 #
+# The flow model samples noise at every frame, so the render is seeded: the same embedding,
+# release and text are the same audio, and a changed hash in the manifest means a change in
+# one of those, never the die.
+#
 # Usage: python render-voice-sample.py <embedding.safetensors> <language> <text> <out.wav>
 
 import sys
@@ -19,6 +23,7 @@ from pocket_tts.modules.stateful_module import init_states
 
 embedding, language, text, out = sys.argv[1:5]
 model = TTSModel.load_model(language=language)
+torch.manual_seed(0)
 with torch.no_grad():
     prompt = safetensors.torch.load_file(embedding)["audio_prompt"].to(model.device)
     if model.flow_lm.insert_bos_before_voice:

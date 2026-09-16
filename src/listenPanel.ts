@@ -447,9 +447,11 @@ const violation = (state: PanelState, what: string): Error =>
 // the two buttons do not name.
 type Verb = Exclude<PerformerEvent, { kind: "seek" | "rate" }>["kind"];
 const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
-// A phrase and the reading never sound together: a preview pauses the reading (`preview`),
-// and a tap on the transport hushes the phrase — always, since a hush on a silent
-// previewer is its own no-op [LAW:dataflow-not-control-flow].
+// One voice at a time: a phrase pauses the reading (`preview`), and whatever starts to
+// sound — a phrase, the reading at a tap or at the voice's entry, a teardown — hushes the
+// phrase sounding first, always, since a hush on a silent player is its own no-op
+// [LAW:dataflow-not-control-flow]. So the previewer and the sample player never sound
+// together, and `sounding` is whichever one spoke last [LAW:single-enforcer].
 const HUSH: Effect = { kind: "hush" };
 
 // The phases in which a `progress`, `ready` or `load-failed` may arrive.
@@ -537,8 +539,9 @@ const reload = (state: Stage): Step =>
 const gesture = (state: Provisioning, given: Consent): ProvisioningStep => {
   if (state.model.kind === "unsupported") return { state, effects: [] };
   const kicked = kick({ ...state, consent: { ...state.consent, given: raise(state.consent.given, given) } });
-  // A Play hushes the sample sounding first: the voice it brings must not sound over it.
-  return { state: kicked.state, effects: [...(given === "play" && state.sounding !== null ? [HUSH] : []), { kind: "unlock" }, ...kicked.effects] };
+  // A Play hushes the sample sounding first: the voice it brings must not sound over it. A
+  // Download brings no voice, and a sample plays on through it.
+  return { state: kicked.state, effects: [...(given === "play" ? [HUSH] : []), { kind: "unlock" }, ...kicked.effects] };
 };
 
 // The page's visibility with the background's pause lifted: by the reader's Pause or Stop,
@@ -736,11 +739,12 @@ const keeping = (state: PanelState, answer: Keeping): Step =>
 // [LAW:dataflow-not-control-flow] Total over every phase: the reader hears the voice itself
 // once its model is ready on stage, and its sample otherwise (voiceSample.ts). The reading is
 // paused first where there is one — a pause on a paused or idle performer is the player's own
-// no-op — so the phrase is heard alone.
+// no-op — and the phrase sounding is hushed, whichever player it is on, so the new phrase is
+// heard alone.
 const preview = (state: PanelState, voice: VoiceId): Step =>
   state.kind === "neural"
-    ? { state, effects: [perform({ kind: "pause" }), state.model.kind === "ready" ? { kind: "preview", voice } : { kind: "sample", voice }] }
-    : { state, effects: [{ kind: "sample", voice }] };
+    ? { state, effects: [perform({ kind: "pause" }), HUSH, state.model.kind === "ready" ? { kind: "preview", voice } : { kind: "sample", voice }] }
+    : { state, effects: [HUSH, { kind: "sample", voice }] };
 
 const sounding = (state: PanelState, voice: VoiceId | null): Step => stay({ ...state, sounding: voice });
 
@@ -857,7 +861,7 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       // The speed is the reader's, not the panel's, and a teardown is not the reader
       // changing their mind [LAW:one-source-of-truth]. The script starts over with everything
       // else: a teardown may be a bug's, and the device answers the next ask for it at once.
-      return { state: { ...started.state, speed: state.speed, visibility: seen(state.visibility) }, effects: [{ kind: "release", worker: "dispose" }, ...started.effects] };
+      return { state: { ...started.state, speed: state.speed, visibility: seen(state.visibility) }, effects: [HUSH, { kind: "release", worker: "dispose" }, ...started.effects] };
     }
     case "view": {
       if (state.kind === "neural") return background({ ...state, view: event.view });
@@ -866,11 +870,13 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       // The performer's first view: the voice takes the stage at the reader's speed, sent
       // unconditionally so it never speaks a syllable at a speed it left behind, and to the
       // cue when a tap is what brought it — resolved now, on the timeline the voice brings.
-      // A download alone leaves it standing ready, the cue kept for the reader's Play.
+      // A download alone leaves it standing ready, the cue kept for the reader's Play, and
+      // a sample sounding plays on; a voice that speaks hushes it first, as the tap did.
       const speaks = granted(state) === "play";
+      const rate = perform({ kind: "rate", to: state.speed });
       return {
         state: { kind: "neural", model, units: script.units, view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: state.sounding, speed: state.speed, visibility: state.visibility },
-        effects: [perform({ kind: "rate", to: state.speed }), ...(speaks ? [perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : [])],
+        effects: speaks ? [HUSH, rate, perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : [rate],
       };
     }
   }
@@ -1846,12 +1852,15 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       case "release": {
         // A worker can die before the performer exists (the bundle failed to load) or
         // after; either way what exists is released: the previewer and the performer, then
-        // the worker, then the device the performer borrowed.
+        // the worker, then the device the performer borrowed. The previewer is hushed before
+        // it goes — its dispose says nothing, so a phrase it was sounding would otherwise
+        // stay lit in the picker — while a sample, which needs no worker, plays on.
         stopDownload("the voice stopped before the file was made");
         const releasing = neural;
         const hushing = previewer;
         neural = null;
         previewer = null;
+        hushing?.hush();
         hushing?.dispose();
         releasing?.dispose();
         unsubscribe();
@@ -2198,9 +2207,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     // One more event through the same machine: the idle state disarms the frame loop,
     // clears the position, and the controls say what the state says, so a page back from
     // the back-forward cache finds them right.
-    dispose: () => {
-      dispatch({ kind: "dispose" });
-      samples.dispose();
-    },
+    // A dispose hushes the sample inside the machine, so a teardown from a bug hushes it too.
+    dispose: () => dispatch({ kind: "dispose" }),
   };
 };

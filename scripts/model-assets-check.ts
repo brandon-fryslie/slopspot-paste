@@ -60,6 +60,7 @@ import {
   assetKey,
   downloadNeedsTap,
   modelVersion,
+  SHA_PREFIX_CHARS,
   shardPlan,
   type Checkpoint,
   type ModelAsset,
@@ -90,7 +91,7 @@ for (const asset of assets) {
   const plan = shardPlan(asset);
   const tiles = plan.every((s, i) => s.start === (i === 0 ? 0 : plan[i - 1]!.end) && s.end > s.start && s.end - s.start <= SHARD_BYTES);
   assert(`${asset.name}: ${plan.length} part(s) tile [0, ${asset.bytes}) exactly`, tiles && plan[plan.length - 1]!.end === asset.bytes);
-  assert(`${asset.name}: every part url is under ${MODEL_ASSET_PREFIX} and carries the sha prefix`, plan.every((s) => s.url.startsWith(assetKey(asset) + ".part") && assetKey(asset).includes(asset.sha256.slice(0, 12))));
+  assert(`${asset.name}: every part url is under ${MODEL_ASSET_PREFIX} and carries the sha prefix`, plan.every((s) => s.url.startsWith(assetKey(asset) + ".part") && assetKey(asset).includes(asset.sha256.slice(0, SHA_PREFIX_CHARS))));
 }
 assert("weights need more than one part; tokenizer needs exactly one", shardPlan(MODEL_ASSETS.weights).length > 1 && shardPlan(MODEL_ASSETS.tokenizer).length === 1);
 

@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "../src/modelAssets";
+import { MODEL_ASSETS, SHA_PREFIX_CHARS, VOICE_IDS, type VoiceId } from "../src/modelAssets";
 import { createSamplePlayer, SAMPLE_PREFIX, sampleFile, samplePath } from "../src/voiceSample";
 import { StubAudio } from "./playbackStub";
 
@@ -26,7 +26,7 @@ const samplesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "public",
 
 console.log("the samples on disk are the bytes the manifest pins");
 {
-  assert("a sample's path is its voice and a prefix of its hash under the samples' prefix", samplePath("alba") === `/voices/alba-${MODEL_ASSETS.voices.alba.sample.sha256.slice(0, 12)}.m4a`);
+  assert("a sample's path is its voice and a prefix of its hash under the samples' prefix", samplePath("alba") === `/voices/alba-${MODEL_ASSETS.voices.alba.sample.sha256.slice(0, SHA_PREFIX_CHARS)}.m4a`);
   for (const id of VOICE_IDS) {
     const { sample } = MODEL_ASSETS.voices[id];
     let bytes: Buffer | null = null;
@@ -73,6 +73,25 @@ console.log("the player: one voice at a time, told to the picker on every change
   await new Promise((resolve) => setImmediate(resolve));
   console.warn = warn;
   assert("a play the browser refuses: said on the console, and the voice unlit", warned.length === 1 && warned[0]?.includes("alba") === true && changes.map(String).join() === "alba,null");
+}
+{
+  const changes: (VoiceId | null)[] = [];
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => warned.push(String(args[0]));
+  const player = createSamplePlayer({ Audio: () => new StubAudio(), onChange: (voice) => changes.push(voice) });
+  const audio = StubAudio.instances.at(-1);
+  if (audio === undefined) throw new Error("fixture: no audio element");
+  player.say("alba");
+  player.say("marius");
+  audio.abort(0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert("the first play, superseded before it began, is rejected: the second stays lit, nothing said", warned.length === 0 && changes.map(String).join() === "alba,marius");
+  player.hush();
+  audio.abort(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  console.warn = warn;
+  assert("a hushed play rejected after the hush: nothing said, nothing to unlight", warned.length === 0 && changes.map(String).join() === "alba,marius,null");
 }
 
 console.log(process.exitCode === 1 ? "voice-sample-check: FAILED" : "voice-sample-check: ok");

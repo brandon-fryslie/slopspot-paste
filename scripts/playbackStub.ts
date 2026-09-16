@@ -130,9 +130,15 @@ export class StubAudio implements SampleAudio {
   constructor(private readonly refuse: string | null = null) {
     StubAudio.instances.push(this);
   }
+  // A play the element refuses outright, or one left pending — as a real element's is until
+  // it has data — for `abort` to reject later, the way a pause or a new src rejects it.
+  private readonly pending: ((error: Error) => void)[] = [];
   play(): Promise<void> {
     this.plays.push(this.src);
-    return this.refuse === null ? Promise.resolve() : Promise.reject(new Error(this.refuse));
+    return this.refuse === null ? new Promise((_, reject) => this.pending.push(reject)) : Promise.reject(new Error(this.refuse));
+  }
+  abort(play: number): void {
+    this.pending[play]?.(new Error("AbortError"));
   }
   pause(): void {
     this.paused += 1;
