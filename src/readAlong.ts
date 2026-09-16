@@ -40,9 +40,10 @@
 // WHAT IS PAINTED IS SHOWN. The page hides prose the voice reads in two ways: a turn an
 // overlay folded behind a <details>, and long prose clamped under Show more. A word painted
 // there would be a cursor nobody can see, and a follower measuring its empty rect scrolls
-// the page to nowhere. So the painter opens every fold and clamp around what it paints
-// before handing it on; they stay open, so nothing above the reader moves again once the
-// voice has passed.
+// the page to nowhere. So on entering a card the painter opens the card's fold and every
+// clamp around a word it wrapped. Opening belongs to the entry, not to each paint: a reader
+// who closes one while the voice is inside has made a choice the next word must not undo.
+// What was opened stays open, so nothing above the reader moves once the voice has passed.
 
 import { expandClampAround } from "./clampBlocks";
 import type { Place } from "./performer";
@@ -205,13 +206,12 @@ export const RANGE_CLASS = "ra-in";
 export const TURN_CLASS = "speaking";
 
 // Opens every closed fold around `el`, innermost first, and the clamp it sits in: after
-// this, what the painter hands on is laid out where the reader can see it.
-const unfold = (el: Element): Element => {
+// this, `el` is laid out where the reader can see it.
+const unfold = (el: Element): void => {
   for (let fold = el.closest("details:not([open])"); fold !== null; fold = fold.closest("details:not([open])")) {
     fold.setAttribute("open", "");
   }
   expandClampAround(el);
-  return el;
 };
 
 const intersects = (a: WordSpan, b: WordSpan): boolean => a.charStart < b.charEnd && b.charStart < a.charEnd;
@@ -250,6 +250,8 @@ const wrapCard = (doc: Document, anchor: string, turn: ReadonlyArray<Utterance>)
     fragment.append(node.data.slice(cursor));
     node.replaceWith(fragment);
   }
+  unfold(card);
+  for (const words of byUtterance.values()) for (const { el } of words) unfold(el);
   return { anchor, card, byUtterance };
 };
 
@@ -293,7 +295,7 @@ export const createPainter = (doc: Document): Painter => {
       }
     }
     const el = onWord ?? inRange ?? current.card;
-    return el === null ? null : { anchor: current.anchor, el: unfold(el) };
+    return el === null ? null : { anchor: current.anchor, el };
   };
 
   return { paint };

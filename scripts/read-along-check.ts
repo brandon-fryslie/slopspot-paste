@@ -284,6 +284,27 @@ console.log("folds and clamps");
   foldPainter.paint(null);
   assert("both stay open once the voice has left: nothing above the reader moves", fold.open && !clamp.classList.contains("is-collapsed"));
 
+  // The reader closes what the voice is in: the next word is painted, and the choice stands
+  // until the voice enters the card again.
+  const [message, reply] = [turnOf(utterances, "t0"), turnOf(utterances, "t1")];
+  const said = (u: Utterance | undefined, n: number): ReadAlongAt => {
+    if (u === undefined) throw new Error("fixture: no utterance");
+    return at(u, turnOf(utterances, u.anchor), whole(u), wordOf(u, n));
+  };
+  foldPainter.paint(said(message[0], 0));
+  if (!(toggle instanceof foldDom.window.HTMLButtonElement)) throw new Error("fixture: the toggle is not a button");
+  toggle.click();
+  foldPainter.paint(said(message[0], 1));
+  assert("a clamp the reader collapses while the voice reads it stays collapsed at the next word", clamp.classList.contains("is-collapsed") && toggle.textContent === "Show more");
+  foldPainter.paint(said(reply[0], 0));
+  fold.open = false;
+  foldPainter.paint(said(reply[0], 1));
+  assert("a fold the reader closes while the voice reads it stays closed at the next word", !fold.open);
+  foldPainter.paint(said(message[0], 2));
+  foldPainter.paint(said(reply[0], 2));
+  assert("entering the card again opens both again", fold.open && !clamp.classList.contains("is-collapsed"));
+  foldPainter.paint(null);
+
   const inFold = (snippet: string): Text => {
     const walker = foldDoc.createTreeWalker(fold, 4);
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) if ((node as Text).data.includes(snippet)) return node as Text;
