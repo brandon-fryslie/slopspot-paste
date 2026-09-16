@@ -1459,12 +1459,13 @@ export interface ListenPanelConfig {
   readonly home: () => Promise<Residency>;
   readonly keep: () => Promise<Keeping>;
   // The device's remembered preference, read at every render and written by the panel's
-  // box and the mini-player's "Always Download": listenConsent's two edges over window.localStorage in the page, over a Map in the
-  // check. And the connection reading the metered rule judges: navigator.connection, which
+  // box and the mini-player's "Always Download": listenConsent's two edges over the device's
+  // storage in the page (preferenceStore.deviceStore, which reads a refused store as nothing
+  // kept), over a Map in the check. And the connection reading the metered rule judges: navigator.connection, which
   // only Chromium exposes; absent is honestly "unknown".
   readonly preference: { readonly read: () => boolean; readonly write: (remembered: boolean) => void };
   // The device's voice pick, read at every render and at the build, written by the picker:
-  // voiceChoice's two edges over window.localStorage in the page, over a Map in the check.
+  // voiceChoice's two edges over the device's storage in the page, over a Map in the check.
   readonly pick: { readonly read: () => VoicePick; readonly write: (pick: VoicePick) => void };
   readonly connection: () => ConnectionReading | undefined;
   // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
@@ -1477,8 +1478,8 @@ export interface ListenPanelConfig {
   // Called with where the read-along is whenever it moves, and with null when it stops.
   // This is the panel's one outward signal; the state itself is readable through `state()`.
   readonly onPosition: (at: ReadAlongAt | null) => void;
-  // The place kept for this paste on this device: keptPlace's edges over
-  // window.localStorage in the page, keyed by the paste and checked against its prints; over
+  // The place kept for this paste on this device: keptPlace's edges over the device's
+  // storage in the page, keyed by the paste and checked against its prints; over
   // a Map in the check. Read at every render; written wherever the voice speaks; forgotten
   // when a listen runs to its end.
   readonly resume: { readonly read: () => Place | null; readonly write: (place: Place) => void; readonly forget: () => void };

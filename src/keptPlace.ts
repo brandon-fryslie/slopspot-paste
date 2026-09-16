@@ -102,37 +102,20 @@ export const wordStart = (utterances: ReadonlyArray<Utterance>, place: Place): P
 export const RESUME_PREFIX = "listen.resume.";
 const resumeKey = (slug: string): string => `${RESUME_PREFIX}${slug}`;
 
-// [LAW:no-silent-failure] exception: a browser that refuses site storage throws on the store
-// itself; it reads as nothing kept and writes as nothing kept — the resume is a
-// convenience, and a refused store must not take Listen down with it (listenConsent.ts and
-// voiceChoice.ts make the same trade). A kept place that no longer resolves is not an
-// error: it is the honest "nothing to resume".
+// The place kept for a paste, or nothing: a store that holds none, holds what this module did
+// not write, or refuses (deviceStore reads a refused store as nothing) has nothing to resume.
+// A kept place that no longer resolves is not an error either: it is the honest "nothing to
+// resume".
 export const readResume = (store: PreferenceStore, slug: string, page: PrintedPage): Place | null => {
-  try {
-    const kept = parseKept(store.getItem(resumeKey(slug)) ?? "");
-    return kept === null ? null : resolveKept(page, kept);
-  } catch {
-    return null;
-  }
+  const kept = parseKept(store.getItem(resumeKey(slug)) ?? "");
+  return kept === null ? null : resolveKept(page, kept);
 };
 
-export const writeResume = (store: PreferenceStore, slug: string, page: PrintedPage, place: Place): void => {
-  const kept = formatKept(keptOf(page, place));
-  try {
-    store.setItem(resumeKey(slug), kept);
-  } catch {
-    /* storage refused — the place is not kept; the listen under way is unaffected */
-  }
-};
+export const writeResume = (store: PreferenceStore, slug: string, page: PrintedPage, place: Place): void =>
+  store.setItem(resumeKey(slug), formatKept(keptOf(page, place)));
 
 // A listen that ran to its end has nothing to resume.
-export const forgetResume = (store: PreferenceStore, slug: string): void => {
-  try {
-    store.removeItem(resumeKey(slug));
-  } catch {
-    /* storage refused — what it holds is not read back as a place either way */
-  }
-};
+export const forgetResume = (store: PreferenceStore, slug: string): void => store.removeItem(resumeKey(slug));
 
 // ── the link ────────────────────────────────────────────────────────────────────────
 

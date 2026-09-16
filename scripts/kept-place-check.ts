@@ -26,9 +26,8 @@ import {
   type PrintedPage,
 } from "../src/keptPlace";
 import type { Place } from "../src/performer";
-import type { PreferenceStore } from "../src/preferenceStore";
 import type { Utterance } from "../src/speech";
-import { memoryPreferences } from "./preferenceStub";
+import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -133,17 +132,7 @@ console.log("readResume and writeResume: the place kept for this paste on this d
   assert("forgotten: nothing kept, and the key is gone", readResume(store, SLUG, page) === null && store.keys().length === 0);
   store.setItem(`${RESUME_PREFIX}${SLUG}`, "not a place");
   assert("a value this module did not write reads as nothing kept", readResume(store, SLUG, page) === null);
-  const refusing: PreferenceStore = {
-    getItem: () => {
-      throw new Error("SecurityError");
-    },
-    setItem: () => {
-      throw new Error("QuotaExceededError");
-    },
-    removeItem: () => {
-      throw new Error("SecurityError");
-    },
-  };
+  const refusing = refusedPreferences();
   assert("a store that refuses reads as nothing kept, and a write or a forget on it is dropped without a throw", readResume(refusing, SLUG, page) === null && (writeResume(refusing, SLUG, page, ADVANCES), forgetResume(refusing, SLUG), true));
 }
 

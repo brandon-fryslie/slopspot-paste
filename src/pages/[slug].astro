@@ -803,6 +803,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { createListenPanel, listening } from "../listenPanel";
     import { shortcut } from "../shortcuts";
     import { readPreference, writePreference } from "../listenConsent";
+    import { deviceStore } from "../preferenceStore";
     import { MODEL_ASSETS, allModelAssets, type ConnectionReading } from "../modelAssets";
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
@@ -904,6 +905,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // Whether the rest of a paste may be made ahead into that store while the voice is idle:
         // on power or a known-unmetered connection, as the browser reports them (presynthesis.ts).
         const allowance = watchAllowance(navigator as Navigator & DeviceSource);
+        // The device's preferences, in this origin's storage: one store for the download
+        // preference, the voice pick and the resume place. A browser that blocks site data
+        // throws from window.localStorage itself, so the page names it and never reads it:
+        // deviceStore reads it inside its guard on every access [LAW:single-enforcer].
+        const device = deviceStore(() => window.localStorage);
         const panel = createListenPanel({
           controls: {
             play: control<HTMLButtonElement>(".speech-play"),
@@ -962,14 +968,14 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           // The device's remembered preference, in this origin's storage; and the connection
           // reading only Chromium exposes, absent elsewhere.
           preference: {
-            read: () => readPreference(window.localStorage),
-            write: (remembered) => writePreference(window.localStorage, remembered),
+            read: () => readPreference(device),
+            write: (remembered) => writePreference(device, remembered),
           },
           // The device's voice pick, in the same storage: read at every render, written by
           // the picker.
           pick: {
-            read: () => readPick(window.localStorage),
-            write: (pick) => writePick(window.localStorage, pick),
+            read: () => readPick(device),
+            write: (pick) => writePick(device, pick),
           },
           connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
           Device: AudioContext,
@@ -984,9 +990,9 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           // The place kept for this paste, in the same storage, filed under its slug and
           // checked against the page's prints on every read.
           resume: {
-            read: () => readResume(window.localStorage, slug, printed),
-            write: (place) => writeResume(window.localStorage, slug, printed, place),
-            forget: () => forgetResume(window.localStorage, slug),
+            read: () => readResume(device, slug, printed),
+            write: (place) => writeResume(device, slug, printed, place),
+            forget: () => forgetResume(device, slug),
           },
           // A link to the moment: this page's address with the place as its fragment, on the
           // clipboard — which a page not served securely has none of, said as such.
