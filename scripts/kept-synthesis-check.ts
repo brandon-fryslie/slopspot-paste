@@ -41,6 +41,7 @@
 //   the listen asks for a held unit   -> answered from the device; the fill left running
 //   a play over units made ahead      -> served from the device; nothing cancelled, nothing made twice
 
+import { createHash } from "node:crypto";
 import { createCodec } from "../src/audioCodec";
 import { createAudioCache, type AudioCache, type KeptUnit, type UnitRequest } from "../src/keptAudio";
 import { withKeptAudio } from "../src/keptSynthesis";
@@ -67,6 +68,19 @@ const assert = (label: string, cond: boolean): void => {
 // ── fixtures ──────────────────────────────────────────────────────────────────────────
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+// [LAW:effects-at-boundaries] A kept unit's key is a SHA-256 digest, and WebCrypto resolves one
+// on Node's thread pool, a wait no count of `flush` turns bounds: under load the made-ahead
+// blocks below outran it and stopped short (slopspot-read-along-a35.ne6). The same bytes,
+// made at once, so every wait in the cache is a turn the check counts and its outcome no
+// longer depends on how busy the machine is.
+Object.defineProperty(crypto.subtle, "digest", {
+  value: async (algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer> => {
+    if (algorithm !== "SHA-256") throw new Error(`kept-synthesis-check: no stand-in digest for ${JSON.stringify(algorithm)}`);
+    const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+    const digest = createHash("sha256").update(bytes).digest();
+    return digest.buffer.slice(digest.byteOffset, digest.byteOffset + digest.byteLength);
+  },
+});
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 const text = { ...prepareText("Hello there."), source: "Hello there." };
 const synthesize = (unitId: number, voice: SynthesizeRequest["voice"] = "alba"): SynthesizeRequest => ({ kind: "synthesize", unitId, text, voice });
