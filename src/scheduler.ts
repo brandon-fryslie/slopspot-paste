@@ -107,7 +107,7 @@ import type { Manifest, ManifestUnit, RecordRejection, UnitReport, WordStart } f
 import { unitText, type SynthesisUnit, type VoiceMap } from "./speechScript";
 import type { ListenPort, SynthesizeRequest } from "./synthesisClient";
 import type { FromWorker, ToWorker, UnitFailure } from "./synthesisProtocol";
-import { layoutOf, type Slot } from "./timeline";
+import { scriptLayout, type Slot } from "./timeline";
 import type { PlayerEvent, PlayerState, SegmentOffset, UnitPlayer, UnitPlayerConfig } from "./unitPlayer";
 
 // ── the window ─────────────────────────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ export const initialState = (
     lookahead: LOOKAHEAD,
     holdings: script.map(() => ABSENT),
     manifest: { ...empty, units },
-    layout: layoutOf(script.map((unit) => unit.utterance.anchor)),
+    layout: scriptLayout(script),
   };
 };
 
