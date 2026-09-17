@@ -1685,6 +1685,11 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("two rows, six voices each, the defaults checked", picker.querySelectorAll(".voice-row").length === 2 && picker.querySelectorAll(".voice-option").length === 12 && checked() === "alba/javert");
   assert("the rows are named You and Claude", [...picker.querySelectorAll(".voice-role")].map((l) => l.textContent).join() === "You,Claude");
   assert("each name carries its attribution and licence for the hover", part<HTMLElement>(option("assistant", "javert"), ".voice-label").title === "voice-donations/Butter via Kyutai tts-voices · CC0-1.0");
+  // The name labels the radio rather than wrapping it, so that the description below can
+  // start in the name's column; a tap on the name must still pick the voice.
+  part<HTMLLabelElement>(option("user", "eponine"), ".voice-label").click();
+  assert("tapping a name picks its voice, as tapping the radio does", checked() === "eponine/javert");
+  radio("user", "alba").click();
   // The name says nothing, and Kyutai's say something false: Alba is a man's voice.
   const about = (role: string, voice: string): HTMLElement => part<HTMLElement>(option(role, voice), ".voice-about");
   assert("each voice says what it is like beside its name, in both rows", about("user", "alba").textContent === "Low and lively · American · masculine" && about("assistant", "alba").textContent === about("user", "alba").textContent);

@@ -74,18 +74,21 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     for (const child of children) parent.appendChild(child);
   };
   const option = (role: PickedVoice, voice: VoiceId): Option => {
-    const label = el("label", "voice-label");
-    label.title = voiceCredit(voice);
     const radio = el("input", "voice-radio");
     radio.type = "radio";
+    radio.id = `voice-${role}-${voice}`;
     radio.name = `voice-${role}`;
     radio.value = voice;
     radio.addEventListener("change", () => {
       if (radio.checked) on.pick(role, voice);
     });
-    const name = el("span", "voice-name");
-    name.textContent = voiceName(voice);
-    attach(label, radio, name);
+    // The name is the radio's label rather than its wrapper, so the radio is a cell of the
+    // option's grid and the description below it starts in the name's column without a
+    // measured indent; tapping the name still picks the voice, which is what `for` means.
+    const label = el("label", "voice-label");
+    label.htmlFor = radio.id;
+    label.title = voiceCredit(voice);
+    label.textContent = voiceName(voice);
     const preview = el("button", "voice-preview");
     preview.type = "button";
     preview.setAttribute("aria-label", `Hear ${voiceName(voice)}`);
@@ -99,7 +102,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     attach(head, label, preview);
     const cell = el("div", "voice-option");
     cell.dataset.voice = voice;
-    attach(cell, head, about);
+    attach(cell, radio, head, about);
     return { role, voice, cell, radio, preview };
   };
   const options = PICKED_VOICES.flatMap((role) => {
