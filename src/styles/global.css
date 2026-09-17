@@ -3348,7 +3348,10 @@ body:has(.diff-aligned) main { max-width: 1400px; }
    and the legend takes the muted mono voice of the panel's other labels. */
 .voice-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  /* `min(…, 100%)` and not a bare 300px: a track's minimum is a floor the row cannot go
+     under, so on a phone the options would lay out wider than the panel and push a
+     horizontal scrollbar under them. Below two columns' worth the floor is the panel. */
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: 10px 18px;
   width: 100%;
   margin: 0;
@@ -3357,7 +3360,6 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   min-width: 0;
 }
 .voice-role {
-  grid-column: 1 / -1;
   width: 100%;
   padding: 0;
   margin-bottom: 2px;
@@ -3386,7 +3388,7 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .voice-about {
   grid-column: 2;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.02em;
   color: var(--fg-muted);
 }

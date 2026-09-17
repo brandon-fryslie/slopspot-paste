@@ -117,7 +117,7 @@ export type VoiceRegister = "masculine" | "feminine";
 export interface VoiceQualities {
   // How it sounds, two words: "Deep and breathy".
   readonly character: string;
-  // Where it sounds from: "American", "Scottish", "North American".
+  // Where it sounds from: "American", "English", "North American".
   readonly accent: string;
   readonly register: VoiceRegister;
 }
@@ -135,6 +135,18 @@ export interface VoiceQualities {
 // donors' voices are breathy and raspy, not because the recordings are noisy: denoising
 // them moves nothing), accent by a CommonAccent classifier over the recording in chunks,
 // and register by an age-and-gender classifier. A new voice is described the same way.
+//
+// WHERE THE TWO DISAGREE, THE SAMPLE WINS, because the sample is the voice: the recording
+// says who donated it, and the reader never hears that. Éponine is why the rule is written
+// down. Her donated recording classifies as Scottish, and by her name and her corpus she
+// "is" Scottish — but the voice this model makes of her does not carry it: on the sample a
+// reader actually hears, Scotland is not in the top three at all (us 0.55, canada 0.43).
+// Calling her Scottish would have been the same false promise as the names themselves.
+//
+// AND A CLAIM IS NO FIRMER THAN ITS MARGIN. The classifier's top label is only worth the
+// distance to its runner-up, so where the two are neighbours within about 0.15 the region
+// is named instead of the country — Éponine and Azelma are both North American on that
+// rule (margins 0.12 and 0.13), while Fantine's England leads by 0.45 and is named flat.
 export interface VoiceAsset extends ModelAsset {
   readonly sample: Pinned;
   readonly qualities: VoiceQualities;
@@ -220,7 +232,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       licence: "CC-BY-4.0",
       attribution: "VCTK p262 via Kyutai tts-voices",
       sample: { bytes: 28241, sha256: "9a1be33f7646d06fc8ac6b75cda3be47cb5a9ff8c1f12bf4d95dc76995532ef8" },
-      qualities: { character: "Warm and even", accent: "Scottish", register: "feminine" },
+      qualities: { character: "Warm and even", accent: "North American", register: "feminine" },
     }),
     azelma: voice({
       id: "azelma",

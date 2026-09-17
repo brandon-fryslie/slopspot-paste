@@ -81,7 +81,7 @@ console.log("the voices as the reader meets them");
 console.log("what each voice is like, in the words a reader picks by");
 {
   // [LAW:behavior-not-structure] What a reader reads beside a name, not how it is stored.
-  assert("a description is what it sounds like, where it sounds from, and which register", voiceDescription("eponine") === "Warm and even · Scottish · feminine");
+  assert("a description is what it sounds like, where it sounds from, and which register", voiceDescription("eponine") === "Warm and even · North American · feminine");
   const described = VOICE_IDS.map((id) => voiceDescription(id));
   assert("every hosted voice is described: three parts, none of them empty", described.every((line) => line.split(" · ").length === 3 && line.split(" · ").every((part) => part.trim().length > 0)));
   assert("no two voices read alike: the description is what tells them apart", new Set(described).size === VOICE_IDS.length);

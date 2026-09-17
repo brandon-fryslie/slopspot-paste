@@ -76,7 +76,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
   const option = (role: PickedVoice, voice: VoiceId): Option => {
     const radio = el("input", "voice-radio");
     radio.type = "radio";
-    radio.id = `voice-${role}-${voice}`;
+    radio.id = `${root.id}-radio-${role}-${voice}`;
     radio.name = `voice-${role}`;
     radio.value = voice;
     radio.addEventListener("change", () => {
@@ -95,7 +95,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     preview.textContent = "▶";
     preview.addEventListener("click", () => on.preview(voice));
     const about = el("span", "voice-about");
-    about.id = `voice-about-${role}-${voice}`;
+    about.id = `${root.id}-about-${role}-${voice}`;
     about.textContent = voiceDescription(voice);
     radio.setAttribute("aria-describedby", about.id);
     const head = el("span", "voice-head");
@@ -125,6 +125,12 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
 };
 
 export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): VoicePicker => {
+  // [LAW:no-silent-failure] Every option's id is scoped by the root's, because a document
+  // resolves a `for` to the FIRST id that matches: two pickers sharing a namespace would
+  // leave the second one's names quietly checking the first one's radios and calling the
+  // first one's handler, moving nothing on screen. An id-less root has no namespace to
+  // lend, so it is refused here rather than mounting a picker that works until it doesn't.
+  if (root.id === "") throw new Error("mountVoicePicker: the picker's root needs an id — the options' ids are scoped by it");
   const { options, note, reset } = build(root, on);
   return {
     render: (shown) => {

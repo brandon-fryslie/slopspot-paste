@@ -47,6 +47,7 @@ import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
 import { DEFAULT_PICK, DEFAULT_VOICES, PICKED_VOICES, readPick, writePick } from "../src/voiceChoice";
+import { mountVoicePicker } from "../src/voicePicker";
 import { samplePath } from "../src/voiceSample";
 import { FRAME_S, frame, StubAudio, StubDevice } from "./playbackStub";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
@@ -650,7 +651,7 @@ const MARKUP = `<!DOCTYPE html><body>
     <button class="speech-voices-toggle" type="button" aria-expanded="false">Voices</button>
     <label class="speech-remember"><input type="checkbox" /><span>Always download the voice on this device</span></label>
   </div>
-  <div class="speech-voices" hidden></div>
+  <div class="speech-voices" id="speech-voices" hidden></div>
   <div class="listen-mark" data-state="checking">
     <button class="listen-mark-button" type="button" aria-expanded="false" aria-label="Listen"><span class="listen-mark-glyph"></span></button>
     <div class="listen-mini" data-face="progress" hidden>
@@ -1694,6 +1695,18 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   const about = (role: string, voice: string): HTMLElement => part<HTMLElement>(option(role, voice), ".voice-about");
   assert("each voice says what it is like beside its name, in both rows", about("user", "alba").textContent === "Low and lively · American · masculine" && about("assistant", "alba").textContent === about("user", "alba").textContent);
   assert("every option carries one, and no two rows share an id", picker.querySelectorAll(".voice-about").length === 12 && new Set([...picker.querySelectorAll(".voice-about")].map((el) => el.id)).size === 12);
+  // A document resolves a name's `for` to the first id that matches, so two pickers sharing
+  // a namespace would leave the second one driving the first. The root lends its own.
+  assert("every id a picker makes is scoped by its root's, so a second picker drives its own radios", [...picker.querySelectorAll(".voice-about, .voice-radio")].every((el) => el.id.startsWith(`${picker.id}-`)));
+  assert("a root with no id has no namespace to lend, and is refused rather than mounted", ((): boolean => {
+    const bare = picker.ownerDocument.createElement("div");
+    try {
+      mountVoicePicker(bare, { pick: () => {}, preview: () => {}, reset: () => {} });
+      return false;
+    } catch {
+      return true;
+    }
+  })());
   assert("the description is the radio's, so the option announces as its name and then what it sounds like", VOICE_IDS.every((voice) => PICKED_VOICES.every((role) => radio(role, voice).getAttribute("aria-describedby") === about(role, voice).id)));
   assert("cold: every voice can be heard, the note says they are samples; nothing to reset", previews().every((b) => !b.disabled) && !note.hidden && note.textContent === "Samples · the voice itself plays once it is ready on this device." && reset.disabled);
   assert("plays are named for assistive tech", hear("azelma").getAttribute("aria-label") === "Hear Azelma");
