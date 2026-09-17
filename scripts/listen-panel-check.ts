@@ -1746,6 +1746,36 @@ console.log("createListenPanel: a cued word survives the re-seat, because a cue 
   panel.dispose();
 }
 
+console.log("createListenPanel: a re-seat that cannot be made is not half made");
+{
+  const r = rig();
+  const panel = mount(r);
+  const digest: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "They ask about the build." };
+  const withDigest = [digest, one, two];
+
+  // A mapper that refuses is not a hypothetical: spokenPlace.ts throws a RangeError for a
+  // place counted in no list it knows, and the page hands its mapper straight in.
+  panel.send({ kind: "place", to: mark(1, 4) });
+  let refused: unknown = null;
+  try {
+    panel.reseat(withDigest, () => {
+      throw new RangeError("that place is counted in no list here");
+    });
+  } catch (error) {
+    refused = error;
+  }
+  assert("the refusal is said, never absorbed", refused instanceof RangeError);
+  assert("and the panel is back at its start, as any bug out of a dispatch leaves it", panel.state().kind === "provisioning" && panel.state().model.kind === "idle");
+
+  // The point of the rollback: the driver must not be left holding the page the panel
+  // refused. What it asks for next is the list it still has.
+  r.play.click();
+  const asked = r.sent.filter((m): m is Extract<typeof m, { kind: "script" }> => m.kind === "script");
+  assert("the next script it asks for is the page it never left", asked.at(-1)?.utterances === utterances);
+
+  panel.dispose();
+}
+
 {
   const r = rig();
   const panel = mount(r);

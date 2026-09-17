@@ -2308,9 +2308,23 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       // it composes the prints that go with these utterances, so a caller that asked and
       // acted is never refused here; one that did not is a bug, said rather than absorbed.
       if (!reseatable(state)) throw violation(state, "a page re-seated");
+      // The list has to be in place before the dispatch, because the step and the render it
+      // drives read it. So the crossing is made whole here instead: a dispatch that throws
+      // tears the machine down to where it started, and a driver left holding the new list
+      // while its caller holds the old would go on taking taps counted in one and seeking in
+      // the other, off by the digests between them and saying nothing about it
+      // [LAW:no-silent-failure]. Either both lists move or neither does.
+      const wasSaid = said;
+      const wasPage = page;
       said = utterances;
       page = pageOf(said);
-      dispatch({ kind: "page", recue });
+      try {
+        dispatch({ kind: "page", recue });
+      } catch (error) {
+        said = wasSaid;
+        page = wasPage;
+        throw error;
+      }
     },
   };
 };

@@ -1287,15 +1287,25 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           const was = spoken;
           saying = wanted;
           const composed = withDigests(utterances, wanted);
-          // The panel holds a cue — a link's word, or a sentence the reader tapped — counted
-          // in the list it was seated with. Only the page knows both lists, so only the page
-          // can say where that place is now: out to the page it was always about, and back in
-          // to where it is said [LAW:one-source-of-truth].
-          panel.reseat(composed.utterances, (place) => spokenPlace(composed, pagePlace(was, place)));
-          // Last, and only once the panel is holding it. `reseat` can throw, and a `spoken`
-          // moved ahead of it would describe a list nothing holds — every later share and
-          // resume then naming the wrong word, quietly.
+          // Moved BEFORE the panel is told, because telling it RENDERS: `reseat` dispatches
+          // synchronously, and that render reads the kept place back out through this very
+          // value (`resume.read` above). Left behind for the length of that call, the offer
+          // would be drawn by mapping through the old list against the panel's new one, and
+          // the mini-player would name a word nobody kept [LAW:no-ambient-temporal-coupling].
           spoken = composed;
+          try {
+            // The panel holds a cue — a link's word, or a sentence the reader tapped —
+            // counted in the list it was seated with. Only the page knows both lists, so only
+            // the page can say where that place is now: out to the page it was always about,
+            // and back in to where it is said [LAW:one-source-of-truth].
+            panel.reseat(composed.utterances, (place) => spokenPlace(composed, pagePlace(was, place)));
+          } catch (error) {
+            // Both sides step back together. A `spoken` left ahead of a panel that refused
+            // the list would describe one nothing holds, and every later share and resume
+            // would name the wrong word, quietly [LAW:no-silent-failure].
+            spoken = was;
+            throw error;
+          }
         };
         // [LAW:no-silent-failure] The one way this page composes: a composition that throws —
         // a digest for a turn the page says nothing of, which is a broken invariant between
@@ -1311,12 +1321,25 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           }
         };
 
-        // [LAW:no-ambient-temporal-coupling] One composition at a time, and exactly one more
-        // whenever a digest landed while one was running. The wait is the digest panel's own
-        // settling rather than a count of arrivals or a timer: a walk derives turn after turn,
-        // and composing on each would re-cut the whole script forty times for one reader.
-        // `again` is what makes the loop end — only a real arrival sets it — and what makes it
-        // complete: a digest that lands during a composition is never the one left unsaid.
+        // One composition at a time, and exactly one more whenever a digest landed while one
+        // was running. `again` is what ends the loop — only a real arrival sets it — and what
+        // makes it complete: a digest that lands during a composition is never the one left
+        // unsaid.
+        //
+        // WHY A PAUSE AND NOT THE PANEL'S OWN `settled()`. Settling waits for the walk to stop
+        // GROWING, which is the whole reading-order walk over every pending turn — minutes on
+        // a long paste with a slow summarizer. The door this composition goes through does not
+        // stay open that long: a reader whose voice is already on the device takes the stage
+        // within seconds of the mount, and from there the page is seated for the visit.
+        // Waiting for the LAST digest is how a reader ends up hearing none of them, with the
+        // choice showing checked; what is ready goes in, and what lands after it goes in next
+        // time [LAW:no-silent-failure].
+        //
+        // The pause is what keeps that from re-cutting the script once per turn. Long enough
+        // that a burst of arrivals composes once, short enough to be inside the time a reader
+        // takes to reach for Listen — and a trailing edge, never a wait for quiet: under a
+        // steady walk it still composes on every tick rather than never.
+        const ARRIVALS_BATCH_MS = 250;
         let composing = false;
         let again = false;
         digestArrived = () => {
@@ -1326,7 +1349,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           void (async () => {
             while (again) {
               again = false;
-              await digests?.settled();
+              await new Promise((wake) => setTimeout(wake, ARRIVALS_BATCH_MS));
               recompose();
             }
             composing = false;
