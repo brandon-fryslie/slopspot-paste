@@ -582,7 +582,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             </div>
             <progress class="speech-progress" hidden></progress>
             <p class="speech-now" aria-live="polite"></p>
-            <button class="mono-pill speech-voices-toggle" type="button" aria-expanded="false" aria-controls="speech-voices">Voices</button>
+            <button class="mono-pill voice-picker-toggle speech-voices-toggle" type="button" aria-expanded="false" aria-controls="speech-voices">Voices</button>
             <label class="speech-remember">
               <input type="checkbox" />
               <span>Always download the voice on this device</span>
@@ -606,7 +606,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           </div>
           {/* The voice picker's rows are built here by voicePicker.ts from the manifest's
               voices, so the markup carries no name it would have to keep in step with. */}
-          <div class="speech-voices" id="speech-voices" hidden></div>
+          <div class="voice-picker" id="speech-voices" hidden></div>
           <pre class="speech-payload" hidden aria-hidden="true" data-prints={prints.join(" ")}>{JSON.stringify(utterances)}</pre>
         </section>
       )}
@@ -786,6 +786,17 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           <div class="listen-mini-offer" hidden>
             <button class="mono-pill listen-mini-resume" type="button" hidden></button>
             <p class="listen-mini-gone" role="status" hidden></p>
+          </div>
+          {/* Voice choice where the reading happens (slopspot-voices-9p4.95s). It sits beside
+              the faces rather than inside one, so the voices are one tap away whatever the
+              face is saying: while the download question stands, while the download runs, and
+              mid-listen. The rows are built into the empty block by voicePicker.ts from the
+              manifest, exactly as the panel's are — the same handlers and the same readout,
+              and an id of its own, which is the radio group the picker names itself by
+              [LAW:one-source-of-truth]. */}
+          <div class="listen-mini-voices">
+            <button class="mono-pill voice-picker-toggle listen-mini-voices-toggle" type="button" aria-expanded="false" aria-controls="listen-mini-picker">Voices</button>
+            <div class="voice-picker listen-mini-picker" id="listen-mini-picker" hidden></div>
           </div>
           <div class="listen-mini-face" data-face="consent" hidden>
             <p class="listen-mini-ask"></p>
@@ -1030,7 +1041,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // ── the transport ───────────────────────────────────────────────────────────────────
 
     const controls = document.querySelector(".speech-controls");
-    const voicesEl = document.querySelector<HTMLElement>(".speech-voices");
+    const voicesEl = document.querySelector<HTMLElement>("#speech-voices");
     const payloadEl = document.querySelector(".speech-payload");
     const markEl = document.querySelector<HTMLElement>(".listen-mark");
 
@@ -1172,6 +1183,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               offer: markPart<HTMLElement>(".listen-mini-offer"),
               resume: markPart<HTMLButtonElement>(".listen-mini-resume"),
               gone: markPart<HTMLElement>(".listen-mini-gone"),
+              voices: {
+                toggle: markPart<HTMLButtonElement>(".listen-mini-voices-toggle"),
+                picker: markPart<HTMLElement>(".listen-mini-picker"),
+              },
             },
           },
           utterances,

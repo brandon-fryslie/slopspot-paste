@@ -166,7 +166,7 @@ import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProt
 import { clockText, cursorIn, estimated, landmark, landmarks, placeIn, pointAt, startAt, startIn, timeAt, timeOfStart, timelineOfUtterances, type Cursor, type Point, type Start, type Timeline } from "./timeline";
 import { MODEL_PCM, openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
 import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
-import { mountVoicePicker, type Audition, type VoicesReadout } from "./voicePicker";
+import { mountVoicePicker, type Audition, type VoicePicker, type VoicePickerHandlers, type VoicesReadout } from "./voicePicker";
 import { createPreviewer, type Previewer } from "./voicePreview";
 import { createSamplePlayer, type SampleAudio } from "./voiceSample";
 
@@ -1492,10 +1492,18 @@ export interface MiniControls {
   readonly offer: HTMLElement;
   readonly resume: HTMLButtonElement;
   readonly gone: HTMLElement;
+  // Voice choice where the reading happens (slopspot-voices-9p4.95s): a disclosure of its
+  // own, beside the faces rather than inside one, so the reader can reach the voices while
+  // the question stands, while the download runs and while a voice is speaking. It sits
+  // inside this root, so the mark's fold hides it and `handOff` already carries focus out
+  // of it [LAW:single-enforcer].
+  readonly voices: VoiceControls;
 }
 
-// The voice picker's markup: the button in the transport that opens and closes it, and the
-// empty block the rows are built into (voicePicker.ts).
+// The voice picker's markup: the button that opens and closes it, and the empty block the
+// rows are built into (voicePicker.ts). One shape for both places the picker is offered —
+// the dock panel's row and the mini-player's — so neither place is the special one
+// [LAW:one-type-per-behavior].
 export interface VoiceControls {
   readonly toggle: HTMLButtonElement;
   readonly picker: HTMLElement;
@@ -1650,11 +1658,36 @@ const renderMini = (mini: MiniControls, face: MiniFace, offer: Offer | null, sta
   mini.play.setAttribute("aria-label", controls.play === "pause" ? "Pause" : "Play");
 };
 
+// [LAW:one-source-of-truth] Every place the voice picker is offered, in one list: the dock
+// panel's row, and the mini-player's, where the reading happens. Adding a place is adding an
+// entry — the mount, the open/close wiring and the render below all read this one list, so a
+// place cannot exist in one of them and be missed by the others.
+const voicePlaces = (controls: ListenControls): ReadonlyArray<VoiceControls> => [controls.voices, controls.mini.voices];
+
+// [LAW:composability] The mounted pickers as one picker. A picker holds no state — every
+// render writes every attribute from the readout it is handed (voicePicker.ts) — so two of
+// them agree only while both are handed the same readout on every render. Folding them into
+// a single `VoicePicker` is what makes that unconditional rather than remembered: `render`
+// below takes one picker and hands it one readout, and cannot learn there are two.
+const everyPicker = (mounted: ReadonlyArray<VoicePicker>): VoicePicker => ({
+  render: (shown: VoicesReadout) => {
+    for (const picker of mounted) picker.render(shown);
+  },
+});
+
 // [LAW:dataflow-not-control-flow] Every attribute written on every render, only the values
 // vary: no path leaves a stale form, a stale sentence or a stale ring behind. Whether the
 // mini-player is `out` is the one input the readout does not carry: the driver's word,
 // from the reader's toggle and the voice's place.
-const render = (controls: ListenControls, picker: { readonly render: (shown: VoicesReadout) => void }, shown: Readout, out: boolean): void => {
+const render = (controls: ListenControls, picker: VoicePicker, shown: Readout, out: boolean): void => {
+  const { mark, mini } = controls;
+  // [LAW:single-enforcer] Who held focus coming IN, read before this render writes anything.
+  // `handOff` below is the one place that lands focus, and it answers by what `held` was
+  // when the render began: a control this render is about to disable or hide is still the
+  // reader's place until it is carried somewhere. Read it any later and the reading is of
+  // our own writes — disabling the focused element drops focus to `<body>`, which `handOff`
+  // reads as "not in the mini-player" and leaves the reader at the top of the document.
+  const held = mini.root.ownerDocument.activeElement;
   picker.render(shown.voices);
   controls.play.textContent = shown.play.label;
   controls.play.disabled = !shown.play.enabled;
@@ -1669,12 +1702,10 @@ const render = (controls: ListenControls, picker: { readonly render: (shown: Voi
   controls.progress.max = shown.progress?.totalBytes ?? 1;
   controls.progress.value = shown.progress?.loadedBytes ?? 0;
   controls.remember.checked = shown.remembered;
-  const { mark, mini } = controls;
   mark.root.dataset.state = shown.mark.kind;
   mark.root.style.setProperty("--fraction", String(shown.mark.kind === "downloading" ? shown.mark.fraction : 0));
   // The sentence names the mark for assistive tech.
   mark.button.setAttribute("aria-label", `Listen: ${shown.status}`);
-  const held = mini.root.ownerDocument.activeElement;
   renderMini(mini, shown.mini, shown.offer, shown.status);
   mini.root.hidden = !out;
   mark.button.setAttribute("aria-expanded", String(out));
@@ -1973,19 +2004,21 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     }
   };
 
-  // The picker's rows, built once into the page's empty block; a pick is written to the
-  // device and the map derived from what the device then holds — the same read the
-  // readout makes — so the voice on stage and the rows can never disagree
-  // [LAW:one-source-of-truth].
+  // The picker's rows, built once into each empty block; a pick is written to the device and
+  // the map derived from what the device then holds — the same read the readout makes — so
+  // the voice on stage and the rows can never disagree [LAW:one-source-of-truth].
   const repick = (pick: VoicePick): void => {
     config.pick.write(pick);
     dispatch({ kind: "voices", voices: voiceMapOf(config.pick.read()) });
   };
-  const picker = mountVoicePicker(controls.voices.picker, {
+  // One set of handlers for every place the picker is offered: a tap means the same thing in
+  // the panel and in the mini-player, because it IS the same thing [LAW:single-enforcer].
+  const on: VoicePickerHandlers = {
     pick: (role: PickedVoice, voice: VoiceId) => repick({ ...config.pick.read(), [role]: voice }),
     preview: (voice) => dispatch({ kind: "preview", voice }),
     reset: () => repick(DEFAULT_PICK),
-  });
+  };
+  const picker = everyPicker(voicePlaces(controls).map((place) => mountVoicePicker(place.picker, on)));
 
   // [LAW:no-shared-mutable-globals] Whether a link this visit opened named a place the page
   // no longer has: owned here, set by `open`, and spent by the reader's next gesture, which
@@ -2249,15 +2282,19 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     send({ kind: "scrub", toMs: Number(controls.scrub.value) });
   });
 
-  // Whether the picker is open is a fact of the markup alone, owned here, as the
-  // mini-player's fold is: the machine has no state for it [LAW:one-source-of-truth].
-  const { voices: voiceControls } = controls;
-  const open = (shown: boolean): void => {
-    voiceControls.picker.hidden = !shown;
-    voiceControls.toggle.setAttribute("aria-expanded", String(shown));
-  };
-  open(false);
-  voiceControls.toggle.addEventListener("click", () => open(voiceControls.picker.hidden));
+  // Whether a picker is open is a fact of its own markup alone, owned here, as the
+  // mini-player's fold is: the machine has no state for it [LAW:one-source-of-truth]. Each
+  // place opens and closes on its own — the panel's rows and the mini-player's are two views
+  // of one pick, not one disclosure shown in two places — and both start closed, so nothing
+  // the reader did not ask for is in their way.
+  for (const place of voicePlaces(controls)) {
+    const open = (shown: boolean): void => {
+      place.picker.hidden = !shown;
+      place.toggle.setAttribute("aria-expanded", String(shown));
+    };
+    open(false);
+    place.toggle.addEventListener("click", () => open(place.picker.hidden));
+  }
 
   // The mark's tap is the mini-player's toggle over what the reader SEES: a tap on a
   // player that is out asks to fold it, whether the reader's toggle or the voice's place

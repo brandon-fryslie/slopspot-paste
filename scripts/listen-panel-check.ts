@@ -654,16 +654,20 @@ const MARKUP = `<!DOCTYPE html><body>
     <span class="speech-left"></span>
     <progress class="speech-progress" hidden></progress>
     <p class="speech-now"></p>
-    <button class="speech-voices-toggle" type="button" aria-expanded="false">Voices</button>
+    <button class="voice-picker-toggle speech-voices-toggle" type="button" aria-expanded="false">Voices</button>
     <label class="speech-remember"><input type="checkbox" /><span>Always download the voice on this device</span></label>
   </div>
-  <div class="speech-voices" id="speech-voices" hidden></div>
+  <div class="voice-picker" id="speech-voices" hidden></div>
   <div class="listen-mark" data-state="checking">
     <button class="listen-mark-button" type="button" aria-expanded="false" aria-label="Listen"><span class="listen-mark-glyph"></span></button>
     <div class="listen-mini" data-face="progress" hidden>
       <div class="listen-mini-offer" hidden>
         <button class="listen-mini-resume" type="button" hidden></button>
         <p class="listen-mini-gone" hidden></p>
+      </div>
+      <div class="listen-mini-voices">
+        <button class="voice-picker-toggle listen-mini-voices-toggle" type="button" aria-expanded="false" aria-controls="listen-mini-picker">Voices</button>
+        <div class="voice-picker listen-mini-picker" id="listen-mini-picker" hidden></div>
       </div>
       <div class="listen-mini-face" data-face="consent" hidden>
         <p class="listen-mini-ask"></p>
@@ -791,6 +795,24 @@ interface VisitSetup {
 const rig = (setup: VisitSetup = {}): Rig => {
   const dom = new JSDOM(MARKUP);
   const doc = dom.window.document;
+  // [FRAMING:representation] The fixture is a map of a browser, and here jsdom is not one:
+  // it leaves focus sitting on a button that has just been disabled, where every browser
+  // moves it to `<body>`. The panel turns on exactly that difference — `handOff` lands focus
+  // by what `activeElement` was when the render began, so a render that disabled the reader's
+  // control before reading it would read `<body>`, conclude the focus was never in the
+  // mini-player, and leave them at the top of the document. Unmodelled, the assertions below
+  // would pass whether or not the render reads focus first: a check that cannot observe what
+  // it certifies [LAW:no-silent-failure]. The blur precedes the disable because jsdom will
+  // not blur an element it already considers unfocusable.
+  const buttons = dom.window.HTMLButtonElement.prototype;
+  const wasDisabled = Object.getOwnPropertyDescriptor(buttons, "disabled") as PropertyDescriptor;
+  Object.defineProperty(buttons, "disabled", {
+    ...wasDisabled,
+    set(this: HTMLButtonElement, value: boolean) {
+      if (value && doc.activeElement === this) this.blur();
+      (wasDisabled.set as (value: boolean) => void).call(this, value);
+    },
+  });
   const el = <T extends Element>(selector: string): T => {
     const found = doc.querySelector<T>(selector);
     if (found === null) throw new Error(`fixture: no ${selector}`);
@@ -901,6 +923,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     offer: el(".listen-mini-offer"),
     resume: el(".listen-mini-resume"),
     gone: el(".listen-mini-gone"),
+    voices: { toggle: el(".listen-mini-voices-toggle"), picker: el(".listen-mini-picker") },
   };
   // The face as the DOM shows it — the one face not hidden — and what it says.
   const shownFace = (): string => {
@@ -947,7 +970,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     remember,
     mark,
     mini,
-    voices: { toggle: el(".speech-voices-toggle"), picker: el(".speech-voices") },
+    voices: { toggle: el(".speech-voices-toggle"), picker: el("#speech-voices") },
     now: 0,
     doc,
     port,
@@ -1915,6 +1938,96 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   part<HTMLButtonElement>(again.voices.picker, '.voice-row[data-role="user"] .voice-option[data-voice="alba"] .voice-preview').click();
   assert("a preview with the voice on stage but idle: nothing to pause, the phrase asked", again.line() === "Listen | stop(off) | Ready" && again.said().endsWith("synthesize -1"));
   reloaded.dispose();
+}
+
+// The picker is offered in two places now (slopspot-voices-9p4.95s): the dock panel's row,
+// and the mini-player, where the reading actually happens. A picker holds no state — every
+// render writes every attribute from the readout it is handed — so the two agree only while
+// both are handed the same readout on every render. That is what this block is for: not that
+// a second picker exists, but that neither can show a pick the other does not.
+console.log("createListenPanel: the voice picker in the mini-player — one pick, wherever the reader opens it");
+{
+  const r = rig();
+  const panel = mount(r);
+  const dock = r.voices;
+  const mini = r.mini.voices;
+  const pickedIn = (root: HTMLElement): string =>
+    ["user", "assistant"].map((role) => root.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
+  const optionIn = (root: HTMLElement, role: string, voice: string): HTMLElement => {
+    const found = root.querySelector<HTMLElement>(`.voice-row[data-role="${role}"] .voice-option[data-voice="${voice}"]`);
+    if (found === null) throw new Error(`fixture: no option ${role}/${voice} in ${root.id}`);
+    return found;
+  };
+  const partIn = <T extends Element>(root: ParentNode, selector: string): T => {
+    const found = root.querySelector<T>(selector);
+    if (found === null) throw new Error(`fixture: no ${selector}`);
+    return found;
+  };
+  const pickIn = (root: HTMLElement, role: string, voice: string): void => {
+    partIn<HTMLInputElement>(optionIn(root, role, voice), "input").click();
+  };
+  const soundingIn = (root: HTMLElement): string =>
+    [...root.querySelectorAll<HTMLButtonElement>(".voice-preview")].filter((b) => b.dataset.sounding === "true").map((b) => b.getAttribute("aria-label")).join();
+  const both = (): string => `${pickedIn(dock.picker)} | ${pickedIn(mini.picker)}`;
+
+  assert("the mini-player carries a picker of its own: the same two rows, the same six voices", mini.picker.querySelectorAll(".voice-row").length === 2 && mini.picker.querySelectorAll(".voice-option").length === 12);
+  assert("both start closed, each toggle saying so", dock.picker.hidden && mini.picker.hidden && dock.toggle.getAttribute("aria-expanded") === "false" && mini.toggle.getAttribute("aria-expanded") === "false");
+  // Two disclosures, not one shown twice: opening where the reader is reaching must not
+  // unfold the other place behind the dock's panel.
+  mini.toggle.click();
+  assert("the mini-player's toggle opens its own picker and leaves the panel's closed", !mini.picker.hidden && mini.toggle.getAttribute("aria-expanded") === "true" && dock.picker.hidden && dock.toggle.getAttribute("aria-expanded") === "false");
+  dock.toggle.click();
+  assert("and the panel's opens its own, both open at once without either closing the other", !dock.picker.hidden && !mini.picker.hidden);
+  // Radios group by name across a whole document, so without its own namespace the second
+  // picker would silently uncheck the first one's rows (voicePicker.ts, namespaceOf).
+  assert("the two pickers name their radio groups apart, so neither drives the other's rows", mini.picker.id !== "" && mini.picker.id !== dock.picker.id && [...mini.picker.querySelectorAll<HTMLInputElement>(".voice-radio")].every((el) => el.name.startsWith(`${mini.picker.id}-`)) && [...dock.picker.querySelectorAll<HTMLInputElement>(".voice-radio")].every((el) => el.name.startsWith(`${dock.picker.id}-`)));
+  // A block says what it IS by class and WHICH one it is by id. If the class said both, it
+  // would match two elements, and whoever selected a picker by it would get whichever the
+  // markup rendered first — so a second picker's rows could be built into the first's block,
+  // twice the options with colliding ids, and nothing would throw.
+  assert("each block is named for what it is by class and for which it is by id, so neither can be selected in the other's place", dock.picker.classList.contains("voice-picker") && mini.picker.classList.contains("voice-picker") && dock.picker.id === "speech-voices" && mini.picker.id === "listen-mini-picker" && r.doc.querySelectorAll(".voice-picker").length === 2 && r.doc.querySelectorAll("#speech-voices").length === 1);
+
+  assert("the defaults are checked in both", both() === "alba/javert | alba/javert");
+  pickIn(mini.picker, "user", "fantine");
+  assert("a voice picked in the mini-player is the voice the panel shows, and the device keeps", both() === "fantine/javert | fantine/javert" && readPick(r.store).user === "fantine");
+  pickIn(dock.picker, "assistant", "marius");
+  assert("and one picked in the panel is the voice the mini-player shows", both() === "fantine/marius | fantine/marius" && readPick(r.store).assistant === "marius");
+
+  // The sounding mark is written from the same readout as the check, so a voice heard from
+  // one picker cannot be lit in that one alone.
+  partIn<HTMLButtonElement>(optionIn(mini.picker, "user", "azelma"), ".voice-preview").click();
+  const audio = r.audio();
+  assert("a voice heard from the mini-player is lit in both pickers, all four rows", soundingIn(mini.picker) === "Hear Azelma,Hear Azelma" && soundingIn(dock.picker) === "Hear Azelma,Hear Azelma");
+  audio.end();
+  assert("the sample ends: unlit in both", soundingIn(mini.picker) === "" && soundingIn(dock.picker) === "");
+
+  // Reset is one act on one stored pick, so it cannot leave the other picker standing on the
+  // voice it just cleared.
+  assert("the reset is offered in both while the pick stands away from the defaults", !partIn<HTMLButtonElement>(mini.picker, ".voice-reset").disabled && !partIn<HTMLButtonElement>(dock.picker, ".voice-reset").disabled);
+  partIn<HTMLButtonElement>(mini.picker, ".voice-reset").click();
+  assert("reset from the mini-player: the defaults in both, nothing left on the device, and neither reset still offered", both() === "alba/javert | alba/javert" && !r.store.keys().includes("listen.voices") && partIn<HTMLButtonElement>(mini.picker, ".voice-reset").disabled && partIn<HTMLButtonElement>(dock.picker, ".voice-reset").disabled);
+
+  // The reset takes itself away in the render its own tap causes, and a browser drops focus
+  // from a control it disables. `handOff` is the one place that lands focus and it answers by
+  // where focus was when the render BEGAN — so a reader who reset from the keyboard is
+  // carried to the mark, not dropped at the top of the document. Read that any later and it
+  // is our own writing being read back.
+  pickIn(mini.picker, "user", "fantine");
+  const miniReset = partIn<HTMLButtonElement>(mini.picker, ".voice-reset");
+  miniReset.focus();
+  assert("the mini-player's reset holds the reader's focus before it is taken", r.doc.activeElement === miniReset);
+  miniReset.click();
+  assert("reset from the keyboard: the reset disables under the reader's focus and the mark's button takes it, never the body", miniReset.disabled && r.doc.activeElement === r.mark.button);
+
+  // The epic's own acceptance: a first visit with nothing downloaded, and the reader can
+  // still reach the voices. The picker is a sibling of the mini-player's faces rather than
+  // one of them, so the question standing in front of the reader does not hide it.
+  r.answer.home(ABSENT);
+  await Promise.resolve();
+  r.mark.button.click();
+  assert("with the download question still standing, the mini-player's voices are out and reachable", r.shownMark() === "download | out | ask Download speech model? · 239 MB | remember off" && mini.toggle.closest("[hidden]") === null && !mini.picker.hidden);
+  assert("and nothing has been sent to a worker to hear them", r.said() === "script" && r.devices().length === 0);
+  panel.dispose();
 }
 
 console.log("createListenPanel: the media controls are told the transport at every event");
