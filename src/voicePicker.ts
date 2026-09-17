@@ -15,9 +15,14 @@
 // THE CREDIT. The CC-BY voices require attribution; each name carries its voice's
 // attribution and licence as its title, so the credit is one hover (or one long press)
 // away without a line of chrome per voice.
+//
+// WHAT IT SOUNDS LIKE. The name is not a description, so each voice carries one beneath it
+// (voiceChoice.voiceDescription) — shown, not hovered, because it is the thing a reader
+// chooses by. It is the radio's `aria-describedby`, so the option announces as its name
+// and then what it sounds like, rather than as one long name.
 
 import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
-import { PICKED_VOICES, ROLE_LABELS, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
+import { PICKED_VOICES, ROLE_LABELS, voiceDescription, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
 
 // [LAW:types-are-the-program] How a voice is heard out: live, its phrase made by the model
 // on this device, or from its sample (voiceSample.ts), with the note beside the rows that
@@ -56,8 +61,26 @@ interface Option {
   readonly preview: HTMLButtonElement;
 }
 
+// [LAW:one-source-of-truth] The one name every id and every radio group of this picker is
+// built from. A document resolves a `for` to the first id that matches and groups radios by
+// name across the whole page, so two pickers sharing a namespace would leave the second
+// one's names checking the first one's radios and its picks silently unchecking the first
+// one's rows. The page's own id is the namespace where there is one — it is readable, it is
+// stable across renders, and the page already keeps it unique. Where there is none the
+// document is asked for a name it does not yet hold, so mounting a picker anywhere is a
+// picker with its own group and no setup asked of the caller [LAW:composability].
+const namespaceOf = (root: HTMLElement): string => {
+  if (root.id !== "") return root.id;
+  const doc = root.ownerDocument;
+  let nth = 1;
+  while (doc.getElementById(`voice-picker-${nth}`) !== null) nth += 1;
+  root.id = `voice-picker-${nth}`;
+  return root.id;
+};
+
 const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyArray<Option>; note: HTMLElement; reset: HTMLButtonElement } => {
   const doc = root.ownerDocument;
+  const scope = namespaceOf(root);
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] => {
     const made = doc.createElement(tag);
     made.className = className;
@@ -69,26 +92,35 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     for (const child of children) parent.appendChild(child);
   };
   const option = (role: PickedVoice, voice: VoiceId): Option => {
-    const label = el("label", "voice-label");
-    label.title = voiceCredit(voice);
     const radio = el("input", "voice-radio");
     radio.type = "radio";
-    radio.name = `voice-${role}`;
+    radio.id = `${scope}-radio-${role}-${voice}`;
+    radio.name = `${scope}-voice-${role}`;
     radio.value = voice;
     radio.addEventListener("change", () => {
       if (radio.checked) on.pick(role, voice);
     });
-    const name = el("span", "voice-name");
-    name.textContent = voiceName(voice);
-    attach(label, radio, name);
+    // The name is the radio's label rather than its wrapper, so the radio is a cell of the
+    // option's grid and the description below it starts in the name's column without a
+    // measured indent; tapping the name still picks the voice, which is what `for` means.
+    const label = el("label", "voice-label");
+    label.htmlFor = radio.id;
+    label.title = voiceCredit(voice);
+    label.textContent = voiceName(voice);
     const preview = el("button", "voice-preview");
     preview.type = "button";
     preview.setAttribute("aria-label", `Hear ${voiceName(voice)}`);
     preview.textContent = "▶";
     preview.addEventListener("click", () => on.preview(voice));
+    const about = el("span", "voice-about");
+    about.id = `${scope}-about-${role}-${voice}`;
+    about.textContent = voiceDescription(voice);
+    radio.setAttribute("aria-describedby", about.id);
+    const head = el("span", "voice-head");
+    attach(head, label, preview);
     const cell = el("div", "voice-option");
     cell.dataset.voice = voice;
-    attach(cell, label, preview);
+    attach(cell, radio, head, about);
     return { role, voice, cell, radio, preview };
   };
   const options = PICKED_VOICES.flatMap((role) => {

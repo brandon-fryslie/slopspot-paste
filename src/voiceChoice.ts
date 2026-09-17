@@ -20,7 +20,7 @@
 // scripts/voice-choice-check.ts drives them over a Map; the page hands them the device's
 // storage through preferenceStore.deviceStore, which answers a refused store.
 
-import { VOICE_IDS, type VoiceId } from "./modelAssets";
+import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
 import type { PreferenceStore } from "./preferenceStore";
 import { prepareText, type UnitText, type VoiceMap } from "./speechScript";
 
@@ -95,6 +95,14 @@ export const writePick = (store: PreferenceStore, pick: VoicePick): void => {
 
 // Each voice is named for a person; the id is the name in lower case.
 export const voiceName = (id: VoiceId): string => id.charAt(0).toUpperCase() + id.slice(1);
+
+// What a voice is like, in one line beside its name — because the name says nothing, and
+// Kyutai's Les Misérables names say something false: Alba is a man's voice. The three
+// qualities are the manifest's [LAW:one-source-of-truth]; this is only how they read.
+export const voiceDescription = (id: VoiceId): string => {
+  const { character, accent, register } = MODEL_ASSETS.voices[id].qualities;
+  return `${character} · ${accent} · ${register}`;
+};
 
 // The phrase a preview says, prepared exactly as a script unit is (speechScript.ts), so
 // the model is fed the shape it is fed for the page. Thirteen words: well under the unit

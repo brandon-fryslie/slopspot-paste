@@ -1,13 +1,13 @@
 // The reader's voice pick (slopspot-read-along-a35.7): the round trip through the device's
 // storage, what a stored value this build did not write reads as, the default kept as
 // absence, the rule that derives the four-role map from the two-role pick, and the phrase
-// a preview says. Run: `tsx scripts/voice-choice-check.ts`.
+// a preview says, and what each voice is described as. Run: `tsx scripts/voice-choice-check.ts`.
 //
 // [LAW:behavior-not-structure] Every assertion is about what a reader would find on the
 // next visit and what voice each role would be spoken in — never how the string is laid out.
 
-import { VOICE_IDS } from "../src/modelAssets";
-import { DEFAULT_PICK, DEFAULT_VOICES, PICK_KEY, SYSTEM_VOICE, previewText, readPick, samePick, voiceMapOf, voiceName, writePick } from "../src/voiceChoice";
+import { MODEL_ASSETS, VOICE_IDS } from "../src/modelAssets";
+import { DEFAULT_PICK, DEFAULT_VOICES, PICK_KEY, SYSTEM_VOICE, previewText, readPick, samePick, voiceDescription, voiceMapOf, voiceName, writePick } from "../src/voiceChoice";
 import type { VoicePick } from "../src/voiceChoice";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 
@@ -76,6 +76,20 @@ console.log("the voices as the reader meets them");
   assert("each voice is named for a person", voiceName("alba") === "Alba" && VOICE_IDS.every((id) => voiceName(id) !== id && voiceName(id).toLowerCase() === id));
   const phrase = previewText("javert");
   assert("the preview says the voice's name, prepared as a script unit is", phrase.source.includes("this is Javert") && phrase.text.includes("this is Javert") && /[.!?]$/.test(phrase.text));
+}
+
+console.log("what each voice is like, in the words a reader picks by");
+{
+  // [LAW:behavior-not-structure] What a reader reads beside a name, not how it is stored.
+  assert("a description is what it sounds like, where it sounds from, and which register", voiceDescription("eponine") === "Warm and even · North American · feminine");
+  const described = VOICE_IDS.map((id) => voiceDescription(id));
+  assert("every hosted voice is described: three parts, none of them empty", described.every((line) => line.split(" · ").length === 3 && line.split(" · ").every((part) => part.trim().length > 0)));
+  assert("no two voices read alike: the description is what tells them apart", new Set(described).size === VOICE_IDS.length);
+  assert("the register is one of the two words a row can be", VOICE_IDS.every((id) => ["masculine", "feminine"].includes(MODEL_ASSETS.voices[id].qualities.register)));
+  // The names are Kyutai's, from Les Misérables, and they are not the voices: a reader who
+  // goes by the name alone picks a man for Alba's woman's name. The description is the fix,
+  // so it must not merely repeat the name.
+  assert("a description never leans on the name", VOICE_IDS.every((id) => !voiceDescription(id).toLowerCase().includes(id)));
 }
 
 console.log(process.exitCode === 1 ? "voice-choice-check: FAILED" : "voice-choice-check: ok");

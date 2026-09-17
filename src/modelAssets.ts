@@ -48,18 +48,25 @@ export type VoiceId = (typeof VOICE_IDS)[number];
 const KYUTAI_VOICES =
   "https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/resolve/fbf82802feb1f92664f3bcf6a0f01295a678853c";
 
-const voice = (
-  id: VoiceId,
-  bytes: number,
-  sha256: string,
-  licence: "CC0-1.0" | "CC-BY-4.0",
-  attribution: string,
-  sample: Pinned,
-): VoiceAsset => ({
+// [LAW:types-are-the-program] What a hosted voice is declared with, each fact named: a
+// catalogue of fifty voices (slopspot-voices-9p4.3d3) is fifty of these, and a positional
+// list of seven would let two strings swap places without a word from the compiler.
+interface VoiceEntry {
+  readonly id: VoiceId;
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly licence: "CC0-1.0" | "CC-BY-4.0";
+  readonly attribution: string;
+  readonly sample: Pinned;
+  readonly qualities: VoiceQualities;
+}
+
+const voice = ({ id, bytes, sha256, licence, attribution, sample, qualities }: VoiceEntry): VoiceAsset => ({
   name: `voice-${id}`,
   bytes,
   sha256,
   sample,
+  qualities,
   source: `${KYUTAI_VOICES}/embeddings/${id}.safetensors`,
   licence,
   attribution,
@@ -98,10 +105,51 @@ export interface Pinned {
   readonly sha256: string;
 }
 
-// A hosted voice: its embedding, and the sample rendered from it (voiceSample.ts), pinned
-// beside it so a sample can never quietly stand for other bytes than the voice's own.
+// [LAW:types-are-the-program] Whether a voice sounds like a man or a woman, as a reader
+// hears it. A synthesized voice is nobody, so this is a quality of the sound and not a
+// claim about a person.
+export type VoiceRegister = "masculine" | "feminine";
+
+// What a voice is like, in the plain words a reader picks by (slopspot-voices-9p4.0ya).
+// `accent` stays a string because the catalogue's accents are open-ended; the register is
+// two words because a row can only be one of them, and a filter over the rows is a filter
+// over these [LAW:one-source-of-truth].
+export interface VoiceQualities {
+  // How it sounds, two words: "Deep and breathy".
+  readonly character: string;
+  // Where it sounds from: "American", "English", "North American".
+  readonly accent: string;
+  readonly register: VoiceRegister;
+}
+
+// A hosted voice: its embedding, the sample rendered from it (voiceSample.ts) pinned beside
+// it so a sample can never quietly stand for other bytes than the voice's own, and what it
+// sounds like.
+//
+// HOW THE QUALITIES WERE ARRIVED AT. Not from the corpora's speaker sheets, which describe
+// the person who was recorded rather than the voice this model synthesizes, and not from
+// the names — Kyutai's Les Misérables names mislead, and Alba, a woman's name, is a man's
+// voice. Each was measured from the voice's own donated recording and from the sample the
+// reader hears: pitch and its range (median f0), pace (words over the sample's speech),
+// texture (harmonics-to-noise, jitter and shimmer — Javert and Marius read low because the
+// donors' voices are breathy and raspy, not because the recordings are noisy: denoising
+// them moves nothing), accent by a CommonAccent classifier over the recording in chunks,
+// and register by an age-and-gender classifier. A new voice is described the same way.
+//
+// WHERE THE TWO DISAGREE, THE SAMPLE WINS, because the sample is the voice: the recording
+// says who donated it, and the reader never hears that. Éponine is why the rule is written
+// down. Her donated recording classifies as Scottish, and by her name and her corpus she
+// "is" Scottish — but the voice this model makes of her does not carry it: on the sample a
+// reader actually hears, Scotland is not in the top three at all (us 0.55, canada 0.43).
+// Calling her Scottish would have been the same false promise as the names themselves.
+//
+// AND A CLAIM IS NO FIRMER THAN ITS MARGIN. The classifier's top label is only worth the
+// distance to its runner-up, so where the two are neighbours within about 0.15 the region
+// is named instead of the country — Éponine and Azelma are both North American on that
+// rule (margins 0.12 and 0.13), while Fantine's England leads by 0.45 and is named flat.
 export interface VoiceAsset extends ModelAsset {
   readonly sample: Pinned;
+  readonly qualities: VoiceQualities;
 }
 
 export interface ModelAssetManifest {
@@ -141,54 +189,60 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     attribution: "Kyutai Pocket TTS SentencePiece tokenizer",
   },
   voices: {
-    alba: voice(
-      "alba",
-      512088,
-      "ad234695323e4030336b6afc8a050c97e3110603e11ecd8226d9562488300a50",
-      "CC-BY-4.0",
-      "alba-mackenna/casual via Kyutai tts-voices",
-      { bytes: 24810, sha256: "8f00054d5f28fc6f57f5dd8af8b7b48348215d4f2cf0bce2bf45b252f8bfe4b6" },
-    ),
-    marius: voice(
-      "marius",
-      512088,
-      "33f75e45fac0005630671f4b1bb632d51b6a083b18417de94855bbd7596a0630",
-      "CC0-1.0",
-      "voice-donations/Selfie via Kyutai tts-voices",
-      { bytes: 21820, sha256: "f8442c6bd2cb0ff95ba8aba8ccb765fc55266f51f45a3fde240e907bacb20219" },
-    ),
-    javert: voice(
-      "javert",
-      512088,
-      "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91",
-      "CC0-1.0",
-      "voice-donations/Butter via Kyutai tts-voices",
-      { bytes: 39672, sha256: "db03a37eedc8df9bc6490f2ea76cf7a405b968c94e0c8b58bac2f2dc7eb5af0f" },
-    ),
-    fantine: voice(
-      "fantine",
-      540760,
-      "b6918a2ece002d2d9037ff53c4ea38730175e8798786658b0958443edf49d355",
-      "CC-BY-4.0",
-      "VCTK p244 via Kyutai tts-voices",
-      { bytes: 21805, sha256: "004cad76ecfda9939c6a355bbba5a27de2c0dbea915d0c648875b6b8106bd592" },
-    ),
-    eponine: voice(
-      "eponine",
-      573528,
-      "bb31940f62da665391de139da2e57d740757df26b73d7ec24152c78a3b8ac0c5",
-      "CC-BY-4.0",
-      "VCTK p262 via Kyutai tts-voices",
-      { bytes: 28241, sha256: "9a1be33f7646d06fc8ac6b75cda3be47cb5a9ff8c1f12bf4d95dc76995532ef8" },
-    ),
-    azelma: voice(
-      "azelma",
-      659544,
-      "ef33fad34437cb187d2702f0a946d8ba7a01efdb8efbc8088c770d49c181ba73",
-      "CC-BY-4.0",
-      "VCTK p303 via Kyutai tts-voices",
-      { bytes: 37903, sha256: "5f41ad6fec65b06b99b8eb7dfa80145f1f7141e53300ffabf3b00e70dbad6c41" },
-    ),
+    alba: voice({
+      id: "alba",
+      bytes: 512088,
+      sha256: "ad234695323e4030336b6afc8a050c97e3110603e11ecd8226d9562488300a50",
+      licence: "CC-BY-4.0",
+      attribution: "alba-mackenna/casual via Kyutai tts-voices",
+      sample: { bytes: 24810, sha256: "8f00054d5f28fc6f57f5dd8af8b7b48348215d4f2cf0bce2bf45b252f8bfe4b6" },
+      qualities: { character: "Low and lively", accent: "American", register: "masculine" },
+    }),
+    marius: voice({
+      id: "marius",
+      bytes: 512088,
+      sha256: "33f75e45fac0005630671f4b1bb632d51b6a083b18417de94855bbd7596a0630",
+      licence: "CC0-1.0",
+      attribution: "voice-donations/Selfie via Kyutai tts-voices",
+      sample: { bytes: 21820, sha256: "f8442c6bd2cb0ff95ba8aba8ccb765fc55266f51f45a3fde240e907bacb20219" },
+      qualities: { character: "Raspy and quick", accent: "American", register: "masculine" },
+    }),
+    javert: voice({
+      id: "javert",
+      bytes: 512088,
+      sha256: "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91",
+      licence: "CC0-1.0",
+      attribution: "voice-donations/Butter via Kyutai tts-voices",
+      sample: { bytes: 39672, sha256: "db03a37eedc8df9bc6490f2ea76cf7a405b968c94e0c8b58bac2f2dc7eb5af0f" },
+      qualities: { character: "Deep and breathy", accent: "American", register: "masculine" },
+    }),
+    fantine: voice({
+      id: "fantine",
+      bytes: 540760,
+      sha256: "b6918a2ece002d2d9037ff53c4ea38730175e8798786658b0958443edf49d355",
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p244 via Kyutai tts-voices",
+      sample: { bytes: 21805, sha256: "004cad76ecfda9939c6a355bbba5a27de2c0dbea915d0c648875b6b8106bd592" },
+      qualities: { character: "Bright and quick", accent: "English", register: "feminine" },
+    }),
+    eponine: voice({
+      id: "eponine",
+      bytes: 573528,
+      sha256: "bb31940f62da665391de139da2e57d740757df26b73d7ec24152c78a3b8ac0c5",
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p262 via Kyutai tts-voices",
+      sample: { bytes: 28241, sha256: "9a1be33f7646d06fc8ac6b75cda3be47cb5a9ff8c1f12bf4d95dc76995532ef8" },
+      qualities: { character: "Warm and even", accent: "North American", register: "feminine" },
+    }),
+    azelma: voice({
+      id: "azelma",
+      bytes: 659544,
+      sha256: "ef33fad34437cb187d2702f0a946d8ba7a01efdb8efbc8088c770d49c181ba73",
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p303 via Kyutai tts-voices",
+      sample: { bytes: 37903, sha256: "5f41ad6fec65b06b99b8eb7dfa80145f1f7141e53300ffabf3b00e70dbad6c41" },
+      qualities: { character: "Clear and unhurried", accent: "North American", register: "feminine" },
+    }),
   },
 };
 

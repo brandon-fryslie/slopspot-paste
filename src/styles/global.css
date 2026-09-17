@@ -3347,10 +3347,13 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 /* A row is a fieldset so the radios are grouped for assistive tech; its chrome is removed
    and the legend takes the muted mono voice of the panel's other labels. */
 .voice-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 14px;
+  display: grid;
+  /* `min(…, 100%)` and not a bare 300px: a track's minimum is a floor the row cannot go
+     under, so on a phone the options would lay out wider than the panel and push a
+     horizontal scrollbar under them. Below two columns' worth the floor is the panel. */
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  gap: 10px 18px;
+  width: 100%;
   margin: 0;
   padding: 0;
   border: 0;
@@ -3365,15 +3368,31 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
+/* An option is the radio and, beside it, two lines: the name with its play, and under them
+   what the voice sounds like — the line a reader chooses by, so it is shown rather than
+   hidden behind a hover. The description begins in the name's column because the grid puts
+   it there, not because an indent was measured out to match the radio [LAW:one-source-of-
+   truth]: resize the radio or change the gap and the two lines still start together. */
 .voice-option {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 2px;
+}
+.voice-head {
+  display: flex;
   align-items: center;
   gap: 5px;
 }
+.voice-about {
+  grid-column: 2;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+}
 .voice-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   font-size: 13px;
   cursor: pointer;
 }
