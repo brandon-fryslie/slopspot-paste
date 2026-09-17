@@ -61,8 +61,26 @@ interface Option {
   readonly preview: HTMLButtonElement;
 }
 
+// [LAW:one-source-of-truth] The one name every id and every radio group of this picker is
+// built from. A document resolves a `for` to the first id that matches and groups radios by
+// name across the whole page, so two pickers sharing a namespace would leave the second
+// one's names checking the first one's radios and its picks silently unchecking the first
+// one's rows. The page's own id is the namespace where there is one — it is readable, it is
+// stable across renders, and the page already keeps it unique. Where there is none the
+// document is asked for a name it does not yet hold, so mounting a picker anywhere is a
+// picker with its own group and no setup asked of the caller [LAW:composability].
+const namespaceOf = (root: HTMLElement): string => {
+  if (root.id !== "") return root.id;
+  const doc = root.ownerDocument;
+  let nth = 1;
+  while (doc.getElementById(`voice-picker-${nth}`) !== null) nth += 1;
+  root.id = `voice-picker-${nth}`;
+  return root.id;
+};
+
 const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyArray<Option>; note: HTMLElement; reset: HTMLButtonElement } => {
   const doc = root.ownerDocument;
+  const scope = namespaceOf(root);
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] => {
     const made = doc.createElement(tag);
     made.className = className;
@@ -76,8 +94,8 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
   const option = (role: PickedVoice, voice: VoiceId): Option => {
     const radio = el("input", "voice-radio");
     radio.type = "radio";
-    radio.id = `${root.id}-radio-${role}-${voice}`;
-    radio.name = `voice-${role}`;
+    radio.id = `${scope}-radio-${role}-${voice}`;
+    radio.name = `${scope}-voice-${role}`;
     radio.value = voice;
     radio.addEventListener("change", () => {
       if (radio.checked) on.pick(role, voice);
@@ -95,7 +113,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     preview.textContent = "▶";
     preview.addEventListener("click", () => on.preview(voice));
     const about = el("span", "voice-about");
-    about.id = `${root.id}-about-${role}-${voice}`;
+    about.id = `${scope}-about-${role}-${voice}`;
     about.textContent = voiceDescription(voice);
     radio.setAttribute("aria-describedby", about.id);
     const head = el("span", "voice-head");
@@ -125,12 +143,6 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
 };
 
 export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): VoicePicker => {
-  // [LAW:no-silent-failure] Every option's id is scoped by the root's, because a document
-  // resolves a `for` to the FIRST id that matches: two pickers sharing a namespace would
-  // leave the second one's names quietly checking the first one's radios and calling the
-  // first one's handler, moving nothing on screen. An id-less root has no namespace to
-  // lend, so it is refused here rather than mounting a picker that works until it doesn't.
-  if (root.id === "") throw new Error("mountVoicePicker: the picker's root needs an id — the options' ids are scoped by it");
   const { options, note, reset } = build(root, on);
   return {
     render: (shown) => {

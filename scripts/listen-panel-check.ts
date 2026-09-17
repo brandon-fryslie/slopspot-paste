@@ -1697,15 +1697,24 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("every option carries one, and no two rows share an id", picker.querySelectorAll(".voice-about").length === 12 && new Set([...picker.querySelectorAll(".voice-about")].map((el) => el.id)).size === 12);
   // A document resolves a name's `for` to the first id that matches, so two pickers sharing
   // a namespace would leave the second one driving the first. The root lends its own.
-  assert("every id a picker makes is scoped by its root's, so a second picker drives its own radios", [...picker.querySelectorAll(".voice-about, .voice-radio")].every((el) => el.id.startsWith(`${picker.id}-`)));
-  assert("a root with no id has no namespace to lend, and is refused rather than mounted", ((): boolean => {
-    const bare = picker.ownerDocument.createElement("div");
-    try {
-      mountVoicePicker(bare, { pick: () => {}, preview: () => {}, reset: () => {} });
-      return false;
-    } catch {
-      return true;
-    }
+  assert("every id and every radio group a picker makes is scoped by its root's name", [...picker.querySelectorAll(".voice-about, .voice-radio")].every((el) => el.id.startsWith(`${picker.id}-`)) && [...picker.querySelectorAll<HTMLInputElement>(".voice-radio")].every((el) => el.name.startsWith(`${picker.id}-`)));
+  // The whole point of the namespace, as behaviour: radios group by name across a document,
+  // so a second picker sharing one would uncheck this picker's row without a word to it.
+  // A root with no id of its own is mounted all the same — it takes a name the document
+  // does not yet hold, so nothing is asked of whoever mounts it.
+  assert("a second picker drives its own radios, and picking in it leaves the first one's pick alone", ((): boolean => {
+    const doc = picker.ownerDocument;
+    const bare = doc.createElement("div");
+    doc.body.appendChild(bare);
+    const theirPicks: string[] = [];
+    mountVoicePicker(bare, { pick: (role, voice) => theirPicks.push(`${role}/${voice}`), preview: () => {}, reset: () => {} });
+    bare.querySelector<HTMLInputElement>('.voice-row[data-role="user"] .voice-option[data-voice="marius"] input')?.click();
+    const ok =
+      bare.id !== "" && bare.id !== picker.id &&
+      theirPicks.join() === "user/marius" &&
+      checked() === "alba/javert";
+    bare.remove();
+    return ok;
   })());
   assert("the description is the radio's, so the option announces as its name and then what it sounds like", VOICE_IDS.every((voice) => PICKED_VOICES.every((role) => radio(role, voice).getAttribute("aria-describedby") === about(role, voice).id)));
   assert("cold: every voice can be heard, the note says they are samples; nothing to reset", previews().every((b) => !b.disabled) && !note.hidden && note.textContent === "Samples · the voice itself plays once it is ready on this device." && reset.disabled);
