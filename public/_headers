@@ -9,3 +9,8 @@
 /models/*
   Cache-Control: public, max-age=31536000, immutable
   Access-Control-Allow-Origin: *
+
+# /voices/* holds each voice's sample (src/voiceSample.ts), rendered by
+# scripts/render-voice-samples.ts and named by its own SHA-256 the same way.
+/voices/*
+  Cache-Control: public, max-age=31536000, immutable

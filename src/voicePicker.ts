@@ -1,10 +1,10 @@
 // [LAW:decomposition] The voice picker's markup: a row per picked role listing the hosted
-// voices by name, a preview beside each name, the credit one hover away, and a reset. One
+// voices by name, a button to hear each, the credit one hover away, and a reset. One
 // sentence, no "and": this module draws the picker and reports the reader's taps. It
-// decides nothing — which voices exist is the manifest's, what a tap means is the panel's
-// (listenPanel.ts) — and holds no state: every render writes every attribute from the
-// readout it is handed, so no path leaves a stale check, a stale note or a stale sounding
-// mark behind [LAW:dataflow-not-control-flow].
+// decides nothing — which voices exist is the manifest's, what a tap means and whether it
+// plays the voice itself or its sample is the panel's (listenPanel.ts) — and holds no state:
+// every render writes every attribute from the readout it is handed, so no path leaves a
+// stale check, a stale note or a stale sounding mark behind [LAW:dataflow-not-control-flow].
 //
 // BUILT, NOT TEMPLATED. The rows are the product of two lists — the picked roles and the
 // hosted voices — and the credit beside each name is the manifest's, so the page carries
@@ -19,15 +19,16 @@
 import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
 import { PICKED_VOICES, ROLE_LABELS, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
 
-// [LAW:types-are-the-program] Whether a voice can be heard out: offered once the model is
-// warm, withheld — with the reason, shown beside the rows — before that.
-export type PreviewOffer = { readonly kind: "offered" } | { readonly kind: "withheld"; readonly why: string };
+// [LAW:types-are-the-program] How a voice is heard out: live, its phrase made by the model
+// on this device, or from its sample (voiceSample.ts), with the note beside the rows that
+// says so. A voice can always be heard; the note is what changes.
+export type Audition = { readonly kind: "live" } | { readonly kind: "sample"; readonly note: string };
 
-// What the picker shows: the pick, whether previews are offered, the voice sounding now,
-// and whether there is anything to reset. Declared here, filled by the panel's readout.
+// What the picker shows: the pick, how a voice is heard out, the voice sounding now, and
+// whether there is anything to reset. Declared here, filled by the panel's readout.
 export interface VoicesReadout {
   readonly picked: VoicePick;
-  readonly preview: PreviewOffer;
+  readonly audition: Audition;
   readonly sounding: VoiceId | null;
   readonly reset: boolean;
 }
@@ -113,14 +114,12 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
   const { options, note, reset } = build(root, on);
   return {
     render: (shown) => {
-      const withheld = shown.preview.kind === "withheld";
       for (const option of options) {
         option.radio.checked = shown.picked[option.role] === option.voice;
-        option.preview.disabled = withheld;
         option.preview.dataset.sounding = String(shown.sounding === option.voice);
       }
-      note.textContent = shown.preview.kind === "withheld" ? shown.preview.why : "";
-      note.hidden = !withheld;
+      note.textContent = shown.audition.kind === "sample" ? shown.audition.note : "";
+      note.hidden = shown.audition.kind !== "sample";
       reset.disabled = !shown.reset;
     },
   };

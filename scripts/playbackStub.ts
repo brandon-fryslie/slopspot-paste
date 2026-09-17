@@ -9,6 +9,7 @@
 // more of Web Audio fails to compile here before it fails in a browser.
 
 import { MODEL_PCM } from "../src/unitPlayer";
+import type { SampleAudio } from "../src/voiceSample";
 import type { PcmBuffer, PcmSource, PlaybackDevice, PlayerState } from "../src/unitPlayer";
 
 export const { sampleRate: SR, frameSamples: FS } = MODEL_PCM;
@@ -117,3 +118,41 @@ export const describe = (state: PlayerState): string =>
   state.kind === "idle"
     ? "idle"
     : `${state.kind}${state.kind === "speaking" ? `/${state.flow}` : ""}@${state.at.segment}:${state.at.offsetMs.toFixed(3)}`;
+
+// A stand-in for the page's audio element (voiceSample.ts): what it was told to play, in
+// order, how often it was paused, and an `end` that plays its sample out.
+export class StubAudio implements SampleAudio {
+  static readonly instances: StubAudio[] = [];
+  src = "";
+  readonly plays: string[] = [];
+  paused = 0;
+  private readonly listeners: Record<"ended" | "error", (() => void)[]> = { ended: [], error: [] };
+  error: { readonly message: string } | null = null;
+  constructor(private readonly refuse: string | null = null) {
+    StubAudio.instances.push(this);
+  }
+  // A play the element refuses outright, or one left pending — as a real element's is until
+  // it has data — for `abort` to reject later, the way a pause or a new src rejects it.
+  private readonly pending: ((error: Error) => void)[] = [];
+  play(): Promise<void> {
+    this.plays.push(this.src);
+    return this.refuse === null ? new Promise((_, reject) => this.pending.push(reject)) : Promise.reject(new Error(this.refuse));
+  }
+  abort(play: number): void {
+    this.pending[play]?.(new Error("AbortError"));
+  }
+  pause(): void {
+    this.paused += 1;
+  }
+  addEventListener(type: "ended" | "error", listener: () => void): void {
+    this.listeners[type].push(listener);
+  }
+  end(): void {
+    for (const listener of this.listeners.ended) listener();
+  }
+  // The element failing where it stands, as a decode error or a dropped connection does.
+  fail(message: string): void {
+    this.error = { message };
+    for (const listener of this.listeners.error) listener();
+  }
+}

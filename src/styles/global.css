@@ -3378,9 +3378,7 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   cursor: pointer;
 }
 .voice-radio { margin: 0; accent-color: var(--accent); }
-/* The preview is a small pill of its own: lit while its voice is sounding, dimmed while
-   previews are withheld. Same dimming as the transport's disabled buttons, so the row
-   never shifts as the voice arrives. */
+/* The play is a small pill of its own, lit while its voice is sounding. */
 .voice-preview {
   font-size: 10px;
   line-height: 1;
@@ -3394,8 +3392,6 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 }
 .voice-preview:hover { color: var(--fg); border-color: var(--accent); }
 .voice-preview[data-sounding="true"] { color: var(--accent); border-color: var(--accent); }
-.voice-preview[disabled] { opacity: 0.45; cursor: default; }
-.voice-preview[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
 .voice-note {
   margin: 0;
   font-family: var(--font-mono);

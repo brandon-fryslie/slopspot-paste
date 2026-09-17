@@ -54,10 +54,12 @@ const voice = (
   sha256: string,
   licence: "CC0-1.0" | "CC-BY-4.0",
   attribution: string,
-): ModelAsset => ({
+  sample: Pinned,
+): VoiceAsset => ({
   name: `voice-${id}`,
   bytes,
   sha256,
+  sample,
   source: `${KYUTAI_VOICES}/embeddings/${id}.safetensors`,
   licence,
   attribution,
@@ -85,12 +87,27 @@ export interface Checkpoint extends ModelAsset {
   readonly sampleRate: number;
   readonly frameSamples: number;
   readonly readout: Readout;
+  // The checkpoint's name in Pocket TTS's own release catalogue (its `language` argument):
+  // what renders a voice's sample on the same model the browser runs.
+  readonly release: string;
+}
+
+// [LAW:types-are-the-program] Bytes pinned by their hash, and nothing else known of them.
+export interface Pinned {
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
+// A hosted voice: its embedding, and the sample rendered from it (voiceSample.ts), pinned
+// beside it so a sample can never quietly stand for other bytes than the voice's own.
+export interface VoiceAsset extends ModelAsset {
+  readonly sample: Pinned;
 }
 
 export interface ModelAssetManifest {
   readonly weights: Checkpoint;
   readonly tokenizer: ModelAsset;
-  readonly voices: Readonly<Record<VoiceId, ModelAsset>>;
+  readonly voices: Readonly<Record<VoiceId, VoiceAsset>>;
 }
 
 // Pocket TTS build b6369a24 (Kyutai's english_2026-01 checkpoint) converted to fp16 for
@@ -107,6 +124,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     // english checkpoints (english_2026-01, which these weights are, and english_2026-04,
     // which its accuracy was measured on); the 24-layer build would be layer 14 head 10.
     readout: { layer: 3, head: 8 },
+    release: "english_2026-01",
     bytes: 235738516,
     sha256: "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
     source:
@@ -129,6 +147,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "ad234695323e4030336b6afc8a050c97e3110603e11ecd8226d9562488300a50",
       "CC-BY-4.0",
       "alba-mackenna/casual via Kyutai tts-voices",
+      { bytes: 24810, sha256: "8f00054d5f28fc6f57f5dd8af8b7b48348215d4f2cf0bce2bf45b252f8bfe4b6" },
     ),
     marius: voice(
       "marius",
@@ -136,6 +155,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "33f75e45fac0005630671f4b1bb632d51b6a083b18417de94855bbd7596a0630",
       "CC0-1.0",
       "voice-donations/Selfie via Kyutai tts-voices",
+      { bytes: 21820, sha256: "f8442c6bd2cb0ff95ba8aba8ccb765fc55266f51f45a3fde240e907bacb20219" },
     ),
     javert: voice(
       "javert",
@@ -143,6 +163,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91",
       "CC0-1.0",
       "voice-donations/Butter via Kyutai tts-voices",
+      { bytes: 39672, sha256: "db03a37eedc8df9bc6490f2ea76cf7a405b968c94e0c8b58bac2f2dc7eb5af0f" },
     ),
     fantine: voice(
       "fantine",
@@ -150,6 +171,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "b6918a2ece002d2d9037ff53c4ea38730175e8798786658b0958443edf49d355",
       "CC-BY-4.0",
       "VCTK p244 via Kyutai tts-voices",
+      { bytes: 21805, sha256: "004cad76ecfda9939c6a355bbba5a27de2c0dbea915d0c648875b6b8106bd592" },
     ),
     eponine: voice(
       "eponine",
@@ -157,6 +179,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "bb31940f62da665391de139da2e57d740757df26b73d7ec24152c78a3b8ac0c5",
       "CC-BY-4.0",
       "VCTK p262 via Kyutai tts-voices",
+      { bytes: 28241, sha256: "9a1be33f7646d06fc8ac6b75cda3be47cb5a9ff8c1f12bf4d95dc76995532ef8" },
     ),
     azelma: voice(
       "azelma",
@@ -164,6 +187,7 @@ export const MODEL_ASSETS: ModelAssetManifest = {
       "ef33fad34437cb187d2702f0a946d8ba7a01efdb8efbc8088c770d49c181ba73",
       "CC-BY-4.0",
       "VCTK p303 via Kyutai tts-voices",
+      { bytes: 37903, sha256: "5f41ad6fec65b06b99b8eb7dfa80145f1f7141e53300ffabf3b00e70dbad6c41" },
     ),
   },
 };
@@ -183,7 +207,9 @@ export const MODEL_ASSET_PREFIX = "/models/";
 // Assets. The weights become ten parts; everything else one.
 export const SHARD_BYTES = 24 * 1024 * 1024;
 
-const SHA_PREFIX_CHARS = 12;
+// The hash prefix that names an asset's bytes in its url — a model part's and a voice
+// sample's alike (voiceSample.ts).
+export const SHA_PREFIX_CHARS = 12;
 
 // [LAW:one-source-of-truth] The asset's address stem AND its cache key — the same string,
 // so a cached entry can only ever mean the bytes published at that path.

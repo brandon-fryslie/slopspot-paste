@@ -982,6 +982,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           },
           connection: () => (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
           Device: AudioContext,
+          Audio: () => new Audio(),
           clock: () => performance.now(),
           frames: {
             request: (callback) => window.requestAnimationFrame(callback),
