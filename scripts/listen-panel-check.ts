@@ -657,7 +657,7 @@ const MARKUP = `<!DOCTYPE html><body>
     <button class="speech-voices-toggle" type="button" aria-expanded="false">Voices</button>
     <label class="speech-remember"><input type="checkbox" /><span>Always download the voice on this device</span></label>
   </div>
-  <div class="speech-voices" id="speech-voices" hidden></div>
+  <div class="voice-picker" id="speech-voices" hidden></div>
   <div class="listen-mark" data-state="checking">
     <button class="listen-mark-button" type="button" aria-expanded="false" aria-label="Listen"><span class="listen-mark-glyph"></span></button>
     <div class="listen-mini" data-face="progress" hidden>
@@ -667,7 +667,7 @@ const MARKUP = `<!DOCTYPE html><body>
       </div>
       <div class="listen-mini-voices">
         <button class="listen-mini-voices-toggle" type="button" aria-expanded="false" aria-controls="listen-mini-picker">Voices</button>
-        <div class="speech-voices listen-mini-picker" id="listen-mini-picker" hidden></div>
+        <div class="voice-picker listen-mini-picker" id="listen-mini-picker" hidden></div>
       </div>
       <div class="listen-mini-face" data-face="consent" hidden>
         <p class="listen-mini-ask"></p>
@@ -952,7 +952,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     remember,
     mark,
     mini,
-    voices: { toggle: el(".speech-voices-toggle"), picker: el(".speech-voices") },
+    voices: { toggle: el(".speech-voices-toggle"), picker: el("#speech-voices") },
     now: 0,
     doc,
     port,
@@ -1963,6 +1963,11 @@ console.log("createListenPanel: the voice picker in the mini-player — one pick
   // Radios group by name across a whole document, so without its own namespace the second
   // picker would silently uncheck the first one's rows (voicePicker.ts, namespaceOf).
   assert("the two pickers name their radio groups apart, so neither drives the other's rows", mini.picker.id !== "" && mini.picker.id !== dock.picker.id && [...mini.picker.querySelectorAll<HTMLInputElement>(".voice-radio")].every((el) => el.name.startsWith(`${mini.picker.id}-`)) && [...dock.picker.querySelectorAll<HTMLInputElement>(".voice-radio")].every((el) => el.name.startsWith(`${dock.picker.id}-`)));
+  // A block says what it IS by class and WHICH one it is by id. If the class said both, it
+  // would match two elements, and whoever selected a picker by it would get whichever the
+  // markup rendered first — so a second picker's rows could be built into the first's block,
+  // twice the options with colliding ids, and nothing would throw.
+  assert("each block is named for what it is by class and for which it is by id, so neither can be selected in the other's place", dock.picker.classList.contains("voice-picker") && mini.picker.classList.contains("voice-picker") && dock.picker.id === "speech-voices" && mini.picker.id === "listen-mini-picker" && r.doc.querySelectorAll(".voice-picker").length === 2 && r.doc.querySelectorAll("#speech-voices").length === 1);
 
   assert("the defaults are checked in both", both() === "alba/javert | alba/javert");
   pickIn(mini.picker, "user", "fantine");

@@ -606,7 +606,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           </div>
           {/* The voice picker's rows are built here by voicePicker.ts from the manifest's
               voices, so the markup carries no name it would have to keep in step with. */}
-          <div class="speech-voices" id="speech-voices" hidden></div>
+          <div class="voice-picker" id="speech-voices" hidden></div>
           <pre class="speech-payload" hidden aria-hidden="true" data-prints={prints.join(" ")}>{JSON.stringify(utterances)}</pre>
         </section>
       )}
@@ -796,7 +796,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               [LAW:one-source-of-truth]. */}
           <div class="listen-mini-voices">
             <button class="mono-pill listen-mini-voices-toggle" type="button" aria-expanded="false" aria-controls="listen-mini-picker">Voices</button>
-            <div class="speech-voices listen-mini-picker" id="listen-mini-picker" hidden></div>
+            <div class="voice-picker listen-mini-picker" id="listen-mini-picker" hidden></div>
           </div>
           <div class="listen-mini-face" data-face="consent" hidden>
             <p class="listen-mini-ask"></p>
@@ -1041,7 +1041,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // ── the transport ───────────────────────────────────────────────────────────────────
 
     const controls = document.querySelector(".speech-controls");
-    const voicesEl = document.querySelector<HTMLElement>(".speech-voices");
+    const voicesEl = document.querySelector<HTMLElement>("#speech-voices");
     const payloadEl = document.querySelector(".speech-payload");
     const markEl = document.querySelector<HTMLElement>(".listen-mark");
 
