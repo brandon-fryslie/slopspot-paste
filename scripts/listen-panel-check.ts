@@ -665,6 +665,10 @@ const MARKUP = `<!DOCTYPE html><body>
         <button class="listen-mini-resume" type="button" hidden></button>
         <p class="listen-mini-gone" hidden></p>
       </div>
+      <div class="listen-mini-voices">
+        <button class="listen-mini-voices-toggle" type="button" aria-expanded="false" aria-controls="listen-mini-picker">Voices</button>
+        <div class="speech-voices listen-mini-picker" id="listen-mini-picker" hidden></div>
+      </div>
       <div class="listen-mini-face" data-face="consent" hidden>
         <p class="listen-mini-ask"></p>
         <button class="listen-mini-download" type="button">Download</button>
@@ -901,6 +905,7 @@ const rig = (setup: VisitSetup = {}): Rig => {
     offer: el(".listen-mini-offer"),
     resume: el(".listen-mini-resume"),
     gone: el(".listen-mini-gone"),
+    voices: { toggle: el(".listen-mini-voices-toggle"), picker: el(".listen-mini-picker") },
   };
   // The face as the DOM shows it — the one face not hidden — and what it says.
   const shownFace = (): string => {
@@ -1915,6 +1920,79 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   part<HTMLButtonElement>(again.voices.picker, '.voice-row[data-role="user"] .voice-option[data-voice="alba"] .voice-preview').click();
   assert("a preview with the voice on stage but idle: nothing to pause, the phrase asked", again.line() === "Listen | stop(off) | Ready" && again.said().endsWith("synthesize -1"));
   reloaded.dispose();
+}
+
+// The picker is offered in two places now (slopspot-voices-9p4.95s): the dock panel's row,
+// and the mini-player, where the reading actually happens. A picker holds no state — every
+// render writes every attribute from the readout it is handed — so the two agree only while
+// both are handed the same readout on every render. That is what this block is for: not that
+// a second picker exists, but that neither can show a pick the other does not.
+console.log("createListenPanel: the voice picker in the mini-player — one pick, wherever the reader opens it");
+{
+  const r = rig();
+  const panel = mount(r);
+  const dock = r.voices;
+  const mini = r.mini.voices;
+  const pickedIn = (root: HTMLElement): string =>
+    ["user", "assistant"].map((role) => root.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
+  const optionIn = (root: HTMLElement, role: string, voice: string): HTMLElement => {
+    const found = root.querySelector<HTMLElement>(`.voice-row[data-role="${role}"] .voice-option[data-voice="${voice}"]`);
+    if (found === null) throw new Error(`fixture: no option ${role}/${voice} in ${root.id}`);
+    return found;
+  };
+  const partIn = <T extends Element>(root: ParentNode, selector: string): T => {
+    const found = root.querySelector<T>(selector);
+    if (found === null) throw new Error(`fixture: no ${selector}`);
+    return found;
+  };
+  const pickIn = (root: HTMLElement, role: string, voice: string): void => {
+    partIn<HTMLInputElement>(optionIn(root, role, voice), "input").click();
+  };
+  const soundingIn = (root: HTMLElement): string =>
+    [...root.querySelectorAll<HTMLButtonElement>(".voice-preview")].filter((b) => b.dataset.sounding === "true").map((b) => b.getAttribute("aria-label")).join();
+  const both = (): string => `${pickedIn(dock.picker)} | ${pickedIn(mini.picker)}`;
+
+  assert("the mini-player carries a picker of its own: the same two rows, the same six voices", mini.picker.querySelectorAll(".voice-row").length === 2 && mini.picker.querySelectorAll(".voice-option").length === 12);
+  assert("both start closed, each toggle saying so", dock.picker.hidden && mini.picker.hidden && dock.toggle.getAttribute("aria-expanded") === "false" && mini.toggle.getAttribute("aria-expanded") === "false");
+  // Two disclosures, not one shown twice: opening where the reader is reaching must not
+  // unfold the other place behind the dock's panel.
+  mini.toggle.click();
+  assert("the mini-player's toggle opens its own picker and leaves the panel's closed", !mini.picker.hidden && mini.toggle.getAttribute("aria-expanded") === "true" && dock.picker.hidden && dock.toggle.getAttribute("aria-expanded") === "false");
+  dock.toggle.click();
+  assert("and the panel's opens its own, both open at once without either closing the other", !dock.picker.hidden && !mini.picker.hidden);
+  // Radios group by name across a whole document, so without its own namespace the second
+  // picker would silently uncheck the first one's rows (voicePicker.ts, namespaceOf).
+  assert("the two pickers name their radio groups apart, so neither drives the other's rows", mini.picker.id !== "" && mini.picker.id !== dock.picker.id && [...mini.picker.querySelectorAll<HTMLInputElement>(".voice-radio")].every((el) => el.name.startsWith(`${mini.picker.id}-`)) && [...dock.picker.querySelectorAll<HTMLInputElement>(".voice-radio")].every((el) => el.name.startsWith(`${dock.picker.id}-`)));
+
+  assert("the defaults are checked in both", both() === "alba/javert | alba/javert");
+  pickIn(mini.picker, "user", "fantine");
+  assert("a voice picked in the mini-player is the voice the panel shows, and the device keeps", both() === "fantine/javert | fantine/javert" && readPick(r.store).user === "fantine");
+  pickIn(dock.picker, "assistant", "marius");
+  assert("and one picked in the panel is the voice the mini-player shows", both() === "fantine/marius | fantine/marius" && readPick(r.store).assistant === "marius");
+
+  // The sounding mark is written from the same readout as the check, so a voice heard from
+  // one picker cannot be lit in that one alone.
+  partIn<HTMLButtonElement>(optionIn(mini.picker, "user", "azelma"), ".voice-preview").click();
+  const audio = r.audio();
+  assert("a voice heard from the mini-player is lit in both pickers, all four rows", soundingIn(mini.picker) === "Hear Azelma,Hear Azelma" && soundingIn(dock.picker) === "Hear Azelma,Hear Azelma");
+  audio.end();
+  assert("the sample ends: unlit in both", soundingIn(mini.picker) === "" && soundingIn(dock.picker) === "");
+
+  // Reset is one act on one stored pick, so it cannot leave the other picker standing on the
+  // voice it just cleared.
+  assert("the reset is offered in both while the pick stands away from the defaults", !partIn<HTMLButtonElement>(mini.picker, ".voice-reset").disabled && !partIn<HTMLButtonElement>(dock.picker, ".voice-reset").disabled);
+  partIn<HTMLButtonElement>(mini.picker, ".voice-reset").click();
+  assert("reset from the mini-player: the defaults in both, nothing left on the device, and neither reset still offered", both() === "alba/javert | alba/javert" && !r.store.keys().includes("listen.voices") && partIn<HTMLButtonElement>(mini.picker, ".voice-reset").disabled && partIn<HTMLButtonElement>(dock.picker, ".voice-reset").disabled);
+
+  // The epic's own acceptance: a first visit with nothing downloaded, and the reader can
+  // still reach the voices. The picker is a sibling of the mini-player's faces rather than
+  // one of them, so the question standing in front of the reader does not hide it.
+  r.answer.home(ABSENT);
+  await Promise.resolve();
+  r.mark.button.click();
+  assert("with the download question still standing, the mini-player's voices are out and reachable", r.shownMark() === "download | out | ask Download speech model? · 239 MB | remember off" && mini.toggle.closest("[hidden]") === null && !mini.picker.hidden);
+  assert("and nothing has been sent to a worker to hear them", r.said() === "script" && r.devices().length === 0);
+  panel.dispose();
 }
 
 console.log("createListenPanel: the media controls are told the transport at every event");

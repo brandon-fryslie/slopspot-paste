@@ -3638,6 +3638,43 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
+/* Voice choice in the mini-player (slopspot-voices-9p4.95s): the toggle, and above it the
+   rows it opens. Both are pills in the mini-player's right-aligned column, so the face stays
+   on the launcher's row and everything the player gains it gains upward.
+   The rows are .speech-voices and .voice-* — drawn once, for both places the picker is
+   offered [LAW:one-source-of-truth]. Only what the mini-player constrains is said here: its
+   width, and a height a phone can hold. */
+.listen-mini-voices {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+.listen-mini-voices-toggle[aria-expanded="true"] { color: var(--fg); border-color: var(--accent); }
+.listen-mini-picker {
+  box-sizing: border-box;
+  /* Room for a name, its play and its description where there is room for them; never wider
+     than the player, which is already capped to the mark's span. Under 300px .voice-row
+     drops to one column on its own, so a phone needs no breakpoint of its own here. */
+  width: min(340px, 100%);
+  margin-top: 0;
+  padding: 10px 12px;
+  /* The screen decides how much is shown, not the list's length: twelve options are taller
+     than a short viewport, and the player grows upward, so without this the first rows climb
+     off the top of the screen where no tap can reach them [LAW:no-silent-failure]. They
+     scroll inside the pill instead, and the scroll stays in it. */
+  max-height: min(46vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--dock-pill-shadow);
+}
 .listen-mini-share,
 .listen-mini-save {
   display: grid;
