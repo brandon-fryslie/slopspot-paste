@@ -369,9 +369,10 @@ console.log("\nThe turn's digest, said before the turn (slopspot-turn-digest-8xc
       },
     ]),
   );
-  const digested = withDigests(said, new Map([[1, "The bundler re-reads every file, so a cache would help."]]));
+  const composed = withDigests(said, new Map([[1, "The bundler re-reads every file, so a cache would help."]]));
+  const digested = composed.utterances;
 
-  assert("a turn with no digest is left exactly as it was", JSON.stringify(withDigests(said, new Map())) === JSON.stringify(said));
+  assert("a turn with no digest is left exactly as it was", JSON.stringify(withDigests(said, new Map()).utterances) === JSON.stringify(said));
   assert("the digest goes BEFORE the turn's first utterance, not merely somewhere in it", digested[said.findIndex((u) => u.index === 1)]?.text === "The bundler re-reads every file, so a cache would help.");
   assert("nothing else is added or dropped", digested.length === said.length + 1);
   assert(
@@ -387,7 +388,7 @@ console.log("\nThe turn's digest, said before the turn (slopspot-turn-digest-8xc
   // Plain text is what the summarizer is asked for and what the card writes, so the
   // narrator says it as it is — whitespace collapsed, and nothing else touched. A markdown
   // pass here would speak something the page never shows.
-  const literal = withDigests(said, new Map([[1, "  It re-reads\n  every `file`.  "]]));
+  const literal = withDigests(said, new Map([[1, "  It re-reads\n  every `file`.  "]])).utterances;
   assert("the digest is said verbatim, whitespace collapsed", literal[1]?.text === "It re-reads every `file`.");
 
   // A turn the conversation says nothing of can hold no digest, and the two derivations
@@ -401,9 +402,24 @@ console.log("\nThe turn's digest, said before the turn (slopspot-turn-digest-8xc
   }
   assert("a digest for a turn the page never says is refused, naming it", refused.includes("9"));
 
-  // Every kept place, link and resume is an index into this list (keptPlace.ts), so the one
-  // thing a caller must never assume is that the two lists address the same words.
-  assert("adding a digest moves every later utterance, which is why the prints are re-derived with it", digested[2]?.text === said[1]?.text && digested[2] !== said[2]);
+  // Every kept place, link and resume is an index into a list (keptPlace.ts), so the one thing
+  // a caller must never assume is that the two lists address the same words — and the mapping
+  // that comes back with the composition is the whole answer to it.
+  assert("adding a digest moves every later utterance", digested[2]?.text === said[1]?.text && digested[2] !== said[2]);
+  assert("the mapping is index for index with each list it maps", composed.onPage.length === digested.length && composed.spoken.length === said.length);
+  assert(
+    "every page utterance is said exactly where the mapping says, as itself",
+    said.every((utterance, page) => digested[composed.spoken[page] ?? -1] === utterance),
+  );
+  assert(
+    "and every one of them maps back to where it came from",
+    said.every((_, page) => composed.onPage[composed.spoken[page] ?? -1] === page),
+  );
+  // The digest is the one spoken utterance with no page utterance of its own. It stands for
+  // the turn it announces, and `spoken` never names it — which is what keeps a link opening
+  // on the word it named rather than on the sentence about it.
+  assert("a digest stands for the turn it was put in front of", composed.onPage[1] === 1 && composed.spoken[1] === 2);
+  assert("no page utterance is said at a digest's index", !composed.spoken.includes(1));
 }
 
 if (process.exitCode) {

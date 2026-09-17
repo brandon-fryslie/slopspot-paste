@@ -65,3 +65,13 @@ export const spokenDigests = (turns: ReadonlyArray<DigestTurn>, service: DigestS
           return held.kind === "ready" ? [[index, held.text]] : [];
         }),
       );
+
+// [LAW:dataflow-not-control-flow] Whether two of these maps say the same thing. The page
+// composes from a walk that reports turn after turn and from a scroll that restarts it, so it
+// is asked far more often than the answer changes; re-seating on an unchanged answer would
+// drop the script the panel holds and set the worker cutting the whole paste again, putting
+// Listen back to "Preparing the script..." for a reader who did nothing but scroll. Compared
+// here, on the INPUT, rather than by hashing the composed list: this is the only thing that
+// varies, and comparing it costs one pass over the turns that have a digest.
+export const sameSaid = (a: SpokenDigests, b: SpokenDigests): boolean =>
+  a.size === b.size && [...a].every(([index, text]) => b.get(index) === text);

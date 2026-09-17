@@ -812,9 +812,11 @@ const voices = (state: PanelState, map: VoiceMap): Step => {
 // point it at a different utterance — a link's word, or a resume, silently moved.
 //
 // A page that arrives while either stands is simply not taken, and the digest that prompted it
-// is said on the reader's next listen: exactly what "the narrator never waits on the
-// summarizer" costs, paid here in the open rather than as a pause nobody can see the reason
-// for [LAW:no-silent-failure].
+// is said on the page's next VISIT — not later in this one: `provisioning` is where a panel
+// starts and nothing returns it there, so a voice that has taken the stage says the page it
+// was seated with until the reader loads it again. That is exactly what "the narrator never
+// waits on the summarizer" costs, paid here in the open rather than as a pause nobody can see
+// the reason for [LAW:no-silent-failure].
 export const reseatable = (state: PanelState): boolean => state.kind === "provisioning" && state.cue === null;
 
 // The page re-seated: the script the panel holds was cut from text the page no longer says,

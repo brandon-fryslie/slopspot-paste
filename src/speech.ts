@@ -528,6 +528,27 @@ export type SpokenDigests = ReadonlyMap<number, string>;
 // run, so a turn's head is simply the utterance whose index differs from the one before it.
 const opensTurn = (utterances: ReadonlyArray<Utterance>, i: number): boolean => utterances[i]?.index !== utterances[i - 1]?.index;
 
+// [LAW:types-are-the-program] The page as the narrator says it, together with the way back to
+// the page it was composed from — one value, because the two are never safely held apart. A
+// Place is an INDEX into an utterance list (performer.ts), and putting a digest in front of a
+// turn moves every index after it, so a list whose mapping went missing is a shared link that
+// opens on the wrong word and a resume that starts in the wrong sentence. `withDigests` is the
+// only thing that makes one, and it fills all three in the one pass, so they cannot disagree.
+//
+// Counting the announcements in the composed list would be the same map drawn a second way,
+// and a WRONG one: the page's own utterances already include announcements (a code block is
+// announced rather than spelled out), so such a count would compile and mislead
+// [LAW:one-source-of-truth].
+export interface SpokenPage {
+  // What is said, in order: the page's utterances with each ready digest before its turn.
+  readonly utterances: ReadonlyArray<Utterance>;
+  // Index for index with `utterances`: the page utterance each spoken one stands for — itself,
+  // or, for a digest, the first utterance of the turn it was put in front of.
+  readonly onPage: ReadonlyArray<number>;
+  // Index for index with the PAGE's utterances: where each of them is said.
+  readonly spoken: ReadonlyArray<number>;
+}
+
 // [LAW:one-way-deps] The digest joins the spoken projection as a VALUE, so this module goes
 // on knowing nothing of summarizers, availability or caches: a pure list in, a pure list out,
 // driven in scripts/speech-check.ts with a Map and no mocks at all.
@@ -543,18 +564,30 @@ const opensTurn = (utterances: ReadonlyArray<Utterance>, i: number): boolean => 
 // [LAW:no-silent-failure] A digest for a turn this page says nothing of is thrown, not
 // dropped: the digest service and this projection read the one viewable dialogue, so the
 // two disagreeing is a broken invariant between them and not a turn to quietly skip.
-export const withDigests = (utterances: ReadonlyArray<Utterance>, digests: SpokenDigests): ReadonlyArray<Utterance> => {
+export const withDigests = (utterances: ReadonlyArray<Utterance>, digests: SpokenDigests): SpokenPage => {
   const heads = new Set(utterances.filter((_, i) => opensTurn(utterances, i)).map((utterance) => utterance.index));
   const unplaced = [...digests.keys()].filter((index) => !heads.has(index));
   if (unplaced.length > 0) {
     throw new RangeError(`the conversation says nothing of turn${unplaced.length === 1 ? "" : "s"} ${unplaced.join(", ")}, so no digest can go before it`);
   }
-  return utterances.flatMap((utterance, i): ReadonlyArray<Utterance> => {
+  const said: Utterance[] = [];
+  const onPage: number[] = [];
+  const spoken: number[] = [];
+  utterances.forEach((utterance, page) => {
     // Collapsed, and spoken VERBATIM otherwise: the summarizer is asked for plain text
     // (summarizerSource.DIGEST_OPTIONS) and the card writes it with textContent, so running
     // it through the markdown-stripping pipeline would speak something the page never shows
     // — the same reason the source's own turn-summary block is spoken as it is written.
-    const digest = opensTurn(utterances, i) ? collapse(digests.get(utterance.index) ?? "") : "";
-    return digest === "" ? [utterance] : [{ index: utterance.index, anchor: utterance.anchor, ...announced(digest) }, utterance];
+    const digest = opensTurn(utterances, page) ? collapse(digests.get(utterance.index) ?? "") : "";
+    if (digest !== "") {
+      said.push({ index: utterance.index, anchor: utterance.anchor, ...announced(digest) });
+      onPage.push(page);
+    }
+    // Where the page's own utterance lands, read before it is pushed: the turn's words, never
+    // the digest in front of them, so a place that came off the page comes back to the page.
+    spoken.push(said.length);
+    said.push(utterance);
+    onPage.push(page);
   });
+  return { utterances: said, onPage, spoken };
 };

@@ -5,7 +5,7 @@
 // [LAW:behavior-not-structure] Every assertion is about an observable — what the map carries,
 // what the store holds — so a different implementation of the same contract passes.
 
-import { NOTHING_SAID, SAY_KEY, readSaid, spokenDigests, writeSaid } from "../src/digestSpeech";
+import { NOTHING_SAID, SAY_KEY, readSaid, sameSaid, spokenDigests, writeSaid } from "../src/digestSpeech";
 import type { DigestOutcome, DigestService, DigestTurn } from "../src/turnDigest";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 
@@ -72,6 +72,17 @@ console.log("\nbefore there is a summarizer at all");
 {
   assert("no service is no digests, rather than an outcome invented for a turn nobody looked at", spokenDigests([turn(1), turn(2)], null).size === 0);
   assert("and the reader's no is that same empty map, not a second path through the composition", NOTHING_SAID.size === 0);
+}
+
+console.log("\nwhether an ask would say anything new");
+{
+  const one = new Map([[1, "A digest of turn one."]]);
+  assert("the same turns with the same words are the same answer", sameSaid(one, new Map([[1, "A digest of turn one."]])));
+  assert("nothing said twice is the same answer, so a page with no digests re-seats nothing", sameSaid(NOTHING_SAID, new Map()));
+  assert("a digest that landed is a different answer", !sameSaid(one, new Map([[1, "A digest of turn one."], [2, "And of turn two."]])));
+  assert("a digest that changed its words is a different answer", !sameSaid(one, new Map([[1, "Re-derived, and differently worded."]])));
+  assert("a digest for another turn entirely is a different answer", !sameSaid(one, new Map([[2, "A digest of turn one."]])));
+  assert("and the reader's no, against a page that was saying one, is a different answer", !sameSaid(one, NOTHING_SAID));
 }
 
 if (process.exitCode) {

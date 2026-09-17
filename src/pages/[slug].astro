@@ -876,7 +876,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
     import { readPick, writePick } from "../voiceChoice";
-    import { forgetResume, fragmentOf, linked, LINK_PREFIX, printsOf, readResume, writeResume, type PrintedPage } from "../keptPlace";
+    import { forgetResume, fragmentOf, linked, LINK_PREFIX, readResume, writeResume, type PrintedPage } from "../keptPlace";
     import { caretSource, createPainter, tapPlace } from "../readAlong";
     import { createFollower } from "../follow";
     import { spawnSynthesisWorker } from "../synthesisClient";
@@ -886,9 +886,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { watchAllowance, type DeviceSource } from "../presynthesis";
     import { MODEL_PCM } from "../unitPlayer";
     import { carrierWav, createMediaSession } from "../mediaSession";
-    import { withDigests, type Utterance } from "../speech";
+    import { withDigests, type SpokenDigests, type SpokenPage, type Utterance } from "../speech";
+    import { pagePlace, spokenPlace } from "../spokenPlace";
     import { createDigestPanel, type DigestPanel } from "../digestPanel";
-    import { NOTHING_SAID, readSaid, writeSaid } from "../digestSpeech";
+    import { NOTHING_SAID, readSaid, sameSaid, writeSaid } from "../digestSpeech";
     import { reseatable } from "../listenPanel";
     import { summarizerSource } from "../summarizerSource";
     import { parseTurnSegment } from "../slug";
@@ -930,88 +931,99 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     const ask = document.querySelector<HTMLElement>(".digest-ask");
     const conversation = document.querySelector<HTMLElement>(".conversation");
     if (ask !== null && conversation !== null) {
-      const part = <T extends Element>(selector: string): T => {
-        const el = ask.querySelector<T>(selector);
-        // [LAW:no-defensive-null-guards] The markup above is this page's own; a missing part
-        // is a broken template, not a reader's browser being old.
-        if (el === null) throw new Error(`digests: the ask has no ${selector}`);
-        return el;
-      };
-      const payload = part<HTMLElement>(".digest-payload");
-      const turns = JSON.parse(payload.textContent ?? "[]") as DigestTurn[];
-      const panel = createDigestPanel({
-        controls: {
-          root: ask,
-          open: part<HTMLButtonElement>(".digest-open"),
-          always: part<HTMLInputElement>(".digest-always input"),
-          note: part<HTMLElement>(".digest-note"),
-          progress: part<HTMLProgressElement>(".digest-progress"),
-        },
-        conversation,
-        turns,
-        source: summarizer,
-        // The same storage Listen's preferences use, read inside its own guard on every
-        // access: a browser that blocks site data keeps no digests and remembers no yes,
-        // and neither takes the page down [LAW:single-enforcer].
-        store: deviceStore(() => window.localStorage),
-        // [LAW:one-source-of-truth] ConnectionReading itself, the same type Listen's mount
-        // reads the same navigator property through — not a second structural spelling of
-        // it here, which would keep compiling while a field downloadNeedsTap later learns to
-        // read went silently missing on this one of the two.
-        connection: (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
-        gestures: window,
-        onDigest: () => digestArrived(),
-        onFault: (what, error) => console.warn(`digests: ${what}`, error),
-      });
-      digests = panel;
+      // [LAW:locality-or-seam] The seam this try restores. Sharing one module with Listen is
+      // what lets the two panels meet, and it cost them the isolation two <script> tags gave
+      // for free: a throw here — a template that lost a .digest-* part, a payload that will
+      // not parse — would abort the module before Listen's mount below is ever reached, so a
+      // regression in the digest markup would silently take the voice down with it. Said and
+      // survived, through the same console the panel's own onFault uses: the reader loses the
+      // digests, which is the half that broke [LAW:no-silent-failure].
+      try {
+        const part = <T extends Element>(selector: string): T => {
+          const el = ask.querySelector<T>(selector);
+          // [LAW:no-defensive-null-guards] The markup above is this page's own; a missing part
+          // is a broken template, not a reader's browser being old.
+          if (el === null) throw new Error(`digests: the ask has no ${selector}`);
+          return el;
+        };
+        const payload = part<HTMLElement>(".digest-payload");
+        const turns = JSON.parse(payload.textContent ?? "[]") as DigestTurn[];
+        const panel = createDigestPanel({
+          controls: {
+            root: ask,
+            open: part<HTMLButtonElement>(".digest-open"),
+            always: part<HTMLInputElement>(".digest-always input"),
+            note: part<HTMLElement>(".digest-note"),
+            progress: part<HTMLProgressElement>(".digest-progress"),
+          },
+          conversation,
+          turns,
+          source: summarizer,
+          // The same storage Listen's preferences use, read inside its own guard on every
+          // access: a browser that blocks site data keeps no digests and remembers no yes,
+          // and neither takes the page down [LAW:single-enforcer].
+          store: deviceStore(() => window.localStorage),
+          // [LAW:one-source-of-truth] ConnectionReading itself, the same type Listen's mount
+          // reads the same navigator property through — not a second structural spelling of
+          // it here, which would keep compiling while a field downloadNeedsTap later learns to
+          // read went silently missing on this one of the two.
+          connection: (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
+          gestures: window,
+          onDigest: () => digestArrived(),
+          onFault: (what, error) => console.warn(`digests: ${what}`, error),
+        });
+        digests = panel;
 
-      // [LAW:no-ambient-temporal-coupling] Where the reader is headed, said before the panel
-      // can have a summarizer to walk with. Without it the first turn derived is whichever
-      // the observer had not yet reported — a race between the browser making a summarizer
-      // and the first frame — and a reader who followed a link to t40 spends their first
-      // digest on turn 0. The observer below keeps the answer current; this is the same
-      // question asked once, now, because a subscription cannot answer for the past.
-      //
-      // [LAW:single-enforcer] A permalink's fragment is read through parseTurnSegment, the
-      // one t<N> grammar the card route and the oEmbed endpoint also parse — never a second
-      // reading of the same URL shape here. The browser has not scrolled to it yet when this
-      // script runs, so the fragment is the honest answer and geometry is not; with no
-      // fragment, the turn at the top of the viewport is.
-      const arrivedAt = (): number => {
-        const asked = parseTurnSegment(location.hash.replace(/^#/, ""));
-        if (asked !== null) return asked;
-        for (const turn of conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")) {
-          if (turn.getBoundingClientRect().bottom > 0) return Number(turn.dataset.index);
-        }
-        return 0;
-      };
-      panel.readAt(arrivedAt());
+        // [LAW:no-ambient-temporal-coupling] Where the reader is headed, said before the panel
+        // can have a summarizer to walk with. Without it the first turn derived is whichever
+        // the observer had not yet reported — a race between the browser making a summarizer
+        // and the first frame — and a reader who followed a link to t40 spends their first
+        // digest on turn 0. The observer below keeps the answer current; this is the same
+        // question asked once, now, because a subscription cannot answer for the past.
+        //
+        // [LAW:single-enforcer] A permalink's fragment is read through parseTurnSegment, the
+        // one t<N> grammar the card route and the oEmbed endpoint also parse — never a second
+        // reading of the same URL shape here. The browser has not scrolled to it yet when this
+        // script runs, so the fragment is the honest answer and geometry is not; with no
+        // fragment, the turn at the top of the viewport is.
+        const arrivedAt = (): number => {
+          const asked = parseTurnSegment(location.hash.replace(/^#/, ""));
+          if (asked !== null) return asked;
+          for (const turn of conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")) {
+            if (turn.getBoundingClientRect().bottom > 0) return Number(turn.dataset.index);
+          }
+          return 0;
+        };
+        panel.readAt(arrivedAt());
 
-      // [LAW:no-ambient-temporal-coupling] Which turn the reader is at is the browser's to
-      // say, and IntersectionObserver is the one that says it — no scroll handler, no timer.
-      // The topmost turn on screen is where the walk aims, so what the reader is ABOUT to
-      // read is derived before what they have passed. This is a different question from the
-      // minimap's active marker (which biases toward the upper viewport to light one row),
-      // and it is asked plainly here rather than bent out of that answer.
-      const onScreen = new Set<number>();
-      const watching = new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          const index = Number((entry.target as HTMLElement).dataset.index);
-          if (entry.isIntersecting) onScreen.add(index);
-          else onScreen.delete(index);
-        }
-        if (onScreen.size > 0) panel.readAt(Math.min(...onScreen));
-      });
-      for (const turn of conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")) watching.observe(turn);
+        // [LAW:no-ambient-temporal-coupling] Which turn the reader is at is the browser's to
+        // say, and IntersectionObserver is the one that says it — no scroll handler, no timer.
+        // The topmost turn on screen is where the walk aims, so what the reader is ABOUT to
+        // read is derived before what they have passed. This is a different question from the
+        // minimap's active marker (which biases toward the upper viewport to light one row),
+        // and it is asked plainly here rather than bent out of that answer.
+        const onScreen = new Set<number>();
+        const watching = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            const index = Number((entry.target as HTMLElement).dataset.index);
+            if (entry.isIntersecting) onScreen.add(index);
+            else onScreen.delete(index);
+          }
+          if (onScreen.size > 0) panel.readAt(Math.min(...onScreen));
+        });
+        for (const turn of conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")) watching.observe(turn);
 
-      // A page the reader is really leaving lets the model go; one going into the
-      // back-forward cache is FROZEN, not gone, and is left exactly as it was so a restored
-      // page is not left saying "Summarizing…" about work nobody is doing.
-      window.addEventListener("pagehide", (event) => {
-        if (event.persisted) return;
-        watching.disconnect();
-        panel.dispose();
-      });
+        // A page the reader is really leaving lets the model go; one going into the
+        // back-forward cache is FROZEN, not gone, and is left exactly as it was so a restored
+        // page is not left saying "Summarizing…" about work nobody is doing.
+        window.addEventListener("pagehide", (event) => {
+          if (event.persisted) return;
+          watching.disconnect();
+          panel.dispose();
+        });
+      } catch (error: unknown) {
+        console.warn("digests: the turn digests could not be mounted", error);
+      }
     }
 
     // ── the transport ───────────────────────────────────────────────────────────────────
@@ -1036,17 +1048,23 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         return el;
       };
       const utterances = JSON.parse(payloadEl.textContent ?? "[]") as Utterance[];
-      // [LAW:no-shared-mutable-globals] What the narrator says, and the prints that name it:
-      // the server's list until the digests arrive, the composed one after (`compose` below,
-      // the ONE writer of both). They move together — a Place is an index into `said` and is
-      // checked against `printed.prints` at the same index — so they are written in one
-      // statement and never separately [LAW:one-source-of-truth].
-      let said: ReadonlyArray<Utterance> = utterances;
-      let printed: PrintedPage = { utterances, prints: (payloadEl.getAttribute("data-prints") ?? "").split(" ").filter((print) => print !== "") };
+      // [LAW:one-source-of-truth] THE page, and the prints that name its utterances: the
+      // server's own list, derived from the stored original, the same for every reader of this
+      // paste in every browser. It never changes while the page is open, and everything kept
+      // outside the page — a resume in this device's storage, a word in a shared link — is
+      // counted in it. That is what makes such a place mean the same thing tomorrow, and mean
+      // anything at all to whoever a link was sent to.
+      const page: PrintedPage = { utterances, prints: (payloadEl.getAttribute("data-prints") ?? "").split(" ").filter((print) => print !== "") };
       const slug = document.querySelector<HTMLElement>(".conversation")?.dataset.slug;
-      if (printed.prints.length !== utterances.length || slug === undefined) {
-        throw new Error(`listen: the page has ${printed.prints.length} prints for ${utterances.length} utterances${slug === undefined ? " and no slug" : ""}`);
+      if (page.prints.length !== utterances.length || slug === undefined) {
+        throw new Error(`listen: the page has ${page.prints.length} prints for ${utterances.length} utterances${slug === undefined ? " and no slug" : ""}`);
       }
+      // [LAW:no-shared-mutable-globals] What the narrator SAYS: the same page with each ready
+      // digest in front of its turn, and the mapping between the two index spaces that comes
+      // with it. `compose` below is the one writer. Composed once here with nothing, rather
+      // than hand-built as an identity, so the mapping has exactly one producer even before a
+      // digest exists.
+      let spoken: SpokenPage = withDigests(utterances, NOTHING_SAID);
 
       // [LAW:parse-dont-validate] The tool is offered when the voice MAY work — the page
       // has WebGPU; its real answer (adapter, 16-bit floats, a device) is the worker's
@@ -1082,7 +1100,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           metadata: (shown) => new MediaMetadata(shown),
           title: document.querySelector("h1")?.textContent?.trim() || document.title,
           // The name on the passage's turn card, as the reader sees it.
-          speakerOf: (utterance) => document.getElementById(said[utterance]?.anchor ?? "")?.querySelector(".role-name")?.textContent?.trim() ?? "",
+          speakerOf: (utterance) => document.getElementById(spoken.utterances[utterance]?.anchor ?? "")?.querySelector(".role-name")?.textContent?.trim() ?? "",
           send: (gesture) => panel.send(gesture),
           element: () => {
             const element = new Audio(carrier);
@@ -1190,17 +1208,25 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           onTransport: (transport) => media.show(transport),
           onUnlock: () => media.unlock(),
           // The place kept for this paste, in the same storage, filed under its slug and
-          // checked against the page's prints on every read.
+          // checked against the page's prints on every read — and counted in the PAGE's list,
+          // not in what the narrator happens to be saying today. A digest is this device's,
+          // derived from this browser's summarizer at some moment of some visit, so a place
+          // counted past one would resolve against nothing on the next load and against a
+          // different word on anyone else's machine [LAW:one-source-of-truth]. Carried across
+          // that seam by spokenPlace.ts, the one module that knows both lists.
           resume: {
-            read: () => readResume(device, slug, printed),
-            write: (place) => writeResume(device, slug, printed, place),
+            read: () => {
+              const kept = readResume(device, slug, page);
+              return kept === null ? null : spokenPlace(spoken, kept);
+            },
+            write: (place) => writeResume(device, slug, page, pagePlace(spoken, place)),
             forget: () => forgetResume(device, slug),
           },
           // A link to the moment: this page's address with the place as its fragment, on the
           // clipboard — which a page not served securely has none of, said as such.
           share: async (place) => {
             if (!navigator.clipboard) throw new Error("this page has no clipboard access");
-            await navigator.clipboard.writeText(new URL(fragmentOf(printed, place), window.location.href).href);
+            await navigator.clipboard.writeText(new URL(fragmentOf(page, pagePlace(spoken, place)), window.location.href).href);
           },
           // The conversation as one audio file, named for the paste, in the form this browser
           // encodes, handed to the browser's own download — a link to the bytes, tapped, and let go
@@ -1239,21 +1265,28 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // page's own markup, and a missing one IS a template bug [LAW:no-defensive-null-guards].
         const sayChoice = controls.querySelector<HTMLElement>(".speech-digests");
         const sayBox = sayChoice === null ? null : control<HTMLInputElement>(".speech-digests input");
-        const compose = async (): Promise<void> => {
+        // What the last composition put in front of the turns, so an ask that would compose
+        // the same thing again composes nothing [LAW:dataflow-not-control-flow].
+        let saying: SpokenDigests = NOTHING_SAID;
+        const compose = (): void => {
           // Refused rather than forced, and the reasons are listenPanel's own (`reseatable`):
           // a voice already on stage is performing units cut from this text, and a cued Place
           // is an index into this very list. Neither is worth interrupting for a sentence the
-          // reader gets on their next listen [LAW:no-silent-failure].
+          // reader gets on the page's next visit [LAW:no-silent-failure].
           if (digests === null || !reseatable(panel.state())) return;
-          const spoken = withDigests(utterances, readSaid(device) ? digests.digests() : NOTHING_SAID);
-          const prints = await printsOf(spoken);
-          // The prints were hashed across an await, and the reader may have tapped a word or
-          // pressed Play in it. Asked again rather than assumed: the answer before the await
-          // is about a panel that no longer exists [LAW:no-ambient-temporal-coupling].
-          if (!reseatable(panel.state())) return;
-          said = spoken;
-          printed = { utterances: spoken, prints };
-          panel.reseat(spoken);
+          const wanted = readSaid(device) ? digests.digests() : NOTHING_SAID;
+          // A walk reports turn after turn and a scroll restarts it, so most asks arrive with
+          // nothing new to say. Re-seating on one of those would drop the script the panel is
+          // holding and set the worker cutting the whole paste again, for a list identical to
+          // the one being cut.
+          if (sameSaid(wanted, saying)) return;
+          // Composed BEFORE either variable moves, so a digest for a turn this page says
+          // nothing of leaves the reader the page they had rather than half of a new one
+          // [LAW:no-silent-failure].
+          const composed = withDigests(utterances, wanted);
+          saying = wanted;
+          spoken = composed;
+          panel.reseat(spoken.utterances);
         };
         // [LAW:no-silent-failure] The one way this page composes: a composition that throws —
         // a digest for a turn the page says nothing of, which is a broken invariant between
@@ -1261,8 +1294,13 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // page they had. Swallowed it would be a narrator that quietly never says a digest;
         // thrown from here it would be an unhandled rejection that also strands the loop below
         // with `composing` never cleared.
-        const composed = (): Promise<void> =>
-          compose().catch((error: unknown) => console.warn("listen: the turns' digests could not be put in front of them", error));
+        const recompose = (): void => {
+          try {
+            compose();
+          } catch (error: unknown) {
+            console.warn("listen: the turns' digests could not be put in front of them", error);
+          }
+        };
 
         // [LAW:no-ambient-temporal-coupling] One composition at a time, and exactly one more
         // whenever a digest landed while one was running. The wait is the digest panel's own
@@ -1280,7 +1318,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             while (again) {
               again = false;
               await digests?.settled();
-              await composed();
+              recompose();
             }
             composing = false;
           })();
@@ -1295,7 +1333,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           sayBox.checked = readSaid(device);
           sayBox.addEventListener("change", () => {
             writeSaid(device, sayBox.checked);
-            void composed();
+            recompose();
           });
         }
 
@@ -1328,7 +1366,10 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // to, not from the link.
         const openLink = (): void => {
           if (!window.location.hash.startsWith(LINK_PREFIX)) return;
-          panel.open(linked(printed, window.location.hash));
+          // Read against the page, then carried to where that word is being said: the link
+          // was written by whoever shared it, against the one list both browsers agree on.
+          const opened = linked(page, window.location.hash);
+          panel.open(opened.kind === "place" ? { kind: "place", place: spokenPlace(spoken, opened.place) } : opened);
           history.replaceState(history.state, "", window.location.pathname + window.location.search);
         };
         if (document.readyState === "complete") openLink();
@@ -1340,7 +1381,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // is looking where the voice is about to be, so the page follows again.
         const caretAt = caretSource(document);
         document.addEventListener("click", (event) => {
-          const place = tapPlace(document, caretAt, said, event);
+          const place = tapPlace(document, caretAt, spoken.utterances, event);
           if (place === null) return;
           panel.send({ kind: "place", to: place });
         });
