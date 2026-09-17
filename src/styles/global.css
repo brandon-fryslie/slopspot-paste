@@ -3351,7 +3351,13 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   justify-items: start;
 }
 .voice-picker[hidden] { display: none; }
-.speech-voices-toggle[aria-expanded="true"] { color: var(--fg); border-color: var(--accent); }
+/* [LAW:one-source-of-truth] The other half of `.voice-picker`: the button that opens one.
+   It says what the button IS, so the lit state of an open disclosure is written once for
+   every place a picker is offered rather than copied per place, where the copies diverge
+   the first time the state changes. Which one it is stays the place's own name
+   (`speech-voices-toggle`, `listen-mini-voices-toggle`), which is what each root is
+   selected by. */
+.voice-picker-toggle[aria-expanded="true"] { color: var(--fg); border-color: var(--accent); }
 /* A row is a fieldset so the radios are grouped for assistive tech; its chrome is removed
    and the legend takes the muted mono voice of the panel's other labels. */
 .voice-row {
@@ -3668,7 +3674,6 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
   max-width: 100%;
   min-width: 0;
 }
-.listen-mini-voices-toggle[aria-expanded="true"] { color: var(--fg); border-color: var(--accent); }
 .listen-mini-picker {
   box-sizing: border-box;
   /* Room for a name, its play and its description where there is room for them; never wider

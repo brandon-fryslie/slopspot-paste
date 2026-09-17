@@ -582,7 +582,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             </div>
             <progress class="speech-progress" hidden></progress>
             <p class="speech-now" aria-live="polite"></p>
-            <button class="mono-pill speech-voices-toggle" type="button" aria-expanded="false" aria-controls="speech-voices">Voices</button>
+            <button class="mono-pill voice-picker-toggle speech-voices-toggle" type="button" aria-expanded="false" aria-controls="speech-voices">Voices</button>
             <label class="speech-remember">
               <input type="checkbox" />
               <span>Always download the voice on this device</span>
@@ -795,7 +795,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               and an id of its own, which is the radio group the picker names itself by
               [LAW:one-source-of-truth]. */}
           <div class="listen-mini-voices">
-            <button class="mono-pill listen-mini-voices-toggle" type="button" aria-expanded="false" aria-controls="listen-mini-picker">Voices</button>
+            <button class="mono-pill voice-picker-toggle listen-mini-voices-toggle" type="button" aria-expanded="false" aria-controls="listen-mini-picker">Voices</button>
             <div class="voice-picker listen-mini-picker" id="listen-mini-picker" hidden></div>
           </div>
           <div class="listen-mini-face" data-face="consent" hidden>

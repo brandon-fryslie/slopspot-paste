@@ -1680,6 +1680,14 @@ const everyPicker = (mounted: ReadonlyArray<VoicePicker>): VoicePicker => ({
 // mini-player is `out` is the one input the readout does not carry: the driver's word,
 // from the reader's toggle and the voice's place.
 const render = (controls: ListenControls, picker: VoicePicker, shown: Readout, out: boolean): void => {
+  const { mark, mini } = controls;
+  // [LAW:single-enforcer] Who held focus coming IN, read before this render writes anything.
+  // `handOff` below is the one place that lands focus, and it answers by what `held` was
+  // when the render began: a control this render is about to disable or hide is still the
+  // reader's place until it is carried somewhere. Read it any later and the reading is of
+  // our own writes — disabling the focused element drops focus to `<body>`, which `handOff`
+  // reads as "not in the mini-player" and leaves the reader at the top of the document.
+  const held = mini.root.ownerDocument.activeElement;
   picker.render(shown.voices);
   controls.play.textContent = shown.play.label;
   controls.play.disabled = !shown.play.enabled;
@@ -1694,12 +1702,10 @@ const render = (controls: ListenControls, picker: VoicePicker, shown: Readout, o
   controls.progress.max = shown.progress?.totalBytes ?? 1;
   controls.progress.value = shown.progress?.loadedBytes ?? 0;
   controls.remember.checked = shown.remembered;
-  const { mark, mini } = controls;
   mark.root.dataset.state = shown.mark.kind;
   mark.root.style.setProperty("--fraction", String(shown.mark.kind === "downloading" ? shown.mark.fraction : 0));
   // The sentence names the mark for assistive tech.
   mark.button.setAttribute("aria-label", `Listen: ${shown.status}`);
-  const held = mini.root.ownerDocument.activeElement;
   renderMini(mini, shown.mini, shown.offer, shown.status);
   mini.root.hidden = !out;
   mark.button.setAttribute("aria-expanded", String(out));
