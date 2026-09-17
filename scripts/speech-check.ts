@@ -391,16 +391,33 @@ console.log("\nThe turn's digest, said before the turn (slopspot-turn-digest-8xc
   const literal = withDigests(said, new Map([[1, "  It re-reads\n  every `file`.  "]])).utterances;
   assert("the digest is said verbatim, whitespace collapsed", literal[1]?.text === "It re-reads every `file`.");
 
-  // A turn the conversation says nothing of can hold no digest, and the two derivations
-  // read one viewable dialogue — so they disagreeing is a broken invariant, said rather
-  // than a turn quietly skipped.
-  let refused = "";
-  try {
-    withDigests(said, new Map([[9, "A digest of a turn that is not there."]]));
-  } catch (error) {
-    refused = error instanceof Error ? error.message : String(error);
-  }
-  assert("a digest for a turn the page never says is refused, naming it", refused.includes("9"));
+  // A digest for a turn the page says nothing of is dropped, and every other digest is still
+  // said. This is not a hypothetical map: digestTurnsOf asks whether a turn holds enough
+  // READABLE words and this module asks whether any of it can be SPOKEN, and a turn whose
+  // visible text is all horizontal rules answers yes to the first and no to the second — so
+  // the real page composes exactly this map. Refusing it would take the narration down for
+  // the whole paste over one turn nobody can hear anyway.
+  const mixed = deriveUtterances(
+    plainView([
+      { kind: "spoken", role: "user", content: "Why is the build slow?" },
+      { kind: "assistant", blocks: [{ kind: "text", content: Array.from({ length: 90 }, () => "---").join("\n") }] },
+    ]),
+  );
+  assert("a turn of nothing but rules is spoken as nothing", !mixed.some((u) => u.index === 1));
+  const partial = withDigests(
+    mixed,
+    new Map([
+      [0, "They ask about the build."],
+      [1, "A digest of a turn that cannot be heard."],
+    ]),
+  );
+  assert("the digest of a turn the page never says is not said", !partial.utterances.some((u) => u.text.includes("cannot be heard")));
+  assert("and the digest of the turn it does say still is", partial.utterances[0]?.text === "They ask about the build.");
+  assert("the mapping still holds index for index", partial.onPage.length === partial.utterances.length && partial.spoken.length === mixed.length);
+  assert(
+    "every page utterance is still said where the mapping says",
+    mixed.every((utterance, page) => partial.utterances[partial.spoken[page] ?? -1] === utterance),
+  );
 
   // Every kept place, link and resume is an index into a list (keptPlace.ts), so the one thing
   // a caller must never assume is that the two lists address the same words — and the mapping

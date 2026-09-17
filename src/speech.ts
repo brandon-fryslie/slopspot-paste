@@ -561,15 +561,22 @@ export interface SpokenPage {
 // turn would light the wrong sentence (readAlong.ts leaves aside.turn-digest out of the
 // card's word pool for the same reason, from the other side).
 //
-// [LAW:no-silent-failure] A digest for a turn this page says nothing of is thrown, not
-// dropped: the digest service and this projection read the one viewable dialogue, so the
-// two disagreeing is a broken invariant between them and not a turn to quietly skip.
+// A digest for a turn this page says nothing of is simply not said — it is not an error,
+// because the two derivations answer DIFFERENT questions of the one viewable dialogue:
+// digestTurnsOf asks whether a turn holds enough readable words to be worth summarizing
+// (turnDigest.wantsDigest), and this module asks whether any of it can be spoken. A turn
+// whose visible text is all horizontal rules or table dividers answers yes to the first and
+// no to the second: eighty rule lines are eighty words to wordCount and nothing at all to
+// speakableSegments. So the map legitimately carries a turn with no run to go in front of.
+//
+// [LAW:no-silent-failure] is satisfied by having nothing to fail AT: the reader still sees
+// that digest on its card, and a turn with nothing to be heard has nothing to announce.
+// Refusing the whole map instead — which this did until the case above was constructed —
+// took the narration down for the WHOLE paste over one turn, and the page's catch around
+// composition (pages/[slug].astro) turned that into digests that never switch on, warned to
+// a console no reader opens. Dropping the one unsayable digest degrades exactly as far as
+// the turn that caused it.
 export const withDigests = (utterances: ReadonlyArray<Utterance>, digests: SpokenDigests): SpokenPage => {
-  const heads = new Set(utterances.filter((_, i) => opensTurn(utterances, i)).map((utterance) => utterance.index));
-  const unplaced = [...digests.keys()].filter((index) => !heads.has(index));
-  if (unplaced.length > 0) {
-    throw new RangeError(`the conversation says nothing of turn${unplaced.length === 1 ? "" : "s"} ${unplaced.join(", ")}, so no digest can go before it`);
-  }
   const said: Utterance[] = [];
   const onPage: number[] = [];
   const spoken: number[] = [];
