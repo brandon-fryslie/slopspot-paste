@@ -63,6 +63,17 @@ console.log("\nMarkdown → speech (slopspot-speech-ins):");
   // A truncated transcript genuinely contains these; refusing to speak the paste would be
   // a worse answer than announcing the block that was opened.
   assert("an unclosed fence is still announced", announced("text\n```sh\nls\nwc")[0] === "sh code block, 2 lines");
+  // A fence inside a list item is indented past CommonMark's top-level three spaces. This
+  // module scans flat lines and tracks no list containers, so it takes any indent as a
+  // fence: the alternative is reading a shell command aloud backtick by backtick.
+  const inList = "Steps:\n\n1. Install it:\n\n    ```bash\n    npm install --save-dev x\n    rm -rf out\n    ```\n\n2. Done.";
+  assert("a fence indented inside a list item is announced, not read", announced(inList)[0] === "bash code block, 2 lines");
+  // CommonMark: a backtick fence carries no backtick in its info string, so a sentence that
+  // opens with an inline code span is prose, not a block that swallows everything after it.
+  const spanFirst = "```npm ci``` first.\n\nThen deploy.";
+  assert("a line opening with an inline code span is spoken, not announced", announced(spanFirst).length === 0 && heard(spanFirst) === "npm ci first. Then deploy.");
+  assert("a tilde fence may carry backticks in its info string", announced("~~~`x`\na\n~~~")[0] === "`x` code block, 1 line");
+  assert("its contents never reach the synthesizer", !heard(inList).includes("npm install") && !heard(inList).includes("```"));
 
   // ── inline surfaces ──
   assert("inline code is read, without its backticks", heard("use `--force` here") === "use --force here");

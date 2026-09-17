@@ -13,7 +13,8 @@
 // the label is spineNodeLabel(node) — the SAME text the minimap markers read via data-topic.
 
 import type { ViewableDialogue } from "./dialogue";
-import { turnAnchorId, spineNodeLabel } from "./dialogue";
+import { nodeRole, turnAnchorId, spineNodeLabel } from "./dialogue";
+import type { Role } from "./types";
 
 // [LAW:types-are-the-program] One entry per spine node. role is the discriminant the
 // CSS colours by (the same three roles the minimap and renderer carry); anchor and
@@ -22,7 +23,7 @@ import { turnAnchorId, spineNodeLabel } from "./dialogue";
 export interface OutlineEntry {
   readonly index: number;
   readonly anchor: string;
-  readonly role: "user" | "system" | "assistant";
+  readonly role: Role;
   readonly label: string;
 }
 
@@ -32,6 +33,6 @@ export const deriveSpineOutline = (
   view.map(({ index, node }) => ({
     index,
     anchor: turnAnchorId(index),
-    role: node.kind === "spoken" ? node.role : "assistant",
+    role: nodeRole(node),
     label: spineNodeLabel(node),
   }));

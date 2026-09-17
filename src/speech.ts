@@ -18,6 +18,8 @@
 
 import type { DisplayNode, ViewableDialogue, AssistantBlock } from "./dialogue";
 import { blockVisibility, blockText, turnAnchorId } from "./dialogue";
+import type { Fence } from "./fence";
+import { closesFence, opensFence } from "./fence";
 
 // [LAW:types-are-the-program] Who is heard: the discriminator that selects a synthesis voice
 // at the edge. `narrator` is our voice, for words neither party said.
@@ -63,23 +65,10 @@ type Segment =
   | { readonly kind: "quoted"; readonly text: string }
   | { readonly kind: "announced"; readonly text: string };
 
-// [LAW:types-are-the-program] Captures the delimiter run itself (group 1), not just
-// whether one was present, because CommonMark's closing rule needs it: a closing fence
-// must reuse the SAME character as its opener and be at least as long. Without tracking
-// that, a code block opened with ``` that discusses fence syntax and contains a nested
-// ~~~ example — or a shorter ``` — would close on the wrong line, splitting one block
-// into a truncated fence plus stray "prose" that gets spoken instead of announced.
-//
-// Group 2 is the WHOLE info string, not just a language token: a real opener can carry
-// more than a bare language (```jsx twoslash, ```js {1,3} line-highlight annotations) —
-// requiring nothing-but-whitespace after the language would fail to recognize those as
-// fences at all, spilling the fenced block's own backticks into prose to be read aloud
-// character by character, which is exactly the invariant this module exists to prevent.
-// The language spoken in the announcement is the info string's first token (see below);
-// a closing line, by contrast, must have an EMPTY info string — CommonMark's rule that a
-// close "may be followed only by spaces or tabs" — so the two uses read the same capture
-// two different ways rather than needing two regexes.
-const FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*(.*)$/;
+// Where a fence opens and closes is fence.ts's answer (CommonMark's char, length and
+// empty-info-string rules), shared with the digest input so the two readers of a paste
+// never disagree about where a block ends [LAW:one-source-of-truth]. What this module
+// adds is what to SAY for one: the language is the info string's first token.
 
 const plural = (n: number, unit: string): string => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
@@ -355,7 +344,7 @@ const collapse = (text: string): string => text.replace(/[ \t]+/g, " ").replace(
 export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
   const segments: Segment[] = [];
   let prose: string[] = [];
-  let fence: { char: string; length: number; language: string; lines: number } | null = null;
+  let fence: { readonly opened: Fence; lines: number } | null = null;
 
   const flushProse = (): void => {
     const text = collapse(prose.join("\n"));
@@ -364,7 +353,10 @@ export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
   };
   const flushFence = (): void => {
     if (fence === null) return;
-    segments.push({ kind: "announced", text: codeAnnouncement(fence.language, fence.lines) });
+    // The announcement speaks only the LANGUAGE — the info string's first token — never
+    // the rest of an annotation (twoslash, {1,3}) a listener has no use for.
+    const language = fence.opened.info === "" ? "" : fence.opened.info.split(/\s+/)[0]!;
+    segments.push({ kind: "announced", text: codeAnnouncement(language, fence.lines) });
     fence = null;
   };
 
@@ -372,32 +364,15 @@ export const speakableSegments = (markdown: string): ReadonlyArray<Segment> => {
   const tableRows = tableLineIndices(lines);
 
   lines.forEach((line, i) => {
-    const fenced = FENCE.exec(line);
     if (fence !== null) {
-      // Inside a block: the only line that closes it reuses the SAME delimiter character
-      // as the opener, is at least as long, and carries no trailing info string —
-      // CommonMark's own rules. Without the length+char check, a nested example using the
-      // other fence character (or a shorter run) would prematurely end the block it lives
-      // inside; without the empty-info-string check, a nested fence opener that happens to
-      // share the outer delimiter's char and length (```md containing an inner ```js
-      // example) would be mistaken for the outer close, leaking the inner block's content
-      // into prose instead of staying announced.
-      const closes =
-        fenced !== null &&
-        fenced[1]![0] === fence.char &&
-        fenced[1]!.length >= fence.length &&
-        fenced[2]!.trim() === "";
-      if (!closes) fence.lines += 1;
-      else flushFence();
+      if (closesFence(line, fence.opened)) flushFence();
+      else fence.lines += 1;
       return;
     }
-    if (fenced !== null) {
+    const opened = opensFence(line);
+    if (opened !== null) {
       flushProse();
-      const info = fenced[2]!.trim();
-      // The announcement speaks only the LANGUAGE — the info string's first token — never
-      // the rest of an annotation (twoslash, {1,3}) a listener has no use for.
-      const language = info === "" ? "" : info.split(/\s+/)[0]!;
-      fence = { char: fenced[1]![0]!, length: fenced[1]!.length, language, lines: 0 };
+      fence = { opened, lines: 0 };
       return;
     }
     prose.push(isRuleLine(line) ? "" : speakLine(line, tableRows.has(i)));
