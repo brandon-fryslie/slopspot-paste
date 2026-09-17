@@ -168,20 +168,11 @@ const parseDigest = (kept: string | null): Digest | undefined => {
   }
 };
 
-// The kept keys in the order they were put, the eviction order; a value this build did not
-// write reads as none kept.
-// [LAW:no-silent-failure] exception: as parseDigest — a list that does not parse starts the
-// list over; the entries it named stay on the device, readable but no longer evictable, the
-// bounded cost of a list this build did not write.
-const parseKeys = (kept: string | null): ReadonlyArray<string> => {
-  if (kept === null) return [];
-  try {
-    const value: unknown = JSON.parse(kept);
-    return Array.isArray(value) && value.every((key) => typeof key === "string") ? value : [];
-  } catch {
-    return [];
-  }
-};
+// The kept keys in the order they were put, the eviction order — one key a line, because a
+// key is hex and a thousand of them are read and written on every put, where a parse and a
+// re-serialization of 65 kB of JSON would block the page each time.
+const parseKeys = (kept: string | null): ReadonlyArray<string> =>
+  kept === null ? [] : kept.split("\n").filter((key) => key.length > 0);
 
 // The kept list is written before the digest it names, and the digest only once the list is
 // read back as written: a device that refuses the list's write (it is the larger of the two)
@@ -192,7 +183,7 @@ export const preferenceDigestStore = (store: PreferenceStore, keep: number = DIG
     const keys = [...parseKeys(store.getItem(KEPT_KEYS)).filter((kept) => kept !== key), key];
     const evicted = keys.slice(0, Math.max(0, keys.length - keep));
     for (const old of evicted) store.removeItem(STORE_PREFIX + old);
-    const list = JSON.stringify(keys.slice(evicted.length));
+    const list = keys.slice(evicted.length).join("\n");
     store.setItem(KEPT_KEYS, list);
     if (store.getItem(KEPT_KEYS) === list) store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
   },
@@ -253,16 +244,17 @@ export const packByQuota = async (
 
 // One turn's digest: its paragraphs packed and each part summarized; while more than one
 // digest remains, the digests are packed and summarized the same way, until one is left,
-// marked combined. A combine round that packs no two digests together would be repeated
-// without end, so it is the turn's failure with that reason [LAW:no-silent-failure]; so is
-// a summarizer that answers nothing, since a blank kept under the turn's key would be served
-// as its digest on every visit.
+// marked combined.
+// [LAW:no-silent-failure] A round that leaves the digests neither fewer nor smaller would
+// be repeated without end, so it is the turn's failure with both measures — a round that
+// pairs nothing is allowed while the digests are still shrinking, and only a summarizer
+// whose digests stop shrinking ends the turn. So does one that answers nothing, since a
+// blank kept under the turn's key would be served as its digest on every visit.
 const digestOf = async (input: DigestInput, summarizer: Summarizer, signal: AbortSignal): Promise<Digest> => {
+  const usageOf = (texts: ReadonlyArray<string>): Promise<number> =>
+    summarizer.measureInputUsage(joinParagraphs(texts), { context: COMBINED_CONTEXT, signal });
   const round = async (texts: ReadonlyArray<string>, context: string, noun: string): Promise<ReadonlyArray<string>> => {
     const parts = await packByQuota(texts, summarizer, { context, signal }, noun);
-    if (noun !== "paragraph" && parts.length === texts.length) {
-      throw new Error(`no two of the ${texts.length} part digests fit the summarizer's quota of ${summarizer.inputQuota} together: they cannot be combined`);
-    }
     const digests: string[] = [];
     for (const part of parts) {
       const digest = await summarizer.summarize(part, { context, signal });
@@ -273,7 +265,16 @@ const digestOf = async (input: DigestInput, summarizer: Summarizer, signal: Abor
   };
   let digests = await round(input.paragraphs, turnContext(input.speaker), "paragraph");
   const combined = digests.length > 1;
-  while (digests.length > 1) digests = await round(digests, COMBINED_CONTEXT, "part digest");
+  let usage = combined ? await usageOf(digests) : 0;
+  while (digests.length > 1) {
+    const next = await round(digests, COMBINED_CONTEXT, "part digest");
+    const nextUsage = next.length > 1 ? await usageOf(next) : 0;
+    if (next.length >= digests.length && nextUsage >= usage) {
+      throw new Error(`the ${next.length} part digests measure ${nextUsage}, no less than the ${usage} they were made from: they cannot be combined under the summarizer's quota of ${summarizer.inputQuota}`);
+    }
+    digests = next;
+    usage = nextUsage;
+  }
   const [text] = digests;
   if (text === undefined) throw new Error("the turn has no readable text to digest");
   return { text, combined };
@@ -394,18 +395,20 @@ export const createDigestService = ({ dialogue, summarizer, identity, store }: D
   // The walk clears itself as the live one in its own finally, before its promise settles,
   // so a start from a listener opens a new walk rather than answering with one that is
   // ending. A turn a stopped walk still has in flight is waited for, never derived beside.
+  // A stop ends the walk through the loop's one exit, so what the listeners threw still
+  // reaches the caller of start [LAW:no-silent-failure].
   const walk = async (controller: AbortController): Promise<void> => {
     const { signal } = controller;
     const thrown: unknown[] = [];
     try {
       for (let entry = next(); entry !== undefined; entry = next()) {
         await entry.inflight?.catch(() => undefined);
-        if (signal.aborted) return;
+        if (signal.aborted) break;
         const derivation = outcomeOf(entry, signal);
         entry.inflight = derivation;
         const outcome = await derivation;
         if (entry.inflight === derivation) entry.inflight = null;
-        if (signal.aborted) return;
+        if (signal.aborted) break;
         thrown.push(...settle(entry, outcome));
       }
     } finally {

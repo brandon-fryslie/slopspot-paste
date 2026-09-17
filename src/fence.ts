@@ -15,15 +15,22 @@
 //
 // The info string is captured WHOLE, not as a bare language token: a real opener can carry
 // more (```jsx twoslash, ```js {1,3}), and requiring nothing after the language would fail
-// to see those as fences at all, spilling the block's own backticks into prose. A fence may
-// be indented up to three spaces; four make it indented code, not a fence.
+// to see those as fences at all, spilling the block's own backticks into prose.
+//
+// ANY leading whitespace opens a fence, which is not CommonMark's rule at the top level
+// (four spaces there make indented code). Both readers scan a flat run of lines and track
+// no list containers, and a fence inside a list item — routine in these transcripts — is
+// indented four or more. Under the strict rule that block is no fence at all: its contents
+// are read aloud backtick by backtick and split across digest parts, which is the whole
+// failure these two questions exist to prevent. Top-level indented code that contains a
+// fence line is the rarer case, and it costs a coarser split, never unreadable audio.
 export interface Fence {
   readonly char: string;
   readonly length: number;
   readonly info: string;
 }
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
+const FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*(.*)$/;
 
 // The fence this line opens, or null when it opens none.
 export const opensFence = (line: string): Fence | null => {
