@@ -71,7 +71,7 @@ const stubSummarizer = (inputQuota: number) => {
 // A Summarizer that stalls until released, rejects as the spec's does when its signal
 // aborts, and announces each call's arrival — a check waits on that, never on a tick, so it
 // does not depend on how busy the machine is [LAW:no-ambient-temporal-coupling].
-const stallingSummarizer = () => {
+const stallingSummarizer = (honoursAbort = true) => {
   let release: (() => void) | null = null;
   let announce: (() => void) | null = null;
   const calls: string[] = [];
@@ -81,7 +81,7 @@ const stallingSummarizer = () => {
     summarize: (input, options) =>
       new Promise((resolve, reject) => {
         calls.push(input);
-        options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+        if (honoursAbort) options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
         release = () => resolve("released");
         announce?.();
       }),
@@ -152,6 +152,12 @@ console.log("a code-heavy turn: a fenced block is one paragraph, its blank lines
   assert("a fence line with an info string opens, never closes", info.length === 2 && info[1] === "after");
   const unclosed = paragraphsOf("```\nnever closed\n\nstill code");
   assert("a fence never closed runs to the end as one paragraph", unclosed.length === 1);
+  const indented = paragraphsOf("Start a block with:\n\n    ```python\n\nthen close it.\n\nDone.");
+  assert("four spaces of indent make indented code, not a fence (CommonMark)", indented.length === 4);
+  const folded = viewable([assistant("```\nleft open"), assistant(`${words(100, "p")}\n\n${words(100, "q")}`)]);
+  assert("the two replies fold into one node", folded.length === 1);
+  const perBlock = selectDigestInput(folded[0]!);
+  assert("a fence left open in one block never swallows the next block", perBlock.paragraphs.length === 3 && perBlock.paragraphs[2]?.startsWith("q0 ") === true);
   const trace = [words(10, "before"), "```\n" + words(40, "frame") + "\n```", words(10, "after")].join("\n\n");
   const input = selectDigestInput(viewable([assistant(trace)])[0]!);
   assert("the trace counts toward the threshold and stays one paragraph", input.paragraphs.length === 3 && wordCount(input) === 62);
@@ -220,34 +226,36 @@ console.log("a very long turn: the part digests are packed and digested in round
   assert("50 parts, then 2, then 1: ready and combined", outcome.kind === "ready" && outcome.combined && calls.length === 53 && outcome.text === "«4 words»");
 }
 
-console.log("a Summarizer whose digests are no shorter than its inputs: the turn fails with that reason");
+console.log("part digests no two of which fit together: the turn fails with that reason, in one round");
+{
+  const dialogue = viewable([assistant([words(40, "a"), words(40, "b"), words(40, "c")].join("\n\n"))]);
+  let calls = 0;
+  const summarizer: Summarizer = {
+    inputQuota: 90,
+    measureInputUsage: async (input) => countWords(input),
+    summarize: async (input) => {
+      calls += 1;
+      return input;
+    },
+  };
+  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  await service.start(0);
+  const outcome = service.outcome(0);
+  assert("failed after the two part calls, naming the quota", outcome.kind === "failed" && outcome.reason.includes("cannot be combined") && outcome.reason.includes("90") && calls === 2);
+}
+
+console.log("a combined digest longer than the part digests it came from is still the digest");
 {
   const dialogue = viewable([assistant([words(40, "a"), words(40, "b"), words(40, "c")].join("\n\n"))]);
   const summarizer: Summarizer = {
     inputQuota: 90,
     measureInputUsage: async (input) => countWords(input),
-    summarize: async (input) => input,
+    summarize: async () => words(30, "d"),
   };
   const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
-  assert("failed, naming the rounds that made no progress", outcome.kind === "failed" && outcome.reason.includes("no shorter"));
-}
-
-console.log("a Summarizer whose digests shrink but cannot yet pair: another round, not a failure");
-{
-  // Six paragraphs of 30 words under a quota of 40; every digest is six tenths of its input,
-  // so the digests go 18 → three of 22 (still no pair under 40) → three of 14 → one.
-  const dialogue = viewable([assistant(Array.from({ length: 6 }, (_, i) => words(30, `p${i}_`)).join("\n\n"))]);
-  const summarizer: Summarizer = {
-    inputQuota: 40,
-    measureInputUsage: async (input) => countWords(input),
-    summarize: async (input) => words(Math.ceil(countWords(input) * 0.6), "d"),
-  };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
-  await service.start(0);
-  const outcome = service.outcome(0);
-  assert("ready and combined after the rounds", outcome.kind === "ready" && outcome.combined);
+  assert("two part digests of 30 words become one of 30: ready and combined", outcome.kind === "ready" && outcome.combined && countWords(outcome.text) === 30);
 }
 
 console.log("a Summarizer that answers nothing: failed, never a blank kept as the digest");
@@ -315,28 +323,39 @@ console.log("a Summarizer that throws: the turn fails with its reason, the walk 
   assert("the third turn is ready", service.outcome(2).kind === "ready");
 }
 
-console.log("a listener that throws: the outcome is already right, the others still hear it, the throw is the caller's");
+console.log("a listener that throws: the outcome is already right, the others still hear it, the walk goes on, the throws are the caller's at its end");
 {
   const dialogue = viewable([user(words(100, "a")), user(words(100, "b")), user(words(100, "c"))]);
   const { summarizer } = stubSummarizer(1_000);
   const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
-  let thrown = true;
-  let resumed: Promise<void> | null = null;
+  let throws = 2;
+  let rejoined: Promise<void> | null = null;
   service.subscribe(() => {
-    if (thrown) {
-      thrown = false;
+    if (throws > 0) {
+      throws -= 1;
       // A start queued from the throwing listener, as a card re-rendering on the outcome might.
-      queueMicrotask(() => void (resumed = service.start(2)));
+      if (throws === 1) queueMicrotask(() => void (rejoined = service.start(2)));
       throw new Error("render blew up");
     }
   });
   const heard: number[] = [];
   service.subscribe((index) => heard.push(index));
-  let caught = "";
-  await service.start(0).catch((error: unknown) => void (caught = error instanceof Error ? error.message : ""));
-  assert("start rejects with the listener's error; the turn it heard is ready, not failed; the other listener heard it", caught === "render blew up" && service.outcome(0).kind === "ready" && heard.join() === "0");
-  await resumed;
-  assert("the start queued from the listener opened a new walk that finished the rest, from t2", heard.join() === "0,2,1" && dialogue.every((d) => service.outcome(d.index).kind === "ready"));
+  let caught: unknown = null;
+  const walk = service.start(0);
+  await walk.catch((error: unknown) => void (caught = error));
+  assert("every turn settled and heard by the other listener", heard.join() === "0,1,2" && dialogue.every((d) => service.outcome(d.index).kind === "ready"));
+  assert("the walk rejects at its end with both throws", caught instanceof AggregateError && caught.errors.length === 2 && caught.errors[0]?.message === "render blew up");
+  assert("the start from the listener joined the same walk rather than opening a second", rejoined === walk);
+}
+
+console.log("a walk with nothing to do ends as it should: the next start opens a new one");
+{
+  const dialogue = viewable([user("short"), user("shorter")]);
+  const { summarizer } = stubSummarizer(1_000);
+  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const first = service.start(0);
+  await first;
+  assert("a second start after the first ended is a new walk", service.start(0) !== first);
 }
 
 // ── the device key ───────────────────────────────────────────────────────────────────
@@ -391,17 +410,17 @@ console.log("the adapter keeps a bounded number of digests, the oldest out first
   await store.put("k3", digest("three"));
   assert("a re-put digest is newest again, so the other is the one evicted", (await store.get("k2")) === undefined && (await store.get("k1"))?.text === "one again" && (await store.get("k3"))?.text === "three");
   assert("the device holds two digests and the kept list", preferences.keys().sort().join() === "digest-kept,digest.k1,digest.k3");
+  // A device that refuses a write over 40 characters: the kept list of one 40-character key
+  // is 44, the digest entry 31, so only the list is refused, as a full device refuses the
+  // larger write first.
   const refusing = memoryPreferences();
-  let refuse = false;
   const flaky = preferenceDigestStore({
     getItem: (key) => refusing.getItem(key),
-    setItem: (key, value) => void (refuse ? undefined : refusing.setItem(key, value)),
+    setItem: (key, value) => void (value.length > 40 ? undefined : refusing.setItem(key, value)),
     removeItem: (key) => refusing.removeItem(key),
   }, 2);
-  await flaky.put("k1", digest("one"));
-  refuse = true;
-  await flaky.put("k2", digest("two"));
-  assert("a device that refuses the kept list's write keeps no digest the list cannot name", refusing.keys().sort().join() === "digest-kept,digest.k1");
+  await flaky.put("k".repeat(40), digest("one"));
+  assert("a device that refuses the kept list's write keeps no digest the list cannot name", refusing.keys().length === 0);
   preferences.setItem("digest-kept", "not a list");
   await store.put("k4", digest("four"));
   assert("a kept list this build did not write starts over", (await store.get("k4"))?.text === "four" && preferences.getItem("digest-kept") === JSON.stringify(["k4"]));
@@ -493,6 +512,35 @@ console.log("a stop while the digest is being kept: nothing settles after the st
   releasePut!();
   await walk;
   assert("the walk resolves with the turn still pending and no listener told", service.outcome(0).kind === "pending" && heard.length === 0);
+}
+
+console.log("a stop then a start while the summarizer is still working: the new walk waits for that work, never asks beside it");
+{
+  const dialogue = viewable([user(words(100, "a")), user(words(100, "b"))]);
+  // This Summarizer does NOT reject when its signal aborts, as an in-browser polyfill
+  // running a model to completion would not; the abandoned call ends only when released.
+  const stub = stallingSummarizer(false);
+  const service = createDigestService({ dialogue, summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
+  const firstCall = stub.nextCall();
+  const first = service.start(0);
+  await firstCall;
+  service.stop();
+  const second = service.start(0);
+  // An absence is what is asserted, so this one waits a turn of the event loop rather than
+  // on an arrival: there is no arrival to wait for if the service is right.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert("the new walk asks nothing while the abandoned call is still in flight", stub.calls.length === 1);
+  const secondCall = stub.nextCall();
+  stub.release();
+  await first;
+  await secondCall;
+  assert("once it ends, the new walk asks for the same turn, still pending", stub.calls.length === 2 && stub.calls[1]?.startsWith("a0 ") === true && service.outcome(0).kind === "pending");
+  const thirdCall = stub.nextCall();
+  stub.release();
+  await thirdCall;
+  stub.release();
+  await second;
+  assert("both ready", service.outcome(0).kind === "ready" && service.outcome(1).kind === "ready");
 }
 
 console.log("a start during a walk re-aims it: the derivation in flight completes, the walk goes on from the new turn");

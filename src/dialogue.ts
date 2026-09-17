@@ -216,14 +216,17 @@ export const blockText = (block: AssistantBlock): string => {
 // from THIS, never from a private re-enumeration of kinds. [LAW:one-way-deps]
 // It lives here, beside the authorities it composes, so readers depend only
 // downhill on the model — never on each other.
-export const nodeVisibleProse = (node: SpineNode): string =>
+export const nodeVisibleTexts = (node: SpineNode): ReadonlyArray<string> =>
   node.kind === "spoken"
-    ? node.content
+    ? [node.content]
     : node.blocks
         .filter((b) => blockVisibility(b) === "spine")
         .map(blockText)
-        .filter((s) => s.length > 0)
-        .join("\n\n");
+        .filter((s) => s.length > 0);
+
+// The same prose as one text, a blank line between blocks. A reader that must keep each
+// block's own markdown structure (a fence never runs across blocks) reads nodeVisibleTexts.
+export const nodeVisibleProse = (node: SpineNode): string => nodeVisibleTexts(node).join("\n\n");
 
 // [LAW:one-source-of-truth] Who a spine node's words belong to: a spoken node's own role,
 // an assistant node the assistant. The outline colours by it and the digest names the

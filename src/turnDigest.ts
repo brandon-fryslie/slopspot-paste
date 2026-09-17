@@ -20,7 +20,7 @@
 // drives every arm with a stub whose quota is small and a Map for the device.
 //
 // WHAT IS SUMMARIZED. A turn's input is its readable prose as the reader sees it on the spine
-// — nodeVisibleProse, the one authority dialogue.ts owns and the transcript projection reads
+// — nodeVisibleTexts, the one authority dialogue.ts owns and the transcript projection reads
 // — taken from the VIEWABLE node (deriveViewableDialogue), so a hidden turn carries its
 // "[redacted]" marker and a redacted span its blank, never the original. Thinking, tool calls
 // and the source's own turn-summary block are not on the spine and so are not input; that
@@ -33,7 +33,7 @@
 
 import { contentHash } from "./contentHash";
 import type { DisplayNode, ViewableDialogue } from "./dialogue";
-import { nodeRole, nodeVisibleProse } from "./dialogue";
+import { nodeRole, nodeVisibleTexts } from "./dialogue";
 import type { Fence } from "./fence";
 import { closesFence, opensFence } from "./fence";
 import type { PreferenceStore } from "./preferenceStore";
@@ -56,8 +56,8 @@ export interface DigestInput {
 // [LAW:dataflow-not-control-flow] Prose split at its blank lines, a fenced code block kept
 // whole: the fence's own blank lines are inside it, and a fence that opens in one part and
 // closes in another is no paragraph. Where a fence opens and closes is fence.ts's answer,
-// the one the speech segmenter reads too. An unclosed fence runs to the end, as there.
-// Exported for the check; selectDigestInput is its caller.
+// the one the speech segmenter reads too. An unclosed fence runs to the end of its text, as
+// there. Exported for the check; selectDigestInput is its caller.
 export const paragraphsOf = (prose: string): ReadonlyArray<string> => {
   const paragraphs: string[] = [];
   let open: string[] = [];
@@ -79,12 +79,12 @@ export const paragraphsOf = (prose: string): ReadonlyArray<string> => {
   return paragraphs;
 };
 
-// [LAW:effects-at-boundaries] Pure: the viewable node's spine prose in its paragraphs.
-// nodeVisibleProse joins an assistant turn's spine blocks with a blank line, so a block
-// boundary is a paragraph boundary here by construction.
+// [LAW:effects-at-boundaries] Pure: the viewable node's spine texts, each in its paragraphs.
+// A block is read on its own, as the speech segmenter reads it, so a block boundary is a
+// paragraph boundary and a fence left open in one block never swallows the next.
 export const selectDigestInput = (display: DisplayNode): DigestInput => ({
   speaker: nodeRole(display.node),
-  paragraphs: paragraphsOf(nodeVisibleProse(display.node)),
+  paragraphs: nodeVisibleTexts(display.node).flatMap(paragraphsOf),
 });
 
 export const wordCount = (input: DigestInput): number =>
@@ -104,12 +104,10 @@ export interface SummarizerIdentity {
   readonly implementation: string;
 }
 
-export type Hash = typeof contentHash;
-
 // The device key of a turn's digest: the exact input the summarizer reads plus the identity
 // of the one reading it, through the one content-hash move every projection cache keys with.
-export const digestKey = (input: DigestInput, identity: SummarizerIdentity, hash: Hash = contentHash): Promise<string> =>
-  hash({ input, identity });
+export const digestKey = (input: DigestInput, identity: SummarizerIdentity): Promise<string> =>
+  contentHash({ input, identity });
 
 // ── the seams ────────────────────────────────────────────────────────────────────────
 
@@ -173,7 +171,8 @@ const parseDigest = (kept: string | null): Digest | undefined => {
 // The kept keys in the order they were put, the eviction order; a value this build did not
 // write reads as none kept.
 // [LAW:no-silent-failure] exception: as parseDigest — a list that does not parse starts the
-// list over; the entries it named are re-derived when next read, not lost.
+// list over; the entries it named stay on the device, readable but no longer evictable, the
+// bounded cost of a list this build did not write.
 const parseKeys = (kept: string | null): ReadonlyArray<string> => {
   if (kept === null) return [];
   try {
@@ -184,17 +183,18 @@ const parseKeys = (kept: string | null): ReadonlyArray<string> => {
   }
 };
 
-// The kept list is written before the digest it names: a device that refuses the list's
-// write then refuses the entry's too, or takes it under a list that already names it, so
-// no entry is kept that the list cannot evict.
+// The kept list is written before the digest it names, and the digest only once the list is
+// read back as written: a device that refuses the list's write (it is the larger of the two)
+// keeps no entry the list cannot evict.
 export const preferenceDigestStore = (store: PreferenceStore, keep: number = DIGEST_KEEP): DigestStore => ({
   get: async (key) => parseDigest(store.getItem(STORE_PREFIX + key)),
   put: async (key, digest) => {
     const keys = [...parseKeys(store.getItem(KEPT_KEYS)).filter((kept) => kept !== key), key];
     const evicted = keys.slice(0, Math.max(0, keys.length - keep));
     for (const old of evicted) store.removeItem(STORE_PREFIX + old);
-    store.setItem(KEPT_KEYS, JSON.stringify(keys.slice(evicted.length)));
-    store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
+    const list = JSON.stringify(keys.slice(evicted.length));
+    store.setItem(KEPT_KEYS, list);
+    if (store.getItem(KEPT_KEYS) === list) store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
   },
 });
 
@@ -251,17 +251,18 @@ export const packByQuota = async (
   return parts.map(joinParagraphs);
 };
 
-const textLength = (texts: ReadonlyArray<string>): number => texts.reduce((n, text) => n + text.length, 0);
-
 // One turn's digest: its paragraphs packed and each part summarized; while more than one
 // digest remains, the digests are packed and summarized the same way, until one is left,
-// marked combined. Every round's digests must be shorter together than what went in, or
-// the summarizer's digests are no shorter than its inputs and the turn fails with that
-// reason [LAW:no-silent-failure]; so does a summarizer that answers nothing, since a blank
-// kept under the turn's key would be served as its digest on every visit.
+// marked combined. A combine round that packs no two digests together would be repeated
+// without end, so it is the turn's failure with that reason [LAW:no-silent-failure]; so is
+// a summarizer that answers nothing, since a blank kept under the turn's key would be served
+// as its digest on every visit.
 const digestOf = async (input: DigestInput, summarizer: Summarizer, signal: AbortSignal): Promise<Digest> => {
   const round = async (texts: ReadonlyArray<string>, context: string, noun: string): Promise<ReadonlyArray<string>> => {
     const parts = await packByQuota(texts, summarizer, { context, signal }, noun);
+    if (noun !== "paragraph" && parts.length === texts.length) {
+      throw new Error(`no two of the ${texts.length} part digests fit the summarizer's quota of ${summarizer.inputQuota} together: they cannot be combined`);
+    }
     const digests: string[] = [];
     for (const part of parts) {
       const digest = await summarizer.summarize(part, { context, signal });
@@ -272,14 +273,10 @@ const digestOf = async (input: DigestInput, summarizer: Summarizer, signal: Abor
   };
   let digests = await round(input.paragraphs, turnContext(input.speaker), "paragraph");
   const combined = digests.length > 1;
-  while (digests.length > 1) {
-    const next = await round(digests, COMBINED_CONTEXT, "part digest");
-    if (textLength(next) >= textLength(digests)) {
-      throw new Error(`${digests.length} part digests summarize to ${next.length} no shorter together: the summarizer's digests are no shorter than its inputs`);
-    }
-    digests = next;
-  }
-  return { text: digests[0] ?? "", combined };
+  while (digests.length > 1) digests = await round(digests, COMBINED_CONTEXT, "part digest");
+  const [text] = digests;
+  if (text === undefined) throw new Error("the turn has no readable text to digest");
+  return { text, combined };
 };
 
 // ── the service ──────────────────────────────────────────────────────────────────────
@@ -315,17 +312,18 @@ export interface DigestServiceConfig {
   readonly summarizer: Summarizer;
   readonly identity: SummarizerIdentity;
   readonly store: DigestStore;
-  readonly hash?: Hash;
 }
 
 const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-// One shown turn as the service holds it: its name to callers, its input, and its outcome
-// so far — the one place an outcome is written.
+// One shown turn as the service holds it: its name to callers, its input, its outcome so far
+// — the one place an outcome is written — and the derivation a walk has in flight on it, so
+// a walk that comes after a stop waits for it rather than asking the summarizer twice.
 interface Entry {
   readonly index: number;
   readonly input: DigestInput;
   outcome: DigestOutcome;
+  inflight: Promise<DigestOutcome> | null;
 }
 
 // The walk under way: what stops it, and the promise a start answers with.
@@ -334,10 +332,10 @@ interface Walk {
   readonly done: Promise<void>;
 }
 
-export const createDigestService = ({ dialogue, summarizer, identity, store, hash = contentHash }: DigestServiceConfig): DigestService => {
+export const createDigestService = ({ dialogue, summarizer, identity, store }: DigestServiceConfig): DigestService => {
   const entries: ReadonlyArray<Entry> = dialogue.map((display) => {
     const input = selectDigestInput(display);
-    return { index: display.index, input, outcome: wordCount(input) < DIGEST_MIN_WORDS ? { kind: "none" } : { kind: "pending" } };
+    return { index: display.index, input, outcome: wordCount(input) < DIGEST_MIN_WORDS ? { kind: "none" } : { kind: "pending" }, inflight: null };
   });
   const byIndex = new Map(entries.map((entry) => [entry.index, entry]));
   const listeners = new Set<DigestListener>();
@@ -345,9 +343,10 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
   let live: Walk | null = null;
 
   // The outcome is written before any listener hears it, and every listener hears it, so a
-  // listener that throws leaves the outcome right and the others told; its throw (the first,
-  // if several) reaches the caller of start, whose listener it is.
-  const settle = (entry: Entry, outcome: DigestOutcome): void => {
+  // listener that throws leaves the outcome right and the others told. What the listeners
+  // threw is returned, not thrown: the walk goes on to the next turn and reports them all at
+  // its end to the caller of start, whose listeners they are.
+  const settle = (entry: Entry, outcome: DigestOutcome): ReadonlyArray<unknown> => {
     entry.outcome = outcome;
     const thrown: unknown[] = [];
     for (const listener of listeners) {
@@ -357,7 +356,7 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
         thrown.push(error);
       }
     }
-    if (thrown.length > 0) throw thrown[0];
+    return thrown;
   };
 
   // The next pending turn in reading order: the first shown turn at or after `from`, to the
@@ -370,7 +369,7 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
   // A kept digest, or a fresh one that is then kept; the signal is read after every await so
   // a stopped walk asks the summarizer nothing more.
   const derive = async (entry: Entry, signal: AbortSignal): Promise<Digest> => {
-    const key = await digestKey(entry.input, identity, hash);
+    const key = await digestKey(entry.input, identity);
     signal.throwIfAborted();
     const kept = await store.get(key);
     signal.throwIfAborted();
@@ -393,19 +392,26 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
   };
 
   // The walk clears itself as the live one in its own finally, before its promise settles,
-  // so a start from a listener that just threw opens a new walk rather than answering with
-  // the one that is ending.
+  // so a start from a listener opens a new walk rather than answering with one that is
+  // ending. A turn a stopped walk still has in flight is waited for, never derived beside.
   const walk = async (controller: AbortController): Promise<void> => {
     const { signal } = controller;
+    const thrown: unknown[] = [];
     try {
       for (let entry = next(); entry !== undefined; entry = next()) {
-        const outcome = await outcomeOf(entry, signal);
+        await entry.inflight?.catch(() => undefined);
         if (signal.aborted) return;
-        settle(entry, outcome);
+        const derivation = outcomeOf(entry, signal);
+        entry.inflight = derivation;
+        const outcome = await derivation;
+        if (entry.inflight === derivation) entry.inflight = null;
+        if (signal.aborted) return;
+        thrown.push(...settle(entry, outcome));
       }
     } finally {
       if (live?.controller === controller) live = null;
     }
+    if (thrown.length > 0) throw new AggregateError(thrown, `${thrown.length} digest listener throw${thrown.length === 1 ? "" : "s"}`);
   };
 
   const stop = (): void => {
@@ -413,11 +419,13 @@ export const createDigestService = ({ dialogue, summarizer, identity, store, has
     live = null;
   };
 
+  // The walk begins on a microtask, after `live` names it, so a walk with nothing to do
+  // clears `live` rather than finishing before it was ever set.
   const start = (at: number): Promise<void> => {
     from = at;
     if (live !== null) return live.done;
     const controller = new AbortController();
-    live = { controller, done: walk(controller) };
+    live = { controller, done: Promise.resolve().then(() => walk(controller)) };
     return live.done;
   };
 

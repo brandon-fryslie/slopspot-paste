@@ -15,14 +15,15 @@
 //
 // The info string is captured WHOLE, not as a bare language token: a real opener can carry
 // more (```jsx twoslash, ```js {1,3}), and requiring nothing after the language would fail
-// to see those as fences at all, spilling the block's own backticks into prose.
+// to see those as fences at all, spilling the block's own backticks into prose. A fence may
+// be indented up to three spaces; four make it indented code, not a fence.
 export interface Fence {
   readonly char: string;
   readonly length: number;
   readonly info: string;
 }
 
-const FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*(.*)$/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 
 // The fence this line opens, or null when it opens none.
 export const opensFence = (line: string): Fence | null => {
