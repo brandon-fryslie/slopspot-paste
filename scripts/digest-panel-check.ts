@@ -9,7 +9,7 @@
 // `settled()`, the panel's own answer to "is anything in flight".
 
 import { JSDOM } from "jsdom";
-import { PREFERENCE_KEY, writePreference } from "../src/digestConsent";
+import { PREFERENCE_KEY, readPreference, writePreference } from "../src/digestConsent";
 import { ASK_LABEL, ASK_NOTE, RETRY_LABEL, createDigestPanel, openingOf, type DigestControls } from "../src/digestPanel";
 import { DIGEST_CLASS } from "../src/digestView";
 import { deriveViewableDialogue } from "../src/overlay";
@@ -385,6 +385,36 @@ console.log("the gesture is taken once, not on every click the reader ever makes
   window.dispatchEvent(new window.Event("keydown"));
   await panel.settled();
   assert("and further gestures create nothing more", model.creates() === 2);
+  panel.dispose();
+}
+
+console.log("unticking the box withdraws the yes — the gesture that withdraws it is not the tap");
+{
+  // The reader remembered a yes, the create was refused for want of activation, and their
+  // next gesture anywhere stands in for the tap. They then change their mind and untick the
+  // box. Its pointerdown reaches the window BEFORE the change event that records the
+  // withdrawal, so a panel that took any gesture at all would start the very download the
+  // reader was in the act of refusing.
+  const model = browser("downloadable", refuses("Requires a user gesture"));
+  const { panel, controls, store, window } = mount({ source: model.source, remembered: true });
+  await panel.settled();
+  assert("it tried once on the remembered yes", model.creates() === 1);
+  assert("and the box is ticked, as the device remembers it", controls.always.checked);
+  // Exactly what a browser sends when the reader clicks the checkbox, in that order.
+  controls.always.dispatchEvent(new window.Event("pointerdown", { bubbles: true }));
+  controls.always.checked = false;
+  controls.always.dispatchEvent(new window.Event("change"));
+  await panel.settled();
+  assert("no download was started by the act of refusing one", model.creates() === 1);
+  assert("the device no longer remembers a yes", readPreference(store) === false);
+  // And the withdrawal holds: a later gesture elsewhere does not resurrect the standing yes.
+  window.dispatchEvent(new window.Event("pointerdown"));
+  await panel.settled();
+  assert("nor does any gesture after it", model.creates() === 1);
+  assert("the ask still stands, so the reader can still say yes deliberately", !controls.root.hidden);
+  controls.open.click();
+  await panel.settled();
+  assert("and the button still means yes", model.creates() === 2);
   panel.dispose();
 }
 

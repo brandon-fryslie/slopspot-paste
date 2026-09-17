@@ -1143,6 +1143,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // the connection is, and which turn the reader is looking at. Every decision made from
     // them is digestPanel.ts's, driven under jsdom by scripts/digest-panel-check.ts.
     import { createDigestPanel } from "../digestPanel";
+    import type { ConnectionReading } from "../modelAssets";
     import { deviceStore } from "../preferenceStore";
     import { summarizerSource } from "../summarizerSource";
     import { parseTurnSegment } from "../slug";
@@ -1178,7 +1179,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // access: a browser that blocks site data keeps no digests and remembers no yes,
         // and neither takes the page down [LAW:single-enforcer].
         store: deviceStore(() => window.localStorage),
-        connection: (navigator as Navigator & { connection?: { saveData?: boolean; type?: string } }).connection,
+        // [LAW:one-source-of-truth] ConnectionReading itself, the same type Listen's mount
+        // reads the same navigator property through — not a second structural spelling of
+        // it here, which would keep compiling while a field downloadNeedsTap later learns to
+        // read went silently missing on this one of the two.
+        connection: (navigator as Navigator & { readonly connection?: ConnectionReading }).connection,
         gestures: window,
         onFault: (what, error) => console.warn(`digests: ${what}`, error),
       });

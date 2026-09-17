@@ -152,6 +152,9 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
   // reporting on it would otherwise put the page back into a download nobody is doing.
   let attemptNo = 0;
   let armed: (() => void) | null = null;
+  // The walk this panel is already tracking. A walk that ends is never this again — the
+  // service answers a later start with a new promise — so it needs no clearing.
+  let walking: Promise<void> | null = null;
   let at = 0;
   let gone = false;
   // Everything the panel has in flight, folded into one promise. `allSettled` because a
@@ -204,7 +207,15 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
   // is live RE-AIMS it, which is the whole point of the reader moving, and a queued start
   // would arrive only once the walk it meant to redirect had finished.
   const walk = (live: DigestService): void => {
-    run("a digest listener threw", live.start(at));
+    const job = live.start(at);
+    // A start while a walk is under way RE-AIMS it and answers with the walk already
+    // running, so the reader scrolling a long paste asks for the same promise over and over.
+    // Tracking it each time would hang another link on the fold `settled()` waits for and
+    // another catch on the one job — a hundred scroll steps, a hundred copies of one
+    // listener's throw in the console [LAW:one-source-of-truth].
+    if (job === walking) return;
+    walking = job;
+    run("a digest listener threw", job);
   };
 
   // The reader's next gesture stands in for the tap the browser wants. One shot: it is
@@ -214,15 +225,30 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
     armed = null;
   };
 
+  const GESTURES = ["pointerdown", "keydown"];
+
   const arm = (): void => {
     if (armed !== null) return;
     const take = (): void => {
       disarm();
+      // The device's yes is read HERE rather than captured when this was armed: it is the
+      // one authority on whether the reader still wants this, and an arm outliving the yes
+      // it stands for would act on a withdrawn consent [LAW:one-source-of-truth].
+      if (!readPreference(store)) return;
       run("the digests could not be put on their turns", attempt());
     };
-    for (const kind of ["pointerdown", "keydown"]) gestures.addEventListener(kind, take, { once: true });
+    // A gesture on the ask ITSELF is never the stand-in tap. Every control there already
+    // means something exact — the button IS the tap, and the box is the reader changing
+    // their mind — and the box's `pointerdown` arrives BEFORE the `change` that records the
+    // withdrawal, so a window listener alone would read a reader UNTICKING the box as their
+    // consent to download and start the very download they were refusing. These listeners
+    // sit nearer the target and so run first, taking the arm down without attempting
+    // anything; the reader who wants it has a button that says so.
+    for (const kind of GESTURES) controls.root.addEventListener(kind, disarm);
+    for (const kind of GESTURES) gestures.addEventListener(kind, take);
     armed = () => {
-      for (const kind of ["pointerdown", "keydown"]) gestures.removeEventListener(kind, take);
+      for (const kind of GESTURES) controls.root.removeEventListener(kind, disarm);
+      for (const kind of GESTURES) gestures.removeEventListener(kind, take);
     };
   };
 
@@ -242,6 +268,12 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
     // lying for however long the create takes [LAW:no-silent-failure]. The monitor's first
     // report is what says a download is happening, and it is the only thing that says it.
     let summarizer: HeldSummarizer;
+    // NO abort signal, deliberately, though openSummarizer takes one. The model is the
+    // BROWSER's and is shared across every page that wants it — that is why a second visit
+    // finds it `available` — so a reader who leaves mid-download has started something worth
+    // finishing, and aborting it would make them start over next time. What this page holds
+    // is let go instead: a summarizer that resolves after the reader is gone is destroyed
+    // below rather than kept.
     // [LAW:no-silent-failure] This try answers for the BROWSER's refusal and nothing else.
     // Everything below it is the page's own work, and the one thing that throws there —
     // a turn the renderer never drew, which digestView.ts raises rather than skipping — is a
