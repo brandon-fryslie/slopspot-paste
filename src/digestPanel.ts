@@ -45,9 +45,12 @@ import { createDigestService, preferenceDigestStore, type DigestService, type Di
 // ── the pure part ──────────────────────────────────────────────────────────────────────
 
 // [LAW:types-are-the-program] What the page does about getting a summarizer, before anything
-// is attempted: nothing at all, open it now, or ask — with the remembered yes differing from
-// the plain ask only in that the reader is not asked twice.
-export type DigestOpening = "none" | "open" | "remembered" | "ask";
+// is attempted: nothing at all, try now, or ask. A remembered yes is NOT a fourth answer —
+// it is precisely what turns an ask into a try, which is the whole of what remembering buys.
+// Naming it separately would be a distinction the type asserts and the program never makes;
+// what a refusal then costs the reader is carried by the preference itself, read where the
+// arming decision is [LAW:one-source-of-truth].
+export type DigestOpening = "none" | "attempt" | "ask";
 
 // [LAW:dataflow-not-control-flow] One table, no branching on the reader's history: what the
 // browser says about the model crossed with what the device remembers. `downloading` — the
@@ -59,10 +62,10 @@ export const openingOf = (availability: SummarizerAvailability, consent: Standin
     case "unavailable":
       return "none";
     case "available":
-      return "open";
+      return "attempt";
     case "downloadable":
     case "downloading":
-      return consent === "download" ? "remembered" : "ask";
+      return consent === "download" ? "attempt" : "ask";
   }
 };
 
@@ -350,13 +353,12 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
       case "none":
         show({ kind: "unavailable" });
         return;
-      case "open":
+      case "attempt":
+        // Whether this is a model already on the device or a remembered yes being honoured,
+        // the page does the same thing and finds out the same way. If the browser refuses —
+        // for want of a gesture, or anything else — `attempt` has already shown the ask with
+        // the reason, and armed the reader's next gesture where a yes was remembered.
         await attempt();
-        return;
-      case "remembered":
-        await attempt();
-        // The attempt failed for want of a gesture (or anything else): `attempt` has already
-        // shown the ask and armed the reader's next gesture.
         return;
       case "ask":
         show({ kind: "ask", refusal: null });

@@ -170,11 +170,11 @@ const mount = (config: {
 console.log("what the page does about getting a summarizer, before anything is attempted");
 {
   assert("no model at all: nothing is offered", openingOf("unavailable", "none") === "none" && openingOf("unavailable", "download") === "none");
-  assert("a model already there: open it, the reader is asked nothing", openingOf("available", "none") === "open");
+  assert("a model already there: try it, the reader is asked nothing", openingOf("available", "none") === "attempt");
   assert("a remembered yes cannot conjure a model the browser does not have", openingOf("unavailable", "download") === "none");
   assert("downloadable, nothing remembered: ask", openingOf("downloadable", "none") === "ask");
-  assert("downloadable, remembered: do not ask again", openingOf("downloadable", "download") === "remembered");
-  assert("already downloading for another page is the same case — create still wants the tap", openingOf("downloading", "none") === "ask" && openingOf("downloading", "download") === "remembered");
+  assert("downloadable, remembered: try rather than ask again", openingOf("downloadable", "download") === "attempt");
+  assert("already downloading for another page is the same case — create still wants the tap", openingOf("downloading", "none") === "ask" && openingOf("downloading", "download") === "attempt");
 }
 
 // ── the browser that cannot ──────────────────────────────────────────────────────────
