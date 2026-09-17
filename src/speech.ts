@@ -515,3 +515,86 @@ const nodeUtterances = ({ index, node }: DisplayNode): ReadonlyArray<Utterance> 
 // knowing overlays exist at all.
 export const deriveUtterances = (view: ViewableDialogue): ReadonlyArray<Utterance> =>
   view.flatMap(nodeUtterances);
+
+// ── the turn's digest ────────────────────────────────────────────────────────────────
+
+// [LAW:types-are-the-program] What the narrator says before a turn, by the turn's CARRIED
+// index — the same number DisplayNode.index carries, the renderer writes as `data-index`
+// and the digest service names a turn by, so there is no second addressing scheme between
+// the summarizer's answer and the voice [LAW:one-source-of-truth].
+export type SpokenDigests = ReadonlyMap<number, string>;
+
+// The first utterance of each turn's run. deriveUtterances maps ONE node to a contiguous
+// run, so a turn's head is simply the utterance whose index differs from the one before it.
+const opensTurn = (utterances: ReadonlyArray<Utterance>, i: number): boolean => utterances[i]?.index !== utterances[i - 1]?.index;
+
+// [LAW:types-are-the-program] The page as the narrator says it, together with the way back to
+// the page it was composed from — one value, because the two are never safely held apart. A
+// Place is an INDEX into an utterance list (performer.ts), and putting a digest in front of a
+// turn moves every index after it, so a list whose mapping went missing is a shared link that
+// opens on the wrong word and a resume that starts in the wrong sentence. `withDigests` is the
+// only thing that makes one, and it fills all three in the one pass, so they cannot disagree.
+//
+// Counting the announcements in the composed list would be the same map drawn a second way,
+// and a WRONG one: the page's own utterances already include announcements (a code block is
+// announced rather than spelled out), so such a count would compile and mislead
+// [LAW:one-source-of-truth].
+export interface SpokenPage {
+  // What is said, in order: the page's utterances with each ready digest before its turn.
+  readonly utterances: ReadonlyArray<Utterance>;
+  // Index for index with `utterances`: the page utterance each spoken one stands for — itself,
+  // or, for a digest, the first utterance of the turn it was put in front of.
+  readonly onPage: ReadonlyArray<number>;
+  // Index for index with the PAGE's utterances: where each of them is said.
+  readonly spoken: ReadonlyArray<number>;
+}
+
+// [LAW:one-way-deps] The digest joins the spoken projection as a VALUE, so this module goes
+// on knowing nothing of summarizers, availability or caches: a pure list in, a pure list out,
+// driven in scripts/speech-check.ts with a Map and no mocks at all.
+//
+// It is an ANNOUNCEMENT, not the page's own words, on both counts that matter. The voice is
+// the narrator's because nobody in the transcript said it — the digest is the reader's
+// browser talking about the turn, as "2 tool calls, not read aloud" is. And the origin is an
+// announcement because the read-along must not paint while it is said: the digest on the
+// card is a summary OF the prose about to be spoken, so a cursor hunting its words in the
+// turn would light the wrong sentence (readAlong.ts leaves aside.turn-digest out of the
+// card's word pool for the same reason, from the other side).
+//
+// A digest for a turn this page says nothing of is simply not said — it is not an error,
+// because the two derivations answer DIFFERENT questions of the one viewable dialogue:
+// digestTurnsOf asks whether a turn holds enough readable words to be worth summarizing
+// (turnDigest.wantsDigest), and this module asks whether any of it can be spoken. A turn
+// whose visible text is all horizontal rules or table dividers answers yes to the first and
+// no to the second: eighty rule lines are eighty words to wordCount and nothing at all to
+// speakableSegments. So the map legitimately carries a turn with no run to go in front of.
+//
+// [LAW:no-silent-failure] is satisfied by having nothing to fail AT: the reader still sees
+// that digest on its card, and a turn with nothing to be heard has nothing to announce.
+// Refusing the whole map instead — which this did until the case above was constructed —
+// took the narration down for the WHOLE paste over one turn, and the page's catch around
+// composition (pages/[slug].astro) turned that into digests that never switch on, warned to
+// a console no reader opens. Dropping the one unsayable digest degrades exactly as far as
+// the turn that caused it.
+export const withDigests = (utterances: ReadonlyArray<Utterance>, digests: SpokenDigests): SpokenPage => {
+  const said: Utterance[] = [];
+  const onPage: number[] = [];
+  const spoken: number[] = [];
+  utterances.forEach((utterance, page) => {
+    // Collapsed, and spoken VERBATIM otherwise: the summarizer is asked for plain text
+    // (summarizerSource.DIGEST_OPTIONS) and the card writes it with textContent, so running
+    // it through the markdown-stripping pipeline would speak something the page never shows
+    // — the same reason the source's own turn-summary block is spoken as it is written.
+    const digest = opensTurn(utterances, page) ? collapse(digests.get(utterance.index) ?? "") : "";
+    if (digest !== "") {
+      said.push({ index: utterance.index, anchor: utterance.anchor, ...announced(digest) });
+      onPage.push(page);
+    }
+    // Where the page's own utterance lands, read before it is pushed: the turn's words, never
+    // the digest in front of them, so a place that came off the page comes back to the page.
+    spoken.push(said.length);
+    said.push(utterance);
+    onPage.push(page);
+  });
+  return { utterances: said, onPage, spoken };
+};

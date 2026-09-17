@@ -26,9 +26,11 @@
 // that refuses and one that is ready.
 
 import { readPreference, standingConsent, writePreference, type StandingConsent } from "./digestConsent";
+import { spokenDigests } from "./digestSpeech";
 import { createDigestView } from "./digestView";
 import type { ConnectionReading } from "./modelAssets";
 import type { PreferenceStore } from "./preferenceStore";
+import type { SpokenDigests } from "./speech";
 import {
   DIGEST_OPTIONS,
   NATIVE_IMPLEMENTATION,
@@ -120,6 +122,12 @@ export interface DigestPanelConfig {
   readonly gestures: EventTarget;
   readonly options?: SummarizerOptions;
   readonly implementation?: string;
+  // A turn gained its digest. The page composes what the narrator says from `digests()`
+  // (speech.ts withDigests), and a subscription is the only honest way for it to learn there
+  // is more to say: the walk settles more than once — a reader who taps the ask after the
+  // first settling opens a second walk — so one await on `settled()` would leave the
+  // narrator with whatever was ready at that one moment [LAW:no-silent-failure].
+  readonly onDigest?: () => void;
   // Said in the console where the page's own view throws — its listeners are this panel's.
   readonly onFault?: (what: string, error: unknown) => void;
 }
@@ -133,6 +141,11 @@ export interface DigestPanel {
   // scripts/digest-panel-check.ts never counts microtasks to know when to look
   // [LAW:no-ambient-temporal-coupling].
   readonly settled: () => Promise<void>;
+  // The digests the panel holds right now, for the narrator to say before their turns
+  // (speech.ts withDigests). Read, never waited on: a turn still being summarized is simply
+  // not in the map, which is what lets Listen compose a page without the summarizer ever
+  // being between the reader and their audio.
+  readonly digests: () => SpokenDigests;
   // The reader is at this turn: the walk re-aims, so what they are about to read is derived
   // before what they have passed.
   readonly readAt: (index: number) => void;
@@ -325,7 +338,18 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
       store: preferenceDigestStore(store),
     });
     service = live;
-    live.subscribe((index, outcome) => view.write(index, outcome));
+    live.subscribe((index, outcome) => {
+      // The page is told BEFORE the card is painted, and the order is load-bearing.
+      // `view.write` throws on a turn the renderer never drew, and the service swallows what
+      // a listener throws (turnDigest.ts settle), so painting first meant such a turn's digest
+      // reached the outcome map and NOTHING ever reached the narrator — and if it was the last
+      // ready digest of the walk, no later arrival would come to compose it either. Silently,
+      // which is the part that matters [LAW:no-silent-failure].
+      // Only a digest the narrator could say is worth telling the page about: a pending or
+      // failed turn changes what the CARD shows and leaves `digests()` exactly as it was.
+      if (outcome.kind === "ready") config.onDigest?.();
+      view.write(index, outcome);
+    });
     show({ kind: "working" });
     // The walk is started BEFORE the first painting, and the order is the whole difference
     // between one turn missing its digest and the feature being off. `paint` writes every
@@ -378,6 +402,7 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
 
   return {
     stage: () => stage,
+    digests: () => spokenDigests(turns, service),
     // [LAW:no-ambient-temporal-coupling] Waiting until the fold stops growing, rather than
     // awaiting it once: the walk this await is for adds the next turn's derivation while the
     // waiter is already suspended on the last one.

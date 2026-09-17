@@ -3518,8 +3518,18 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
 @keyframes listen-mark-turn { to { --mark-turn: 1turn; } }
 @keyframes listen-mark-breathe { 50% { opacity: 0.3; } }
 
-.speech-remember { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); cursor: pointer; }
-.speech-remember input { margin: 0; accent-color: var(--accent); }
+/* The two per-device choices in the panel wear one dress: the voice's download, and
+   whether the narrator says each turn's digest before its turn. One rule for both, so
+   they cannot drift apart into two looks for one kind of control. */
+.speech-remember, .speech-digests { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); cursor: pointer; }
+/* An author `display` beats the UA sheet's `[hidden] { display: none }`, so a control that is
+   rendered hidden needs it said again here — as .speech-follow and .speech-voices do above.
+   Without it the digests choice paints from the first frame in a browser with no Summarizer
+   (Chrome without the Writing Assistance API, Firefox, Safari): checked, clickable, and about
+   something that browser will never produce. */
+.speech-digests[hidden] { display: none; }
+.speech-digests-later { font-style: italic; }
+.speech-remember input, .speech-digests input { margin: 0; accent-color: var(--accent); }
 
 /* ─── The mini-player (slopspot-read-along-a35.djn) ─────────────────────────
    One pill to the left of the mark, in the same row, holding whichever face the panel

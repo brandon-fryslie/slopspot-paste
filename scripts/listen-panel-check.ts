@@ -22,7 +22,8 @@ import {
   markForm,
   pageOf,
   readout,
-  SCRIPT_ID,
+  FIRST_SCRIPT_ID,
+  reseatable,
   step as stepOn,
   type MarkForm,
   type PanelEvent,
@@ -39,7 +40,7 @@ import type { Place, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport, type WordStart } from "../src/speechManifest";
-import { speechSegments, timeAt, timelineOfScript, timelineOfUtterances } from "../src/timeline";
+import { landmarks, speechSegments, timeAt, timelineOfScript, timelineOfUtterances, type Start } from "../src/timeline";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { ListenPort, RenderedUnit, SynthesizeRequest } from "../src/synthesisClient";
 import { encodeFile } from "../src/renditionFile";
@@ -107,7 +108,7 @@ const seekTo = (utterance: number, char = 0): PanelEvent => ({ kind: "seek", to:
 const atMs = (utterance: number, char = 0): string => `${Math.round(timeAt(timelineOfScript(emptyManifest(units), table, nothingBegun), mark(utterance, char)))}ms`;
 const supported: PanelEvent = worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } });
 const ready: PanelEvent = worker({ kind: "ready", backend: "webgpu", modelVersion: "v" });
-const scriptBack: PanelEvent = worker({ kind: "script", id: SCRIPT_ID, units });
+const scriptBack: PanelEvent = worker({ kind: "script", id: FIRST_SCRIPT_ID, units });
 
 const scriptLine = timelineOfScript(emptyManifest(units), table, nothingBegun);
 const viewOf = (player: NeuralView["player"], settled = false): NeuralView => ({
@@ -230,7 +231,12 @@ console.log("step: the way to audio");
   assert("ready: nothing more to send — the script was asked for at the spawn — and the script is what the voice waits on", effects(scripting) === "" && shown(scripting.state) === "Listen(off) | stop(off) | Preparing the script…");
   const restoring = step(scripting.state, scriptBack);
   assert("the units back: the device is asked what it keeps of them, the status unchanged", restoring.state.kind === "provisioning" && restoring.state.script.kind === "restoring" && effects(restoring) === "restore" && shown(restoring.state) === "Listen(off) | stop(off) | Preparing the script…");
-  throws("a script reply with another id is not ours", () => step(scripting.state, worker({ kind: "script", id: 7, units })));
+  // The id is no longer `step`'s to judge: a page re-seated with the narrator's digests asks
+  // again while the first ask may still be out, so which ask is standing is a fact of the
+  // DRIVER, which drops every other reply before it reaches here [LAW:single-enforcer]. The
+  // pure step takes the reply it is handed — and the driver's own check, further down, is
+  // what proves a superseded script never reaches it.
+  assert("the pure step builds over whatever reply the driver passed it", step(scripting.state, worker({ kind: "script", id: 7, units })).state.kind === "provisioning");
   const keptReports = [report(640), undefined, undefined];
   const answer = (asked: ReadonlyArray<SynthesisUnit>): PanelEvent => ({ kind: "restored", units: asked, voices: DEFAULT_VOICES, kept: keptReports });
   const built = step(restoring.state, answer(units));
@@ -1083,7 +1089,7 @@ const escaped = async (run: () => Promise<void>): Promise<unknown> => {
 
 // The units back from the worker, and the device's answer on what it keeps of them.
 const scripted = async (r: Rig, script: ReadonlyArray<SynthesisUnit> = units): Promise<void> => {
-  r.emit({ kind: "script", id: SCRIPT_ID, units: script });
+  r.emit({ kind: "script", id: FIRST_SCRIPT_ID, units: script });
   await flush();
 };
 
@@ -1138,7 +1144,7 @@ console.log("createListenPanel: the tap opens the device, the voice arrives and 
   assert("warming: the bar goes, the ring is empty", r.bar.hidden && r.line() === "Listen(off) | stop(off) | Warming up the voice…" && r.mark.root.dataset.state === "warming" && r.mark.root.style.getPropertyValue("--fraction") === "0");
   r.emit({ kind: "ready", backend: "webgpu", modelVersion: "v" });
   const script = r.sent[0];
-  assert("the script the voice waits on was asked for at the spawn: the page's utterances under the panel's script id", script?.kind === "script" && script.id === SCRIPT_ID && script.utterances === utterances && r.line() === "Listen(off) | stop(off) | Preparing the script…");
+  assert("the script the voice waits on was asked for at the spawn: the page's utterances under the panel's script id", script?.kind === "script" && script.id === FIRST_SCRIPT_ID && script.utterances === utterances && r.line() === "Listen(off) | stop(off) | Preparing the script…");
 
   await scripted(r);
   assert("units back: the voice plays at once from the top on the device the tap opened, and asks for unit 0", panel.state().kind === "neural" && r.devices().length === 1 && r.said().endsWith("synthesize 0") && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && r.mark.root.dataset.state === "speaking");
@@ -1655,6 +1661,130 @@ console.log("createListenPanel: a teardown that fails too goes out with the bug 
   r.refusing.dispose = false;
   panel.dispose();
   assert("the panel is not left draining: the next event is handled, the worker disposed, the device closed, at the start", panel.state().kind === "provisioning" && r.counts.disposed === 2 && r.devices()[0]?.calls.at(-1) === "close" && r.line() === IDLE_LINE);
+}
+
+console.log("createListenPanel: the page re-seated — the narrator gains each turn's digest, and the script it was cut from goes with it (slopspot-turn-digest-8xc.p1n)");
+{
+  const r = rig();
+  const panel = mount(r);
+  // The page as it is once the digests land: a narrator announcement in front of turn 1,
+  // exactly what speech.ts withDigests composes. Every index after it has moved by one.
+  const digest: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "They ask about the build." };
+  const digestTwo: Utterance = { index: 2, anchor: "t2", origin: "announcement", voice: "narrator", text: "The reply is short." };
+  const withDigest = [digest, one, digestTwo, two];
+  // How a place counted in the page the server sent is counted once each turn gains a digest
+  // in front of it: page 0 is said at 1, page 1 at 3. What spokenPlace.ts derives for real.
+  const moved = (place: Place): Place => ({ utterance: place.utterance * 2 + 1, char: place.char });
+
+  assert("mounted: the first ask is out, over the page the server sent", r.said() === "script" && r.sent[0]?.kind === "script" && r.sent[0].id === FIRST_SCRIPT_ID && r.sent[0].utterances === utterances);
+  assert("nothing is on stage and nobody has named a place, so the page may be re-seated", reseatable(panel.state()));
+
+  panel.reseat(withDigest, moved);
+  const second = r.sent[1];
+  if (second?.kind !== "script") throw new Error("the re-seat did not ask for a script");
+  assert("re-seating asks again, over the new page, under a NEW id", r.said() === "script,script" && second.utterances === withDigest && second.id !== FIRST_SCRIPT_ID);
+  assert("and the panel is waiting again rather than holding the script it had", panel.state().kind === "provisioning" && panel.state().kind === "provisioning" && (panel.state() as Extract<PanelState, { kind: "provisioning" }>).script.kind === "asked");
+
+  // The first ask's answer arrives LATE, as it does on a real first visit: a worker holds a
+  // script request until its model is ready, which is the whole download away.
+  r.emit({ kind: "script", id: FIRST_SCRIPT_ID, units });
+  await flush();
+  assert("the superseded script is dropped, not built over: the panel still waits", (panel.state() as Extract<PanelState, { kind: "provisioning" }>).script.kind === "asked");
+
+  const digestUnits = [unit({ ...digest }, 0, digest.text.length), ...units];
+  r.emit({ kind: "script", id: second.id, units: digestUnits });
+  await flush();
+  assert("the standing ask's answer is taken", (panel.state() as Extract<PanelState, { kind: "provisioning" }>).script.kind === "held");
+
+  // A turn skip lands on a gap, and a gap is laid before every run of a new ANCHOR
+  // (timeline.ts). The digest carries its TURN's anchor, not one of its own, so it joins the
+  // head of that run: the skip lands on the gap in front of the digest, and the digest runs
+  // straight into the turn it is about with no pause between them — which is the whole of
+  // "skipping to a turn lands on its digest", falling out of the anchor rather than out of a
+  // rule the skip would have to learn [LAW:one-source-of-truth].
+  const digestLine = timelineOfUtterances(withDigest);
+  assert(
+    "the gap stays at the TURN boundary: the digest and the turn it is about run together, with no pause laid between them",
+    digestLine.segments.map((segment) => segment.content.kind).join() === "speech,speech,silence,speech,speech",
+  );
+  assert(
+    "so the digests add no landmark of their own: a skip still counts turns, not sentences",
+    landmarks(digestLine).length === landmarks(timelineOfUtterances(utterances)).length,
+  );
+  // What a forward skip lands on is the gap; what is SAID next is whatever begins after it.
+  const afterTheGap = digestLine.segments[3]?.content;
+  assert(
+    "and what the voice says after that gap is turn 2's digest, before a word of turn 2",
+    afterTheGap?.kind === "speech" && withDigest[afterTheGap.utterance] === digestTwo,
+  );
+
+  panel.dispose();
+}
+
+console.log("createListenPanel: a cued word survives the re-seat, because a cue is a place counted in a list that moved");
+{
+  const r = rig();
+  const panel = mount(r);
+  const digest: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "They ask about the build." };
+  const digestTwo: Utterance = { index: 2, anchor: "t2", origin: "announcement", voice: "narrator", text: "The reply is short." };
+  const withDigest = [digest, one, digestTwo, two];
+  const moved = (place: Place): Place => ({ utterance: place.utterance * 2 + 1, char: place.char });
+  const cueNow = (): Start | null => (panel.state() as Extract<PanelState, { kind: "provisioning" }>).cue;
+
+  // A tap on a word, which is how a reader names a place before any voice exists. A shared
+  // listen link names one the same way, through `open`, and that is the reader this matters
+  // most to: a link cues at load, so a door closed on a cue would be closed all visit.
+  panel.send({ kind: "place", to: mark(1, 4) });
+  assert("the word is cued where it was named, in the list it was named in", cueNow()?.kind === "speech" && (cueNow() as { place: Place }).place.utterance === 1);
+  assert("a named place does NOT close the door: a cue is carried, not destroyed", reseatable(panel.state()));
+
+  panel.reseat(withDigest, moved);
+  assert("the cue is still the same WORD, counted where that word is now said", cueNow()?.kind === "speech" && (cueNow() as { place: Place }).place.utterance === 3);
+  assert("and at the same character, because it is the same text", (cueNow() as { place: Place }).place.char === 4);
+  assert("the script is asked again over the page carrying the digests", r.said() === "script,script" && (r.sent[1] as { utterances: unknown }).utterances === withDigest);
+
+  panel.dispose();
+}
+
+console.log("createListenPanel: a re-seat that cannot be made is not half made");
+{
+  const r = rig();
+  const panel = mount(r);
+  const digest: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "They ask about the build." };
+  const withDigest = [digest, one, two];
+
+  // A mapper that refuses is not a hypothetical: spokenPlace.ts throws a RangeError for a
+  // place counted in no list it knows, and the page hands its mapper straight in.
+  panel.send({ kind: "place", to: mark(1, 4) });
+  let refused: unknown = null;
+  try {
+    panel.reseat(withDigest, () => {
+      throw new RangeError("that place is counted in no list here");
+    });
+  } catch (error) {
+    refused = error;
+  }
+  assert("the refusal is said, never absorbed", refused instanceof RangeError);
+  assert("and the panel is back at its start, as any bug out of a dispatch leaves it", panel.state().kind === "provisioning" && panel.state().model.kind === "idle");
+
+  // The point of the rollback: the driver must not be left holding the page the panel
+  // refused. What it asks for next is the list it still has.
+  r.play.click();
+  const asked = r.sent.filter((m): m is Extract<typeof m, { kind: "script" }> => m.kind === "script");
+  assert("the next script it asks for is the page it never left", asked.at(-1)?.utterances === utterances);
+
+  panel.dispose();
+}
+
+{
+  const r = rig();
+  const panel = mount(r);
+  // The tap is the consent the load waits on; then the whole way to a voice on stage.
+  r.play.click();
+  await arrive(r);
+  assert("a voice on stage is performing units cut from the old text, so the door is closed there too", panel.state().kind === "neural" && !reseatable(panel.state()));
+  throws("re-seating under a speaking voice is said", () => panel.reseat(utterances, (place) => place));
+  panel.dispose();
 }
 
 console.log("createListenPanel: the voice picker — a pick made cold arrives with the voice, one mid-listen restarts the unit, and both survive a reload");

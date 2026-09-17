@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { plainView, spineNodeLabel, type Dialogue, type SpineNode } from "../src/dialogue";
-import { deriveUtterances, speakableSegments, type Utterance } from "../src/speech";
+import { deriveUtterances, speakableSegments, withDigests, type Utterance } from "../src/speech";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -349,6 +349,94 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   assert("a collapsed node is read in full, in its speaker's voice", folded.length === 1 && folded[0]?.text === longContent && folded[0]?.voice === "user");
   assert("a collapsed node is never stood in for by its label", !folded.some((u) => u.text.includes(spineNodeLabel(foldedNode))));
   assert("a collapsed node still anchors to its own carried index", folded[0]?.anchor === "t3");
+}
+
+console.log("\nThe turn's digest, said before the turn (slopspot-turn-digest-8xc.p1n):");
+{
+  // Two turns the page really says, so "before the turn" is a claim about a run of
+  // utterances and not about a single one: the assistant turn below is prose, a fence and a
+  // detail count, three utterances under one index.
+  const said = deriveUtterances(
+    plainView([
+      { kind: "spoken", role: "user", content: "Why is the build slow?" },
+      {
+        kind: "assistant",
+        blocks: [
+          { kind: "text", content: "The bundler re-reads every file." },
+          { kind: "thinking", content: "…" },
+          { kind: "text", content: "Try:\n```sh\nls -la\n```" },
+        ],
+      },
+    ]),
+  );
+  const composed = withDigests(said, new Map([[1, "The bundler re-reads every file, so a cache would help."]]));
+  const digested = composed.utterances;
+
+  assert("a turn with no digest is left exactly as it was", JSON.stringify(withDigests(said, new Map()).utterances) === JSON.stringify(said));
+  assert("the digest goes BEFORE the turn's first utterance, not merely somewhere in it", digested[said.findIndex((u) => u.index === 1)]?.text === "The bundler re-reads every file, so a cache would help.");
+  assert("nothing else is added or dropped", digested.length === said.length + 1);
+  assert(
+    "every utterance of the turn still follows, in its own order",
+    JSON.stringify(digested.filter((u) => u !== digested[1])) === JSON.stringify(said),
+  );
+
+  const digest = digested[1];
+  assert("it is the narrator's, because nobody in the transcript said it", digest?.voice === "narrator");
+  assert("it is an announcement, so the read-along paints no prose while it is said", digest?.origin === "announcement");
+  assert("it anchors to the turn it is about", digest?.anchor === "t1" && digest?.index === 1);
+
+  // Plain text is what the summarizer is asked for and what the card writes, so the
+  // narrator says it as it is — whitespace collapsed, and nothing else touched. A markdown
+  // pass here would speak something the page never shows.
+  const literal = withDigests(said, new Map([[1, "  It re-reads\n  every `file`.  "]])).utterances;
+  assert("the digest is said verbatim, whitespace collapsed", literal[1]?.text === "It re-reads every `file`.");
+
+  // A digest for a turn the page says nothing of is dropped, and every other digest is still
+  // said. This is not a hypothetical map: digestTurnsOf asks whether a turn holds enough
+  // READABLE words and this module asks whether any of it can be SPOKEN, and a turn whose
+  // visible text is all horizontal rules answers yes to the first and no to the second — so
+  // the real page composes exactly this map. Refusing it would take the narration down for
+  // the whole paste over one turn nobody can hear anyway.
+  const mixed = deriveUtterances(
+    plainView([
+      { kind: "spoken", role: "user", content: "Why is the build slow?" },
+      { kind: "assistant", blocks: [{ kind: "text", content: Array.from({ length: 90 }, () => "---").join("\n") }] },
+    ]),
+  );
+  assert("a turn of nothing but rules is spoken as nothing", !mixed.some((u) => u.index === 1));
+  const partial = withDigests(
+    mixed,
+    new Map([
+      [0, "They ask about the build."],
+      [1, "A digest of a turn that cannot be heard."],
+    ]),
+  );
+  assert("the digest of a turn the page never says is not said", !partial.utterances.some((u) => u.text.includes("cannot be heard")));
+  assert("and the digest of the turn it does say still is", partial.utterances[0]?.text === "They ask about the build.");
+  assert("the mapping still holds index for index", partial.onPage.length === partial.utterances.length && partial.spoken.length === mixed.length);
+  assert(
+    "every page utterance is still said where the mapping says",
+    mixed.every((utterance, page) => partial.utterances[partial.spoken[page] ?? -1] === utterance),
+  );
+
+  // Every kept place, link and resume is an index into a list (keptPlace.ts), so the one thing
+  // a caller must never assume is that the two lists address the same words — and the mapping
+  // that comes back with the composition is the whole answer to it.
+  assert("adding a digest moves every later utterance", digested[2]?.text === said[1]?.text && digested[2] !== said[2]);
+  assert("the mapping is index for index with each list it maps", composed.onPage.length === digested.length && composed.spoken.length === said.length);
+  assert(
+    "every page utterance is said exactly where the mapping says, as itself",
+    said.every((utterance, page) => digested[composed.spoken[page] ?? -1] === utterance),
+  );
+  assert(
+    "and every one of them maps back to where it came from",
+    said.every((_, page) => composed.onPage[composed.spoken[page] ?? -1] === page),
+  );
+  // The digest is the one spoken utterance with no page utterance of its own. It stands for
+  // the turn it announces, and `spoken` never names it — which is what keeps a link opening
+  // on the word it named rather than on the sentence about it.
+  assert("a digest stands for the turn it was put in front of", composed.onPage[1] === 1 && composed.spoken[1] === 2);
+  assert("no page utterance is said at a digest's index", !composed.spoken.includes(1));
 }
 
 if (process.exitCode) {
