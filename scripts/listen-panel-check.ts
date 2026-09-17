@@ -40,7 +40,7 @@ import type { Place, Speed } from "../src/performer";
 import type { ReadAlongAt } from "../src/readAlong";
 import type { Utterance } from "../src/speech";
 import { emptyManifest, type UnitReport, type WordStart } from "../src/speechManifest";
-import { landmarks, speechSegments, timeAt, timelineOfScript, timelineOfUtterances } from "../src/timeline";
+import { landmarks, speechSegments, timeAt, timelineOfScript, timelineOfUtterances, type Start } from "../src/timeline";
 import { prepareText, type SynthesisUnit, type VoiceMap } from "../src/speechScript";
 import type { ListenPort, RenderedUnit, SynthesizeRequest } from "../src/synthesisClient";
 import { encodeFile } from "../src/renditionFile";
@@ -1672,11 +1672,14 @@ console.log("createListenPanel: the page re-seated — the narrator gains each t
   const digest: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "They ask about the build." };
   const digestTwo: Utterance = { index: 2, anchor: "t2", origin: "announcement", voice: "narrator", text: "The reply is short." };
   const withDigest = [digest, one, digestTwo, two];
+  // How a place counted in the page the server sent is counted once each turn gains a digest
+  // in front of it: page 0 is said at 1, page 1 at 3. What spokenPlace.ts derives for real.
+  const moved = (place: Place): Place => ({ utterance: place.utterance * 2 + 1, char: place.char });
 
   assert("mounted: the first ask is out, over the page the server sent", r.said() === "script" && r.sent[0]?.kind === "script" && r.sent[0].id === FIRST_SCRIPT_ID && r.sent[0].utterances === utterances);
   assert("nothing is on stage and nobody has named a place, so the page may be re-seated", reseatable(panel.state()));
 
-  panel.reseat(withDigest);
+  panel.reseat(withDigest, moved);
   const second = r.sent[1];
   if (second?.kind !== "script") throw new Error("the re-seat did not ask for a script");
   assert("re-seating asks again, over the new page, under a NEW id", r.said() === "script,script" && second.utterances === withDigest && second.id !== FIRST_SCRIPT_ID);
@@ -1715,12 +1718,30 @@ console.log("createListenPanel: the page re-seated — the narrator gains each t
     afterTheGap?.kind === "speech" && withDigest[afterTheGap.utterance] === digestTwo,
   );
 
-  // A cue is a Place, which is an INDEX into the list it was named in, so a page carrying the
-  // narrator's digests would point it at a different utterance.
-  // A tap on a word, which is how a reader names a place before any voice exists.
-  panel.send({ kind: "place", to: mark(1, 0) });
-  assert("a named place closes the door: the page is not re-seatable while one is cued", !reseatable(panel.state()));
-  throws("and re-seating anyway is said, never absorbed", () => panel.reseat(utterances));
+  panel.dispose();
+}
+
+console.log("createListenPanel: a cued word survives the re-seat, because a cue is a place counted in a list that moved");
+{
+  const r = rig();
+  const panel = mount(r);
+  const digest: Utterance = { index: 1, anchor: "t1", origin: "announcement", voice: "narrator", text: "They ask about the build." };
+  const digestTwo: Utterance = { index: 2, anchor: "t2", origin: "announcement", voice: "narrator", text: "The reply is short." };
+  const withDigest = [digest, one, digestTwo, two];
+  const moved = (place: Place): Place => ({ utterance: place.utterance * 2 + 1, char: place.char });
+  const cueNow = (): Start | null => (panel.state() as Extract<PanelState, { kind: "provisioning" }>).cue;
+
+  // A tap on a word, which is how a reader names a place before any voice exists. A shared
+  // listen link names one the same way, through `open`, and that is the reader this matters
+  // most to: a link cues at load, so a door closed on a cue would be closed all visit.
+  panel.send({ kind: "place", to: mark(1, 4) });
+  assert("the word is cued where it was named, in the list it was named in", cueNow()?.kind === "speech" && (cueNow() as { place: Place }).place.utterance === 1);
+  assert("a named place does NOT close the door: a cue is carried, not destroyed", reseatable(panel.state()));
+
+  panel.reseat(withDigest, moved);
+  assert("the cue is still the same WORD, counted where that word is now said", cueNow()?.kind === "speech" && (cueNow() as { place: Place }).place.utterance === 3);
+  assert("and at the same character, because it is the same text", (cueNow() as { place: Place }).place.char === 4);
+  assert("the script is asked again over the page carrying the digests", r.said() === "script,script" && (r.sent[1] as { utterances: unknown }).utterances === withDigest);
 
   panel.dispose();
 }
@@ -1732,7 +1753,7 @@ console.log("createListenPanel: the page re-seated — the narrator gains each t
   r.play.click();
   await arrive(r);
   assert("a voice on stage is performing units cut from the old text, so the door is closed there too", panel.state().kind === "neural" && !reseatable(panel.state()));
-  throws("re-seating under a speaking voice is said", () => panel.reseat(utterances));
+  throws("re-seating under a speaking voice is said", () => panel.reseat(utterances, (place) => place));
   panel.dispose();
 }
 

@@ -1280,13 +1280,22 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           // holding and set the worker cutting the whole paste again, for a list identical to
           // the one being cut.
           if (sameSaid(wanted, saying)) return;
-          // Composed BEFORE either variable moves, so a digest for a turn this page says
-          // nothing of leaves the reader the page they had rather than half of a new one
-          // [LAW:no-silent-failure].
-          const composed = withDigests(utterances, wanted);
+          // Spent BEFORE the attempt, not after it. What follows is a pure function of
+          // `wanted`, so an answer that throws for it throws for it every time: advanced here,
+          // a broken invariant is said once; advanced after, every later digest would compose
+          // it again and warn again, for the life of the page [LAW:no-silent-failure].
+          const was = spoken;
           saying = wanted;
+          const composed = withDigests(utterances, wanted);
+          // The panel holds a cue — a link's word, or a sentence the reader tapped — counted
+          // in the list it was seated with. Only the page knows both lists, so only the page
+          // can say where that place is now: out to the page it was always about, and back in
+          // to where it is said [LAW:one-source-of-truth].
+          panel.reseat(composed.utterances, (place) => spokenPlace(composed, pagePlace(was, place)));
+          // Last, and only once the panel is holding it. `reseat` can throw, and a `spoken`
+          // moved ahead of it would describe a list nothing holds — every later share and
+          // resume then naming the wrong word, quietly.
           spoken = composed;
-          panel.reseat(spoken.utterances);
         };
         // [LAW:no-silent-failure] The one way this page composes: a composition that throws —
         // a digest for a turn the page says nothing of, which is a broken invariant between

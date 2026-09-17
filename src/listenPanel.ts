@@ -382,8 +382,10 @@ export type PanelEvent =
   | { readonly kind: "voices"; readonly voices: VoiceMap }
   // The page says something else now: its turns' digests arrived and the narrator says them
   // (speech.ts withDigests), or the reader withdrew that choice. Only ever sent where
-  // `reseatable` below says it may be [LAW:single-enforcer].
-  | { readonly kind: "page" }
+  // `reseatable` below says it may be [LAW:single-enforcer]. It carries how a place counted
+  // in the old list is counted in the new one, because the panel holds one — the cue — and
+  // has no way of its own to know what moved [LAW:effects-at-boundaries].
+  | { readonly kind: "page"; readonly recue: Recue }
   // The page is done with the panel: everything it built is released.
   | { readonly kind: "dispose" };
 
@@ -804,20 +806,39 @@ const voices = (state: PanelState, map: VoiceMap): Step => {
   return state.script.kind === "restoring" ? { state, effects: [{ kind: "restore", units: state.script.units }] } : stay(state);
 };
 
-// [LAW:types-are-the-program] When the page may say something else than it did. Two facts,
-// and both are about what a re-seat would DESTROY rather than about who is asking. A voice on
-// stage is performing units cut from the old text, and rebuilding them under it would stop the
-// reading to insert a sentence the reader never asked for. A cue is a Place, which is an INDEX
-// into this very list (keptPlace.ts), so a list with the narrator's digests among them would
-// point it at a different utterance — a link's word, or a resume, silently moved.
+// [LAW:types-are-the-program] When the page may say something else than it did. ONE fact, and
+// it is about what a re-seat would DESTROY rather than about who is asking: a voice on stage
+// is performing units cut from the old text, and rebuilding them under it would stop the
+// reading to insert a sentence the reader never asked for.
 //
-// A page that arrives while either stands is simply not taken, and the digest that prompted it
-// is said on the page's next VISIT — not later in this one: `provisioning` is where a panel
-// starts and nothing returns it there, so a voice that has taken the stage says the page it
-// was seated with until the reader loads it again. That is exactly what "the narrator never
-// waits on the summarizer" costs, paid here in the open rather than as a pause nobody can see
-// the reason for [LAW:no-silent-failure].
-export const reseatable = (state: PanelState): boolean => state.kind === "provisioning" && state.cue === null;
+// A standing CUE used to be a second reason, and is not one any more. A cue is a Start, which
+// names a Place — an index into the list it was counted in — so a list with the narrator's
+// digests among it would once have pointed the cue at a different utterance. It is now carried
+// across with the page it was counted in (`recue`), which is the same crossing a shared link
+// and a resume make (spokenPlace.ts). Keeping the old refusal would cost the whole feature to
+// the reader it matters most to: a listen link cues a word at load and nothing clears a cue
+// while a panel provisions, so everyone who arrived by a shared link — and everyone who tapped
+// a sentence — would hear no digest all visit, with the choice showing checked.
+//
+// A page that arrives with a voice on stage is simply not taken, and the digest that prompted
+// it is said on the page's next VISIT — not later in this one: `provisioning` is where a panel
+// starts and nothing returns it there. That is exactly what "the narrator never waits on the
+// summarizer" costs, paid here in the open rather than as a pause nobody can see the reason
+// for [LAW:no-silent-failure].
+export const reseatable = (state: PanelState): boolean => state.kind === "provisioning";
+
+// How a place counted in the list the panel was seated with is counted in the one replacing
+// it. Total: every place in the old list is somewhere in the new one, because a re-seat only
+// ever adds the narrator's sentences to the page's own [LAW:parse-dont-validate].
+export type Recue = (place: Place) => Place;
+
+// The cue, carried. A Start names a Place in speech and the place a gap leads into in silence
+// (timeline.ts) — never a time, exactly so a name survives a change of timeline — so moving
+// the place it names is the whole of moving it [LAW:one-source-of-truth].
+const recued = (cue: Start | null, recue: Recue): Start | null => {
+  if (cue === null) return null;
+  return cue.kind === "speech" ? { kind: "speech", place: recue(cue.place) } : { ...cue, before: recue(cue.before) };
+};
 
 // The page re-seated: the script the panel holds was cut from text the page no longer says,
 // so it is dropped and asked for again — of the worker where there is one, and otherwise by
@@ -825,12 +846,15 @@ export const reseatable = (state: PanelState): boolean => state.kind === "provis
 // still out for the old units is recognised by identity and so is already stale (`restored`),
 // and a `script` reply to the ask released with a previous worker cannot arrive, since the
 // port it would come on went with it.
-const reseated = (state: PanelState): Step => {
+const reseated = (state: PanelState, event: Extract<PanelEvent, { kind: "page" }>): Step => {
   if (state.kind !== "provisioning") throw violation(state, "a page re-seated");
   // The three phases `onStage` excludes are exactly the three with no worker behind them:
   // before the first spawn, after a device was found unable, and after a crash released it.
   const asks = onStage(state.model);
-  return { state: { ...state, script: asks ? { kind: "asked" } : NO_SCRIPT }, effects: asks ? [{ kind: "script" }] : [] };
+  return {
+    state: { ...state, cue: recued(state.cue, event.recue), script: asks ? { kind: "asked" } : NO_SCRIPT },
+    effects: asks ? [{ kind: "script" }] : [],
+  };
 };
 
 // The device's answer builds the performer over the units it was asked about, in the voices
@@ -896,7 +920,7 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
     case "voices":
       return voices(state, event.voices);
     case "page":
-      return reseated(state);
+      return reseated(state, event);
     case "visibility":
       return visibility(state, event.hidden);
     case "dispose": {
@@ -1574,9 +1598,10 @@ export interface ListenPanel {
   readonly state: () => PanelState;
   // The conversation says something else now — the narrator has each turn's digest to say
   // before it, or the reader withdrew that choice. The script is asked for again over the new
-  // text. Only while `reseatable(state())`, which the page asks first so the prints it keeps
-  // for these utterances are written in the same breath [LAW:one-source-of-truth].
-  readonly reseat: (utterances: ReadonlyArray<Utterance>) => void;
+  // text, and a standing cue is carried across by `recue`, which the page supplies because
+  // only the page knows both lists. Only while `reseatable(state())`, which the page asks
+  // first so what it keeps for these utterances moves in the same breath.
+  readonly reseat: (utterances: ReadonlyArray<Utterance>, recue: Recue) => void;
   // Ends the listen, the device and the worker (gracefully: the model is released before
   // the worker ends); the page is left as the renderer made it, the controls show the
   // idle readout.
@@ -2277,7 +2302,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     // the back-forward cache finds them right.
     // A dispose hushes the sample inside the machine, so a teardown from a bug hushes it too.
     dispose: () => dispatch({ kind: "dispose" }),
-    reseat: (utterances) => {
+    reseat: (utterances, recue) => {
       // [LAW:parse-dont-validate] The one crossing: past it, the page and the script are
       // this list's and nothing holds the old one. `reseatable` is the page's to ask BEFORE
       // it composes the prints that go with these utterances, so a caller that asked and
@@ -2285,7 +2310,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       if (!reseatable(state)) throw violation(state, "a page re-seated");
       said = utterances;
       page = pageOf(said);
-      dispatch({ kind: "page" });
+      dispatch({ kind: "page", recue });
     },
   };
 };
