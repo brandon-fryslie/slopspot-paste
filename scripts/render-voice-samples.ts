@@ -1,8 +1,9 @@
 // Renders every hosted voice's sample (src/voiceSample.ts) into public/voices/: the live
 // preview's phrase (voiceChoice.previewText, as the runtime speaks it — `text`, not the
-// source it was normalized from), spoken from the voice's own pinned embedding
-// on the model release the site hosts — the bytes and the checkpoint the browser runs — and
-// encoded as mono AAC. Each file is named by its hash, every other file under the prefix is
+// source it was normalized from), spoken from the voice's own pinned embedding on the model
+// release the site hosts (the browser runs an fp16 conversion of those weights, so a sample
+// is the live preview's voice and phrase, near enough to hear, not its bytes) — and encoded
+// as mono AAC. Each file is named by its hash, every other file under the prefix is
 // removed, and the manifest entries to pin are printed: the bytes decide the name, and the
 // manifest holds it [LAW:one-source-of-truth]. The render is seeded and pocket-tts pinned, so
 // the same inputs are the same bytes: a changed hash means a changed voice, phrase or
@@ -33,8 +34,10 @@ const samplesDir = join(publicDir, SAMPLE_PREFIX);
 const work = mkdtempSync(join(tmpdir(), "voice-samples-"));
 mkdirSync(samplesDir, { recursive: true });
 
+// Every voice is rendered before any is published: a render that fails partway leaves the
+// prefix as it was, never a few new samples beside the stale ones the manifest still pins.
 const pinned: string[] = [];
-const written = new Set<string>();
+const made = new Map<string, Buffer>();
 for (const id of VOICE_IDS) {
   const asset = MODEL_ASSETS.voices[id];
   const [shard, ...rest] = shardPlan(asset);
@@ -52,8 +55,7 @@ for (const id of VOICE_IDS) {
   const bytes = readFileSync(m4a);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const name = sampleFile(id, sha256);
-  writeFileSync(join(samplesDir, name), bytes);
-  written.add(name);
+  made.set(name, bytes);
   console.log(`render-voice-samples: ${id} — ${name}, ${bytes.byteLength} bytes`);
   pinned.push(`  ${id}  { bytes: ${bytes.byteLength}, sha256: "${sha256}" }`);
 }
@@ -61,9 +63,10 @@ for (const id of VOICE_IDS) {
 // old bytes, and the sample of a voice no longer hosted, would otherwise ride into every
 // later deploy, and voice-sample-check.ts fails on a stray file.
 for (const stale of readdirSync(samplesDir)) {
-  if (written.has(stale)) continue;
+  if (made.has(stale)) continue;
   rmSync(join(samplesDir, stale));
   console.log(`render-voice-samples: removed stale ${stale}`);
 }
+for (const [name, bytes] of made) writeFileSync(join(samplesDir, name), bytes);
 rmSync(work, { recursive: true, force: true });
 console.log(`render-voice-samples: pin these in src/modelAssets.ts, each as its voice's \`sample\` argument:\n${pinned.join("\n")}`);

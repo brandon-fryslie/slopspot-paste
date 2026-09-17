@@ -70,7 +70,8 @@ export const createSamplePlayer = ({ Audio, onChange }: SamplePlayerConfig): Sam
   // The element's own failure — a decode that fails, a connection that drops mid-sample —
   // is said and the voice unlit, as a refused play is [LAW:no-silent-failure].
   audio.addEventListener("error", () => {
-    if (sounding !== null) console.warn(`voice sample: ${sounding} stopped — ${audio.error?.message ?? "the element gave no reason"}`);
+    // Only Chrome reliably fills the element's reason in; elsewhere it is the empty string.
+    if (sounding !== null) console.warn(`voice sample: ${sounding} stopped — ${audio.error?.message?.trim() || "the element gave no reason"}`);
     settle(null);
   });
   const hush = (): void => {

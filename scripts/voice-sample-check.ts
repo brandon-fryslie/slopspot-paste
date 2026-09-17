@@ -38,8 +38,11 @@ console.log("the samples on disk are the bytes the manifest pins");
     const hash = bytes === null ? "" : createHash("sha256").update(bytes).digest("hex");
     assert(`${id}: the file at its pinned path is its pinned bytes, an MP4 audio file`, bytes !== null && bytes.byteLength === sample.bytes && hash === sample.sha256 && bytes.subarray(4, 8).toString("latin1") === "ftyp");
   }
-  const expected = VOICE_IDS.map((id) => sampleFile(id, MODEL_ASSETS.voices[id].sample.sha256)).sort();
-  assert("nothing under the samples' prefix but the pinned samples: a stale render never ships", JSON.stringify(readdirSync(samplesDir).sort()) === JSON.stringify(expected));
+  // Each pinned file's presence is settled above [LAW:single-enforcer]; what is left to say
+  // is that nothing else is there, and to name what is when something is.
+  const expected = VOICE_IDS.map((id) => sampleFile(id, MODEL_ASSETS.voices[id].sample.sha256));
+  const stray = readdirSync(samplesDir).filter((file) => !expected.includes(file));
+  assert(`nothing under the samples' prefix but the pinned samples: a stale render never ships${stray.length === 0 ? "" : ` — found ${stray.join(", ")}`}`, stray.length === 0);
 }
 
 console.log("the player: one voice at a time, told to the picker on every change");
@@ -108,8 +111,11 @@ console.log("the player: one voice at a time, told to the picker on every change
   if (audio === undefined) throw new Error("fixture: no audio element");
   player.say("alba");
   audio.fail("the connection dropped");
-  console.warn = warn;
   assert("the element fails mid-sample: said with the browser's reason, and the voice unlit", warned.length === 1 && warned[0]?.includes("alba") === true && warned[0]?.includes("the connection dropped") === true && changes.map(String).join() === "alba,null");
+  player.say("marius");
+  audio.fail("");
+  console.warn = warn;
+  assert("a browser that gives no reason — most but Chrome — still says which voice stopped, and why it cannot say more", warned.length === 2 && warned[1]?.includes("marius") === true && warned[1]?.endsWith("the element gave no reason") === true);
 }
 
 console.log(process.exitCode === 1 ? "voice-sample-check: FAILED" : "voice-sample-check: ok");
