@@ -15,9 +15,14 @@
 // THE CREDIT. The CC-BY voices require attribution; each name carries its voice's
 // attribution and licence as its title, so the credit is one hover (or one long press)
 // away without a line of chrome per voice.
+//
+// WHAT IT SOUNDS LIKE. The name is not a description, so each voice carries one beneath it
+// (voiceChoice.voiceDescription) — shown, not hovered, because it is the thing a reader
+// chooses by. It is the radio's `aria-describedby`, so the option announces as its name
+// and then what it sounds like, rather than as one long name.
 
 import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
-import { PICKED_VOICES, ROLE_LABELS, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
+import { PICKED_VOICES, ROLE_LABELS, voiceDescription, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
 
 // [LAW:types-are-the-program] How a voice is heard out: live, its phrase made by the model
 // on this device, or from its sample (voiceSample.ts), with the note beside the rows that
@@ -86,9 +91,15 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): { options: ReadonlyA
     preview.setAttribute("aria-label", `Hear ${voiceName(voice)}`);
     preview.textContent = "▶";
     preview.addEventListener("click", () => on.preview(voice));
+    const about = el("span", "voice-about");
+    about.id = `voice-about-${role}-${voice}`;
+    about.textContent = voiceDescription(voice);
+    radio.setAttribute("aria-describedby", about.id);
+    const head = el("span", "voice-head");
+    attach(head, label, preview);
     const cell = el("div", "voice-option");
     cell.dataset.voice = voice;
-    attach(cell, label, preview);
+    attach(cell, head, about);
     return { role, voice, cell, radio, preview };
   };
   const options = PICKED_VOICES.flatMap((role) => {

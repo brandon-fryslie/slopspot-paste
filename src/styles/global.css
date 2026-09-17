@@ -3349,8 +3349,8 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .voice-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 14px;
+  align-items: flex-start;
+  gap: 10px 18px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -3365,10 +3365,24 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   letter-spacing: 0.03em;
   color: var(--fg-muted);
 }
+/* An option is two lines: the name with its play, and under them what the voice sounds
+   like — the line a reader chooses by, so it is shown rather than hidden behind a hover. */
 .voice-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.voice-head {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+.voice-about {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+  padding-left: 19px;
 }
 .voice-label {
   display: inline-flex;

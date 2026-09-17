@@ -31,7 +31,7 @@ import {
   type Transport,
   type Visit,
 } from "../src/listenPanel";
-import type { ConnectionReading } from "../src/modelAssets";
+import { VOICE_IDS, type ConnectionReading } from "../src/modelAssets";
 import { createMediaSession, type ActionDetails, type MediaAction } from "../src/mediaSession";
 import { utteranceTable, type NeuralView } from "../src/neuralPerformer";
 import type { Keeping, Residency } from "../src/modelResidency";
@@ -46,7 +46,7 @@ import { encodeFile } from "../src/renditionFile";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
-import { DEFAULT_PICK, DEFAULT_VOICES, readPick, writePick } from "../src/voiceChoice";
+import { DEFAULT_PICK, DEFAULT_VOICES, PICKED_VOICES, readPick, writePick } from "../src/voiceChoice";
 import { samplePath } from "../src/voiceSample";
 import { FRAME_S, frame, StubAudio, StubDevice } from "./playbackStub";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
@@ -1685,6 +1685,11 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("two rows, six voices each, the defaults checked", picker.querySelectorAll(".voice-row").length === 2 && picker.querySelectorAll(".voice-option").length === 12 && checked() === "alba/javert");
   assert("the rows are named You and Claude", [...picker.querySelectorAll(".voice-role")].map((l) => l.textContent).join() === "You,Claude");
   assert("each name carries its attribution and licence for the hover", part<HTMLElement>(option("assistant", "javert"), ".voice-label").title === "voice-donations/Butter via Kyutai tts-voices · CC0-1.0");
+  // The name says nothing, and Kyutai's say something false: Alba is a man's voice.
+  const about = (role: string, voice: string): HTMLElement => part<HTMLElement>(option(role, voice), ".voice-about");
+  assert("each voice says what it is like beside its name, in both rows", about("user", "alba").textContent === "Low and lively · American · masculine" && about("assistant", "alba").textContent === about("user", "alba").textContent);
+  assert("every option carries one, and no two rows share an id", picker.querySelectorAll(".voice-about").length === 12 && new Set([...picker.querySelectorAll(".voice-about")].map((el) => el.id)).size === 12);
+  assert("the description is the radio's, so the option announces as its name and then what it sounds like", VOICE_IDS.every((voice) => PICKED_VOICES.every((role) => radio(role, voice).getAttribute("aria-describedby") === about(role, voice).id)));
   assert("cold: every voice can be heard, the note says they are samples; nothing to reset", previews().every((b) => !b.disabled) && !note.hidden && note.textContent === "Samples · the voice itself plays once it is ready on this device." && reset.disabled);
   assert("plays are named for assistive tech", hear("azelma").getAttribute("aria-label") === "Hear Azelma");
   hear("azelma").click();
