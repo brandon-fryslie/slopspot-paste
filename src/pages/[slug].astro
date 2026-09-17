@@ -33,6 +33,7 @@ import {
 // reader's launcher. Classes NOT in this map (tool-dock-items, tool-dock-slot, tool-panel-title,
 // …) stay literal on purpose: they are styling, not part of the module↔markup contract.
 import { DOCK_SELECTORS } from "../toolDockView";
+import { digestTurnsOf, wantsDigest } from "../turnDigest";
 
 export const prerender = false;
 
@@ -114,6 +115,16 @@ const utterances = deriveUtterances(dialogue);
 // it still names before it is used (keptPlace.ts). Derived here with the utterances, so the
 // page carries exactly the prints of the text it carries.
 const prints = await printsOf(utterances);
+
+// [LAW:one-source-of-truth] The digest input — a FIFTH reading of the same viewable
+// `dialogue`, selected HERE, where the derived model is, and carried to the browser as its
+// result. The browser re-derives nothing of "what of a turn is readable" from the HTML it
+// was sent: one selection, on the server, for the page and for the polyfill later alike.
+const digestTurns = digestTurnsOf(dialogue);
+// [LAW:polishing-by-subtraction] A conversation whose every turn is its own digest carries
+// none of this: no payload, no ask, no script work. The threshold is the service's own
+// (wantsDigest), asked here rather than restated.
+const digestable = digestTurns.some((turn) => wantsDigest(turn.input));
 
 // [LAW:one-source-of-truth] Code artifacts are a THIRD projection of the SAME viewable
 // `dialogue` the renderer and outline read — extracted from its already-redacted nodes,
@@ -359,6 +370,32 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     // [LAW:dataflow-not-control-flow] Reveal only now that the one effect is wired.
     document.body.classList.add("compare-ready");
   </script>
+
+  {/*
+    ─── The digest ask (slopspot-turn-digest-8xc.44n) ───────────────────────
+    The page's ONE affordance for on-device digests, above the conversation it
+    is about. It carries no sentence of its own: digestPanel.ts writes the note
+    and the button's label on every state change, so the wording lives in one
+    place [LAW:one-source-of-truth], and the section stays hidden until that
+    module has heard from the browser — a reader whose browser cannot summarize
+    never sees it at all [LAW:no-silent-failure].
+
+    The payload is the selected input for each turn, derived above. It rides in
+    a hidden <pre> exactly as Listen's utterances do, and only for a
+    conversation that has a turn worth digesting.
+  */}
+  {digestable && (
+    <section class="digest-ask" hidden>
+      <p class="digest-note"></p>
+      {/* .mono-pill is the site's one button chrome — the dock's controls and Listen's
+          transport wear it too, so this button cannot look like a different program's
+          [LAW:one-source-of-truth]. Its LABEL is digestPanel.ts's, not the markup's. */}
+      <button class="digest-open mono-pill" type="button"></button>
+      <label class="digest-always"><input type="checkbox" /><span>Always on this device</span></label>
+      <progress class="digest-progress" max="1" value="0" hidden></progress>
+      <pre class="digest-payload" hidden aria-hidden="true">{JSON.stringify(digestTurns)}</pre>
+    </section>
+  )}
 
   {/*
     [LAW:one-source-of-truth] data-slug is the ONE client-readable slug: a projection of
@@ -1090,6 +1127,102 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           { capture: true },
         );
       }
+    }
+  </script>
+
+  <script>
+    // [LAW:effects-at-boundaries] The digest mount: everything here is a fact only the
+    // browser holds — whether it has a Summarizer at all, what this device remembers, what
+    // the connection is, and which turn the reader is looking at. Every decision made from
+    // them is digestPanel.ts's, driven under jsdom by scripts/digest-panel-check.ts.
+    import { createDigestPanel } from "../digestPanel";
+    import { deviceStore } from "../preferenceStore";
+    import { summarizerSource } from "../summarizerSource";
+    import { parseTurnSegment } from "../slug";
+    import type { DigestTurn } from "../turnDigest";
+
+    // The section is absent for a conversation with nothing worth digesting (the server
+    // decided that with the service's own threshold), and that absence is the whole feature
+    // being off — not a case to guard around [LAW:dataflow-not-control-flow].
+    const ask = document.querySelector<HTMLElement>(".digest-ask");
+    const conversation = document.querySelector<HTMLElement>(".conversation");
+    if (ask !== null && conversation !== null) {
+      const part = <T extends Element>(selector: string): T => {
+        const el = ask.querySelector<T>(selector);
+        // [LAW:no-defensive-null-guards] The markup above is this page's own; a missing part
+        // is a broken template, not a reader's browser being old.
+        if (el === null) throw new Error(`digests: the ask has no ${selector}`);
+        return el;
+      };
+      const payload = part<HTMLElement>(".digest-payload");
+      const turns = JSON.parse(payload.textContent ?? "[]") as DigestTurn[];
+      const panel = createDigestPanel({
+        controls: {
+          root: ask,
+          open: part<HTMLButtonElement>(".digest-open"),
+          always: part<HTMLInputElement>(".digest-always input"),
+          note: part<HTMLElement>(".digest-note"),
+          progress: part<HTMLProgressElement>(".digest-progress"),
+        },
+        conversation,
+        turns,
+        source: summarizerSource(self),
+        // The same storage Listen's preferences use, read inside its own guard on every
+        // access: a browser that blocks site data keeps no digests and remembers no yes,
+        // and neither takes the page down [LAW:single-enforcer].
+        store: deviceStore(() => window.localStorage),
+        connection: (navigator as Navigator & { connection?: { saveData?: boolean; type?: string } }).connection,
+        gestures: window,
+        onFault: (what, error) => console.warn(`digests: ${what}`, error),
+      });
+
+      // [LAW:no-ambient-temporal-coupling] Where the reader is headed, said before the panel
+      // can have a summarizer to walk with. Without it the first turn derived is whichever
+      // the observer had not yet reported — a race between the browser making a summarizer
+      // and the first frame — and a reader who followed a link to t40 spends their first
+      // digest on turn 0. The observer below keeps the answer current; this is the same
+      // question asked once, now, because a subscription cannot answer for the past.
+      //
+      // [LAW:single-enforcer] A permalink's fragment is read through parseTurnSegment, the
+      // one t<N> grammar the card route and the oEmbed endpoint also parse — never a second
+      // reading of the same URL shape here. The browser has not scrolled to it yet when this
+      // script runs, so the fragment is the honest answer and geometry is not; with no
+      // fragment, the turn at the top of the viewport is.
+      const arrivedAt = (): number => {
+        const asked = parseTurnSegment(location.hash.replace(/^#/, ""));
+        if (asked !== null) return asked;
+        for (const turn of conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")) {
+          if (turn.getBoundingClientRect().bottom > 0) return Number(turn.dataset.index);
+        }
+        return 0;
+      };
+      panel.readAt(arrivedAt());
+
+      // [LAW:no-ambient-temporal-coupling] Which turn the reader is at is the browser's to
+      // say, and IntersectionObserver is the one that says it — no scroll handler, no timer.
+      // The topmost turn on screen is where the walk aims, so what the reader is ABOUT to
+      // read is derived before what they have passed. This is a different question from the
+      // minimap's active marker (which biases toward the upper viewport to light one row),
+      // and it is asked plainly here rather than bent out of that answer.
+      const onScreen = new Set<number>();
+      const watching = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          const index = Number((entry.target as HTMLElement).dataset.index);
+          if (entry.isIntersecting) onScreen.add(index);
+          else onScreen.delete(index);
+        }
+        if (onScreen.size > 0) panel.readAt(Math.min(...onScreen));
+      });
+      for (const turn of conversation.querySelectorAll<HTMLElement>(":scope > [data-index]")) watching.observe(turn);
+
+      // A page the reader is really leaving lets the model go; one going into the
+      // back-forward cache is FROZEN, not gone, and is left exactly as it was so a restored
+      // page is not left saying "Summarizing…" about work nobody is doing.
+      window.addEventListener("pagehide", (event) => {
+        if (event.persisted) return;
+        watching.disconnect();
+        panel.dispose();
+      });
     }
   </script>
 
