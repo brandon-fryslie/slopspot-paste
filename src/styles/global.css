@@ -3703,3 +3703,94 @@ body.tool-dock-ready.speech-ready .tool-dock[data-state="closed"] .listen-mark {
     transition: none;
   }
 }
+
+/* ─── Turn digests (slopspot-turn-digest-8xc.44n) ─────────────────────────
+   The digest at the head of a long turn, and the one page-level ask that gets
+   the browser's summary model. Both halves live here together so the thing the
+   reader is asked for and the thing they get cannot drift apart in look
+   [LAW:one-source-of-truth].
+
+   The digest must not read as the source's OWN turn-summary aside
+   (.bubble-turn-summary above: italic, right-aligned, muted) nor as the
+   conversation TL;DR. It is a left-aligned accented lead-in with a mark, set
+   directly under the role line: a reader can tell at a glance which sentence
+   the page wrote and which the transcript carried. */
+.turn-digest {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 2px 0 10px;
+  padding: 7px 10px 7px 9px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.turn-digest-mark {
+  flex: none;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.turn-digest-text {
+  margin: 0;
+  flex: 1 1 auto;
+}
+/* Pending and failed are the page talking about itself, not the turn's digest:
+   muted and italic, so a reader never mistakes either for a summary. */
+.turn-digest[data-digest="pending"],
+.turn-digest[data-digest="failed"] {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.turn-digest[data-digest="pending"] {
+  border-left-color: var(--border);
+  background: transparent;
+}
+.turn-digest[data-digest="failed"] {
+  border-left-style: dotted;
+}
+.turn-digest-combined {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  text-transform: lowercase;
+  cursor: help;
+}
+
+.digest-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+/* The panel hides the ask with the `hidden` attribute, and a `display` of our own would
+   otherwise outrank the UA sheet's rule for it — leaving an empty bordered strip on a
+   browser that cannot summarize, which is the one thing this feature promises never to do.
+   Same owner-per-face convention as the dock's panels above. */
+.digest-ask[hidden] { display: none; }
+.digest-note {
+  flex: 1 1 260px;
+  margin: 0;
+}
+.digest-always {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.digest-progress {
+  flex: 1 1 100%;
+  height: 4px;
+}

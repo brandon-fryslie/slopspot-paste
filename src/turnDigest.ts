@@ -90,6 +90,24 @@ export const selectDigestInput = (display: DisplayNode): DigestInput => ({
 export const wordCount = (input: DigestInput): number =>
   input.paragraphs.reduce((words, paragraph) => words + paragraph.split(/\s+/).length, 0);
 
+// [LAW:single-enforcer] The one answer to "is this turn long enough to be worth digesting".
+// The service reads it to decide a turn's opening outcome, and the page reads it to decide
+// whether to carry the input for these turns to the browser at all — one threshold, asked
+// twice, never two thresholds that could drift apart.
+export const wantsDigest = (input: DigestInput): boolean => wordCount(input) >= DIGEST_MIN_WORDS;
+
+// [LAW:types-are-the-program] A turn as the service holds it: which turn of the rendered
+// conversation it is, and the exact text that will be summarized. The selection happens ONCE,
+// where the derived model is — on the server, for the page — and what crosses to the browser
+// is its result, so nothing re-derives "what of a turn is readable" from rendered HTML.
+export interface DigestTurn {
+  readonly index: number;
+  readonly input: DigestInput;
+}
+
+export const digestTurnsOf = (dialogue: ViewableDialogue): ReadonlyArray<DigestTurn> =>
+  dialogue.map((display) => ({ index: display.index, input: selectDigestInput(display) }));
+
 // ── the key ──────────────────────────────────────────────────────────────────────────
 
 // [LAW:one-source-of-truth] What makes two digests of the same text different: the
@@ -323,7 +341,7 @@ export interface DigestService {
 }
 
 export interface DigestServiceConfig {
-  readonly dialogue: ViewableDialogue;
+  readonly turns: ReadonlyArray<DigestTurn>;
   readonly summarizer: Summarizer;
   readonly identity: SummarizerIdentity;
   readonly store: DigestStore;
@@ -347,11 +365,13 @@ interface Walk {
   readonly done: Promise<void>;
 }
 
-export const createDigestService = ({ dialogue, summarizer, identity, store }: DigestServiceConfig): DigestService => {
-  const entries: ReadonlyArray<Entry> = dialogue.map((display) => {
-    const input = selectDigestInput(display);
-    return { index: display.index, input, outcome: wordCount(input) < DIGEST_MIN_WORDS ? { kind: "none" } : { kind: "pending" }, inflight: null };
-  });
+export const createDigestService = ({ turns, summarizer, identity, store }: DigestServiceConfig): DigestService => {
+  const entries: ReadonlyArray<Entry> = turns.map(({ index, input }) => ({
+    index,
+    input,
+    outcome: wantsDigest(input) ? { kind: "pending" } : { kind: "none" },
+    inflight: null,
+  }));
   const byIndex = new Map(entries.map((entry) => [entry.index, entry]));
   const listeners = new Set<DigestListener>();
   let from = 0;

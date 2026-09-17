@@ -9,6 +9,7 @@ import {
   DIGEST_COMBINE_ROUNDS,
   DIGEST_MIN_WORDS,
   createDigestService,
+  digestTurnsOf,
   packByQuota,
   paragraphsOf,
   preferenceDigestStore,
@@ -170,7 +171,7 @@ console.log("the threshold: a turn one word short is its own digest");
 {
   const dialogue = viewable([user(words(DIGEST_MIN_WORDS - 1, "a")), user(words(DIGEST_MIN_WORDS, "b"))]);
   const { summarizer } = stubSummarizer(1_000);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   assert(`${DIGEST_MIN_WORDS - 1} words: none`, service.outcome(0).kind === "none");
   assert(`${DIGEST_MIN_WORDS} words: pending`, service.outcome(1).kind === "pending");
   assert("wordCount counts what the stub measures", wordCount(selectDigestInput(dialogue[1]!)) === DIGEST_MIN_WORDS);
@@ -209,7 +210,7 @@ console.log("a long turn: each part digested, the digests digested together, mar
 {
   const dialogue = viewable([assistant([words(40, "a"), words(40, "b"), words(40, "c")].join("\n\n"))]);
   const { summarizer, calls, measures } = stubSummarizer(90);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
   assert("ready and combined", outcome.kind === "ready" && outcome.combined && outcome.text === "«4 words»");
@@ -223,7 +224,7 @@ console.log("a very long turn: the part digests are packed and digested in round
 {
   const dialogue = viewable([assistant(Array.from({ length: 100 }, (_, i) => words(40, `p${i}_`)).join("\n\n"))]);
   const { summarizer, calls } = stubSummarizer(90);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
   assert("50 parts, then 2, then 1: ready and combined", outcome.kind === "ready" && outcome.combined && calls.length === 53 && outcome.text === "«4 words»");
@@ -241,7 +242,7 @@ console.log("part digests that never combine: the turn fails after a bounded num
       return input;
     },
   };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
   assert("failed, naming the rounds it was given", outcome.kind === "failed" && outcome.reason.includes(`${DIGEST_COMBINE_ROUNDS} rounds`));
@@ -262,7 +263,7 @@ console.log("a stop during the rounds: the cascade ends at the call it was in");
       return input;
     },
   };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   assert("stopped at the first call, not eight rounds later; the turn is still pending", calls === 1 && service.outcome(0).kind === "pending");
 }
@@ -277,7 +278,7 @@ console.log("part digests that pair with none but are still shrinking: another r
     measureInputUsage: async (input) => countWords(input),
     summarize: async (input) => words(Math.ceil(countWords(input) * 0.6), "d"),
   };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
   assert("ready and combined after the shrinking rounds", outcome.kind === "ready" && outcome.combined);
@@ -291,7 +292,7 @@ console.log("a combined digest longer than the part digests it came from is stil
     measureInputUsage: async (input) => countWords(input),
     summarize: async () => words(30, "d"),
   };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
   assert("two part digests of 30 words become one of 30: ready and combined", outcome.kind === "ready" && outcome.combined && countWords(outcome.text) === 30);
@@ -306,7 +307,7 @@ console.log("a Summarizer that answers nothing: failed, never a blank kept as th
     summarize: async () => "  ",
   };
   const { store, held } = mapStore();
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store });
   await service.start(0);
   const outcome = service.outcome(0);
   assert("failed with the reason, nothing kept", outcome.kind === "failed" && outcome.reason.includes("answered nothing") && held.size === 0);
@@ -320,7 +321,7 @@ console.log("a part digest over the quota on its own: the reason names a part di
     measureInputUsage: async (input) => countWords(input),
     summarize: async () => words(100, "long"),
   };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
   assert("failed: a part digest measures 100 against 90", outcome.kind === "failed" && outcome.reason.startsWith("a part digest measures 100"));
@@ -330,7 +331,7 @@ console.log("a turn that fits: one measure, one call, not combined; a paragraph 
 {
   const dialogue = viewable([user(words(100, "a")), user([words(40, "b"), words(400, "c")].join("\n\n"))]);
   const { summarizer, calls, measures } = stubSummarizer(200);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const fit = service.outcome(0);
   const over = service.outcome(1);
@@ -353,7 +354,7 @@ console.log("a Summarizer that throws: the turn fails with its reason, the walk 
       return "fine";
     },
   };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const failed = service.outcome(0);
   const destroyed = service.outcome(1);
@@ -366,7 +367,7 @@ console.log("a listener that throws: the outcome is already right, the others st
 {
   const dialogue = viewable([user(words(100, "a")), user(words(100, "b")), user(words(100, "c"))]);
   const { summarizer } = stubSummarizer(1_000);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   let throws = 2;
   let rejoined: Promise<void> | null = null;
   service.subscribe(() => {
@@ -391,7 +392,7 @@ console.log("a walk with nothing to do ends as it should: the next start opens a
 {
   const dialogue = viewable([user("short"), user("shorter")]);
   const { summarizer } = stubSummarizer(1_000);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   const first = service.start(0);
   await first;
   assert("a second start after the first ended is a new walk", service.start(0) !== first);
@@ -404,24 +405,24 @@ console.log("the device key: a second visit is a hit; an edit or another summari
   const turns = [user(words(100, "a")), user(words(100, "b"))];
   const { store, held } = mapStore();
   const first = stubSummarizer(1_000);
-  await createDigestService({ dialogue: viewable(turns), summarizer: first.summarizer, identity: IDENTITY, store }).start(0);
+  await createDigestService({ turns: digestTurnsOf(viewable(turns)), summarizer: first.summarizer, identity: IDENTITY, store }).start(0);
   assert("two digests made and kept", first.calls.length === 2 && held.size === 2);
 
   const again = stubSummarizer(1_000);
-  const revisit = createDigestService({ dialogue: viewable(turns), summarizer: again.summarizer, identity: IDENTITY, store });
+  const revisit = createDigestService({ turns: digestTurnsOf(viewable(turns)), summarizer: again.summarizer, identity: IDENTITY, store });
   await revisit.start(0);
   assert("the same paste again: both ready from the device, no summarize call", again.calls.length === 0 && revisit.outcome(0).kind === "ready" && revisit.outcome(1).kind === "ready");
 
   const edited = stubSummarizer(1_000);
-  await createDigestService({ dialogue: viewable([turns[0]!, user(words(100, "b") + " more")]), summarizer: edited.summarizer, identity: IDENTITY, store }).start(0);
+  await createDigestService({ turns: digestTurnsOf(viewable([turns[0]!, user(words(100, "b") + " more")])), summarizer: edited.summarizer, identity: IDENTITY, store }).start(0);
   assert("an edited turn misses; the unedited one still hits", edited.calls.length === 1 && countWords(edited.calls[0]!.input) === 101 && held.size === 3);
 
   const folded = stubSummarizer(1_000);
-  await createDigestService({ dialogue: viewable(turns, [{ kind: "collapse", target: { kind: "turn", index: 0 } }]), summarizer: folded.summarizer, identity: IDENTITY, store }).start(0);
+  await createDigestService({ turns: digestTurnsOf(viewable(turns, [{ kind: "collapse", target: { kind: "turn", index: 0 } }])), summarizer: folded.summarizer, identity: IDENTITY, store }).start(0);
   assert("a fold changes no readable text, so it hits", folded.calls.length === 0);
 
   const other = stubSummarizer(1_000);
-  await createDigestService({ dialogue: viewable(turns), summarizer: other.summarizer, identity: { ...IDENTITY, implementation: "polyfill/gemma-3-270m" }, store }).start(0);
+  await createDigestService({ turns: digestTurnsOf(viewable(turns)), summarizer: other.summarizer, identity: { ...IDENTITY, implementation: "polyfill/gemma-3-270m" }, store }).start(0);
   assert("another summarizer identity misses both", other.calls.length === 2 && held.size === 5);
 }
 
@@ -480,7 +481,7 @@ console.log("the reading order: from the reader's turn to the end, then the star
 {
   const dialogue = viewable([user(words(100, "a")), user("short"), user(words(100, "c")), user(words(100, "d")), user(words(100, "e"))]);
   const { summarizer } = stubSummarizer(1_000);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   const seen: number[] = [];
   const unsubscribe = service.subscribe((index, outcome) => {
     if (outcome.kind === "ready") seen.push(index);
@@ -499,12 +500,12 @@ console.log("the reading order through a feature overlay: indices are the turns'
     [{ kind: "feature", target: { kind: "turn", index: 0 } }, { kind: "feature", target: { kind: "turn", index: 2 } }],
   );
   const { summarizer } = stubSummarizer(1_000);
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   const seen: number[] = [];
   service.subscribe((index) => seen.push(index));
   await service.start(1);
   assert("from t1, which is not shown: the next shown turn first — 2, then 0", seen.join() === "2,0");
-  const fresh = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  const fresh = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store: mapStore().store });
   const past: number[] = [];
   fresh.subscribe((index) => past.push(index));
   await fresh.start(9);
@@ -515,7 +516,7 @@ console.log("a stop: the derivation under way is abandoned, the turn stays pendi
 {
   const dialogue = viewable([user(words(100, "a")), user(words(100, "b"))]);
   const stub = stallingSummarizer();
-  const service = createDigestService({ dialogue, summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
   const firstCall = stub.nextCall();
   const walk = service.start(0);
   await firstCall;
@@ -540,7 +541,7 @@ console.log("a stop after a listener threw: the throw still reaches the caller o
 {
   const dialogue = viewable([user(words(100, "a")), user(words(100, "b"))]);
   const stub = stallingSummarizer();
-  const service = createDigestService({ dialogue, summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
   service.subscribe((index) => {
     if (index === 0) throw new Error("render blew up");
   });
@@ -572,7 +573,7 @@ console.log("a stop while the digest is being kept: nothing settles after the st
         putArrived?.();
       }),
   };
-  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer, identity: IDENTITY, store });
   const heard: number[] = [];
   service.subscribe((index) => heard.push(index));
   const walk = service.start(0);
@@ -589,7 +590,7 @@ console.log("a stop then a start while the summarizer is still working: the new 
   // This Summarizer does NOT reject when its signal aborts, as an in-browser polyfill
   // running a model to completion would not; the abandoned call ends only when released.
   const stub = stallingSummarizer(false);
-  const service = createDigestService({ dialogue, summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
   const firstCall = stub.nextCall();
   const first = service.start(0);
   await firstCall;
@@ -616,7 +617,7 @@ console.log("a start during a walk re-aims it: the derivation in flight complete
 {
   const dialogue = viewable([user(words(100, "a")), user(words(100, "b")), user(words(100, "c"))]);
   const stub = stallingSummarizer();
-  const service = createDigestService({ dialogue, summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
+  const service = createDigestService({ turns: digestTurnsOf(dialogue), summarizer: stub.summarizer, identity: IDENTITY, store: mapStore().store });
   const seen: number[] = [];
   service.subscribe((index) => seen.push(index));
   const firstCall = stub.nextCall();
