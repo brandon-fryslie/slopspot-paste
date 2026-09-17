@@ -322,7 +322,7 @@ console.log("a digest for a turn the page never drew is the PAGE's bug, not the 
   // a create that in fact SUCCEEDED, reported to the reader as a failure, with a button
   // inviting them to open a second model on top of the one already running.
   const model = browser("available", ready());
-  const { panel, controls, faults } = mount({
+  const { panel, controls, faults, digests } = mount({
     source: model.source,
     turns: [...DIGEST_TURNS, { index: 99, input: DIGEST_TURNS[0]!.input }],
   });
@@ -331,6 +331,12 @@ console.log("a digest for a turn the page never drew is the PAGE's bug, not the 
   assert("the reader is told nothing about a summarizer that did not fail", controls.note.textContent?.includes("could not start") !== true);
   assert("the panel stays out of the reader's way rather than falling back to the ask", panel.stage().kind === "working" && controls.root.hidden);
   assert("one summarizer was opened", model.creates() === 1);
+  // The point of starting the walk before the first painting: the broken turn is the only
+  // one the reader loses. Painting first meant the throw arrived before the walk began and
+  // NO turn was ever digested, with the ask already hidden and no retry able to reach it.
+  const written = digests();
+  assert("every turn the page did draw still gets its digest", written.length === 3);
+  assert("and they carry real digests, not a stalled Summarizing…", written.every((text) => text.includes("digest of")));
   // The ask is hidden, but the button is still in the page and still clickable.
   controls.open.click();
   await panel.settled();
@@ -415,6 +421,31 @@ console.log("unticking the box withdraws the yes — the gesture that withdraws 
   controls.open.click();
   await panel.settled();
   assert("and the button still means yes", model.creates() === 2);
+  panel.dispose();
+}
+
+console.log("a remembered yes buys one gesture-backed try, not one create per keystroke");
+{
+  // A browser that refuses every create — the model fetch blocked, no room on the device —
+  // with a remembered yes behind it. The yes exists to supply the user activation a quiet
+  // page load cannot have; once a real gesture has been behind a create and it failed
+  // anyway, a second gesture cannot fix it, and re-arming on every refusal would hand a
+  // reader typing in the page's search box one Summarizer.create() per keystroke.
+  const model = browser("downloadable", refuses("the model would not load"));
+  const { panel, controls, window } = mount({ source: model.source, remembered: true });
+  await panel.settled();
+  assert("it tried once on the remembered yes", model.creates() === 1);
+  window.dispatchEvent(new window.Event("pointerdown"));
+  await panel.settled();
+  assert("the reader's gesture was taken as the tap", model.creates() === 2);
+  for (let keystroke = 0; keystroke < 8; keystroke += 1) window.dispatchEvent(new window.Event("keydown"));
+  await panel.settled();
+  assert("and typing afterwards starts nothing at all", model.creates() === 2);
+  assert("the ask stands, carrying the reason", panel.stage().kind === "ask");
+  assert("the reader can read it", controls.note.textContent?.includes("the model would not load") === true);
+  controls.open.click();
+  await panel.settled();
+  assert("the button is still the deliberate way to try again", model.creates() === 3);
   panel.dispose();
 }
 

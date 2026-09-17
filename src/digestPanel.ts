@@ -155,6 +155,8 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
   // reporting on it would otherwise put the page back into a download nobody is doing.
   let attemptNo = 0;
   let armed: (() => void) | null = null;
+  // Whether the remembered yes has already spent its one gesture — see the create's catch.
+  let armSpent = false;
   // The walk this panel is already tracking. A walk that ends is never this again — the
   // service answers a later start with a new promise — so it needs no clearing.
   let walking: Promise<void> | null = null;
@@ -294,7 +296,16 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
       if (gone) return;
       const refusal = error instanceof Error ? error.message : String(error);
       show({ kind: "ask", refusal });
-      if (readPreference(store)) arm();
+      // The remembered yes buys ONE gesture-backed try, not a standing retry. Its whole job
+      // is to supply the user activation a quiet page load cannot have; once a real gesture
+      // has been behind a create and it failed anyway, it failed for something a second
+      // gesture cannot fix. Re-arming on every refusal would hand a reader who is typing in
+      // the page's search box one Summarizer.create() per keystroke. The ask stands with its
+      // button, which is the deliberate way to try again.
+      if (!armSpent && readPreference(store)) {
+        armSpent = true;
+        arm();
+      }
       return;
     } finally {
       attemptingNow(false);
@@ -313,8 +324,16 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
     service = live;
     live.subscribe((index, outcome) => view.write(index, outcome));
     show({ kind: "working" });
-    paint(live);
+    // The walk is started BEFORE the first painting, and the order is the whole difference
+    // between one turn missing its digest and the feature being off. `paint` writes every
+    // turn at once and `view.write` throws on a turn the renderer never drew, so painting
+    // first meant one bad index took all the others down with it — attempt rejected before
+    // the walk ever began, the ask already hidden, and `held` already set so no retry could
+    // reach it. Started first, the walk derives every turn it can and the service collects
+    // what the bad one throws; the reader loses exactly the turn that is broken
+    // [LAW:no-silent-failure].
     walk(live);
+    paint(live);
   };
 
   // [LAW:no-silent-failure] Whatever the browser answers about availability decides what the

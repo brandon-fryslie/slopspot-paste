@@ -121,12 +121,19 @@ const prints = await printsOf(utterances);
 // result. The browser re-derives nothing of "what of a turn is readable" from the HTML it
 // was sent: one selection, on the server, for the page and for the polyfill later alike.
 //
-// [LAW:polishing-by-subtraction] Only the turns that will be summarized ride to the browser.
-// A turn under the threshold gets `none` from the service and NOTHING from the view, so
-// carrying its prose would buy the reader nothing and cost them the bytes — every reader,
-// including the majority whose browser has no Summarizer at all. Dropping them changes no
-// behaviour: the walk reads from the first turn at or after where the reader is and skips
-// what is not pending, and an outcome is only ever asked for a turn that was sent.
+// Only the turns that will be summarized ride to the browser. A turn under the threshold
+// gets `none` from the service and NOTHING from the view, so carrying its prose was weight
+// with no reader on the other end. Dropping them changes no behaviour: the walk reads from
+// the first turn at or after where the reader is and skips what is not pending, and an
+// outcome is only ever asked for a turn that was sent.
+//
+// This filter is NOT what makes the payload cheap, and saying so would be the kind of claim
+// a measurement embarrasses: on a 40-turn transcript of a few hundred words each it removes
+// nothing at all, because the bytes live in exactly the long turns that survive it — 67 KiB
+// of payload against 92 KiB of rendered conversation, on every request, for every reader
+// including the majority whose browser has no Summarizer. Making that cheap is a delivery
+// change (one endpoint serving this and the speech payload, fetched when a reader asks for
+// either), and it is ticket slopspot-turn-digest-8xc.6uw, not this line.
 const digestTurns = digestTurnsOf(dialogue).filter((turn) => wantsDigest(turn.input));
 // A conversation whose every turn is its own digest carries none of this: no payload, no
 // ask, no script work. The threshold is the service's own (wantsDigest), asked above rather
