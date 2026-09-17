@@ -380,6 +380,10 @@ export type PanelEvent =
   // The device's pick changed: the map the voice on stage speaks with from now on. A voice
   // on its way reads the pick at its build, so it has nothing to do here.
   | { readonly kind: "voices"; readonly voices: VoiceMap }
+  // The page says something else now: its turns' digests arrived and the narrator says them
+  // (speech.ts withDigests), or the reader withdrew that choice. Only ever sent where
+  // `reseatable` below says it may be [LAW:single-enforcer].
+  | { readonly kind: "page" }
   // The page is done with the panel: everything it built is released.
   | { readonly kind: "dispose" };
 
@@ -418,8 +422,14 @@ export interface Step {
   readonly effects: ReadonlyArray<Effect>;
 }
 
-// The one script the panel ever asks for; a reply with another id is not ours.
-export const SCRIPT_ID = 1;
+// The first script a panel asks for. An ask is NOT the only one a page ever makes: a page
+// re-seated with the narrator's digests among its utterances asks again, over text the first
+// ask knew nothing of, and the answer to that first ask may still be out — a worker holds a
+// script request until its model is ready, which is the whole download away. So the id counts
+// the asks, the driver stamps each request with the one it is making and drops a reply to any
+// ask but the standing one [LAW:single-enforcer]: the panel below is handed only replies that
+// are its own, and a superseded script can never be built over.
+export const FIRST_SCRIPT_ID = 1;
 
 const IDLE: NeuralState = { kind: "idle" };
 const MODEL_IDLE: ModelPhase = { kind: "idle" };
@@ -658,7 +668,6 @@ const provision = (state: Provisioning, message: FromWorker, at: number): Step =
     }
     case "script":
       if (state.script.kind !== "asked") throw violation(state, "script");
-      if (message.id !== SCRIPT_ID) throw new Error(`listen panel: script reply ${message.id}, sent ${SCRIPT_ID}`);
       return stay({ ...state, script: { kind: "held", units: message.units } });
     case "refused":
       throw new Error(`listen panel: the worker refused ${message.request.kind} in phase ${message.phase}`);
@@ -795,6 +804,33 @@ const voices = (state: PanelState, map: VoiceMap): Step => {
   return state.script.kind === "restoring" ? { state, effects: [{ kind: "restore", units: state.script.units }] } : stay(state);
 };
 
+// [LAW:types-are-the-program] When the page may say something else than it did. Two facts,
+// and both are about what a re-seat would DESTROY rather than about who is asking. A voice on
+// stage is performing units cut from the old text, and rebuilding them under it would stop the
+// reading to insert a sentence the reader never asked for. A cue is a Place, which is an INDEX
+// into this very list (keptPlace.ts), so a list with the narrator's digests among them would
+// point it at a different utterance — a link's word, or a resume, silently moved.
+//
+// A page that arrives while either stands is simply not taken, and the digest that prompted it
+// is said on the reader's next listen: exactly what "the narrator never waits on the
+// summarizer" costs, paid here in the open rather than as a pause nobody can see the reason
+// for [LAW:no-silent-failure].
+export const reseatable = (state: PanelState): boolean => state.kind === "provisioning" && state.cue === null;
+
+// The page re-seated: the script the panel holds was cut from text the page no longer says,
+// so it is dropped and asked for again — of the worker where there is one, and otherwise by
+// the `kick` that spawns the next one, which asks for a script it does not hold. A restore
+// still out for the old units is recognised by identity and so is already stale (`restored`),
+// and a `script` reply to the ask released with a previous worker cannot arrive, since the
+// port it would come on went with it.
+const reseated = (state: PanelState): Step => {
+  if (state.kind !== "provisioning") throw violation(state, "a page re-seated");
+  // The three phases `onStage` excludes are exactly the three with no worker behind them:
+  // before the first spawn, after a device was found unable, and after a crash released it.
+  const asks = onStage(state.model);
+  return { state: { ...state, script: asks ? { kind: "asked" } : NO_SCRIPT }, effects: asks ? [{ kind: "script" }] : [] };
+};
+
 // The device's answer builds the performer over the units it was asked about, in the voices
 // it was read in. An answer for any other ask — a restore a crash left behind — is stale and
 // changes nothing.
@@ -857,6 +893,8 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       return sounding(state, event.voice);
     case "voices":
       return voices(state, event.voices);
+    case "page":
+      return reseated(state);
     case "visibility":
       return visibility(state, event.hidden);
     case "dispose": {
@@ -1532,6 +1570,11 @@ export interface ListenPanel {
   // The page went out of view, or came back into it.
   readonly visibility: (hidden: boolean) => void;
   readonly state: () => PanelState;
+  // The conversation says something else now — the narrator has each turn's digest to say
+  // before it, or the reader withdrew that choice. The script is asked for again over the new
+  // text. Only while `reseatable(state())`, which the page asks first so the prints it keeps
+  // for these utterances are written in the same breath [LAW:one-source-of-truth].
+  readonly reseat: (utterances: ReadonlyArray<Utterance>) => void;
   // Ends the listen, the device and the worker (gracefully: the model is released before
   // the worker ends); the page is left as the renderer made it, the controls show the
   // idle readout.
@@ -1648,7 +1691,7 @@ const latest = <T,>(deliver: (value: T) => void): { ask: (pending: Promise<T>) =
 };
 
 export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
-  const { controls, frames, utterances } = config;
+  const { controls, frames } = config;
   // [LAW:no-shared-mutable-globals] Owned here; written only by `dispatch`, from `step`.
   let state: PanelState = initialState();
   const queue: PanelEvent[] = [];
@@ -1693,9 +1736,17 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // written only by its two listeners. It is not a second position: it is the one fact
   // nobody else holds — that the reader is asking for a place they have not committed to.
   let held = false;
-  // The page, its timeline built once for the panel's whole life; the voice's timeline
-  // travels with its view, built once per view.
-  const page = pageOf(utterances);
+  // [LAW:no-shared-mutable-globals] The page the panel reads, owned here and replaced only
+  // through `reseat` below, which is the one thing that may say the conversation says
+  // something else than it did. Its timeline is built with it — once for a page, as the
+  // voice's is built once per view — so nothing downstream can be reading one page's
+  // utterances against another's clock [LAW:one-source-of-truth].
+  let said = config.utterances;
+  let page = pageOf(said);
+  // [LAW:no-shared-mutable-globals] Which script ask is the standing one, owned here beside
+  // the page it was made over: written only where the request is sent, read only where a
+  // reply arrives. It counts from the id before the first, so the first ask sends FIRST_SCRIPT_ID.
+  let asking = FIRST_SCRIPT_ID - 1;
   const timeline = (): Timeline => timelineOf(state, page);
 
   // Read live from the performer, not from the state's snapshot: the clock moves with no
@@ -1718,7 +1769,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   const placeNow = (): Place | null => {
     const now = stageState();
     const place = now.kind === "idle" ? placeOfCue(state.cue) : placeIn(timeline(), now.segment, now.atMs);
-    return place === null ? null : wordStart(utterances, place);
+    return place === null ? null : wordStart(said, place);
   };
   // The transport as the media controls read it: the live clock, not the last report, since
   // this is read at the moment an event lands.
@@ -1761,8 +1812,8 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   // nothing.
   const emitPosition = (): void => {
     const now = stageState();
-    const cursor = now.kind === "idle" ? cursorOfCue(state.cue, utterances) : cursorIn(now.segment, now.atMs);
-    const at = cursor === null ? null : readAlongAt(cursor, utterances);
+    const cursor = now.kind === "idle" ? cursorOfCue(state.cue, said) : cursorIn(now.segment, now.atMs);
+    const at = cursor === null ? null : readAlongAt(cursor, said);
     if (samePlace(at, shown)) return;
     shown = at;
     config.onPosition(at);
@@ -1792,7 +1843,15 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         return;
       case "spawn":
         port = config.spawn();
-        unsubscribe = port.subscribe((message) => dispatch({ kind: "worker", message, at: config.clock() }));
+        unsubscribe = port.subscribe((message) => {
+          // A script cut from a page that has since been re-seated: its units say text the
+          // conversation no longer says, so it is dropped here rather than built over. Every
+          // other message is the one performer's, and the standing ask's reply is the one the
+          // panel is waiting for [LAW:no-silent-failure] — nothing is lost, because the ask
+          // that superseded this one is already out.
+          if (message.kind === "script" && message.id !== asking) return;
+          dispatch({ kind: "worker", message, at: config.clock() });
+        });
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
         return;
       case "unlock":
@@ -1808,7 +1867,11 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         askKeep.ask(config.keep());
         return;
       case "script":
-        portOf().send({ kind: "script", id: SCRIPT_ID, utterances });
+        // [LAW:one-source-of-truth] The ask the panel is now waiting on: one number, stamped
+        // on the request and read on every reply, so "is this script the page's" is asked of
+        // the same fact twice rather than of two.
+        asking += 1;
+        portOf().send({ kind: "script", id: asking, utterances: said });
         return;
       case "restore": {
         // The pick as the device holds it now, carried with the answer so the build speaks in
@@ -1823,7 +1886,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
           port: portOf(),
           device: device(),
           script: effect.units,
-          utterances,
+          utterances: said,
           voices: effect.voices,
           kept: effect.kept,
           onChange: (view) => dispatch({ kind: "view", view }),
@@ -2212,5 +2275,15 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     // the back-forward cache finds them right.
     // A dispose hushes the sample inside the machine, so a teardown from a bug hushes it too.
     dispose: () => dispatch({ kind: "dispose" }),
+    reseat: (utterances) => {
+      // [LAW:parse-dont-validate] The one crossing: past it, the page and the script are
+      // this list's and nothing holds the old one. `reseatable` is the page's to ask BEFORE
+      // it composes the prints that go with these utterances, so a caller that asked and
+      // acted is never refused here; one that did not is a bug, said rather than absorbed.
+      if (!reseatable(state)) throw violation(state, "a page re-seated");
+      said = utterances;
+      page = pageOf(said);
+      dispatch({ kind: "page" });
+    },
   };
 };

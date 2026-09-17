@@ -149,6 +149,10 @@ const mount = (config: {
   const conversation = pick<HTMLElement>(".conversation");
   const turns = config.turns ?? DIGEST_TURNS;
   const faults: string[] = [];
+  // Every time the page is told a turn gained its digest — the door Listen's composition
+  // waits at (src/pages/[slug].astro), counted so a check can see it is knocked on for a
+  // digest and for nothing else.
+  const arrivals: number[] = [];
   const panel = createDigestPanel({
     controls,
     conversation,
@@ -158,11 +162,12 @@ const mount = (config: {
     connection: config.connection,
     gestures: dom.window,
     implementation: "stub",
+    onDigest: () => arrivals.push(arrivals.length),
     onFault: (what) => faults.push(what),
   });
   const digests = (): ReadonlyArray<string> =>
     [...conversation.querySelectorAll<HTMLElement>(`.${DIGEST_CLASS}`)].map((el) => el.textContent ?? "");
-  return { panel, controls, store, conversation, digests, faults, window: dom.window };
+  return { panel, controls, store, conversation, digests, arrivals, faults, window: dom.window };
 };
 
 // ── the pure decision ────────────────────────────────────────────────────────────────
@@ -214,6 +219,29 @@ console.log("a browser whose model is already there: no ask, no download, digest
   assert("the short turn carries none", digests().every((text) => !text.includes("too short")));
   assert("each digest is of its own turn", digests()[0]?.includes("digest of a0") === true && digests()[1]?.includes("digest of b0") === true);
   assert("nothing was said in the console", faults.length === 0);
+  panel.dispose();
+}
+
+console.log("what the narrator is given to say before each turn");
+{
+  const model = browser("available", ready());
+  const { panel, digests, arrivals } = mount({ source: model.source });
+  assert("before anything is derived the narrator has nothing: the map is empty, not a turn with a blank", panel.digests().size === 0);
+  await panel.settled();
+  const said = panel.digests();
+  assert("the three long turns are in it, by the index the renderer drew them under", [...said.keys()].join() === "0,1,2");
+  assert("the short turn is not: a turn that is its own digest has none to say", said.size === 3 && digests().length === 3);
+  assert("each carries its own turn's digest, as text and not as an outcome", said.get(0) === "digest of a0" && said.get(1) === "digest of b0");
+  assert("the page was told once per digest, and only for a digest", arrivals.length === 3);
+  panel.dispose();
+}
+
+console.log("a browser that cannot summarize gives the narrator nothing to say, and says so by saying nothing");
+{
+  const { panel, arrivals } = mount({ source: null });
+  await panel.settled();
+  assert("no service, no digests — never an outcome invented for a turn nobody looked at", panel.digests().size === 0);
+  assert("and the page is never told there is something to say", arrivals.length === 0);
   panel.dispose();
 }
 

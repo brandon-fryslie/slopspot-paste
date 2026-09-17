@@ -515,3 +515,46 @@ const nodeUtterances = ({ index, node }: DisplayNode): ReadonlyArray<Utterance> 
 // knowing overlays exist at all.
 export const deriveUtterances = (view: ViewableDialogue): ReadonlyArray<Utterance> =>
   view.flatMap(nodeUtterances);
+
+// ── the turn's digest ────────────────────────────────────────────────────────────────
+
+// [LAW:types-are-the-program] What the narrator says before a turn, by the turn's CARRIED
+// index — the same number DisplayNode.index carries, the renderer writes as `data-index`
+// and the digest service names a turn by, so there is no second addressing scheme between
+// the summarizer's answer and the voice [LAW:one-source-of-truth].
+export type SpokenDigests = ReadonlyMap<number, string>;
+
+// The first utterance of each turn's run. deriveUtterances maps ONE node to a contiguous
+// run, so a turn's head is simply the utterance whose index differs from the one before it.
+const opensTurn = (utterances: ReadonlyArray<Utterance>, i: number): boolean => utterances[i]?.index !== utterances[i - 1]?.index;
+
+// [LAW:one-way-deps] The digest joins the spoken projection as a VALUE, so this module goes
+// on knowing nothing of summarizers, availability or caches: a pure list in, a pure list out,
+// driven in scripts/speech-check.ts with a Map and no mocks at all.
+//
+// It is an ANNOUNCEMENT, not the page's own words, on both counts that matter. The voice is
+// the narrator's because nobody in the transcript said it — the digest is the reader's
+// browser talking about the turn, as "2 tool calls, not read aloud" is. And the origin is an
+// announcement because the read-along must not paint while it is said: the digest on the
+// card is a summary OF the prose about to be spoken, so a cursor hunting its words in the
+// turn would light the wrong sentence (readAlong.ts leaves aside.turn-digest out of the
+// card's word pool for the same reason, from the other side).
+//
+// [LAW:no-silent-failure] A digest for a turn this page says nothing of is thrown, not
+// dropped: the digest service and this projection read the one viewable dialogue, so the
+// two disagreeing is a broken invariant between them and not a turn to quietly skip.
+export const withDigests = (utterances: ReadonlyArray<Utterance>, digests: SpokenDigests): ReadonlyArray<Utterance> => {
+  const heads = new Set(utterances.filter((_, i) => opensTurn(utterances, i)).map((utterance) => utterance.index));
+  const unplaced = [...digests.keys()].filter((index) => !heads.has(index));
+  if (unplaced.length > 0) {
+    throw new RangeError(`the conversation says nothing of turn${unplaced.length === 1 ? "" : "s"} ${unplaced.join(", ")}, so no digest can go before it`);
+  }
+  return utterances.flatMap((utterance, i): ReadonlyArray<Utterance> => {
+    // Collapsed, and spoken VERBATIM otherwise: the summarizer is asked for plain text
+    // (summarizerSource.DIGEST_OPTIONS) and the card writes it with textContent, so running
+    // it through the markdown-stripping pipeline would speak something the page never shows
+    // — the same reason the source's own turn-summary block is spoken as it is written.
+    const digest = opensTurn(utterances, i) ? collapse(digests.get(utterance.index) ?? "") : "";
+    return digest === "" ? [utterance] : [{ index: utterance.index, anchor: utterance.anchor, ...announced(digest) }, utterance];
+  });
+};

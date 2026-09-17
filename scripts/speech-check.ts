@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { plainView, spineNodeLabel, type Dialogue, type SpineNode } from "../src/dialogue";
-import { deriveUtterances, speakableSegments, type Utterance } from "../src/speech";
+import { deriveUtterances, speakableSegments, withDigests, type Utterance } from "../src/speech";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -349,6 +349,61 @@ console.log("\nDialogue → utterances (slopspot-speech-ins):");
   assert("a collapsed node is read in full, in its speaker's voice", folded.length === 1 && folded[0]?.text === longContent && folded[0]?.voice === "user");
   assert("a collapsed node is never stood in for by its label", !folded.some((u) => u.text.includes(spineNodeLabel(foldedNode))));
   assert("a collapsed node still anchors to its own carried index", folded[0]?.anchor === "t3");
+}
+
+console.log("\nThe turn's digest, said before the turn (slopspot-turn-digest-8xc.p1n):");
+{
+  // Two turns the page really says, so "before the turn" is a claim about a run of
+  // utterances and not about a single one: the assistant turn below is prose, a fence and a
+  // detail count, three utterances under one index.
+  const said = deriveUtterances(
+    plainView([
+      { kind: "spoken", role: "user", content: "Why is the build slow?" },
+      {
+        kind: "assistant",
+        blocks: [
+          { kind: "text", content: "The bundler re-reads every file." },
+          { kind: "thinking", content: "…" },
+          { kind: "text", content: "Try:\n```sh\nls -la\n```" },
+        ],
+      },
+    ]),
+  );
+  const digested = withDigests(said, new Map([[1, "The bundler re-reads every file, so a cache would help."]]));
+
+  assert("a turn with no digest is left exactly as it was", JSON.stringify(withDigests(said, new Map())) === JSON.stringify(said));
+  assert("the digest goes BEFORE the turn's first utterance, not merely somewhere in it", digested[said.findIndex((u) => u.index === 1)]?.text === "The bundler re-reads every file, so a cache would help.");
+  assert("nothing else is added or dropped", digested.length === said.length + 1);
+  assert(
+    "every utterance of the turn still follows, in its own order",
+    JSON.stringify(digested.filter((u) => u !== digested[1])) === JSON.stringify(said),
+  );
+
+  const digest = digested[1];
+  assert("it is the narrator's, because nobody in the transcript said it", digest?.voice === "narrator");
+  assert("it is an announcement, so the read-along paints no prose while it is said", digest?.origin === "announcement");
+  assert("it anchors to the turn it is about", digest?.anchor === "t1" && digest?.index === 1);
+
+  // Plain text is what the summarizer is asked for and what the card writes, so the
+  // narrator says it as it is — whitespace collapsed, and nothing else touched. A markdown
+  // pass here would speak something the page never shows.
+  const literal = withDigests(said, new Map([[1, "  It re-reads\n  every `file`.  "]]));
+  assert("the digest is said verbatim, whitespace collapsed", literal[1]?.text === "It re-reads every `file`.");
+
+  // A turn the conversation says nothing of can hold no digest, and the two derivations
+  // read one viewable dialogue — so they disagreeing is a broken invariant, said rather
+  // than a turn quietly skipped.
+  let refused = "";
+  try {
+    withDigests(said, new Map([[9, "A digest of a turn that is not there."]]));
+  } catch (error) {
+    refused = error instanceof Error ? error.message : String(error);
+  }
+  assert("a digest for a turn the page never says is refused, naming it", refused.includes("9"));
+
+  // Every kept place, link and resume is an index into this list (keptPlace.ts), so the one
+  // thing a caller must never assume is that the two lists address the same words.
+  assert("adding a digest moves every later utterance, which is why the prints are re-derived with it", digested[2]?.text === said[1]?.text && digested[2] !== said[2]);
 }
 
 if (process.exitCode) {
