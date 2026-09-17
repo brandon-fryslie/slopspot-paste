@@ -33,9 +33,17 @@ export interface Fence {
 const FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*(.*)$/;
 
 // The fence this line opens, or null when it opens none.
+// A backtick fence's info string may hold no backtick — CommonMark's rule, and the reason
+// for it is a line of prose that begins with an inline code span: "```npm ci``` first" opens
+// no block, and without this rule it would swallow every line after it.  A tilde fence has
+// no such rule, so ~~~nope~~~ opens one.
 export const opensFence = (line: string): Fence | null => {
   const fenced = FENCE.exec(line);
-  return fenced === null ? null : { char: fenced[1]![0]!, length: fenced[1]!.length, info: fenced[2]!.trim() };
+  if (fenced === null) return null;
+  const run = fenced[1]!;
+  const info = fenced[2]!.trim();
+  const char = run[0]!;
+  return char === "`" && info.includes("`") ? null : { char, length: run.length, info };
 };
 
 // Whether this line closes the open fence: the same character, at least as long, no info.

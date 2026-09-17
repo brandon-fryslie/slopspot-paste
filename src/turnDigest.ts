@@ -176,19 +176,26 @@ const parseDigest = (kept: string | null): Digest | undefined => {
 const parseKeys = (kept: string | null): ReadonlyArray<string> =>
   kept === null ? [] : kept.split("\n").filter((key) => key.length > 0);
 
-// The kept list is written first, and nothing else happens unless it reads back as written:
-// a device that refuses the list's write — it is the larger of the two — neither keeps an
-// entry the list cannot evict nor drops one the list still names.
+// Every write is read back, because a device at its limit refuses one silently, and the two
+// values must agree: the digest first, then the list that names it (taking the new digest's
+// own room into account), and only then the room the evicted digests were holding. A refusal
+// at either step leaves the device as it was — no entry the list cannot evict, no name the
+// device cannot answer — and the digest is simply derived again on the next visit.
 export const preferenceDigestStore = (store: PreferenceStore, keep: number = DIGEST_KEEP): DigestStore => ({
   get: async (key) => parseDigest(store.getItem(STORE_PREFIX + key)),
   put: async (key, digest) => {
+    const value = JSON.stringify(digest);
+    store.setItem(STORE_PREFIX + key, value);
+    if (store.getItem(STORE_PREFIX + key) !== value) return;
     const keys = [...parseKeys(store.getItem(KEPT_KEYS)).filter((kept) => kept !== key), key];
     const evicted = keys.slice(0, Math.max(0, keys.length - keep));
     const list = keys.slice(evicted.length).join("\n");
     store.setItem(KEPT_KEYS, list);
-    if (store.getItem(KEPT_KEYS) !== list) return;
+    if (store.getItem(KEPT_KEYS) !== list) {
+      store.removeItem(STORE_PREFIX + key);
+      return;
+    }
     for (const old of evicted) store.removeItem(STORE_PREFIX + old);
-    store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
   },
 });
 

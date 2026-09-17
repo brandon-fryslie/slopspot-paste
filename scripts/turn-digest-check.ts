@@ -155,6 +155,8 @@ console.log("a code-heavy turn: a fenced block is one paragraph, its blank lines
   assert("a fence never closed runs to the end as one paragraph", unclosed.length === 1);
   const inList = "1. Install it:\n\n    ```bash\n    npm install x\n\n    rm -rf out\n    ```\n\n2. Done.";
   assert("a fence indented inside a list item is still one paragraph", paragraphsOf(inList).length === 3);
+  const span = paragraphsOf("x\n\n```code``` is the value\n\nafter");
+  assert("a line opening with an inline code span opens no fence", span.length === 3 && span[2] === "after");
   const folded = viewable([assistant("```\nleft open"), assistant(`${words(100, "p")}\n\n${words(100, "q")}`)]);
   assert("the two replies fold into one node", folded.length === 1);
   const perBlock = selectDigestInput(folded[0]!);
@@ -458,6 +460,15 @@ console.log("the adapter keeps a bounded number of digests, the oldest out first
   }, 2);
   await flaky.put("k".repeat(40), digest("one"));
   assert("a device that refuses the kept list's write keeps no digest the list cannot name", refusing.keys().length === 0);
+  // The other refusal: the list fits and the digest does not.
+  const partial = memoryPreferences();
+  const entryRefused = preferenceDigestStore({
+    getItem: (key) => partial.getItem(key),
+    setItem: (key, value) => void (key.startsWith("digest.") ? undefined : partial.setItem(key, value)),
+    removeItem: (key) => partial.removeItem(key),
+  }, 2);
+  await entryRefused.put("aa", digest("one"));
+  assert("a device that refuses the digest's write is left naming nothing", partial.keys().length === 0);
   preferences.setItem("digest-kept", "a line this build did not write");
   await store.put("k4", digest("four"));
   assert("a kept list line this build did not write names nothing and evicts nothing", (await store.get("k4"))?.text === "four" && preferences.getItem("digest-kept") === "a line this build did not write\nk4");
