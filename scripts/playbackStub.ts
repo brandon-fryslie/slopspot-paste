@@ -127,6 +127,7 @@ export class StubAudio implements SampleAudio {
   readonly plays: string[] = [];
   paused = 0;
   private readonly listeners: Record<"ended" | "error", (() => void)[]> = { ended: [], error: [] };
+  error: { readonly message: string } | null = null;
   constructor(private readonly refuse: string | null = null) {
     StubAudio.instances.push(this);
   }
@@ -148,5 +149,10 @@ export class StubAudio implements SampleAudio {
   }
   end(): void {
     for (const listener of this.listeners.ended) listener();
+  }
+  // The element failing where it stands, as a decode error or a dropped connection does.
+  fail(message: string): void {
+    this.error = { message };
+    for (const listener of this.listeners.error) listener();
   }
 }

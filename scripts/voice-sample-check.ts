@@ -90,8 +90,26 @@ console.log("the player: one voice at a time, told to the picker on every change
   player.hush();
   audio.abort(1);
   await new Promise((resolve) => setImmediate(resolve));
+  player.say("javert");
+  player.say("javert");
+  audio.abort(2);
+  await new Promise((resolve) => setImmediate(resolve));
   console.warn = warn;
-  assert("a hushed play rejected after the hush: nothing said, nothing to unlight", warned.length === 0 && changes.map(String).join() === "alba,marius,null");
+  assert("a hushed play rejected after the hush: nothing said, nothing to unlight", warned.length === 0 && changes.map(String).join() === "alba,marius,null,javert");
+  assert("the same voice heard twice: the second play stands, the first's rejection unlights nothing", warned.length === 0 && changes.map(String).join() === "alba,marius,null,javert");
+}
+{
+  const changes: (VoiceId | null)[] = [];
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => warned.push(args.join(" "));
+  const player = createSamplePlayer({ Audio: () => new StubAudio(), onChange: (voice) => changes.push(voice) });
+  const audio = StubAudio.instances.at(-1);
+  if (audio === undefined) throw new Error("fixture: no audio element");
+  player.say("alba");
+  audio.fail("the connection dropped");
+  console.warn = warn;
+  assert("the element fails mid-sample: said with the browser's reason, and the voice unlit", warned.length === 1 && warned[0]?.includes("alba") === true && warned[0]?.includes("the connection dropped") === true && changes.map(String).join() === "alba,null");
 }
 
 console.log(process.exitCode === 1 ? "voice-sample-check: FAILED" : "voice-sample-check: ok");

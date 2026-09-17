@@ -1,5 +1,6 @@
 // Renders every hosted voice's sample (src/voiceSample.ts) into public/voices/: the live
-// preview's phrase (voiceChoice.previewText), spoken from the voice's own pinned embedding
+// preview's phrase (voiceChoice.previewText, as the runtime speaks it — `text`, not the
+// source it was normalized from), spoken from the voice's own pinned embedding
 // on the model release the site hosts — the bytes and the checkpoint the browser runs — and
 // encoded as mono AAC. Each file is named by its hash, every other file under the prefix is
 // removed, and the manifest entries to pin are printed: the bytes decide the name, and the
@@ -44,7 +45,7 @@ for (const id of VOICE_IDS) {
   const wav = join(work, `${id}.wav`);
   const m4a = join(work, `${id}.m4a`);
   console.log(`render-voice-samples: ${id} — rendering on ${MODEL_ASSETS.weights.release}…`);
-  execFileSync("uv", ["run", "--with", POCKET_TTS, "--with", "scipy", "python", join(here, "render-voice-sample.py"), embedding, MODEL_ASSETS.weights.release, previewText(id).source, wav], { stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync("uv", ["run", "--with", POCKET_TTS, "--with", "scipy", "python", join(here, "render-voice-sample.py"), embedding, MODEL_ASSETS.weights.release, previewText(id).text, wav], { stdio: ["ignore", "ignore", "pipe"] });
   // Mono AAC at the model's rate: a few seconds is a few tens of kilobytes, and every stock
   // player and browser opens it. No metadata, so the same audio is the same bytes.
   execFileSync("ffmpeg", ["-v", "error", "-y", "-i", wav, "-map_metadata", "-1", "-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", m4a], { stdio: ["ignore", "ignore", "pipe"] });

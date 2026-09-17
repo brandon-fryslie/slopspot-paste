@@ -447,11 +447,14 @@ const violation = (state: PanelState, what: string): Error =>
 // the two buttons do not name.
 type Verb = Exclude<PerformerEvent, { kind: "seek" | "rate" }>["kind"];
 const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
-// One voice at a time: a phrase pauses the reading (`preview`), and whatever starts to
-// sound — a phrase, the reading at a tap or at the voice's entry, a teardown — hushes the
-// phrase sounding first, always, since a hush on a silent player is its own no-op
-// [LAW:dataflow-not-control-flow]. So the previewer and the sample player never sound
-// together, and `sounding` is whichever one spoke last [LAW:single-enforcer].
+// One voice at a time, and the transport owns the audio: a phrase pauses the reading
+// (`preview`), and the phrase sounding is hushed by every transport gesture — a Play, a
+// Pause, a Stop, a seek — by the voice's own entry when it comes to speak, and by a
+// teardown. A consent is not a transport gesture: the hover's yes and a Download bring no
+// voice, and the phrase plays on through them. The hush is unconditional wherever it is
+// sent, since a hush on a silent player is its own no-op [LAW:dataflow-not-control-flow];
+// so the previewer and the sample player never sound together, and `sounding` is whichever
+// one spoke last [LAW:single-enforcer].
 const HUSH: Effect = { kind: "hush" };
 
 // The phases in which a `progress`, `ready` or `load-failed` may arrive.

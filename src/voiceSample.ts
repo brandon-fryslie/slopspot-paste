@@ -37,6 +37,8 @@ export interface SampleAudio {
   play: () => Promise<void>;
   pause: () => void;
   addEventListener: (type: "ended" | "error", listener: () => void) => void;
+  // Why the element failed, when it has: the browser's own word, for the console.
+  readonly error: { readonly message: string } | null;
 }
 
 export interface SamplePlayerConfig {
@@ -56,28 +58,38 @@ export const createSamplePlayer = ({ Audio, onChange }: SamplePlayerConfig): Sam
   // [LAW:no-shared-mutable-globals] One element, owned here, and the voice it is sounding.
   const audio = Audio();
   let sounding: VoiceId | null = null;
+  // [LAW:types-are-the-program] Which play is speaking, not which voice: a `say` for the
+  // voice already sounding is a new play too, and the one it supersedes must not unlight it.
+  let plays = 0;
   const settle = (voice: VoiceId | null): void => {
     if (voice === sounding) return;
     sounding = voice;
     onChange(voice);
   };
   audio.addEventListener("ended", () => settle(null));
-  audio.addEventListener("error", () => settle(null));
+  // The element's own failure — a decode that fails, a connection that drops mid-sample —
+  // is said and the voice unlit, as a refused play is [LAW:no-silent-failure].
+  audio.addEventListener("error", () => {
+    if (sounding !== null) console.warn(`voice sample: ${sounding} stopped — ${audio.error?.message ?? "the element gave no reason"}`);
+    settle(null);
+  });
   const hush = (): void => {
+    plays += 1;
     audio.pause();
     settle(null);
   };
   return {
     say: (voice) => {
+      const play = (plays += 1);
       audio.pause();
       audio.src = samplePath(voice);
       settle(voice);
       // A play the browser refuses — no gesture behind it, a network the sample never came
       // over — is said, and the voice is unlit [LAW:no-silent-failure]. A play superseded
-      // before it began (the pause or the new src of the next `say` rejects it) is not a
-      // refusal of the voice sounding now: only the voice still sounding is unlit.
+      // before it began (the pause or the new src of the next `say`, or a hush, rejects it)
+      // is not a refusal of the play sounding now, even where both are the same voice.
       audio.play().catch((error: unknown) => {
-        if (sounding !== voice) return;
+        if (play !== plays) return;
         console.warn(`voice sample: ${voice} could not play`, error);
         settle(null);
       });
