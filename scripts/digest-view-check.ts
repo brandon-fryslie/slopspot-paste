@@ -9,6 +9,7 @@
 import { JSDOM } from "jsdom";
 import { DIGEST_CLASS, DIGEST_STATE, createDigestView } from "../src/digestView";
 import { deriveViewableDialogue } from "../src/overlay";
+import { pageWords } from "../src/readAlong";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import type { Overlay, Turn } from "../src/types";
 
@@ -114,6 +115,30 @@ console.log("each turn wears its own digest and no other's");
   assert("the first turn got the first digest", digestIn(conversation, 0)?.textContent?.includes("one") === true);
   assert("the turn between them got none", digestIn(conversation, 1) === null);
   assert("and the last is still summarizing", digestIn(conversation, 2)?.textContent?.includes("Summarizing") === true);
+}
+
+console.log("a digest is not prose the narrator says");
+{
+  // A digest is a summary of the very prose Listen speaks, and it sits at the HEAD of the
+  // card. Left in the narrator's word pool it is what the aligner's greedy forward scan
+  // matches first, so the highlight paints words in the digest before jumping into the body
+  // and a tap on it seeks the audio. Two files have to agree for that not to happen — this
+  // view's element and readAlong's UNSPOKEN — and nothing but this holds them together.
+  const { conversation, view } = page([assistant("The service walks each turn in reading order.")]);
+  const card = conversation.querySelector(":scope > [data-index]");
+  if (card === null) throw new Error("the fixture lost its turn");
+  const said = (): string =>
+    pageWords(card)
+      .map((word) => word.node.data.slice(word.start, word.end))
+      .join(" ");
+  const before = said();
+  assert("the turn's own prose is what the narrator says", before.includes("walks each turn"));
+  view.write(0, { kind: "ready", text: "A digest of the turn.", combined: false });
+  assert("a digest adds nothing to it", said() === before);
+  view.write(0, { kind: "pending" });
+  assert("nor does the word it shows while summarizing", said() === before);
+  view.write(0, { kind: "failed", reason: "the summarizer answered nothing" });
+  assert("nor the reason it gives for failing", said() === before);
 }
 
 console.log("a turn the conversation does not carry is a caller's bug, said out loud");

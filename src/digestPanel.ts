@@ -88,9 +88,12 @@ export const DOWNLOADING_NOTE = "Downloading your browser's summary model…";
 // ── the driver ─────────────────────────────────────────────────────────────────────────
 
 // [LAW:types-are-the-program] Exactly the elements the panel writes, so the page hands it
-// four and the check builds four. The stage owns visibility through `hidden` alone; the
-// `data-stage` it also writes is for the stylesheet's colours and spacing and never hides
-// anything, so there is one answer to "is the reader being asked" [LAW:one-source-of-truth].
+// these and the check builds these. Visibility has ONE authority — the `hidden` attribute,
+// written by `show` for every part on every stage — and the panel marks them with nothing
+// else. It used to also stamp a `data-stage` "for the stylesheet", which no rule ever read:
+// a second account of "is the reader being asked" that could only ever drift from the first
+// [LAW:one-source-of-truth]. (`data-digest`, which the stylesheet does read, is the VIEW's
+// attribute on a turn's own digest, and is a different thing.)
 export interface DigestControls {
   readonly root: HTMLElement;
   readonly open: HTMLButtonElement;
@@ -174,7 +177,6 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
   // every part, so no part can carry a sentence left over from the stage before.
   const show = (next: DigestStage): void => {
     stage = next;
-    controls.root.dataset.stage = next.kind;
     controls.root.hidden = next.kind === "unavailable" || next.kind === "working";
     controls.open.hidden = next.kind !== "ask";
     controls.progress.hidden = next.kind !== "downloading";

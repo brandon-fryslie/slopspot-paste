@@ -102,11 +102,22 @@ export interface PageWord {
 
 // What the narrator's voice covers on the page: fenced code (<pre>), the detail folds
 // (thinking, tool calls, subagents — every one a details.condensed), every fold's summary
-// label, a control's label (a clamp's Show more), the usage aside, and anything hidden. None
-// of it is page prose an utterance says, so none of it is a match target. A turn an overlay
-// folded is a <details> too, but its body is the turn itself and is read in full, so only
-// its summary is here. The turn-summary aside is not: the narrator reads it verbatim.
-const UNSPOKEN = "pre, details.condensed, summary, button, aside.bubble-usage, [hidden], [aria-hidden='true']";
+// label, a control's label (a clamp's Show more), the usage aside, the digest aside, and
+// anything hidden. None of it is page prose an utterance says, so none of it is a match
+// target. A turn an overlay folded is a <details> too, but its body is the turn itself and
+// is read in full, so only its summary is here. The turn-summary aside is not: the narrator
+// reads it verbatim.
+//
+// aside.turn-digest (digestView.ts) is the one entry here that is not merely unspoken but
+// ACTIVELY MISLEADING if left in. It is a summary of the very prose being spoken, written by
+// the browser's summarizer at the HEAD of the card, so the aligner's greedy forward scan
+// latches onto it first: the highlight paints words in the digest and then jumps into the
+// body, and a tap on it seeks the audio. Marking it aria-hidden would fix that by taking it
+// away from screen readers, which is a worse bug than the one it fixes — a digest is
+// something a reader should be able to meet. So it is named here instead, and
+// scripts/digest-view-check.ts holds this name and the view's together.
+const UNSPOKEN =
+  "pre, details.condensed, summary, button, aside.bubble-usage, aside.turn-digest, [hidden], [aria-hidden='true']";
 const SHOW_TEXT = 4;
 const TEXT_NODE = 3;
 
