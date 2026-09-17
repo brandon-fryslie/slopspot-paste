@@ -6,6 +6,7 @@
 import type { Overlay, Turn } from "../src/types";
 import { deriveViewableDialogue } from "../src/overlay";
 import {
+  DIGEST_COMBINE_ROUNDS,
   DIGEST_MIN_WORDS,
   createDigestService,
   packByQuota,
@@ -226,18 +227,42 @@ console.log("a very long turn: the part digests are packed and digested in round
   assert("50 parts, then 2, then 1: ready and combined", outcome.kind === "ready" && outcome.combined && calls.length === 53 && outcome.text === "«4 words»");
 }
 
-console.log("part digests that stop shrinking: the turn fails with both measures");
+console.log("part digests that never combine: the turn fails after a bounded number of rounds");
 {
   const dialogue = viewable([assistant([words(40, "a"), words(40, "b"), words(40, "c")].join("\n\n"))]);
+  let calls = 0;
   const summarizer: Summarizer = {
     inputQuota: 90,
     measureInputUsage: async (input) => countWords(input),
-    summarize: async (input) => input,
+    summarize: async (input) => {
+      calls += 1;
+      return input;
+    },
   };
   const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
   await service.start(0);
   const outcome = service.outcome(0);
-  assert("failed, naming the measure that did not fall and the quota", outcome.kind === "failed" && outcome.reason.includes("no less than") && outcome.reason.includes("90"));
+  assert("failed, naming the rounds it was given", outcome.kind === "failed" && outcome.reason.includes(`${DIGEST_COMBINE_ROUNDS} rounds`));
+  assert("the summarizer was asked twice a round, no more", calls === 2 * (DIGEST_COMBINE_ROUNDS + 1));
+}
+
+console.log("a stop during the rounds: the cascade ends at the call it was in");
+{
+  const dialogue = viewable([assistant([words(40, "a"), words(40, "b"), words(40, "c")].join("\n\n"))]);
+  let calls = 0;
+  // A Summarizer that runs to completion through an abort, as an in-browser model would.
+  const summarizer: Summarizer = {
+    inputQuota: 90,
+    measureInputUsage: async (input) => countWords(input),
+    summarize: async (input) => {
+      calls += 1;
+      if (calls === 1) service.stop();
+      return input;
+    },
+  };
+  const service = createDigestService({ dialogue, summarizer, identity: IDENTITY, store: mapStore().store });
+  await service.start(0);
+  assert("stopped at the first call, not eight rounds later; the turn is still pending", calls === 1 && service.outcome(0).kind === "pending");
 }
 
 console.log("part digests that pair with none but are still shrinking: another round, not a failure");

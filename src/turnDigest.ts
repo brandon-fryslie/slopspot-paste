@@ -144,10 +144,12 @@ export interface DigestStore {
 const STORE_PREFIX = "digest.";
 const KEPT_KEYS = "digest-kept";
 
-// How many digests the device keeps, oldest out first: a digest is a few hundred bytes, so
-// this is well under a megabyte of the storage the Listen preferences share, and an
-// unbounded cache would one day fill that storage and take those preferences with it.
-export const DIGEST_KEEP = 1_000;
+// How many digests the device keeps, oldest out first: an unbounded cache would one day
+// fill the storage the Listen preferences share and take those preferences with it. A long
+// paste's worth and then some — kept this side of a thousand because a PreferenceStore
+// cannot enumerate its keys, so the whole list is rewritten on every put and its length is
+// paid on the page's own thread each time.
+export const DIGEST_KEEP = 250;
 
 // [LAW:parse-dont-validate] A kept entry is a Digest, or it is not this build's and reads as
 // absent. The store is the page's preference store, so a refused device already reads as
@@ -174,18 +176,19 @@ const parseDigest = (kept: string | null): Digest | undefined => {
 const parseKeys = (kept: string | null): ReadonlyArray<string> =>
   kept === null ? [] : kept.split("\n").filter((key) => key.length > 0);
 
-// The kept list is written before the digest it names, and the digest only once the list is
-// read back as written: a device that refuses the list's write (it is the larger of the two)
-// keeps no entry the list cannot evict.
+// The kept list is written first, and nothing else happens unless it reads back as written:
+// a device that refuses the list's write — it is the larger of the two — neither keeps an
+// entry the list cannot evict nor drops one the list still names.
 export const preferenceDigestStore = (store: PreferenceStore, keep: number = DIGEST_KEEP): DigestStore => ({
   get: async (key) => parseDigest(store.getItem(STORE_PREFIX + key)),
   put: async (key, digest) => {
     const keys = [...parseKeys(store.getItem(KEPT_KEYS)).filter((kept) => kept !== key), key];
     const evicted = keys.slice(0, Math.max(0, keys.length - keep));
-    for (const old of evicted) store.removeItem(STORE_PREFIX + old);
     const list = keys.slice(evicted.length).join("\n");
     store.setItem(KEPT_KEYS, list);
-    if (store.getItem(KEPT_KEYS) === list) store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
+    if (store.getItem(KEPT_KEYS) !== list) return;
+    for (const old of evicted) store.removeItem(STORE_PREFIX + old);
+    store.setItem(STORE_PREFIX + key, JSON.stringify(digest));
   },
 });
 
@@ -204,6 +207,12 @@ const turnContext = (speaker: Role): string =>
 const COMBINED_CONTEXT = "These are digests of consecutive parts of one long turn in a transcript of a conversation with an AI assistant; digest them as one.";
 
 const joinParagraphs = (paragraphs: ReadonlyArray<string>): string => paragraphs.join("\n\n");
+
+// How many rounds a turn's part digests are given to combine into one. A round that paired
+// only two digests would still combine 256 parts in eight; a real round packs many more than
+// two into a part, so a cascade still going after this is a summarizer whose digests are no
+// shorter than its inputs, not a long turn.
+export const DIGEST_COMBINE_ROUNDS = 8;
 
 // [LAW:dataflow-not-control-flow] Paragraphs packed into parts that each measure under the
 // quota, measured under the context they will be summarized with. The whole measured first:
@@ -245,19 +254,21 @@ export const packByQuota = async (
 // One turn's digest: its paragraphs packed and each part summarized; while more than one
 // digest remains, the digests are packed and summarized the same way, until one is left,
 // marked combined.
-// [LAW:no-silent-failure] A round that leaves the digests neither fewer nor smaller would
-// be repeated without end, so it is the turn's failure with both measures — a round that
-// pairs nothing is allowed while the digests are still shrinking, and only a summarizer
-// whose digests stop shrinking ends the turn. So does one that answers nothing, since a
-// blank kept under the turn's key would be served as its digest on every visit.
+// [LAW:no-silent-failure] The cascade is bounded by its rounds, not by watching a measure
+// fall: a turn still uncombined after DIGEST_COMBINE_ROUNDS is the turn's failure. So is a
+// summarizer that answers nothing, since a blank kept under the turn's key would be served
+// as its digest on every visit.
+// The signal is read in every round [LAW:no-ambient-temporal-coupling]: a Summarizer that
+// runs a model to completion through an abort — an in-browser polyfill will — must not have
+// the cascade keep feeding it turns after the reader has gone.
 const digestOf = async (input: DigestInput, summarizer: Summarizer, signal: AbortSignal): Promise<Digest> => {
-  const usageOf = (texts: ReadonlyArray<string>): Promise<number> =>
-    summarizer.measureInputUsage(joinParagraphs(texts), { context: COMBINED_CONTEXT, signal });
   const round = async (texts: ReadonlyArray<string>, context: string, noun: string): Promise<ReadonlyArray<string>> => {
+    signal.throwIfAborted();
     const parts = await packByQuota(texts, summarizer, { context, signal }, noun);
     const digests: string[] = [];
     for (const part of parts) {
       const digest = await summarizer.summarize(part, { context, signal });
+      signal.throwIfAborted();
       if (digest.trim() === "") throw new Error(`the summarizer answered nothing for a ${noun === "paragraph" ? "part" : "round"} of the turn`);
       digests.push(digest);
     }
@@ -265,15 +276,11 @@ const digestOf = async (input: DigestInput, summarizer: Summarizer, signal: Abor
   };
   let digests = await round(input.paragraphs, turnContext(input.speaker), "paragraph");
   const combined = digests.length > 1;
-  let usage = combined ? await usageOf(digests) : 0;
-  while (digests.length > 1) {
-    const next = await round(digests, COMBINED_CONTEXT, "part digest");
-    const nextUsage = next.length > 1 ? await usageOf(next) : 0;
-    if (next.length >= digests.length && nextUsage >= usage) {
-      throw new Error(`the ${next.length} part digests measure ${nextUsage}, no less than the ${usage} they were made from: they cannot be combined under the summarizer's quota of ${summarizer.inputQuota}`);
+  for (let left = DIGEST_COMBINE_ROUNDS; digests.length > 1; left -= 1) {
+    if (left === 0) {
+      throw new Error(`${digests.length} part digests are still uncombined after ${DIGEST_COMBINE_ROUNDS} rounds: the summarizer's digests are no shorter than its inputs`);
     }
-    digests = next;
-    usage = nextUsage;
+    digests = await round(digests, COMBINED_CONTEXT, "part digest");
   }
   const [text] = digests;
   if (text === undefined) throw new Error("the turn has no readable text to digest");
