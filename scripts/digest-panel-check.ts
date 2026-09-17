@@ -16,7 +16,7 @@ import { deriveViewableDialogue } from "../src/overlay";
 import { renderDialogueHtml } from "../src/renderDialogue";
 import type { HeldSummarizer, SummarizerAvailability, SummarizerSource } from "../src/summarizerSource";
 import type { Turn } from "../src/types";
-import { DIGEST_MIN_WORDS, digestTurnsOf } from "../src/turnDigest";
+import { DIGEST_MIN_WORDS, digestTurnsOf, type DigestTurn } from "../src/turnDigest";
 import { memoryPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
@@ -51,6 +51,8 @@ const TURNS: ReadonlyArray<Turn> = [
   assistant(words(DIGEST_MIN_WORDS + 20, "c")),
   user("too short to need one"),
 ];
+
+const DIGEST_TURNS = digestTurnsOf(deriveViewableDialogue({ turns: TURNS, overlay: [] }));
 
 // A summarizer that answers a digest naming its input's first word, so a digest can be
 // traced to the turn it came from.
@@ -114,6 +116,9 @@ const mount = (config: {
   readonly source: SummarizerSource | null;
   readonly remembered?: boolean;
   readonly connection?: { readonly type?: string; readonly saveData?: boolean };
+  // The turns the page hands the panel. Defaults to the ones this conversation really has;
+  // a check that wants them to DISAGREE with the rendered conversation passes its own.
+  readonly turns?: ReadonlyArray<DigestTurn>;
 }) => {
   const html = renderDialogueHtml(deriveViewableDialogue({ turns: TURNS, overlay: [] }));
   const dom = new JSDOM(
@@ -142,7 +147,7 @@ const mount = (config: {
   const store = memoryPreferences();
   if (config.remembered === true) writePreference(store, true);
   const conversation = pick<HTMLElement>(".conversation");
-  const turns = digestTurnsOf(deriveViewableDialogue({ turns: TURNS, overlay: [] }));
+  const turns = config.turns ?? DIGEST_TURNS;
   const faults: string[] = [];
   const panel = createDigestPanel({
     controls,
@@ -307,6 +312,31 @@ console.log("a monitor outliving the create it was handed to cannot claim a down
   assert("a report on it moves nothing", panel.stage().kind === "ask");
   assert("and leaves no bar behind", controls.progress.hidden);
   panel.dispose();
+}
+
+console.log("a digest for a turn the page never drew is the PAGE's bug, not the browser's");
+{
+  // The service's indices and the renderer's are the same indices; where they are not, that
+  // is a broken invariant between the two and digestView.ts raises it rather than skipping
+  // the turn. The panel must not dress that up as a summarizer the browser refused —
+  // a create that in fact SUCCEEDED, reported to the reader as a failure, with a button
+  // inviting them to open a second model on top of the one already running.
+  const model = browser("available", ready());
+  const { panel, controls, faults } = mount({
+    source: model.source,
+    turns: [...DIGEST_TURNS, { index: 99, input: DIGEST_TURNS[0]!.input }],
+  });
+  await panel.settled();
+  assert("what actually went wrong is said where it can be read", faults.some((what) => what.includes("digests could not be put")));
+  assert("the reader is told nothing about a summarizer that did not fail", controls.note.textContent?.includes("could not start") !== true);
+  assert("the panel stays out of the reader's way rather than falling back to the ask", panel.stage().kind === "working" && controls.root.hidden);
+  assert("one summarizer was opened", model.creates() === 1);
+  // The ask is hidden, but the button is still in the page and still clickable.
+  controls.open.click();
+  await panel.settled();
+  assert("and a tap cannot open a second one beside it", model.creates() === 1);
+  panel.dispose();
+  assert("the one model is let go", model.held()?.destroyed() === true);
 }
 
 console.log("a create that fails where the reader was never asked still tells them");

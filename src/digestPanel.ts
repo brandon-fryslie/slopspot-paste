@@ -158,9 +158,13 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
   // refusal is an outcome the panel has already answered for, never a reason for a waiter to
   // reject [LAW:no-silent-failure].
   let work: Promise<unknown> = Promise.resolve();
-  const track = <T>(job: Promise<T>): Promise<T> => {
+  // [LAW:single-enforcer] The one way the panel starts anything: the job joins the fold
+  // `settled()` waits on, and whatever it throws is SAID. Because there is no other way to
+  // start work, there is no way to start work that a waiter cannot see or that fails into an
+  // unhandled rejection where nobody reads it [LAW:no-silent-failure].
+  const run = (what: string, job: Promise<unknown>): void => {
     work = Promise.allSettled([work, job]);
-    return job;
+    job.catch((error: unknown) => fault(what, error));
   };
 
   // [LAW:dataflow-not-control-flow] One writer for the whole affordance: every stage sets
@@ -200,7 +204,7 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
   // is live RE-AIMS it, which is the whole point of the reader moving, and a queued start
   // would arrive only once the walk it meant to redirect had finished.
   const walk = (live: DigestService): void => {
-    track(live.start(at)).catch((error: unknown) => fault("a digest listener threw", error));
+    run("a digest listener threw", live.start(at));
   };
 
   // The reader's next gesture stands in for the tap the browser wants. One shot: it is
@@ -214,7 +218,7 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
     if (armed !== null) return;
     const take = (): void => {
       disarm();
-      void track(attempt());
+      run("the digests could not be put on their turns", attempt());
     };
     for (const kind of ["pointerdown", "keydown"]) gestures.addEventListener(kind, take, { once: true });
     armed = () => {
@@ -227,41 +231,56 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
   // with becomes the reason the ask then shows; a reader who remembered their yes is not
   // asked again but is told, and their next gesture tries once more.
   const attempt = async (): Promise<void> => {
-    if (attempting || gone || source === null) return;
+    // [LAW:one-source-of-truth] A panel opens ONE summarizer, ever: `held` is that fact, so
+    // a second attempt cannot orphan the first model, subscribe the view twice, or leave two
+    // services walking the same turns.
+    if (attempting || gone || held !== null || source === null) return;
     attemptingNow(true);
     const mine = (attemptNo += 1);
     // The stage is NOT moved to `downloading` here: a create that needs no download never
     // reports progress, and a page that announced a download it is not doing would be
     // lying for however long the create takes [LAW:no-silent-failure]. The monitor's first
     // report is what says a download is happening, and it is the only thing that says it.
+    let summarizer: HeldSummarizer;
+    // [LAW:no-silent-failure] This try answers for the BROWSER's refusal and nothing else.
+    // Everything below it is the page's own work, and the one thing that throws there —
+    // a turn the renderer never drew, which digestView.ts raises rather than skipping — is a
+    // broken invariant between the render and the service. Under a wider try it would reach
+    // the reader as "the summarizer could not start: the conversation has no turn 7", blaming
+    // the browser for the page's bug and inviting a retry that opens a SECOND model.
     try {
-      const summarizer = await openSummarizer(source, options, (loaded) => {
+      summarizer = await openSummarizer(source, options, (loaded) => {
         // Only the attempt still in flight may say a download is happening [LAW:no-silent-failure].
         if (!gone && attempting && mine === attemptNo) show({ kind: "downloading", loaded });
       });
-      if (gone) {
-        summarizer.destroy();
-        return;
-      }
-      held = summarizer;
-      const live = createDigestService({
-        turns,
-        summarizer,
-        identity: summarizerIdentity(options, implementation),
-        store: preferenceDigestStore(store),
-      });
-      service = live;
-      live.subscribe((index, outcome) => view.write(index, outcome));
-      show({ kind: "working" });
-      paint(live);
-      walk(live);
     } catch (error) {
+      // A page the reader has already left is told nothing and arms nothing: `dispose` said
+      // this panel holds no listener, and a create the browser abandons on unload is the
+      // ordinary way to arrive here.
+      if (gone) return;
       const refusal = error instanceof Error ? error.message : String(error);
       show({ kind: "ask", refusal });
       if (readPreference(store)) arm();
+      return;
     } finally {
       attemptingNow(false);
     }
+    if (gone) {
+      summarizer.destroy();
+      return;
+    }
+    held = summarizer;
+    const live = createDigestService({
+      turns,
+      summarizer,
+      identity: summarizerIdentity(options, implementation),
+      store: preferenceDigestStore(store),
+    });
+    service = live;
+    live.subscribe((index, outcome) => view.write(index, outcome));
+    show({ kind: "working" });
+    paint(live);
+    walk(live);
   };
 
   // [LAW:no-silent-failure] Whatever the browser answers about availability decides what the
@@ -292,11 +311,15 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
     }
   };
 
-  controls.open.addEventListener("click", () => void track(attempt()));
+  controls.open.addEventListener("click", () => run("the digests could not be put on their turns", attempt()));
   controls.always.addEventListener("change", () => writePreference(store, controls.always.checked));
   controls.always.checked = readPreference(store);
   show({ kind: "unavailable" });
-  void track(open());
+  // The same sentence as the button's and the gesture's: an availability that throws is
+  // already answered for inside `open`, so the only thing left for this to catch is what
+  // `attempt` throws — one failure, said one way, however the reader arrived at it
+  // [LAW:one-source-of-truth].
+  run("the digests could not be put on their turns", open());
 
   return {
     stage: () => stage,

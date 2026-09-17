@@ -120,11 +120,18 @@ const prints = await printsOf(utterances);
 // `dialogue`, selected HERE, where the derived model is, and carried to the browser as its
 // result. The browser re-derives nothing of "what of a turn is readable" from the HTML it
 // was sent: one selection, on the server, for the page and for the polyfill later alike.
-const digestTurns = digestTurnsOf(dialogue);
-// [LAW:polishing-by-subtraction] A conversation whose every turn is its own digest carries
-// none of this: no payload, no ask, no script work. The threshold is the service's own
-// (wantsDigest), asked here rather than restated.
-const digestable = digestTurns.some((turn) => wantsDigest(turn.input));
+//
+// [LAW:polishing-by-subtraction] Only the turns that will be summarized ride to the browser.
+// A turn under the threshold gets `none` from the service and NOTHING from the view, so
+// carrying its prose would buy the reader nothing and cost them the bytes — every reader,
+// including the majority whose browser has no Summarizer at all. Dropping them changes no
+// behaviour: the walk reads from the first turn at or after where the reader is and skips
+// what is not pending, and an outcome is only ever asked for a turn that was sent.
+const digestTurns = digestTurnsOf(dialogue).filter((turn) => wantsDigest(turn.input));
+// A conversation whose every turn is its own digest carries none of this: no payload, no
+// ask, no script work. The threshold is the service's own (wantsDigest), asked above rather
+// than restated here.
+const digestable = digestTurns.length > 0;
 
 // [LAW:one-source-of-truth] Code artifacts are a THIRD projection of the SAME viewable
 // `dialogue` the renderer and outline read — extracted from its already-redacted nodes,

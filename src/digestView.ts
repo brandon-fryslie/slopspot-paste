@@ -85,9 +85,6 @@ export interface DigestView {
   // Show this turn's outcome at its head. A turn the conversation does not carry is a
   // caller's bug, thrown — the service's indices and the renderer's are the same indices.
   write(index: number, outcome: DigestOutcome): void;
-  // Take every digest off the page, as when the summarizer is lost: the conversation is
-  // exactly as the renderer left it.
-  clear(): void;
 }
 
 export const createDigestView = (conversation: HTMLElement): DigestView => {
@@ -130,10 +127,6 @@ export const createDigestView = (conversation: HTMLElement): DigestView => {
       parts.root.setAttribute(DIGEST_STATE, outcome.kind);
       parts.text.textContent = shownText(outcome);
       parts.combined.hidden = !(outcome.kind === "ready" && outcome.combined);
-    },
-    clear: () => {
-      for (const parts of shown.values()) parts.root.remove();
-      shown.clear();
     },
   };
 };

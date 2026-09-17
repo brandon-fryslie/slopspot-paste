@@ -68,6 +68,7 @@ console.log("a folded turn keeps its digest inside the fold, where its role line
 console.log("every outcome the service can report");
 {
   const { conversation, view } = page([assistant("an answer")]);
+  const before = conversation.innerHTML;
   view.write(0, { kind: "pending" });
   assert("pending says so rather than showing an empty box", digestIn(conversation, 0)?.textContent?.includes("Summarizing") === true);
   view.write(0, { kind: "failed", reason: "the summarizer answered nothing" });
@@ -80,6 +81,7 @@ console.log("every outcome the service can report");
   assert("one element throughout — the reader sees one digest, not four", conversation.querySelectorAll(`.${DIGEST_CLASS}`).length === 1);
   view.write(0, { kind: "none" });
   assert("none removes it: a turn too short for a digest carries no affordance at all", digestIn(conversation, 0) === null);
+  assert("and leaves the conversation exactly as the renderer wrote it", conversation.innerHTML === before);
 }
 
 console.log("a combined digest says it was combined");
@@ -101,17 +103,17 @@ console.log("the model's words are text, never markup");
   assert("the characters are shown as the model wrote them", digest?.textContent?.includes("<img src=x onerror=alert(1)> and <b>bold</b>") === true);
 }
 
-console.log("clearing leaves the conversation as the renderer wrote it");
+console.log("each turn wears its own digest and no other's");
 {
   // Alternating speakers: the renderer groups consecutive assistant turns into ONE spine
   // node, so two assistant turns in a row would be one index, not two.
   const { conversation, view } = page([assistant("first"), user("between"), assistant("second")]);
-  const before = conversation.innerHTML;
   view.write(0, { kind: "ready", text: "one", combined: false });
   view.write(2, { kind: "pending" });
   assert("both were written", conversation.querySelectorAll(`.${DIGEST_CLASS}`).length === 2);
-  view.clear();
-  assert("nothing of the digests is left", conversation.innerHTML === before);
+  assert("the first turn got the first digest", digestIn(conversation, 0)?.textContent?.includes("one") === true);
+  assert("the turn between them got none", digestIn(conversation, 1) === null);
+  assert("and the last is still summarizing", digestIn(conversation, 2)?.textContent?.includes("Summarizing") === true);
 }
 
 console.log("a turn the conversation does not carry is a caller's bug, said out loud");
