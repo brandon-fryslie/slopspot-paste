@@ -350,7 +350,7 @@ console.log("a digest for a turn the page never drew is the PAGE's bug, not the 
   // a create that in fact SUCCEEDED, reported to the reader as a failure, with a button
   // inviting them to open a second model on top of the one already running.
   const model = browser("available", ready());
-  const { panel, controls, faults, digests } = mount({
+  const { panel, controls, faults, digests, arrivals } = mount({
     source: model.source,
     turns: [...DIGEST_TURNS, { index: 99, input: DIGEST_TURNS[0]!.input }],
   });
@@ -365,6 +365,11 @@ console.log("a digest for a turn the page never drew is the PAGE's bug, not the 
   const written = digests();
   assert("every turn the page did draw still gets its digest", written.length === 3);
   assert("and they carry real digests, not a stalled Summarizing…", written.every((text) => text.includes("digest of")));
+  // The narrator is told before the card is painted, so a turn whose CARD cannot be written
+  // still reaches the page. Told after, the throw — which the service swallows — would eat the
+  // knock too, and a digest that was the walk's last would never be said by anybody
+  // [LAW:no-silent-failure].
+  assert("a digest whose card cannot be drawn still reaches the page", arrivals.length === written.length + 1);
   // The ask is hidden, but the button is still in the page and still clickable.
   controls.open.click();
   await panel.settled();

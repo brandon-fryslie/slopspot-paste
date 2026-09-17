@@ -339,10 +339,16 @@ export const createDigestPanel = (config: DigestPanelConfig): DigestPanel => {
     });
     service = live;
     live.subscribe((index, outcome) => {
-      view.write(index, outcome);
+      // The page is told BEFORE the card is painted, and the order is load-bearing.
+      // `view.write` throws on a turn the renderer never drew, and the service swallows what
+      // a listener throws (turnDigest.ts settle), so painting first meant such a turn's digest
+      // reached the outcome map and NOTHING ever reached the narrator — and if it was the last
+      // ready digest of the walk, no later arrival would come to compose it either. Silently,
+      // which is the part that matters [LAW:no-silent-failure].
       // Only a digest the narrator could say is worth telling the page about: a pending or
       // failed turn changes what the CARD shows and leaves `digests()` exactly as it was.
       if (outcome.kind === "ready") config.onDigest?.();
+      view.write(index, outcome);
     });
     show({ kind: "working" });
     // The walk is started BEFORE the first painting, and the order is the whole difference

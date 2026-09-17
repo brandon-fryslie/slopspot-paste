@@ -600,6 +600,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
               <label class="speech-digests" hidden>
                 <input type="checkbox" checked />
                 <span>Say each turn's digest before the turn</span>
+                <span class="speech-digests-later" hidden>— from your next visit</span>
               </label>
             )}
           </div>
@@ -1285,6 +1286,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           // a broken invariant is said once; advanced after, every later digest would compose
           // it again and warn again, for the life of the page [LAW:no-silent-failure].
           const was = spoken;
+          const wasSaying = saying;
           saying = wanted;
           const composed = withDigests(utterances, wanted);
           // Moved BEFORE the panel is told, because telling it RENDERS: `reseat` dispatches
@@ -1303,7 +1305,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             // Both sides step back together. A `spoken` left ahead of a panel that refused
             // the list would describe one nothing holds, and every later share and resume
             // would name the wrong word, quietly [LAW:no-silent-failure].
+            // Both, or the next identical ask would short-circuit on `sameSaid` and the page
+            // would never try again. Latent while `reseatable` is asked just above, and not
+            // worth leaving as a trap for the day it is not.
             spoken = was;
+            saying = wasSaying;
             throw error;
           }
         };
@@ -1363,8 +1369,16 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         if (sayChoice !== null && sayBox !== null && summarizer !== null) {
           sayChoice.hidden = false;
           sayBox.checked = readSaid(device);
+          const later = sayChoice.querySelector<HTMLElement>(".speech-digests-later");
           sayBox.addEventListener("change", () => {
             writeSaid(device, sayBox.checked);
+            // [LAW:no-silent-failure] Asked at the one moment it matters — the reader has just
+            // said what they want, and whether it reaches THIS listen is settled now. A voice
+            // already on stage is performing units cut from the page it was seated with, so
+            // the answer is kept and said from the next visit; the box would otherwise read
+            // the opposite of what the narrator is doing, with nothing anywhere saying so.
+            // Once shown it stays shown, because from here the page is seated for good.
+            if (later !== null && !reseatable(panel.state())) later.hidden = false;
             recompose();
           });
         }
