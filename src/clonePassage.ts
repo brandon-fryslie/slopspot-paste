@@ -28,7 +28,7 @@
 // Read aloud at an unhurried pace, this is what the reader records. It is ordinary English a
 // person can read cold, because a tongue-twister is read in a tongue-twister's voice and the
 // prosody is part of what gets cloned.
-export const CLONE_PASSAGE = "She walked home from Joyce's huge beige garage, chanting proudly that it looked worth every mile.";
+export const CLONE_PASSAGE = "She walked home from Joyce's huge beige garage, chanting proudly that lunch looked worth every mile.";
 
 // The slowest reader the passage must survive — a bound, not an average, and the difference is
 // the whole point. A fluent adult reads prose aloud nearer 150 wpm, but the typical rate is not
@@ -116,18 +116,26 @@ export const CONSONANT_SOUNDS: ReadonlyArray<Sound> = [
 
 // The 16 vowels, the half improvised speech misses most: an unscripted ten seconds routinely
 // holds no /ʊ/, no /ɔɪ/ and no /aʊ/ at all.
+//
+// EVERY ONE OF THEM RIDES A WORD THE READER STRESSES, which is a stricter rule than "the word is
+// in the passage" and the reason /ʌ/ says `lunch` and not `from`. English does not say the
+// vowels of its function words: read at speed, `from` is [frəm] and `that` is [ðət], so a row
+// resting on either claims a sound the microphone never hears while the check stays green — the
+// word IS in the passage. The consonant rows are free to name them, because reduction takes the
+// vowel and leaves the /f/ and the /ð/ standing. scripts/clone-passage-check.ts enforces the
+// split [LAW:verifiable-goals].
 export const VOWEL_SOUNDS: ReadonlyArray<Sound> = [
-  { phoneme: "i", word: "she" },
-  { phoneme: "ɪ", word: "it" },
+  { phoneme: "i", word: "every" },
+  { phoneme: "ɪ", word: "Joyce's" },
   { phoneme: "eɪ", word: "beige" },
   { phoneme: "ɛ", word: "every" },
-  { phoneme: "æ", word: "that" },
+  { phoneme: "æ", word: "chanting" },
   { phoneme: "ɑ", word: "garage" },
   { phoneme: "ɔ", word: "walked" },
   { phoneme: "oʊ", word: "home" },
   { phoneme: "ʊ", word: "looked" },
   { phoneme: "u", word: "huge" },
-  { phoneme: "ʌ", word: "from" },
+  { phoneme: "ʌ", word: "lunch" },
   { phoneme: "ɜr", word: "worth" },
   { phoneme: "aɪ", word: "mile" },
   { phoneme: "aʊ", word: "proudly" },

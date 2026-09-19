@@ -1840,11 +1840,15 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   assert("named by the reader, described as their recording, credited as their own", picker.querySelector<HTMLElement>(`.voice-option[data-voice="${mine.key}"] .voice-label`)?.textContent === "Brandon" && picker.querySelector<HTMLElement>(`.voice-option[data-voice="${mine.key}"] .voice-about`)?.textContent === "Your recording · 2 s · kept on this device" && picker.querySelector<HTMLElement>(`.voice-option[data-voice="${mine.key}"] .voice-label`)?.title.startsWith("Recorded on this device") === true);
   assert("the pick naming it is shown checked, and reset is offered", checked(picker) === `${mine.key}/fantine` && !picker.querySelector<HTMLButtonElement>(".voice-reset")!.disabled);
   assert("its shelf row carries its name and a remove named for it", picker.querySelector<HTMLElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-label`)?.textContent === "Brandon" && picker.querySelector<HTMLButtonElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-remove`)?.getAttribute("aria-label") === "Remove Brandon");
-  assert("the form is idle: Record offered, Upload offered, no note", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLButtonElement>(".voice-clone-upload")?.disabled === false && picker.querySelector<HTMLElement>(".voice-clone-note")?.hidden === true);
+  assert("the form is idle: Record offered, Upload offered, no note", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLButtonElement>(".voice-clone-upload")?.disabled === false && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "");
   // The reader is never asked to think up ten seconds of speech: the passage stands in the form
   // before the tap, in whichever picker they opened, and the Record button points at it.
   assert("the passage to read stands in the form of both pickers, before any tap", picker.querySelector<HTMLElement>(".voice-clone-passage")?.textContent === CLONE_PASSAGE && r.mini.voices.picker.querySelector<HTMLElement>(".voice-clone-passage")?.textContent === CLONE_PASSAGE);
-  assert("Record is described by the passage, so reaching it by keyboard is hearing what to read", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.getAttribute("aria-describedby") === picker.querySelector<HTMLElement>(".voice-clone-passage")?.id);
+  const describes = (button: string): ReadonlyArray<string> => (picker.querySelector<HTMLButtonElement>(button)?.getAttribute("aria-describedby") ?? "").split(" ").filter((id) => id !== "");
+  assert("Record is described by the instruction and the passage, so reaching it by keyboard is hearing what to read and how long there is to read it", describes(".voice-clone-record").join(" ") === `${picker.querySelector<HTMLElement>(".voice-clone-read")?.id} ${picker.querySelector<HTMLElement>(".voice-clone-passage")?.id}`);
+  // Naming only Record would leave Upload with the defect the passage removes: a reader who
+  // tabs to it is owed the same words and the same ten-second budget.
+  assert("Upload is described by the same words as Record, not left bare", describes(".voice-clone-upload").join(" ") === describes(".voice-clone-record").join(" "));
   assert("each picker's passage carries its own scoped id, so neither describes the other's button", picker.querySelector<HTMLElement>(".voice-clone-passage")?.id.startsWith(`${picker.id}-`) === true && r.mini.voices.picker.querySelector<HTMLElement>(".voice-clone-passage")?.id.startsWith(`${r.mini.voices.picker.id}-`) === true);
   picker.querySelector<HTMLButtonElement>(`.voice-option[data-voice="${mine.key}"] .voice-preview`)?.click();
   assert("heard cold: its recording plays, where a hosted voice's sample would", r.audio().plays.join() === `blob:${mine.key}`);
@@ -1858,18 +1862,22 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   assert("a tap on Record: recording, the button now Stop, the note saying so", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.startsWith("Recording") === true && r.mini.voices.picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL);
   // Stop is not described by the passage: read out over a running ten-second recording, the
   // whole passage would outlast the recording it was meant to help end.
-  assert("Stop is described by the note saying where the making is, not by the passage", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.getAttribute("aria-describedby") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
+  assert("Stop is described by the note saying where the making is, and by nothing else", describes(".voice-clone-record").join(" ") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert("the microphone refused: idle again, the reason on the form", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no microphone in the check");
   // The button says Record again, but what needs saying is why the last one failed — so the
   // description follows the note and not the phase. Pointed back at the passage here, a reader
   // arriving at the button by keyboard is read the words to say and never the reason it failed.
-  assert("a Record offered after a failure is described by the reason, not by the passage again", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.getAttribute("aria-describedby") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
+  assert("a Record offered after a failure is described by the reason AND still by the words to read — the reader is owed both, and a rule that picked one dropped the other", describes(".voice-clone-record").join(" ") === `${picker.querySelector<HTMLElement>(".voice-clone-note")?.id} ${picker.querySelector<HTMLElement>(".voice-clone-read")?.id} ${picker.querySelector<HTMLElement>(".voice-clone-passage")?.id}`);
   assert("and the reason is a status region, so it is announced where it lands rather than waiting to be found", picker.querySelector<HTMLElement>(".voice-clone-note")?.getAttribute("role") === "status" && r.mini.voices.picker.querySelector<HTMLElement>(".voice-clone-note")?.getAttribute("role") === "status");
   // A clone the model refused, said by the worker, lands on the form too — naming the clone
   // by the name the reader gave it, never its key.
   r.emit({ kind: "clone-failed", voice: mine.key, message: "no prompt" });
   assert("a clone the model could not make is said on the form, by name", picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Brandon cannot be spoken on this device: no prompt");
+  // Idle with a note standing is the shape `Saved <name>.` leaves behind too — voiceCloning's
+  // `ended` sets it and only the next `make` clears it — so a reader who has just kept one voice
+  // and turns to record a second must still be told what to read, not only about the last one.
+  assert("a note left standing over an idle form never costs the reader the words to read", describes(".voice-clone-record").includes(picker.querySelector<HTMLElement>(".voice-clone-passage")!.id) && describes(".voice-clone-record")[0] === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
   // Their own voice auditioned, then removed mid-phrase. The pure arm above proves the
   // machine hushes; this proves the removal ever reaches it — a reducer arm nothing dispatches
   // is a fix the check cannot see [LAW:verifiable-goals].

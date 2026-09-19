@@ -18,6 +18,13 @@ import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, LEAD_IN_SECONDS,
 const CONSONANTS = "p b t d k g f v θ ð s z ʃ ʒ h tʃ dʒ m n ŋ l r w j".split(" ");
 const VOWELS = "i ɪ eɪ ɛ æ ɑ ɔ oʊ ʊ u ʌ ɜr aɪ aʊ ɔɪ ə".split(" ");
 
+// [LAW:one-source-of-truth] The function words of English, which is a fact about the language
+// rather than about this passage. Said at speed these reduce — `from` is [frəm], `that` as a
+// complementizer is [ðət], `it` is [ət] — and the vowel they were carrying simply is not in the
+// recording. A vowel row naming one of them claims a sound the microphone never heard, and every
+// other assertion here stays green, because the WORD is in the passage.
+const REDUCIBLE = "a an and are as at be been but by can could did do does for from had has have he her his how i if in is it its me my of on or our she should so than that the their them then there they this to was we were what when will with would you your".split(" ");
+
 const sameSet = (got: ReadonlyArray<string>, want: ReadonlyArray<string>): boolean => got.length === want.length && [...want].sort().join() === [...got].sort().join();
 
 // [LAW:no-silent-failure] Why a discrepancy names BOTH sides: a row for a sound the language does
@@ -76,6 +83,16 @@ console.log("the inventory is whole and says each sound once");
   const twice = phonemes.filter((p, i) => phonemes.indexOf(p) !== i);
   assert(`no sound is listed twice${twice.length === 0 ? "" : ` — ${[...new Set(twice)].map((p) => `/${p}/`).join(", ")}`}`, twice.length === 0);
   assert("every row names a sound and a word, neither blank", CLONE_PASSAGE_SOUNDS.every(({ phoneme, word }) => phoneme.trim() !== "" && word.trim() !== ""));
+}
+
+console.log("every vowel rides a word the reader stresses");
+{
+  // Consonants are exempt on purpose: reduction takes the vowel out of a function word and
+  // leaves the consonants standing, so `from` still puts an /f/ in the microphone and `that`
+  // still puts a /ð/ there. It is only the vowel rows that go silent [LAW:no-silent-failure].
+  const reduced = VOWEL_SOUNDS.filter(({ word }) => REDUCIBLE.includes(passageWords(word).join(" ")));
+  const named = reduced.map(({ phoneme, word }) => `/${phoneme}/ rests on ${word}`).join("; ");
+  assert(`no vowel is carried only by a word English says without stressing${reduced.length === 0 ? "" : ` — ${named}`}`, reduced.length === 0);
 }
 
 console.log("the passage fits inside the recording");
