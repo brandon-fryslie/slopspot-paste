@@ -143,11 +143,30 @@ const jsonOf = (raw: string): unknown => {
   }
 };
 
-export const readClones = (store: PreferenceStore): ReadonlyArray<ClonedVoice> => {
-  const raw = store.getItem(CLONES_KEY);
+const parseClones = (raw: string | null): ReadonlyArray<ClonedVoice> => {
   if (raw === null) return [];
   const parsed = jsonOf(raw);
   return Array.isArray(parsed) ? parsed.flatMap((item) => parseKept(item) ?? []) : [];
+};
+
+export const readClones = (store: PreferenceStore): ReadonlyArray<ClonedVoice> => parseClones(store.getItem(CLONES_KEY));
+
+// [LAW:one-source-of-truth] The same read, deriving afresh only when the stored record is
+// not the one already derived from. The store stays the authority — every call reads it —
+// and the clones are the disposable projection the governing principle says they are; what
+// is skipped is only the walk over every sample byte.
+//
+// WHY THE PANEL NEEDS IT. The readout reads the clones at every render, and a render follows
+// every worker message — one per generated frame. Parsing ten seconds of base64 twice per
+// frame is half a million byte writes on the thread that schedules playback, so the read a
+// render makes must cost nothing when nothing changed.
+export const createClonesReader = (store: PreferenceStore): (() => ReadonlyArray<ClonedVoice>) => {
+  let derived: { readonly raw: string | null; readonly clones: ReadonlyArray<ClonedVoice> } | null = null;
+  return () => {
+    const raw = store.getItem(CLONES_KEY);
+    if (derived === null || derived.raw !== raw) derived = { raw, clones: parseClones(raw) };
+    return derived.clones;
+  };
 };
 
 // Whether the device took the write. A PreferenceStore never throws — a refused write is

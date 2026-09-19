@@ -98,16 +98,20 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
         throw new Error("the recording was stopped before it began");
       }
       const chunks: Blob[] = [];
-      const made = config.Recorder(stream);
-      recorder = made;
-      const blob = new Promise<Blob>((resolve, reject) => {
-        made.addEventListener("dataavailable", (event) => chunks.push(event.data));
-        made.addEventListener("stop", () => resolve(new Blob(chunks)));
-        made.addEventListener("error", (event) => reject(event.error instanceof Error ? event.error : new Error("the recorder failed")));
-      });
+      // [LAW:no-silent-failure] Everything past the open microphone is guarded: a recorder
+      // this browser will not build, or will not start, must still give the microphone back
+      // — an unreleased track leaves the browser's recording light on for the life of the
+      // page, with nothing the reader can tap to end it.
       const timer = config.setTimeout(end, CLONE_SECONDS * 1000);
-      made.start();
       try {
+        const made = config.Recorder(stream);
+        recorder = made;
+        const blob = new Promise<Blob>((resolve, reject) => {
+          made.addEventListener("dataavailable", (event) => chunks.push(event.data));
+          made.addEventListener("stop", () => resolve(new Blob(chunks)));
+          made.addEventListener("error", (event) => reject(event.error instanceof Error ? event.error : new Error("the recorder failed")));
+        });
+        made.start();
         return await decode(await blob);
       } finally {
         config.clearTimeout(timer);

@@ -1091,14 +1091,18 @@ const loadFailureText = (failure: LoadFailure): string => {
   }
 };
 
-const unitFailureText = (reason: FailureReason): string => {
+const unitFailureText = (reason: FailureReason, cloned: ReadonlyArray<ClonedVoice>): string => {
   switch (reason.kind) {
     case "frame-cap":
       return `the model looped for ${reason.frames} frames without finishing`;
     case "runtime":
       return reason.message;
-    case "unknown-voice":
-      return `the voice ${reason.voice} is not on this device`;
+    case "unknown-voice": {
+      // The reader named this voice; its key is a content hash, and no sentence should show
+      // one. A clone the device no longer keeps has no name left to give.
+      const held = cloned.find((clone) => clone.key === reason.voice);
+      return held === undefined ? "that voice is not on this device" : `the voice ${held.name} is not on this device`;
+    }
     case "bad-duration":
     case "word-count":
     case "times-out-of-order":
@@ -1206,7 +1210,7 @@ const where = (utterance: number, total: number): string => `passage ${utterance
 // The passage the voice's segment says — from inside a gap, the passage the gap leads into.
 // A voice waiting on its audio is synthesizing ahead once the model is ready, and waiting for
 // the model before; the model's own line follows while it is on its way.
-const neuralStatus = (state: Stage, total: number): string => {
+const neuralStatus = (state: Stage, total: number, cloned: ReadonlyArray<ClonedVoice>): string => {
   const { view, visibility, model } = state;
   const unitAt = (unitIndex: number): string => {
     const segment = view.units[unitIndex];
@@ -1214,7 +1218,7 @@ const neuralStatus = (state: Stage, total: number): string => {
     return where(segment.content.utterance, total);
   };
   const skipped = view.holdings.flatMap((holding, i) =>
-    holding.kind === "failed" ? [`${unitAt(i)} could not be synthesized: ${unitFailureText(holding.reason)}`] : [],
+    holding.kind === "failed" ? [`${unitAt(i)} could not be synthesized: ${unitFailureText(holding.reason, cloned)}`] : [],
   );
   const at = stateOf(view);
   const { player } = view;
@@ -1427,7 +1431,7 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, savable(state), visit);
   const offer = offerOf(state, page, mark, visit);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player, state.visibility), ...rest, status: neuralStatus(state, total), progress: progressOf(state.model), mark, remembered, voices, mini, offer };
+    return { ...transport(state.view.player, state.visibility), ...rest, status: neuralStatus(state, total, visit.cloned), progress: progressOf(state.model), mark, remembered, voices, mini, offer };
   }
   const { model } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -1944,8 +1948,13 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
           // panel is waiting for [LAW:no-silent-failure] — nothing is lost, because the ask
           // that superseded this one is already out.
           if (message.kind === "script" && message.id !== asking) return;
-          // A clone the model could not make is the cloning machine's to say.
-          if (message.kind === "clone-failed") cloner.send({ kind: "failed", message: message.message });
+          // A clone the model could not make is the cloning machine's to SAY — never to act
+          // on: it names a clone saved earlier, not the recording the reader may be making
+          // right now, and this arrives whenever the weights finish loading.
+          if (message.kind === "clone-failed") {
+            const held = config.clones.read().find((clone) => clone.key === message.voice);
+            cloner.send({ kind: "model-refused", name: held?.name ?? "That voice", message: message.message });
+          }
           dispatch({ kind: "worker", message, at: config.clock() });
         });
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
@@ -2061,7 +2070,13 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       port?.send({ kind: "clone", voice });
       repick({ ...config.pick.read(), user: voice.key });
     },
-    onForgot: () => repick(config.pick.read()),
+    onForgot: (key) => {
+      // The pick is re-derived FIRST, so the unit under way in that voice is cancelled
+      // before the worker is told to release its prompt: the work stops, then the thing it
+      // worked from goes [LAW:no-ambient-temporal-coupling].
+      repick(config.pick.read());
+      port?.send({ kind: "forget", voice: key });
+    },
   });
   const on: VoicePickerHandlers = {
     pick: (role: PickedVoice, voice: VoiceKey) => repick({ ...config.pick.read(), [role]: voice }),

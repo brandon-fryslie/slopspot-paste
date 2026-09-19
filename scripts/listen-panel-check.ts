@@ -1842,12 +1842,13 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   assert("a tap on Record: recording, the button now Stop, the note saying so", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.startsWith("Recording") === true && r.mini.voices.picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert("the microphone refused: idle again, the reason on the form", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no microphone in the check");
-  // A clone the model refused, said by the worker, lands on the form too.
+  // A clone the model refused, said by the worker, lands on the form too — naming the clone
+  // by the name the reader gave it, never its key.
   r.emit({ kind: "clone-failed", voice: mine.key, message: "no prompt" });
-  assert("a clone the model could not make is said on the form", picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no prompt");
+  assert("a clone the model could not make is said on the form, by name", picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Brandon cannot be spoken on this device: no prompt");
   picker.querySelector<HTMLButtonElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-remove`)?.click();
   assert("removed: gone from the device, from both pickers' rows and shelves, and the pick reads the reader's default — the other role kept", readClones(r.store).length === 0 && optionsOf(picker, "user").length === 6 && r.mini.voices.picker.querySelector(".voice-clone") === null && checked(picker) === "alba/fantine");
-  assert("the voice on stage is told the new map: the unit under way in the removed voice gives way", r.said().endsWith("synthesize 0,cancel 0"));
+  assert("the voice on stage is told the new map, and the worker is told to forget it after the unit under way gives way", r.said().endsWith("synthesize 0,cancel 0,forget"));
   panel.dispose();
 }
 

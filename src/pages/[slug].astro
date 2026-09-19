@@ -888,7 +888,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
     import { askToKeep, readResidency } from "../modelResidency";
     import { opfs } from "@jax-js/loaders";
     import { readPick, writePick } from "../voiceChoice";
-    import { isClonedKey, readClones, wavOf } from "../clonedVoice";
+    import { createClonesReader, isClonedKey, wavOf } from "../clonedVoice";
     import { createCloning } from "../voiceCloning";
     import { createVoiceCapture } from "../voiceCapture";
     import { samplePath } from "../voiceSample";
@@ -1146,8 +1146,11 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
         // deviceStore reads it inside its guard on every access [LAW:single-enforcer].
         const device = deviceStore(() => window.localStorage);
         // [LAW:no-shared-mutable-globals] The URLs made of the clones' recordings, by key,
-        // written by `sampleSrc` alone.
+        // written by `sampleSrc` alone and released when the reader forgets the clone.
         const recordings = new Map<string, string>();
+        // The clones this device keeps. Read at every render — the readout names them — so
+        // the walk over every sample byte is spent only when the stored record changes.
+        const clonesNow = createClonesReader(device);
         const panel = createListenPanel({
           controls: {
             play: control<HTMLButtonElement>(".speech-play"),
@@ -1217,15 +1220,23 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
           // The device's voice pick, in the same storage: read at every render, written by
           // the picker.
           pick: {
-            read: () => readPick(device, readClones(device)),
+            read: () => readPick(device, clonesNow()),
             write: (pick) => writePick(device, pick),
           },
           // The voices the reader recorded, in the same storage; and their making, over the
           // page's microphone and decoder (voiceCapture.ts), kept in that storage.
-          clones: { read: () => readClones(device) },
+          clones: { read: clonesNow },
           cloning: (told) =>
             createCloning({
               ...told,
+              // The page made the recording's URL, so the page is what releases it: a clone
+              // the reader forgot has no row left to play [LAW:one-source-of-truth].
+              onForgot: (key) => {
+                const url = recordings.get(key);
+                if (url !== undefined) URL.revokeObjectURL(url);
+                recordings.delete(key);
+                told.onForgot(key);
+              },
               store: device,
               capture: createVoiceCapture({
                 Decoder: () => new OfflineAudioContext(1, 1, SAMPLE_RATE),
@@ -1241,7 +1252,7 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
             if (!isClonedKey(voice)) return samplePath(voice);
             const held = recordings.get(voice);
             if (held !== undefined) return held;
-            const clone = readClones(device).find((kept) => kept.key === voice);
+            const clone = clonesNow().find((kept) => kept.key === voice);
             if (clone === undefined) throw new Error(`listen: ${voice} is not a clone this device keeps`);
             const url = URL.createObjectURL(new Blob([wavOf(clone.samples)], { type: "audio/wav" }));
             recordings.set(voice, url);

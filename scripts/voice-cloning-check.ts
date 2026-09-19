@@ -26,7 +26,8 @@ const settle = async (): Promise<void> => {
 
 const tone = (seconds: number, scale = 0.5): Float32Array<ArrayBuffer> => Float32Array.from({ length: Math.round(seconds * SAMPLE_RATE) }, (_, i) => scale * Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE));
 
-const shown = (state: CloningState): string => (state.kind === "idle" ? `idle${state.note === null ? "" : `: ${state.note}`}` : `${state.kind} ${state.name}`);
+const shown = (state: CloningState): string =>
+  `${state.phase.kind === "idle" ? "idle" : `${state.phase.kind} ${state.phase.name}`}${state.note === null ? "" : `: ${state.note}`}`;
 const effects = (state: CloningState, ...events: CloningEvent[]): string => {
   const made: string[] = [];
   for (const event of events) {
@@ -46,17 +47,25 @@ console.log("step: one voice at a time, and every way a making ends");
   assert("a record from idle: recording, the microphone captured", shown(recording.state) === "recording Me" && effects(idle, { kind: "make", name: "Me", source: { kind: "microphone" } }) === "capture");
   const making = step(idle, { kind: "make", name: "Me", source: { kind: "file", file } });
   assert("an upload from idle: making at once — there is nothing to stop", shown(making.state) === "making Me" && making.effects[0]?.kind === "capture");
-  assert("a second make while one is under way is refused as nothing", effects(recording.state, { kind: "make", name: "Again", source: { kind: "microphone" } }) === "" && effects(making.state, { kind: "make", name: "Again", source: { kind: "file", file } }) === "");
+  const busy = step(recording.state, { kind: "make", name: "Again", source: { kind: "microphone" } });
+  assert(
+    "a second make while one is under way starts nothing, and the note says why",
+    busy.effects.length === 0 && shown(busy.state) === `recording Me: ${BUSY}` && effects(making.state, { kind: "make", name: "Again", source: { kind: "file", file } }) === "",
+  );
   const stopped = step(recording.state, { kind: "stop" });
   assert("stop while recording: the capture is stopped and the making begins", shown(stopped.state) === "making Me" && stopped.effects.map((e) => e.kind).join() === "stop");
   assert("stop while idle or making changes nothing", effects(idle, { kind: "stop" }) === "" && effects(making.state, { kind: "stop" }) === "");
   const voice: ClonedVoice = { key: `clone:${"b".repeat(64)}`, name: "Me", samples: new Int16Array(new ArrayBuffer(48000)) };
   assert("made while making: kept", effects(making.state, { kind: "made", voice }) === "keep");
-  assert("made while idle is a capture that outlived its making: nothing", effects(idle, { kind: "made", voice }) === "");
+  assert("made while idle is kept all the same: a finished recording is never dropped", effects(idle, { kind: "made", voice }) === "keep");
   assert("kept: idle, saying so", shown(step(making.state, { kind: "kept", voice }).state) === "idle: Saved Me.");
   assert("failed: idle, saying why", shown(step(recording.state, { kind: "failed", message: "no microphone" }).state) === "idle: Could not make the voice: no microphone");
   assert("remove: forgotten, wherever the making is", effects(idle, { kind: "remove", key: voice.key }) === "forget" && effects(recording.state, { kind: "remove", key: voice.key }) === "forget");
-  assert("the busy note is one sentence a form can show", BUSY.length > 0);
+  const refused = step(recording.state, { kind: "model-refused", name: "Me", message: "out of memory" });
+  assert(
+    "the model refusing a saved clone is said, and the recording under way is left alone",
+    refused.effects.length === 0 && shown(refused.state) === "recording Me: Me cannot be spoken on this device: out of memory",
+  );
 }
 
 // ── the capture edge over a stub browser ──────────────────────────────────────────────
@@ -225,18 +234,28 @@ console.log("createCloning: every way it fails is said on the form");
   busy.cloner.send({ kind: "make", name: "One", source: { kind: "microphone" } });
   busy.cloner.send({ kind: "make", name: "Two", source: { kind: "file", file } });
   await settle();
-  assert("a second make while recording does nothing", busy.states.join(" | ") === "recording One");
+  assert("a second make while recording starts nothing, and the form says why", busy.states.join(" | ") === `recording One | recording One: ${BUSY}`);
   busy.cloner.dispose();
   assert("dispose stops a recording under way", busy.stops() === 1);
   await settle();
-  assert("and nothing lands after it", busy.kept.length === 0 && busy.states.length === 1);
+  assert("and nothing lands after it", busy.kept.length === 0 && busy.states.length === 2);
 }
 
-// A clone the model refused, said by the worker, lands on the same form.
+// The worker saying the model could not make a clone. It names a clone saved earlier, so it
+// is SAID and nothing else: the arm exists because ending the making instead threw away the
+// recording the reader had under way, without a word.
 {
   const r = rig(tone(2));
-  r.cloner.send({ kind: "failed", message: "no prompt for this one" });
-  assert("a failure from outside — the model's — is shown like any other", r.states.join() === "idle: Could not make the voice: no prompt for this one");
+  r.cloner.send({ kind: "make", name: "Mine", source: { kind: "microphone" } });
+  await settle();
+  r.cloner.send({ kind: "model-refused", name: "Older", message: "no prompt for this one" });
+  assert(
+    "the model refusing an older clone is said, and the recording under way survives it",
+    r.states.at(-1) === "recording Mine: Older cannot be spoken on this device: no prompt for this one",
+  );
+  r.cloner.send({ kind: "stop" });
+  await settle();
+  assert("and that recording still becomes a clone the device keeps", r.kept.join() === "Mine");
 }
 
 const kept: ClonedVoice = await cloneVoice("t", tone(1));

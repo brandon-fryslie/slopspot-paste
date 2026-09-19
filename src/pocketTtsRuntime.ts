@@ -427,9 +427,17 @@ export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
       countTokens: (text) => hydrated.encode(text).length,
       generate: (unit, voice) => generate(hydrated, unit, voice),
       addVoice: (voice) => {
-        // A clone told again replaces its prompt: the old one is released first.
+        // A clone told again replaces its prompt. Derived BEFORE the old one is released:
+        // an encode that throws must leave the prompt the model already holds intact, or
+        // the map keeps a freed tensor under a key the handler still counts as known and
+        // the next generation reads disposed memory [LAW:no-silent-failure].
+        const prompt = clonePrompt(hydrated.model, voice);
         hydrated.voices.get(voice.key)?.dispose();
-        hydrated.voices.set(voice.key, clonePrompt(hydrated.model, voice));
+        hydrated.voices.set(voice.key, prompt);
+      },
+      removeVoice: (voice) => {
+        hydrated.voices.get(voice)?.dispose();
+        hydrated.voices.delete(voice);
       },
       dispose: () => tree.dispose([hydrated.model, [...hydrated.voices.values()]]),
     };

@@ -121,6 +121,7 @@ const stubModel = (config: StubModelConfig) => {
     backend: "webgpu",
     countTokens: wordish,
     addVoice: () => {},
+    removeVoice: () => {},
     async *generate(unit: UnitText, voice: VoiceKey) {
       log.started.push(`${voice}:${unit.text}`);
       try {
@@ -457,6 +458,7 @@ const cloneOf = (name: string): ClonedVoice => ({
 });
 {
   const taken: string[] = [];
+  const released: string[] = [];
   const stub = stubModel({ frames: 1, end: EOS });
   const model: LoadedModel = {
     ...stub.model,
@@ -464,6 +466,7 @@ const cloneOf = (name: string): ClonedVoice => ({
       if (voice.name === "broken") throw new Error("no prompt for a broken voice");
       taken.push(voice.key);
     },
+    removeVoice: (voice) => void released.push(voice),
   };
   const box = mailbox();
   const rt = stubRuntime(SUPPORTED, [{ ok: true, model }]);
@@ -494,16 +497,32 @@ const cloneOf = (name: string): ClonedVoice => ({
   assert("a unit in the clone the model refused is failed{unknown-voice} too", refused.reason.kind === "unknown-voice");
   handler.receive({ kind: "clone", voice: { ...broken, name: "mended" } });
   assert("a clone told again under its key is given to the model again", taken.at(-1) === broken.key);
+  // A re-telling the model refuses: the prompt it held for that key is gone, so the key must
+  // be unknown again rather than name a prompt nobody made.
+  handler.receive({ kind: "clone", voice: { ...late, name: "broken" } });
+  handler.receive({ kind: "synthesize", unitId: 3, text: unitOf("Hello there."), voice: late.key });
+  const stale = await box.waitFor("failed", (m) => m.unitId === 3);
+  assert("a clone whose re-telling the model refused is unknown again", stale.reason.kind === "unknown-voice" && box.of("clone-failed").at(-1)?.voice === late.key);
+  // `forget`: the page no longer keeps it, so no model holds it.
+  handler.receive({ kind: "clone", voice: late });
+  assert("the clone is held again once the model takes it", taken.at(-1) === late.key);
+  handler.receive({ kind: "forget", voice: late.key });
+  assert("a clone the page forgot is released by the model", released.at(-1) === late.key);
+  handler.receive({ kind: "synthesize", unitId: 4, text: unitOf("Hello there."), voice: late.key });
+  const forgotten = await box.waitFor("failed", (m) => m.unitId === 4);
+  assert("a unit in a clone since forgotten is failed{unknown-voice}", forgotten.reason.kind === "unknown-voice");
   handler.receive({ kind: "dispose" });
   await box.waitFor("disposed");
   handler.receive({ kind: "clone", voice: late });
   assert("a clone told to a disposed worker is refused", box.of("refused").at(-1)?.phase === "disposed");
+  handler.receive({ kind: "forget", voice: late.key });
+  assert("a forget told to a disposed worker is refused", box.of("refused").at(-1)?.phase === "disposed");
 }
 
 // The protocol's closed set: a `Record` over the union is refused by the compiler when a
 // kind has no row, so a new message kind cannot land without one — and the tally says
 // whether the scenarios above actually exercised it.
-const TO_KINDS: Record<ToWorker["kind"], true> = { load: true, script: true, synthesize: true, cancel: true, clone: true, dispose: true };
+const TO_KINDS: Record<ToWorker["kind"], true> = { load: true, script: true, synthesize: true, cancel: true, clone: true, forget: true, dispose: true };
 const FROM_KINDS: Record<FromWorker["kind"], true> = { capability: true, progress: true, ready: true, "load-failed": true, script: true, audio: true, word: true, done: true, cancelled: true, failed: true, refused: true, "clone-failed": true, disposed: true };
 const unexercised = [
   ...Object.keys(TO_KINDS).filter((kind) => !exercised.to.has(kind as ToWorker["kind"])),

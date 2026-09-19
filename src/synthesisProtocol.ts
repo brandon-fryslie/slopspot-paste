@@ -24,7 +24,10 @@
 // one already does. So the page sends clones whenever it has them, never "once ready", and a
 // synthesize that names a clone the worker was never told is a typed `unknown-voice` failure
 // rather than a guess [LAW:no-silent-failure]. A clone whose prompt the model cannot make is
-// `clone-failed`, said once per model that failed it.
+// `clone-failed`, said once per model that failed it. `forget` is `clone`'s counterpart and
+// legal in the same phases: the page says which clones it keeps, both when it gains one and
+// when it loses one, so the worker holds neither samples nor prompt for a voice nobody can
+// pick, and no model load re-derives one.
 //
 // CONTRACTS THE TYPES CANNOT CARRY, stated here so both ends read the same sentence:
 //  - A fresh worker probes on its own; its first message is always `capability`, and no
@@ -105,6 +108,8 @@ export type ToWorker =
   | { readonly kind: "cancel"; readonly unitId: number }
   // A clone the page keeps: remembered by the worker, made into a prompt by its model.
   | { readonly kind: "clone"; readonly voice: ClonedVoice }
+  // A clone the page no longer keeps: forgotten by the worker, its prompt released.
+  | { readonly kind: "forget"; readonly voice: ClonedVoiceKey }
   | { readonly kind: "dispose" };
 
 export type FromWorker =

@@ -72,6 +72,8 @@ export interface LoadedModel {
   readonly countTokens: TokenCount;
   generate(unit: UnitText, voice: VoiceKey): AsyncGenerator<GeneratedFrame, GenerationEnd>;
   addVoice(voice: ClonedVoice): void;
+  // Releases a clone's prompt. Idempotent: a key the model never held is nothing to free.
+  removeVoice(voice: ClonedVoiceKey): void;
   dispose(): void;
 }
 
@@ -148,6 +150,10 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       ready.model.addVoice(voice);
       ready.known.add(voice.key);
     } catch (e) {
+      // A re-telling that failed leaves the model holding whatever it held before, which is
+      // no longer this clone: it is unknown again, so a synthesize naming it is the typed
+      // `unknown-voice` rather than a read of a prompt nobody made [LAW:no-silent-failure].
+      ready.known.delete(voice.key);
       post({ kind: "clone-failed", voice: voice.key, message: message(e) }, []);
     }
   };
@@ -344,6 +350,16 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
         if (state.kind === "disposed") return refuse(request);
         told.set(request.voice.key, request.voice);
         if (state.kind === "ready") give(state, request.voice);
+        return;
+      case "forget":
+        // The counterpart of `clone`, legal in the same phases: a clone the device no longer
+        // keeps is one no model should hold a prompt for, nor re-derive on its next load.
+        if (state.kind === "disposed") return refuse(request);
+        told.delete(request.voice);
+        if (state.kind === "ready") {
+          state.model.removeVoice(request.voice);
+          state.known.delete(request.voice);
+        }
         return;
       case "dispose":
         // Idempotent: a page's unconditional pagehide teardown may follow an explicit one.

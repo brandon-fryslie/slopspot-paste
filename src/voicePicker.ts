@@ -265,15 +265,18 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       built.note.textContent = shown.audition.kind === "sample" ? shown.audition.note : "";
       built.note.hidden = shown.audition.kind !== "sample";
       built.reset.disabled = !shown.reset;
-      const { cloning } = shown;
-      built.record.dataset.recording = String(cloning.kind === "recording");
-      built.record.textContent = cloning.kind === "recording" ? STOP_LABEL : RECORD_LABEL;
-      built.record.disabled = cloning.kind === "making";
-      built.upload.disabled = cloning.kind !== "idle";
-      built.name.disabled = cloning.kind !== "idle";
-      const note = cloning.kind === "idle" ? cloning.note : cloning.kind === "recording" ? `Recording ${cloning.name || "your voice"}… speak for up to ${CLONE_SECONDS} seconds.` : MAKING_NOTE;
-      built.making.textContent = note ?? "";
-      built.making.hidden = note === null;
+      const { phase, note } = shown.cloning;
+      built.record.dataset.recording = String(phase.kind === "recording");
+      built.record.textContent = phase.kind === "recording" ? STOP_LABEL : RECORD_LABEL;
+      built.record.disabled = phase.kind === "making";
+      built.upload.disabled = phase.kind !== "idle";
+      built.name.disabled = phase.kind !== "idle";
+      // The note is the last word said to the reader and outranks the phase's own line: a
+      // word arrives only when there is something to say, and the phase is plain from the
+      // buttons [LAW:no-silent-failure].
+      const said = note ?? (phase.kind === "recording" ? `Recording ${phase.name || "your voice"}… speak for up to ${CLONE_SECONDS} seconds.` : phase.kind === "making" ? MAKING_NOTE : null);
+      built.making.textContent = said ?? "";
+      built.making.hidden = said === null;
     },
   };
 };
