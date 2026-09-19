@@ -129,12 +129,30 @@ export const PROMPT_SAMPLES = LEAD_IN_SAMPLES + CLONE_SAMPLES;
 // enough that a few samples of crackle cannot pass for speech.
 const FRAME_SAMPLES = SAMPLE_RATE / 50;
 
-// What counts as voice, as a fraction of the loudest frame in the recording. RELATIVE, because no
-// absolute number is right twice: a phone held at the chin clips near −3 dBFS and a laptop across
-// a desk peaks nearer −30, and a floor that suits either admits or refuses everything on the
-// other. About −30 dB from the peak — an order of magnitude above the room tone of a quiet room,
-// and far enough below a vowel to catch the fricative that opens `She`.
-const VOICE_FRACTION_OF_PEAK = 0.03;
+// How loud the reader's voice is, read off the recording as a high percentile of its frame levels
+// rather than as its loudest frame. The difference is not precision, it is WHICH WAY THE ESTIMATE
+// FAILS [LAW:no-silent-failure].
+//
+// A maximum fails UPWARD. One clipped transient — a door, a knock, a hand on the desk — is two
+// frames of six hundred, and it drags a maximum to full scale while leaving a percentile
+// untouched. With the floor drawn off that maximum, no frame of a quietly-recorded passage clears
+// it, `speechStart` concludes the reader was silent throughout the allowance, and the clone begins
+// three seconds into the passage: the opening words gone, silently, and worse than not trimming at
+// all.
+//
+// A percentile fails DOWNWARD. When it underestimates — a recording that is mostly silence, so
+// even the ninetieth percentile lands in room tone — the floor collapses toward that room tone,
+// the very first frame clears it, and the clone starts at the top. Which is exactly what every
+// recording did before this existed. The benign failure is the one worth having.
+const SPEECH_PERCENTILE = 0.9;
+
+// What counts as voice, as a fraction of that level. RELATIVE, because no absolute number is right
+// twice: a phone held at the chin clips near −3 dBFS and a laptop across a desk peaks nearer −30,
+// and a floor that suits either admits or refuses everything on the other. About −30 dB down — an
+// order of magnitude above the room tone of a quiet room, and far enough below a vowel to catch the
+// fricative that opens `She`. Room tone within 30 dB of the voice keeps frame zero above the floor,
+// so a recording made in a genuinely noisy room is not trimmed at all rather than trimmed wrongly.
+const VOICE_FRACTION_OF_SPEECH = 0.03;
 
 // Backed off from the frame that crossed the floor, so the attack of the first word is inside the
 // clone rather than merely the thing that located it.
@@ -151,12 +169,13 @@ export const monoOf = (audio: DecodedAudio): Float32Array<ArrayBuffer> => {
   return mono;
 };
 
-// Where the reader's voice begins: the first frame of the allowance whose level clears a floor
-// set by the loudest frame of the whole waveform, less a moment of pre-roll.
+// Where the reader's voice begins: the first frame of the allowance whose level clears a floor set
+// by how loud the reader's voice is across the whole window, less a moment of pre-roll.
 //
-// The peak is taken over everything handed in and not only over the stretch searched, because the
-// speech that calibrates the floor is normally AFTER the silence being measured — a floor drawn
-// from the lead-in alone would be a floor drawn from room tone [LAW:one-source-of-truth].
+// The level is read off ALL of the audio that could become the clone and not merely the stretch
+// searched, because the speech that calibrates the floor is normally AFTER the silence being
+// measured — a floor drawn from the lead-in alone would be a floor drawn from room tone
+// [LAW:one-source-of-truth].
 //
 // TWO ANSWERS, EACH RIGHT FOR ITS OWN REASON. When no frame of the allowance clears the floor the
 // reader really was silent throughout it, so the whole allowance was lead-in and the clone starts
@@ -171,16 +190,14 @@ export const speechStart = (mono: Float32Array): number => {
   const frames = Math.floor(Math.min(mono.length, PROMPT_SAMPLES) / FRAME_SAMPLES);
   if (frames === 0) return 0;
   const level = new Float32Array(frames);
-  let peak = 0;
   for (let frame = 0; frame < frames; frame++) {
     const at = frame * FRAME_SAMPLES;
     let square = 0;
     for (let i = at; i < at + FRAME_SAMPLES; i++) square += (mono[i] ?? 0) ** 2;
-    const rms = Math.sqrt(square / FRAME_SAMPLES);
-    level[frame] = rms;
-    peak = Math.max(peak, rms);
+    level[frame] = Math.sqrt(square / FRAME_SAMPLES);
   }
-  const floor = peak * VOICE_FRACTION_OF_PEAK;
+  const ranked = Float32Array.from(level).sort();
+  const floor = (ranked[Math.min(frames - 1, Math.floor(frames * SPEECH_PERCENTILE))] ?? 0) * VOICE_FRACTION_OF_SPEECH;
   if (floor <= 0) return 0;
   const searched = Math.min(frames, Math.ceil(LEAD_IN_SAMPLES / FRAME_SAMPLES));
   for (let frame = 0; frame < searched; frame++) {

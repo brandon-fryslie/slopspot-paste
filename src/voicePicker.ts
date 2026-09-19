@@ -40,6 +40,7 @@
 import { CLONE_PASSAGE } from "./clonePassage";
 import { CLONE_SECONDS, NAME_LENGTH, isClonedKey, type ClonedVoice, type ClonedVoiceKey, type VoiceKey } from "./clonedVoice";
 import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
+import { RECORDING_SECONDS } from "./voiceCapture";
 import { CLONE_CREDIT, PICKED_VOICES, ROLE_LABELS, voiceDescription, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
 import type { CloningState } from "./voiceCloning";
 
@@ -218,13 +219,18 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   // sentence promising "nothing goes missing" promised the opposite of what the code does. Saying
   // the number is what makes the promise true [LAW:no-silent-failure].
   //
-  // AND IT SAYS WHERE THE TEN SECONDS ARE COUNTED FROM, which is the reader's first word rather
-  // than the tap: voiceCapture.ts records past its cap and takes the clone from where the voice
-  // begins (slopspot-voices-4f5). This used to read "Start reading the moment you tap Record" — a
-  // request standing in for a mechanism, because the lead-in was spent out of the same ten and
-  // nothing but the reader's haste could save it. Now that something does spend it, the sentence
-  // asking them to hurry is gone and what replaces it is the fact [LAW:no-ambient-temporal-coupling].
-  read.textContent = `Read this aloud, or upload a recording of yourself reading it. The ${CLONE_SECONDS} seconds kept are counted from your first word, and these words cover every sound English makes:`;
+  // AND IT SAYS WHERE THE TEN SECONDS BEGIN, which is the reader's first word rather than the tap:
+  // voiceCapture.ts records past its cap and takes the clone from where the voice begins
+  // (slopspot-voices-4f5). This used to read "Start reading the moment you tap Record" — a request
+  // standing in for a mechanism, because the lead-in was spent out of the same ten and nothing but
+  // the reader's haste could save it [LAW:no-ambient-temporal-coupling].
+  //
+  // BUT IT STILL ASKS THEM TO BEGIN SOON, because the mechanism is BOUNDED and the promise must not
+  // outrun it. `speechStart` looks through LEAD_IN_SECONDS of silence and no further, so a reader
+  // who dawdles past it gets a window clamped to its end and loses a second of reading for every
+  // second more they take. "The ten seconds begin at your first word" read alone invites exactly
+  // that dawdle; the clause after it is what keeps the sentence true [LAW:no-silent-failure].
+  read.textContent = `Read this aloud, or upload a recording of yourself reading it. The ${CLONE_SECONDS} seconds kept begin at your first word, so start within a few seconds of tapping. These words cover every sound English makes:`;
   const passage = el("p", "voice-clone-passage");
   passage.id = `${scope}-clone-passage`;
   passage.textContent = CLONE_PASSAGE;
@@ -328,7 +334,7 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       // The note is the last word said to the reader and outranks the phase's own line: a
       // word arrives only when there is something to say, and the phase is plain from the
       // buttons [LAW:no-silent-failure].
-      const said = note ?? (phase.kind === "recording" ? `Recording ${phase.name || "your voice"}… read the passage, then tap Stop.` : phase.kind === "making" ? MAKING_NOTE : null);
+      const said = note ?? (phase.kind === "recording" ? `Recording ${phase.name || "your voice"}… read the passage. It stops itself after ${RECORDING_SECONDS} s, or tap Stop.` : phase.kind === "making" ? MAKING_NOTE : null);
       built.making.textContent = said ?? "";
       // [LAW:dataflow-not-control-flow] `aria-describedby` takes a LIST, and the two things worth
       // saying are independent, so they are computed independently and joined — never chosen

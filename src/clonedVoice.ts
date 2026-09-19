@@ -67,23 +67,38 @@ export const cloneName = (raw: string): string => {
 // ── the recording as a clone ──────────────────────────────────────────────────────────
 
 // Float samples in [-1, 1] as 16-bit: the ingest's one lossy step, sized above.
+//
+// [LAW:single-enforcer] It does NOT choose which part of a recording to keep. voiceCapture's
+// `clonePrompt` does, and is the only thing that does. This used to cut `pcm.subarray(0,
+// CLONE_SAMPLES)` — keep-the-FIRST-ten-seconds, the very defect slopspot-voices-4f5 removed — which
+// was inert only for as long as every caller happened to trim first. Samples longer than a clone are
+// now a caller that skipped the one enforcer, and are refused: a loud error beats silently
+// reinstating the old truncation for whoever adds the next road in [LAW:no-silent-failure].
 export const quantize = (pcm: Float32Array): Int16Array<ArrayBuffer> => {
-  const cut = pcm.subarray(0, CLONE_SAMPLES);
-  const samples = new Int16Array(new ArrayBuffer(cut.length * 2));
-  for (const [i, x] of cut.entries()) samples[i] = Math.round(Math.max(-1, Math.min(1, x)) * 32767);
+  if (pcm.length > CLONE_SAMPLES) {
+    throw new Error(`a clone is ${CLONE_SECONDS} s at most and these samples are ${(pcm.length / SAMPLE_RATE).toFixed(1)} s: they did not come through clonePrompt`);
+  }
+  const samples = new Int16Array(new ArrayBuffer(pcm.length * 2));
+  for (const [i, x] of pcm.entries()) samples[i] = Math.round(Math.max(-1, Math.min(1, x)) * 32767);
   return samples;
 };
 
 export const toFloat = (samples: Int16Array): Float32Array<ArrayBuffer> => Float32Array.from(samples, (x) => x / 32767);
 
-// [LAW:parse-dont-validate] A recording with at least a second in it becomes a clone; a
-// shorter one is not a voice — a tap that ended before anything was said — and is refused
-// with the reason a reader can act on.
+// [LAW:parse-dont-validate] A recording with at least a second of SPEECH in it becomes a clone; a
+// shorter one is not a voice — a tap that ended before anything was said, or a file whose every
+// other second is room tone — and is refused with the reason a reader can act on.
+//
+// What arrives here has already been through `clonePrompt`, so its length is the speech that was
+// found and not the length of the file the reader chose. The refusal says so: telling someone who
+// uploaded three and a half seconds that "the recording is 0.5 s" is a false statement about their
+// file, and sends them to record a longer one when the problem was that only half a second of it
+// was voice [LAW:no-silent-failure].
 export const MIN_SECONDS = 1;
 
 export const cloneVoice = async (name: string, pcm: Float32Array): Promise<ClonedVoice> => {
   if (pcm.length < MIN_SECONDS * SAMPLE_RATE) {
-    throw new Error(`the recording is ${(pcm.length / SAMPLE_RATE).toFixed(1)} s; a voice needs at least ${MIN_SECONDS} s`);
+    throw new Error(`only ${(pcm.length / SAMPLE_RATE).toFixed(1)} s of that recording is speech; a voice needs at least ${MIN_SECONDS} s`);
   }
   const samples = quantize(pcm);
   return { key: `clone:${await contentHash(base64Of(samples))}`, name: cloneName(name), samples };

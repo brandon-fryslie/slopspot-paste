@@ -263,10 +263,24 @@ console.log("the clone is ten seconds of voice, not ten seconds of clock");
   );
   assert("a recording with nothing in it anywhere has no floor to clear, and starts at the top as it always did", speechStart(new Float32Array(CLONE_SAMPLES)) === 0);
 
+  // [LAW:no-silent-failure] A door, a knock, a hand on the desk: two frames of six hundred. It drags
+  // a MAXIMUM to full scale and leaves a percentile untouched, which is the whole reason the floor is
+  // drawn off a percentile. Calibrated on the loudest frame, one thud put the floor above every frame
+  // of a quietly-recorded passage, `speechStart` concluded the reader had been silent throughout the
+  // allowance, and the clone began three seconds into the passage — the opening words gone, with no
+  // sign of it, and worse than never having trimmed at all.
+  const thudded = tone(13, 0.014);
+  const thudAt = Math.round(6 * SAMPLE_RATE);
+  for (let i = 0; i < Math.round(0.04 * SAMPLE_RATE); i++) thudded[thudAt + i] = 1;
+  assert("one loud transient does not convince it the reader was silent, and cost them the opening words", speechStart(thudded) === 0);
+  // The same recording without the thud, so the assertion above is about the thud and not about the
+  // level: both must answer zero, and calibrating on the maximum makes only the first one disagree.
+  assert("and the same take without it answers the same", speechStart(tone(13, 0.014)) === 0);
+
   // A quiet microphone and a loud one both work, because the floor is a fraction of the
   // recording's OWN peak: the same lead-in is found in a take 25 times fainter.
   assert(
-    "a faint recording is trimmed where a loud one is, because the floor is relative to its own peak",
+    "a faint recording is trimmed where a loud one is, because the floor is relative to the voice in it",
     Math.abs(speechStart(afterSilence(1.5, 5, 0.00008, 0.02)) / SAMPLE_RATE - 1.5) < 0.1,
   );
 
@@ -364,7 +378,7 @@ console.log("createCloning: every way it fails is said on the form");
   const short = rig(tone(0.3));
   short.cloner.send({ kind: "make", name: "Blip", source: { kind: "file", file } });
   await settle();
-  assert("a file too short to be a voice: not kept, the reason shown", short.states.at(-1)?.startsWith("idle: Could not make the voice: the recording is 0.3 s") === true && short.kept.length === 0);
+  assert("a file too short to be a voice: not kept, the reason shown, and named as speech rather than as the file", short.states.at(-1)?.startsWith("idle: Could not make the voice: only 0.3 s of that recording is speech") === true && short.kept.length === 0);
 
   const held = new Map<string, string>();
   const full: PreferenceStore & { readonly keys: () => string[] } = { getItem: (k) => held.get(k) ?? null, setItem: () => undefined, removeItem: (k) => void held.delete(k), keys: () => [...held.keys()] };

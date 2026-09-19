@@ -51,6 +51,7 @@ import { cloneVoice, isClonedKey, readClones, writeClones, type ClonedVoiceKey }
 import { DEFAULT_PICK, DEFAULT_VOICES, PICKED_VOICES, readPick, writePick } from "../src/voiceChoice";
 import { createCloning } from "../src/voiceCloning";
 import { CLONE_PASSAGE } from "../src/clonePassage";
+import { RECORDING_SECONDS } from "../src/voiceCapture";
 import { RECORD_LABEL, STOP_LABEL, mountVoicePicker } from "../src/voicePicker";
 import { samplePath } from "../src/voiceSample";
 import { FRAME_S, frame, StubAudio, StubDevice } from "./playbackStub";
@@ -1860,6 +1861,15 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   // fails and says so — on both forms, since both are views of one machine.
   picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.click();
   assert("a tap on Record: recording, the button now Stop, the note saying so", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.startsWith("Recording") === true && r.mini.voices.picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL);
+  // [LAW:no-silent-failure] The microphone outlasts the clone it collects — it runs to
+  // RECORDING_SECONDS so that ten seconds of VOICE survive a reader who takes a moment to begin — and
+  // the button still reads "Record 10 s", which now names the kept length rather than the recording's.
+  // So the running note is the one place a reader learns when it closes itself, and a reader who
+  // pauses mid-sentence has it close from under them if nothing said so.
+  assert(
+    "the note names the cap the microphone really runs to, since the button names the kept length instead",
+    picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.includes(`${RECORDING_SECONDS} s`) === true,
+  );
   // Stop is not described by the passage: read out over a running ten-second recording, the
   // whole passage would outlast the recording it was meant to help end.
   assert("Stop is described by the note saying where the making is, and by nothing else", describes(".voice-clone-record").join(" ") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);

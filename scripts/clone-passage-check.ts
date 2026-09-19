@@ -8,6 +8,7 @@
 // however you like: this check tells you which sound you just dropped.
 
 import { CLONE_SECONDS } from "../src/clonedVoice";
+import { LEAD_IN_SECONDS } from "../src/voiceCapture";
 import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, SLOWEST_READING_WORDS_PER_MINUTE, VOWEL_SOUNDS, passageWords } from "../src/clonePassage";
 
 // [LAW:one-source-of-truth] The sounds of General American English, which is a fact about the
@@ -110,7 +111,14 @@ console.log("the passage fits inside the recording");
   // pass/fail against an assumed pace. Both bounds below read off this same reading time
   // [LAW:one-source-of-truth]: one quantity, two edges, no second constant to drift.
   const cutOffBelow = (words.length / readingWindow) * 60;
-  assert(`${words.length} words at ${SLOWEST_READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s of the ${readingWindow.toFixed(1)} s the reader gets, all of it reading time — so the tail is lost only below ${cutOffBelow.toFixed(0)} wpm`, reading <= readingWindow);
+  assert(`${words.length} words at ${SLOWEST_READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s of the ${readingWindow.toFixed(1)} s the reader gets from their first word — so the tail is lost only below ${cutOffBelow.toFixed(0)} wpm`, reading <= readingWindow);
+  // [LAW:verifiable-goals] That window is the clone's WHOLE length only while the reader begins
+  // inside the allowance voiceCapture.ts looks through; past it `speechStart` clamps, and every
+  // further second they take comes off the reading. So the honest figure is not the allowance alone
+  // but the allowance plus whatever the passage leaves spare — the moment the tail starts to go.
+  // Stated here because the bound above is the one a reader would otherwise believe unconditionally.
+  const grace = LEAD_IN_SECONDS + (readingWindow - reading);
+  assert(`and they have ${grace.toFixed(1)} s from the tap before any of it is at risk: the ${LEAD_IN_SECONDS} s the capture looks through, plus the ${(readingWindow - reading).toFixed(1)} s the passage leaves spare`, grace > LEAD_IN_SECONDS);
   // A passage that leaves most of the window empty is one that could be carrying more sounds in
   // more contexts; this floor says it is not wastefully short.
   assert(`and long enough to be worth the recording (${((reading / readingWindow) * 100).toFixed(0)}% of that window used)`, reading >= readingWindow * 0.7);

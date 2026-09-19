@@ -6,7 +6,7 @@
 // [LAW:behavior-not-structure] Every assertion is about what a reader would find on the next
 // visit and what the model would be fed — never how the string is laid out.
 
-import { CLONES_KEY, CLONE_SAMPLES, cloneVoice, isClonedKey, readClones, toFloat, wavOf, withClone, withoutClone, writeClones, type ClonedVoice } from "../src/clonedVoice";
+import { CLONES_KEY, CLONE_SAMPLES, CLONE_SECONDS, cloneVoice, isClonedKey, readClones, toFloat, wavOf, withClone, withoutClone, writeClones, type ClonedVoice } from "../src/clonedVoice";
 import { SAMPLE_RATE } from "../src/modelAssets";
 import type { PreferenceStore } from "../src/preferenceStore";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
@@ -35,8 +35,18 @@ console.log("a recording becomes a clone");
   assert("the same recording is the same key whatever it is named", again.key === voice.key);
   const other = await cloneVoice("Brandon", tone(2, 0.4));
   assert("a different recording is another key", other.key !== voice.key);
-  const long = await cloneVoice("Long", tone(14));
-  assert("a recording longer than a clone is cut to a clone's length", long.samples.length === CLONE_SAMPLES);
+  // [LAW:single-enforcer] Cutting here would silently reinstate keep-the-FIRST-ten-seconds, which
+  // is the defect slopspot-voices-4f5 removed. Only clonePrompt decides which part is kept, so
+  // samples that never went through it are a caller's mistake and are said to be one.
+  let overlong = "";
+  try {
+    await cloneVoice("Long", tone(14));
+  } catch (e) {
+    overlong = e instanceof Error ? e.message : String(e);
+  }
+  assert("samples longer than a clone are refused, not quietly cut from the front", overlong.includes("14.0 s") && overlong.includes("clonePrompt"));
+  const exact = await cloneVoice("Exact", tone(CLONE_SECONDS));
+  assert("and samples that are exactly a clone long are kept whole", exact.samples.length === CLONE_SAMPLES);
   const named = await cloneVoice("", tone(2));
   assert("no name is 'My voice'", named.name === "My voice");
   let refused = "";
@@ -45,7 +55,9 @@ console.log("a recording becomes a clone");
   } catch (e) {
     refused = e instanceof Error ? e.message : String(e);
   }
-  assert("less than a second is refused with the length and the least a voice needs", refused.includes("0.4 s") && refused.includes("at least 1 s"));
+  // What reaches cloneVoice is the speech clonePrompt found, not the file the reader chose, so the
+  // refusal must not call 0.5 s "the recording" when they uploaded three and a half seconds.
+  assert("less than a second of speech is refused, named as speech and with the least a voice needs", refused.includes("0.4 s of that recording is speech") && refused.includes("at least 1 s"));
   const loud = await cloneVoice("Loud", Float32Array.from([2, -2, 0.5, ...tone(1)]));
   assert("samples beyond full scale are clipped, not wrapped", loud.samples[0] === 32767 && loud.samples[1] === -32767);
 }

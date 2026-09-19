@@ -18,7 +18,7 @@
 // anything was to end the making, which threw the reader's recording away mid-tap.
 //
 // EVERY END OF A RECORDING IS THE SAME EVENT. The reader's tap arrives as `stop` from the
-// panel; the capture's own cap at CLONE_SECONDS arrives as `stop` too, when the edge
+// panel; the capture's own cap at RECORDING_SECONDS arrives as `stop` too, when the edge
 // announces it ended (voiceCapture.ts `ended`). Two tellers, one event, and the arm absorbs
 // the second: whichever comes first moves the phase and stops the edge, and the other finds
 // a phase already moved and an edge already stopped [LAW:dataflow-not-control-flow].
@@ -56,7 +56,7 @@ export type Source = { readonly kind: "microphone" } | { readonly kind: "file"; 
 export type CloningEvent =
   // The reader's tap: a recording from the microphone, or a file they chose, under a name.
   | { readonly kind: "make"; readonly name: string; readonly source: Source }
-  // A recording under way is over — the reader's tap, or the capture's cap at CLONE_SECONDS
+  // A recording under way is over — the reader's tap, or the capture's cap at RECORDING_SECONDS
   // (voiceCapture.ts `ended`) — and what was recorded is made.
   | { readonly kind: "stop" }
   // The capture answered: the samples became a clone, or the reason they did not.
