@@ -305,7 +305,12 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
   // for whichever road the audio came in on.
   const samplesOf = async (audio: Blob): Promise<Float32Array<ArrayBuffer>> => {
     const prompt = clonePrompt(monoOf(await config.Decoder().decodeAudioData(await audio.arrayBuffer())));
-    if (speechLevel(prompt) < SILENT_BELOW) throw new Error("there is no voice in that recording — it may be silent, or the microphone may not have been heard");
+    // Says WHAT WAS FOUND, not what it guesses caused it. The two roads in fail this the same way
+    // and for opposite reasons — a microphone that was never heard, or a file whose speaking starts
+    // past the only stretch a clone can come from — so a message naming either one is a false
+    // statement to half the readers who see it. An uploaded voice memo beginning at 0:30 is audible,
+    // and has a microphone that worked perfectly [LAW:no-silent-failure].
+    if (speechLevel(prompt) < SILENT_BELOW) throw new Error(`there is no voice in the first ${RECORDING_SECONDS} s of that recording, which is all a clone can be taken from`);
     return prompt;
   };
 

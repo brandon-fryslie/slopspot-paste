@@ -305,7 +305,11 @@ console.log("the clone is ten seconds of voice, not ten seconds of clock");
   });
   let hushed = "";
   await hush.decode(new Blob([new Uint8Array(4)])).catch((e: unknown) => (hushed = e instanceof Error ? e.message : String(e)));
-  assert("a recording with no voice in it is refused, since being a whole clone long says nothing about that", hushed.includes("no voice in that recording"));
+  assert("a recording with no voice in it is refused, since being a whole clone long says nothing about that", hushed.includes(`no voice in the first ${RECORDING_SECONDS} s`));
+  // [LAW:no-silent-failure] And the refusal names WHAT WAS FOUND rather than a cause it cannot know.
+  // Both roads reach it: the file road has no microphone to blame, and an uploaded memo that opens
+  // on half a minute of room tone is perfectly audible — just not where a clone is taken from.
+  assert("the refusal blames neither the microphone nor the reader, having no way to tell which it was", !/microphone|silent/.test(hushed));
 
   // [LAW:one-source-of-truth] And it is refused by the SAME measure the trim's floor is drawn from,
   // because a peak would not refuse it. One startup pop — a single sample at 0.05, which USB and
