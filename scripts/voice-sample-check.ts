@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isClonedKey, type VoiceKey } from "../src/clonedVoice";
 import { MODEL_ASSETS, SHA_PREFIX_CHARS, VOICE_IDS, type VoiceId } from "../src/modelAssets";
 import { createSamplePlayer, SAMPLE_PREFIX, sampleFile, samplePath } from "../src/voiceSample";
 import { StubAudio } from "./playbackStub";
@@ -45,10 +46,13 @@ console.log("the samples on disk are the bytes the manifest pins");
   assert(`nothing under the samples' prefix but the pinned samples: a stale render never ships${stray.length === 0 ? "" : ` — found ${stray.join(", ")}`}`, stray.length === 0);
 }
 
+// The page's rule for where a sample is: a hosted voice's path; a clone's is its recording.
+const hostedSrc = (voice: VoiceKey): string => (isClonedKey(voice) ? `blob:${voice}` : samplePath(voice));
+
 console.log("the player: one voice at a time, told to the picker on every change");
 {
-  const changes: (VoiceId | null)[] = [];
-  const player = createSamplePlayer({ Audio: () => new StubAudio(), onChange: (voice) => changes.push(voice) });
+  const changes: (VoiceKey | null)[] = [];
+  const player = createSamplePlayer({ Audio: () => new StubAudio(), src: hostedSrc, onChange: (voice) => changes.push(voice) });
   const audio = StubAudio.instances.at(-1);
   if (audio === undefined) throw new Error("fixture: no audio element");
   assert("built: one element, nothing sounding, nothing said", StubAudio.instances.length === 1 && changes.length === 0);
@@ -67,22 +71,22 @@ console.log("the player: one voice at a time, told to the picker on every change
   assert("dispose is a hush", changes.length === 5);
 }
 {
-  const changes: (VoiceId | null)[] = [];
+  const changes: (VoiceKey | null)[] = [];
   const warned: string[] = [];
   const warn = console.warn;
   console.warn = (...args: unknown[]) => warned.push(String(args[0]));
-  const player = createSamplePlayer({ Audio: () => new StubAudio("NotAllowedError"), onChange: (voice) => changes.push(voice) });
+  const player = createSamplePlayer({ Audio: () => new StubAudio("NotAllowedError"), src: hostedSrc, onChange: (voice) => changes.push(voice) });
   player.say("alba");
   await new Promise((resolve) => setImmediate(resolve));
   console.warn = warn;
   assert("a play the browser refuses: said on the console, and the voice unlit", warned.length === 1 && warned[0]?.includes("alba") === true && changes.map(String).join() === "alba,null");
 }
 {
-  const changes: (VoiceId | null)[] = [];
+  const changes: (VoiceKey | null)[] = [];
   const warned: string[] = [];
   const warn = console.warn;
   console.warn = (...args: unknown[]) => warned.push(String(args[0]));
-  const player = createSamplePlayer({ Audio: () => new StubAudio(), onChange: (voice) => changes.push(voice) });
+  const player = createSamplePlayer({ Audio: () => new StubAudio(), src: hostedSrc, onChange: (voice) => changes.push(voice) });
   const audio = StubAudio.instances.at(-1);
   if (audio === undefined) throw new Error("fixture: no audio element");
   player.say("alba");
@@ -102,11 +106,11 @@ console.log("the player: one voice at a time, told to the picker on every change
   assert("the same voice heard twice: the second play stands, the first's rejection unlights nothing", warned.length === 0 && changes.map(String).join() === "alba,marius,null,javert");
 }
 {
-  const changes: (VoiceId | null)[] = [];
+  const changes: (VoiceKey | null)[] = [];
   const warned: string[] = [];
   const warn = console.warn;
   console.warn = (...args: unknown[]) => warned.push(args.join(" "));
-  const player = createSamplePlayer({ Audio: () => new StubAudio(), onChange: (voice) => changes.push(voice) });
+  const player = createSamplePlayer({ Audio: () => new StubAudio(), src: hostedSrc, onChange: (voice) => changes.push(voice) });
   const audio = StubAudio.instances.at(-1);
   if (audio === undefined) throw new Error("fixture: no audio element");
   player.say("alba");

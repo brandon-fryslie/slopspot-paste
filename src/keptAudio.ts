@@ -59,7 +59,7 @@ import { bytesOf, type AudioCodec, type EncodedAudio } from "./audioCodec";
 import type { UnitReport } from "./speechManifest";
 import { sameUtterance, type Utterance } from "./speech";
 import { scriptHash, unitHash, unitText, type PreparedText, type SynthesisUnit, type UnitText, type VoiceMap } from "./speechScript";
-import type { VoiceId } from "./modelAssets";
+import type { VoiceKey } from "./clonedVoice";
 
 // 128 MiB: about eleven hours of Opus at the codec's 24 kbps, or three quarters of an hour of
 // 16-bit PCM where the browser has no Opus — beside the 239 MB model in the same origin.
@@ -151,7 +151,7 @@ export const recalledScript = (utterances: ReadonlyArray<Utterance>, kept: Reado
 // What a synthesize request names: the one shape a unit is kept under.
 export interface UnitRequest {
   readonly text: UnitText;
-  readonly voice: VoiceId;
+  readonly voice: VoiceKey;
 }
 
 // A kept unit as the port replays it: its frames and the report the worker made with them.

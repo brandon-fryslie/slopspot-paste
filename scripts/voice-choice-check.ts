@@ -7,7 +7,8 @@
 // next visit and what voice each role would be spoken in — never how the string is laid out.
 
 import { MODEL_ASSETS, VOICE_IDS } from "../src/modelAssets";
-import { DEFAULT_PICK, DEFAULT_VOICES, PICK_KEY, SYSTEM_VOICE, previewText, readPick, samePick, voiceDescription, voiceMapOf, voiceName, writePick } from "../src/voiceChoice";
+import type { ClonedVoice } from "../src/clonedVoice";
+import { CLONE_CREDIT, DEFAULT_PICK, DEFAULT_VOICES, PICK_KEY, SYSTEM_VOICE, previewText, readPick, samePick, voiceDescription, voiceMapOf, voiceName, writePick } from "../src/voiceChoice";
 import type { VoicePick } from "../src/voiceChoice";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 
@@ -20,23 +21,33 @@ const assert = (label: string, cond: boolean): void => {
   }
 };
 
+const throws = (label: string, act: () => unknown): void => {
+  let threw = false;
+  try {
+    act();
+  } catch {
+    threw = true;
+  }
+  assert(label, threw);
+};
+
 const CHOSEN: VoicePick = { user: "marius", assistant: "fantine" };
 
 console.log("the pick's round trip");
 {
   const store = memoryPreferences();
-  assert("a device that never picked reads the default, with nothing stored", samePick(readPick(store), DEFAULT_PICK) && store.keys().length === 0);
+  assert("a device that never picked reads the default, with nothing stored", samePick(readPick(store, []), DEFAULT_PICK) && store.keys().length === 0);
   writePick(store, CHOSEN);
-  assert("a pick written is the pick read, under the one key", samePick(readPick(store), CHOSEN) && store.keys().join() === PICK_KEY);
+  assert("a pick written is the pick read, under the one key", samePick(readPick(store, []), CHOSEN) && store.keys().join() === PICK_KEY);
   writePick(store, { ...CHOSEN, user: "alba" });
-  assert("a second write replaces the first", readPick(store).user === "alba" && readPick(store).assistant === "fantine" && store.keys().length === 1);
+  assert("a second write replaces the first", readPick(store, []).user === "alba" && readPick(store, []).assistant === "fantine" && store.keys().length === 1);
   writePick(store, DEFAULT_PICK);
-  assert("the default written is the key removed: a reset device and a fresh one are the same device", store.keys().length === 0 && samePick(readPick(store), DEFAULT_PICK));
+  assert("the default written is the key removed: a reset device and a fresh one are the same device", store.keys().length === 0 && samePick(readPick(store, []), DEFAULT_PICK));
   const trips = VOICE_IDS.flatMap((user) =>
     VOICE_IDS.map((assistant) => {
       const pick: VoicePick = { user, assistant };
       writePick(store, pick);
-      return samePick(readPick(store), pick);
+      return samePick(readPick(store, []), pick);
     }),
   );
   assert(`every hosted voice survives the trip in either role (${trips.length} pairs)`, trips.every(Boolean));
@@ -48,10 +59,10 @@ console.log("a stored value this build did not write reads as the default");
   for (const raw of garbage) {
     const store = memoryPreferences();
     store.setItem(PICK_KEY, raw);
-    assert(`${JSON.stringify(raw)} reads as the default`, samePick(readPick(store), DEFAULT_PICK));
+    assert(`${JSON.stringify(raw)} reads as the default`, samePick(readPick(store, []), DEFAULT_PICK));
   }
   const refusing = refusedPreferences();
-  assert("a browser that refuses storage: the default, no throw", samePick(readPick(refusing), DEFAULT_PICK));
+  assert("a browser that refuses storage: the default, no throw", samePick(readPick(refusing, []), DEFAULT_PICK));
   let threw = false;
   try {
     writePick(refusing, CHOSEN);
@@ -71,25 +82,40 @@ console.log("the rule: two rows, four voices");
   assert("the same pick is the same pick; a pick that differs in one role is not", samePick(CHOSEN, { ...CHOSEN }) && !samePick(CHOSEN, { ...CHOSEN, user: "alba" }));
 }
 
+console.log("a clone is picked like any voice, and read back only while the device keeps it");
+{
+  const store = memoryPreferences();
+  const mine: ClonedVoice = { key: `clone:${"a".repeat(64)}`, name: "Brandon", samples: new Int16Array(new ArrayBuffer(48000)) };
+  writePick(store, { user: mine.key, assistant: "fantine" });
+  assert("a pick naming a kept clone reads back as picked", readPick(store, [mine]).user === mine.key && readPick(store, [mine]).assistant === "fantine");
+  assert("the same pick on a device that no longer keeps the clone reads that role as its default, the other role kept", samePick(readPick(store, []), { user: DEFAULT_PICK.user, assistant: "fantine" }));
+  store.setItem(PICK_KEY, JSON.stringify({ user: "clone:not-a-hash", assistant: "fantine" }));
+  assert("a clone key that is not a content hash is not a pick this build wrote: the default", samePick(readPick(store, [mine]), DEFAULT_PICK));
+  assert("a clone is named by the reader, described as their recording, and credited as their own", voiceName(mine.key, [mine]) === "Brandon" && voiceDescription(mine.key, [mine]) === "Your recording · 1 s · kept on this device" && CLONE_CREDIT.startsWith("Recorded on this device"));
+  assert("its preview phrase says the reader's name", previewText(mine.key, [mine]).source.includes("this is Brandon"));
+  throws("a clone the device does not keep cannot be named: a pick that escaped the parse is a bug", () => voiceName(mine.key, []));
+  assert("the map derived from a pick carries the clone for its role, and the narrator with Claude's", voiceMapOf({ user: mine.key, assistant: mine.key }).narrator === mine.key && voiceMapOf({ user: mine.key, assistant: "alba" }).user === mine.key);
+}
+
 console.log("the voices as the reader meets them");
 {
-  assert("each voice is named for a person", voiceName("alba") === "Alba" && VOICE_IDS.every((id) => voiceName(id) !== id && voiceName(id).toLowerCase() === id));
-  const phrase = previewText("javert");
+  assert("each voice is named for a person", voiceName("alba", []) === "Alba" && VOICE_IDS.every((id) => voiceName(id, []) !== id && voiceName(id, []).toLowerCase() === id));
+  const phrase = previewText("javert", []);
   assert("the preview says the voice's name, prepared as a script unit is", phrase.source.includes("this is Javert") && phrase.text.includes("this is Javert") && /[.!?]$/.test(phrase.text));
 }
 
 console.log("what each voice is like, in the words a reader picks by");
 {
   // [LAW:behavior-not-structure] What a reader reads beside a name, not how it is stored.
-  assert("a description is what it sounds like, where it sounds from, and which register", voiceDescription("eponine") === "Warm and even · North American · feminine");
-  const described = VOICE_IDS.map((id) => voiceDescription(id));
+  assert("a description is what it sounds like, where it sounds from, and which register", voiceDescription("eponine", []) === "Warm and even · North American · feminine");
+  const described = VOICE_IDS.map((id) => voiceDescription(id, []));
   assert("every hosted voice is described: three parts, none of them empty", described.every((line) => line.split(" · ").length === 3 && line.split(" · ").every((part) => part.trim().length > 0)));
   assert("no two voices read alike: the description is what tells them apart", new Set(described).size === VOICE_IDS.length);
   assert("the register is one of the two words a row can be", VOICE_IDS.every((id) => ["masculine", "feminine"].includes(MODEL_ASSETS.voices[id].qualities.register)));
   // The names are Kyutai's, from Les Misérables, and they are not the voices: a reader who
   // goes by the name alone picks a man for Alba's woman's name. The description is the fix,
   // so it must not merely repeat the name.
-  assert("a description never leans on the name", VOICE_IDS.every((id) => !voiceDescription(id).toLowerCase().includes(id)));
+  assert("a description never leans on the name", VOICE_IDS.every((id) => !voiceDescription(id, []).toLowerCase().includes(id)));
 }
 
 console.log(process.exitCode === 1 ? "voice-choice-check: FAILED" : "voice-choice-check: ok");

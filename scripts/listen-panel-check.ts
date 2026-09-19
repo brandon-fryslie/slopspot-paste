@@ -47,8 +47,10 @@ import { encodeFile } from "../src/renditionFile";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
+import { cloneVoice, isClonedKey, readClones, writeClones } from "../src/clonedVoice";
 import { DEFAULT_PICK, DEFAULT_VOICES, PICKED_VOICES, readPick, writePick } from "../src/voiceChoice";
-import { mountVoicePicker } from "../src/voicePicker";
+import { createCloning } from "../src/voiceCloning";
+import { RECORD_LABEL, STOP_LABEL, mountVoicePicker } from "../src/voicePicker";
 import { samplePath } from "../src/voiceSample";
 import { FRAME_S, frame, StubAudio, StubDevice } from "./playbackStub";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
@@ -140,7 +142,7 @@ const effects = (s: ReturnType<typeof step>): string =>
     .join();
 // A visit that remembered nothing, on a connection nobody metered: what every reader is
 // until the hover says otherwise.
-const ASKING: Visit = { remembered: false, metered: false, pick: DEFAULT_PICK, resume: null, gone: false };
+const ASKING: Visit = { remembered: false, metered: false, pick: DEFAULT_PICK, cloned: [], resume: null, gone: false };
 const shown = (state: PanelState, visit: Visit = ASKING): string => {
   const r = readout(state, page, visit);
   return `${r.play.label}${r.play.enabled ? "" : "(off)"} | stop${r.stop.enabled ? "" : "(off)"} | ${r.status}${r.progress === null ? "" : ` | bar ${r.progress.loadedBytes}/${r.progress.totalBytes}`}`;
@@ -1071,7 +1073,10 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     keep: r.keep,
     restore: r.restore,
     preference: { read: () => readPreference(r.store), write: (remembered) => writePreference(r.store, remembered) },
-    pick: { read: () => readPick(r.store), write: (pick) => writePick(r.store, pick) },
+    pick: { read: () => readPick(r.store, readClones(r.store)), write: (pick) => writePick(r.store, pick) },
+    clones: { read: () => readClones(r.store) },
+    cloning: (told) => createCloning({ ...told, store: r.store, capture: { record: () => ({ pcm: Promise.reject(new Error("no microphone in the check")), stop: () => {} }), decode: () => Promise.reject(new Error("no decoder in the check")) } }),
+    sampleSrc: (voice) => (isClonedKey(voice) ? `blob:${voice}` : samplePath(voice)),
     connection: () => r.connection.reading,
     Device: StubDevice,
     Audio: () => new StubAudio(),
@@ -1810,6 +1815,42 @@ console.log("createListenPanel: a re-seat that cannot be made is not half made")
   panel.dispose();
 }
 
+console.log("createListenPanel: the reader's own voices — a kept clone is a row in both pickers, told to the worker, picked for the reader, and removable (slopspot-voices-9p4.8j6)");
+{
+  const r = rig();
+  const mine = await cloneVoice("Brandon", Float32Array.from({ length: 48000 }, (_, i) => 0.5 * Math.sin(i / 9)));
+  writeClones(r.store, [mine]);
+  writePick(r.store, { user: mine.key, assistant: "fantine" });
+  const panel = mount(r);
+  const { picker } = r.voices;
+  const optionsOf = (root: ParentNode, role: string): string[] => [...root.querySelectorAll<HTMLElement>(`.voice-row[data-role="${role}"] .voice-option`)].map((o) => o.dataset.voice ?? "");
+  const checked = (root: ParentNode): string => ["user", "assistant"].map((role) => root.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
+  assert("a kept clone is the seventh option of each row, after the hosted six, in the panel and the mini-player alike", optionsOf(picker, "user").at(-1) === mine.key && optionsOf(picker, "assistant").length === 7 && optionsOf(r.mini.voices.picker, "user").at(-1) === mine.key);
+  assert("named by the reader, described as their recording, credited as their own", picker.querySelector<HTMLElement>(`.voice-option[data-voice="${mine.key}"] .voice-label`)?.textContent === "Brandon" && picker.querySelector<HTMLElement>(`.voice-option[data-voice="${mine.key}"] .voice-about`)?.textContent === "Your recording · 2 s · kept on this device" && picker.querySelector<HTMLElement>(`.voice-option[data-voice="${mine.key}"] .voice-label`)?.title.startsWith("Recorded on this device") === true);
+  assert("the pick naming it is shown checked, and reset is offered", checked(picker) === `${mine.key}/fantine` && !picker.querySelector<HTMLButtonElement>(".voice-reset")!.disabled);
+  assert("its shelf row carries its name and a remove named for it", picker.querySelector<HTMLElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-label`)?.textContent === "Brandon" && picker.querySelector<HTMLButtonElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-remove`)?.getAttribute("aria-label") === "Remove Brandon");
+  assert("the form is idle: Record offered, Upload offered, no note", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLButtonElement>(".voice-clone-upload")?.disabled === false && picker.querySelector<HTMLElement>(".voice-clone-note")?.hidden === true);
+  picker.querySelector<HTMLButtonElement>(`.voice-option[data-voice="${mine.key}"] .voice-preview`)?.click();
+  assert("heard cold: its recording plays, where a hosted voice's sample would", r.audio().plays.join() === `blob:${mine.key}`);
+  r.play.click();
+  assert("the worker is told the clone at its spawn, before anything else", r.said().startsWith("clone,script"));
+  await arrive(r);
+  assert("the voice arrives with the clone picked: unit 0, the reader's, in it", (r.sent.at(-1) as { voice: string }).voice === mine.key);
+  // The form's taps reach the cloning machine: the rig's microphone refuses, so the making
+  // fails and says so — on both forms, since both are views of one machine.
+  picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.click();
+  assert("a tap on Record: recording, the button now Stop, the note saying so", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.startsWith("Recording") === true && r.mini.voices.picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert("the microphone refused: idle again, the reason on the form", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no microphone in the check");
+  // A clone the model refused, said by the worker, lands on the form too.
+  r.emit({ kind: "clone-failed", voice: mine.key, message: "no prompt" });
+  assert("a clone the model could not make is said on the form", picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no prompt");
+  picker.querySelector<HTMLButtonElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-remove`)?.click();
+  assert("removed: gone from the device, from both pickers' rows and shelves, and the pick reads the reader's default — the other role kept", readClones(r.store).length === 0 && optionsOf(picker, "user").length === 6 && r.mini.voices.picker.querySelector(".voice-clone") === null && checked(picker) === "alba/fantine");
+  assert("the voice on stage is told the new map: the unit under way in the removed voice gives way", r.said().endsWith("synthesize 0,cancel 0"));
+  panel.dispose();
+}
+
 console.log("createListenPanel: the voice picker — a pick made cold arrives with the voice, one mid-listen restarts the unit, and both survive a reload");
 {
   const r = rig();
@@ -1860,7 +1901,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
     const bare = doc.createElement("div");
     doc.body.appendChild(bare);
     const theirPicks: string[] = [];
-    mountVoicePicker(bare, { pick: (role, voice) => theirPicks.push(`${role}/${voice}`), preview: () => {}, reset: () => {} });
+    mountVoicePicker(bare, { pick: (role, voice) => theirPicks.push(`${role}/${voice}`), preview: () => {}, reset: () => {}, record: () => {}, upload: () => {}, stop: () => {}, remove: () => {} });
     bare.querySelector<HTMLInputElement>('.voice-row[data-role="user"] .voice-option[data-voice="marius"] input')?.click();
     const ok =
       bare.id !== "" && bare.id !== picker.id &&
@@ -1883,7 +1924,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   audio.end();
 
   radio("assistant", "marius").click();
-  assert("Claude's voice picked while cold: kept on the device, shown checked, reset offered, nothing sent to a worker", readPick(r.store).assistant === "marius" && checked() === "alba/marius" && !reset.disabled && r.said() === "script");
+  assert("Claude's voice picked while cold: kept on the device, shown checked, reset offered, nothing sent to a worker", readPick(r.store, []).assistant === "marius" && checked() === "alba/marius" && !reset.disabled && r.said() === "script");
   toggle.click();
   assert("the toggle closes it again; the pick stands", picker.hidden && checked() === "alba/marius");
 
@@ -1915,7 +1956,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("resumed: the reader's units arrive and Claude's is asked in the voice picked cold", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.said().endsWith("synthesize 2") && (r.sent.at(-1) as { voice: string }).voice === "marius");
 
   radio("user", "fantine").click();
-  assert("the reader's voice picked mid-listen: the unit under the cursor restarts in it — Claude's request gives way, unit 0 is asked again in Fantine — and the pick is kept", r.said().endsWith("cancel 2,synthesize 0") && (r.sent.at(-1) as { voice: string }).voice === "fantine" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && readPick(r.store).user === "fantine" && checked() === "fantine/marius");
+  assert("the reader's voice picked mid-listen: the unit under the cursor restarts in it — Claude's request gives way, unit 0 is asked again in Fantine — and the pick is kept", r.said().endsWith("cancel 2,synthesize 0") && (r.sent.at(-1) as { voice: string }).voice === "fantine" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && readPick(r.store, []).user === "fantine" && checked() === "fantine/marius");
   r.emit({ kind: "cancelled", unitId: 2 });
   r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
   assert("the new rendition plays from the unit's start", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.where() === "t1 0-20 of 1");
@@ -1989,9 +2030,9 @@ console.log("createListenPanel: the voice picker in the mini-player — one pick
 
   assert("the defaults are checked in both", both() === "alba/javert | alba/javert");
   pickIn(mini.picker, "user", "fantine");
-  assert("a voice picked in the mini-player is the voice the panel shows, and the device keeps", both() === "fantine/javert | fantine/javert" && readPick(r.store).user === "fantine");
+  assert("a voice picked in the mini-player is the voice the panel shows, and the device keeps", both() === "fantine/javert | fantine/javert" && readPick(r.store, []).user === "fantine");
   pickIn(dock.picker, "assistant", "marius");
-  assert("and one picked in the panel is the voice the mini-player shows", both() === "fantine/marius | fantine/marius" && readPick(r.store).assistant === "marius");
+  assert("and one picked in the panel is the voice the mini-player shows", both() === "fantine/marius | fantine/marius" && readPick(r.store, []).assistant === "marius");
 
   // The sounding mark is written from the same readout as the check, so a voice heard from
   // one picker cannot be lit in that one alone.

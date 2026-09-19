@@ -21,16 +21,15 @@
 // commands for the two seams; `createPreviewer` performs them. scripts/voice-preview-
 // check.ts drives the step with no device at all, and the driver over the stub one.
 
-import type { VoiceId } from "./modelAssets";
+import type { VoiceKey } from "./clonedVoice";
+import type { UnitText } from "./speechScript";
 import type { SynthesisPort } from "./synthesisClient";
 import type { FromWorker, ToWorker } from "./synthesisProtocol";
 import { createUnitPlayer, openDevice, type DeviceFactory, type OpenDevice, type PlayerEvent, type PlayerState, type UnitPlayer } from "./unitPlayer";
-import { previewText } from "./voiceChoice";
-
 // ── state ──────────────────────────────────────────────────────────────────────────────
 
 export interface Sounding {
-  readonly voice: VoiceId;
+  readonly voice: VoiceKey;
   readonly unitId: number;
 }
 
@@ -43,8 +42,10 @@ export interface PreviewState {
 export const initialState = (): PreviewState => ({ sounding: null, next: -1 });
 
 export type PreviewEvent =
-  // The reader's tap on a voice: it is heard now, replacing whatever was sounding.
-  | { readonly kind: "say"; readonly voice: VoiceId }
+  // The reader's tap on a voice: it is heard saying the phrase now, replacing whatever was
+  // sounding. The phrase is the caller's (voiceChoice.previewText), since it names the voice
+  // by the name the reader knows it by, and a clone's name is the reader's own.
+  | { readonly kind: "say"; readonly voice: VoiceKey; readonly text: UnitText }
   // Silence: the preview under way, if any, is withdrawn.
   | { readonly kind: "hush" }
   | { readonly kind: "worker"; readonly message: FromWorker }
@@ -113,7 +114,7 @@ export const step = (state: PreviewState, event: PreviewEvent): PreviewPlan => {
         state: { sounding: { voice: event.voice, unitId }, next: unitId - 1 },
         commands: [
           ...withdraw(state),
-          toWorker({ kind: "synthesize", unitId, text: previewText(event.voice), voice: event.voice }),
+          toWorker({ kind: "synthesize", unitId, text: event.text, voice: event.voice }),
           toPlayer(unitId, { kind: "play" }),
         ],
       };
@@ -138,11 +139,11 @@ export interface PreviewerConfig {
   // with the previewer.
   readonly Device: DeviceFactory;
   // Called with the voice sounding whenever that changes, and with null when none does.
-  readonly onChange: (sounding: VoiceId | null) => void;
+  readonly onChange: (sounding: VoiceKey | null) => void;
 }
 
 export interface Previewer {
-  readonly say: (voice: VoiceId) => void;
+  readonly say: (voice: VoiceKey, text: UnitText) => void;
   readonly hush: () => void;
   readonly state: () => PreviewState;
   // Silences the preview, ends its players, closes the device, stops hearing the port.
@@ -197,7 +198,7 @@ export const createPreviewer = (config: PreviewerConfig): Previewer => {
   const unsubscribe = config.port.subscribe((message) => dispatch({ kind: "worker", message }));
 
   return {
-    say: (voice) => dispatch({ kind: "say", voice }),
+    say: (voice, text) => dispatch({ kind: "say", voice, text }),
     hush: () => dispatch({ kind: "hush" }),
     state: () => state,
     dispose: () => {

@@ -24,6 +24,14 @@
 // frame n+1's transformer step is issued — is kept: `pending` holds the readback of the
 // previous frame and is awaited only after this frame's decode has been enqueued.
 //
+// WHY A CLONE IS ENCODED WHERE THE HOSTED VOICES ARE READ. A hosted voice's file holds the
+// `audio_prompt` Kyutai's export-voice made: its recording through Mimi's encoder, then the
+// FlowLM's speaker projection (pocket_tts TTSModel._encode_audio). Both live in the hosted
+// weights, so a clone's samples (clonedVoice.ts) take the same road here, on the reader's
+// GPU, and land in the same map the hosted prompts are read from — a synthesize request
+// names either the same way [LAW:one-type-per-behavior]. This build's FlowLM has no
+// `bos_before_voice`, so nothing is prepended.
+//
 // The seed is fixed, so a unit's audio is a deterministic function of its text and voice:
 // the rendition a listener resumes is the one they paused [LAW:one-source-of-truth].
 // That determinism is what the device's kept audio rests on (keptAudio.ts): a change to the
@@ -44,6 +52,7 @@ import { defaultDevice, init, numpy as np, random, tree } from "@jax-js/jax";
 import { safetensors } from "@jax-js/loaders";
 import { fromBinary } from "@bufbuild/protobuf";
 import { ModelProtoSchema, ModelProto_SentencePiece_Type, TrainerSpec_ModelType } from "sentencepiece-buf/model";
+import { toFloat, type ClonedVoice, type VoiceKey } from "./clonedVoice";
 import { loadAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { UnitText } from "./speechScript";
@@ -55,6 +64,7 @@ import {
   fromSafetensors,
   runFlowLMStep,
   runMimiDecode,
+  runMimiEncode,
   type PocketTTS,
 } from "./vendor/pocket-tts";
 import { createWordAligner, isVoiced, planAlignment, unitScores, wordsBegun } from "./wordAlignment";
@@ -125,9 +135,18 @@ const voicePrompt = (id: VoiceId, bytes: Uint8Array<ArrayBuffer>): np.Array => {
     .astype(WEIGHT_DTYPE);
 };
 
+// A clone's prompt from its samples: Mimi's encoder over the waveform gives [512, frames];
+// the speaker projection ([1024, 512], a bias-free linear) turns each frame's latent into
+// the FlowLM's conditioning, [frames, 1024] — the shape a hosted voice's file holds.
+const clonePrompt = (model: PocketTTS, voice: ClonedVoice): np.Array => {
+  const waveform = np.array(toFloat(voice.samples), { shape: [1, voice.samples.length], dtype: np.float32 }).astype(WEIGHT_DTYPE);
+  const latents = runMimiEncode(tree.ref(model.mimi), waveform); // [512, frames]
+  return np.dot(latents.transpose([1, 0]), model.flowLM.speakerProjWeight.ref.transpose([1, 0]));
+};
+
 // [LAW:parse-dont-validate] How many cache positions a voice prompt occupies: the leading
 // dimension of its [frames, dim] tensor.
-export const promptFrames = (id: VoiceId, prompt: np.Array): number => {
+export const promptFrames = (id: VoiceKey, prompt: np.Array): number => {
   const [frames, dim] = prompt.shape;
   if (prompt.shape.length !== 2 || frames === undefined || dim === undefined) {
     throw new Error(`voice ${id}: expected a [frames, dim] prompt, got shape [${prompt.shape.join(", ")}]`);
@@ -235,16 +254,24 @@ export const parseTokenizer = (bytes: Uint8Array): Tokenizer => {
 
 interface Hydrated extends Tokenizer {
   readonly model: PocketTTS;
-  readonly voices: Readonly<Record<VoiceId, np.Array>>;
+  // [LAW:no-shared-mutable-globals] Every prompt the model can speak with, hosted and cloned,
+  // by key: owned by the loaded model, written by `addVoice` alone, released with it.
+  readonly voices: Map<VoiceKey, np.Array>;
 }
 
 const hydrate = (bytesOf: (asset: ModelAsset) => Uint8Array<ArrayBuffer>): Hydrated => ({
   ...parseTokenizer(bytesOf(MODEL_ASSETS.tokenizer)),
   model: fromSafetensors(safetensors.parse(bytesOf(MODEL_ASSETS.weights)), WEIGHT_DTYPE),
-  voices: Object.fromEntries(
-    VOICE_IDS.map((id) => [id, voicePrompt(id, bytesOf(MODEL_ASSETS.voices[id]))]),
-  ) as Record<VoiceId, np.Array>,
+  voices: new Map(VOICE_IDS.map((id) => [id, voicePrompt(id, bytesOf(MODEL_ASSETS.voices[id]))])),
 });
+
+// [LAW:parse-dont-validate] The prompt of a voice the model holds; a miss is the handler's
+// bookkeeping gone wrong (it tracks which clones the model took), thrown, never a default voice.
+const promptOf = (voices: Map<VoiceKey, np.Array>, voice: VoiceKey): np.Array => {
+  const prompt = voices.get(voice);
+  if (prompt === undefined) throw new Error(`voice ${voice} is not one this model holds`);
+  return prompt;
+};
 
 // [LAW:parse-dont-validate] An id `encode` produced is an index into its own pieces; a miss
 // is thrown, never a skipped token.
@@ -292,17 +319,18 @@ interface PendingFrame {
 async function* generate(
   { model, encode, pieces, voices }: Hydrated,
   unit: UnitText,
-  voice: VoiceId,
+  voice: VoiceKey,
 ): AsyncGenerator<GeneratedFrame, GenerationEnd> {
   const ids = encode(unit.text);
   const plan = planAlignment(unit, ids.map((id) => pieceOf(pieces, id)));
   const aligner = createWordAligner(plan);
   const modelRef = tree.ref(model);
   const tokens = np.array(ids, { dtype: np.uint32 });
-  const embeds = np.concatenate([voices[voice].ref, model.flowLM.conditionerEmbed.ref.slice(tokens)]);
+  const prompt = promptOf(voices, voice);
+  const embeds = np.concatenate([prompt.ref, model.flowLM.conditionerEmbed.ref.slice(tokens)]);
   const afterEos = framesAfterEos(unit.text);
   // The cache positions of the text tokens: right after the voice prompt's frames.
-  const textStart = promptFrames(voice, voices[voice]);
+  const textStart = promptFrames(voice, prompt);
   const readout = { ...MODEL_ASSETS.weights.readout, textStart, textEnd: textStart + ids.length };
 
   let lastLatent = model.flowLM.bosEmb.ref.reshape([1, -1]); // [1, 32]
@@ -398,7 +426,12 @@ export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
       backend: "webgpu",
       countTokens: (text) => hydrated.encode(text).length,
       generate: (unit, voice) => generate(hydrated, unit, voice),
-      dispose: () => tree.dispose([hydrated.model, hydrated.voices]),
+      addVoice: (voice) => {
+        // A clone told again replaces its prompt: the old one is released first.
+        hydrated.voices.get(voice.key)?.dispose();
+        hydrated.voices.set(voice.key, clonePrompt(hydrated.model, voice));
+      },
+      dispose: () => tree.dispose([hydrated.model, [...hydrated.voices.values()]]),
     };
     return { ok: true, model };
   },

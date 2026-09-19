@@ -3435,6 +3435,60 @@ body:has(.diff-aligned) main { max-width: 1400px; }
 .voice-note[hidden] { display: none; }
 .voice-reset[disabled] { opacity: 0.45; cursor: default; }
 .voice-reset[disabled]:hover { color: var(--fg-muted); border-color: var(--border); }
+/* The reader's own voices (slopspot-voices-9p4.8j6): the clones on their shelf, each with
+   its remove, and the form that makes one more — a name, Record (Stop while the microphone
+   is open) and Upload — under a note that says where the making is. It is a fieldset so
+   the form is grouped for assistive tech, with the row's chrome removed the same way. */
+.voice-own {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.voice-own-legend {
+  padding: 0;
+  margin-bottom: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+.voice-clones { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.voice-clones:empty { display: none; }
+.voice-clone {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.voice-clone-remove {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.voice-clone-remove:hover { color: var(--fg); border-color: var(--accent); }
+.voice-clone-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.voice-clone-name {
+  flex: 1 1 120px;
+  min-width: 0;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+.voice-clone-record[data-recording="true"] { color: var(--accent); border-color: var(--accent); }
+.voice-clone-record[disabled], .voice-clone-upload[disabled] { opacity: 0.45; cursor: default; }
 
 /* ─── The Listen mark (slopspot-read-along-a35.a4l) ────────────────────────
    One always-visible icon beside the dock's launcher, in the launcher's own row, that says

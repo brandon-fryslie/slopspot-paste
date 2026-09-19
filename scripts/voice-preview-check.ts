@@ -84,17 +84,17 @@ console.log("step: hearing a voice out");
 {
   const fresh = initialState();
   assert("fresh: silent, the first id is -1", sounding(fresh) === "silent" && fresh.next === -1);
-  const first = run(fresh, { kind: "say", voice: "alba" });
+  const first = run(fresh, { kind: "say", voice: "alba", text: previewText("alba", []) });
   assert("say: synthesize under -1 in that voice, then play — on a player answering to -1", first.commands.join() === "synthesize -1 alba,play@-1" && sounding(first.state) === "alba@-1" && first.state.next === -2);
-  const request = step(fresh, { kind: "say", voice: "alba" }).commands[0];
-  assert("the request carries the preview phrase, in the voice's own name", request?.kind === "worker" && request.message.kind === "synthesize" && request.message.text.text === previewText("alba").text);
+  const request = step(fresh, { kind: "say", voice: "alba", text: previewText("alba", []) }).commands[0];
+  assert("the request carries the preview phrase, in the voice's own name", request?.kind === "worker" && request.message.kind === "synthesize" && request.message.text.text === previewText("alba", []).text);
 
   const streamed = run(first.state, audio(-1, 0), audio(-1, 1), done(-1));
   assert("its frames and its end go to its player as unit 0", streamed.commands.join() === "frame 0#0@-1,frame 0#1@-1,complete 0@-1" && streamed.state === first.state);
   const said = run(streamed.state, idleOf(-1));
   assert("its player idle: the phrase was said, silent again", said.commands.length === 0 && sounding(said.state) === "silent" && said.state.next === -2);
 
-  const replaced = run(first.state, { kind: "say", voice: "marius" });
+  const replaced = run(first.state, { kind: "say", voice: "marius", text: previewText("marius", []) });
   assert("say while sounding: the old request withdrawn, a fresh id, the new one played", replaced.commands.join() === "cancel -1,synthesize -2 marius,play@-2" && sounding(replaced.state) === "marius@-2" && replaced.state.next === -3);
   const stale = run(replaced.state, audio(-1, 3), done(-1), worker({ kind: "cancelled", unitId: -1 }), failed(-1), idleOf(-1));
   assert("everything of the replaced preview is ignored", stale.commands.length === 0 && stale.state === replaced.state);
@@ -109,14 +109,14 @@ console.log("step: hearing a voice out");
   assert("hush while sounding: the request withdrawn, silent", hushed.commands.join() === "cancel -2" && sounding(hushed.state) === "silent");
   const quiet = run(hushed.state, { kind: "hush" }, audio(-2, 0), done(-2), idleOf(-2));
   assert("hush while silent, and the withdrawn preview's messages: nothing", quiet.commands.length === 0 && quiet.state === hushed.state);
-  const next = run(hushed.state, { kind: "say", voice: "fantine" });
+  const next = run(hushed.state, { kind: "say", voice: "fantine", text: previewText("fantine", []) });
   assert("the next say takes the next id down", next.commands.join() === "synthesize -3 fantine,play@-3");
 
   throws("cancelled for the sounding preview is a previewer bug", () => step(replaced.state, worker({ kind: "cancelled", unitId: -2 })));
-  throws("a refused preview is a previewer bug", () => step(replaced.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: -2, text: previewText("marius"), voice: "marius" }, phase: "idle" })));
-  throws("a refused synthesize of a replaced preview is one too", () => step(replaced.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: previewText("alba"), voice: "alba" }, phase: "idle" })));
+  throws("a refused preview is a previewer bug", () => step(replaced.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: -2, text: previewText("marius", []), voice: "marius" }, phase: "idle" })));
+  throws("a refused synthesize of a replaced preview is one too", () => step(replaced.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: previewText("alba", []), voice: "alba" }, phase: "idle" })));
   throws("a refused cancel after a hush, nothing sounding, is one too", () => step(run(replaced.state, { kind: "hush" }).state, worker({ kind: "refused", request: { kind: "cancel", unitId: -2 }, phase: "idle" })));
-  const others = run(replaced.state, worker({ kind: "refused", request: { kind: "load" }, phase: "ready" }), worker({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 2 } }), worker({ kind: "refused", request: { kind: "synthesize", unitId: 0, text: previewText("alba"), voice: "alba" }, phase: "idle" }));
+  const others = run(replaced.state, worker({ kind: "refused", request: { kind: "load" }, phase: "ready" }), worker({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 2 } }), worker({ kind: "refused", request: { kind: "synthesize", unitId: 0, text: previewText("alba", []), voice: "alba" }, phase: "idle" }));
   assert("the panel's messages and the script's refusals pass by untouched", others.commands.length === 0 && others.state === replaced.state);
 }
 
@@ -147,7 +147,7 @@ console.log("driver: a stub port, one real player per preview, a device of its o
   const previewer = createPreviewer({ port, Device: StubDevice, onChange: (voice) => changes.push(voice) });
   assert("fresh: no device, nothing sent, one subscriber, nobody told", devices().length === 0 && sent.length === 0 && listeners.size === 1 && changes.length === 0);
 
-  previewer.say("alba");
+  previewer.say("alba", previewText("alba", []));
   const device = devices()[0];
   if (device === undefined) throw new Error("the first say did not open a device");
   assert("the first say opens the device and resumes it — the tap's gesture — and asks for the phrase", devices().length === 1 && device.calls.join() === "resume" && said() === "synthesize -1 alba" && changes.join() === "alba");
@@ -159,8 +159,8 @@ console.log("driver: a stub port, one real player per preview, a device of its o
   device.advance(SCHEDULE_LEAD_S + FRAME_S + 0.01);
   assert("the phrase ends: silent, and the picker told", previewer.state().sounding === null && changes.join() === "alba," && device.calls.at(-1) === "suspend");
 
-  previewer.say("marius");
-  previewer.say("fantine");
+  previewer.say("marius", previewText("marius", []));
+  previewer.say("fantine", previewText("fantine", []));
   assert("a second voice tapped over the first: the first withdrawn, the second asked", said() === "synthesize -1 alba,synthesize -2 marius,cancel -2,synthesize -3 fantine" && changes.join() === "alba,,marius,fantine");
   assert("the replaced preview's player is ended before the new one plays: the device is resumed, not suspended", device.calls.at(-1) === "resume" && devices().length === 1);
   emit({ kind: "audio", unitId: -2, frameIndex: 0, pcm: frame(0, 0) });
@@ -171,11 +171,11 @@ console.log("driver: a stub port, one real player per preview, a device of its o
   previewer.hush();
   assert("hush: the request withdrawn, silent, the picker told, the device suspended", said().endsWith("cancel -3") && previewer.state().sounding === null && changes.at(-1) === null && device.calls.at(-1) === "suspend");
 
-  previewer.say("javert");
+  previewer.say("javert", previewText("javert", []));
   emit({ kind: "failed", unitId: -4, reason: { kind: "frame-cap", frames: 1000 } });
   assert("a preview that fails: silent, the picker told", previewer.state().sounding === null && changes.slice(-2).join() === "javert,");
 
-  previewer.say("azelma");
+  previewer.say("azelma", previewText("azelma", []));
   const before = changes.length;
   previewer.dispose();
   assert("dispose: the request withdrawn, the port unheard, the device closed, nobody told", said().endsWith("synthesize -5 azelma,cancel -5") && listeners.size === 0 && device.calls.at(-1) === "close" && changes.length === before);

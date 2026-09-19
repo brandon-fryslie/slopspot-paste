@@ -17,9 +17,15 @@
 // file at a manifest's path is missing or is not those bytes — a sample can never drift
 // from the voice it stands for without the check saying so.
 //
+// A CLONE'S SAMPLE IS ITS RECORDING. A voice the reader recorded (clonedVoice.ts) has no
+// rendered sample and needs none: before the model is on the device, hearing the clone is
+// hearing the recording it is made of, through this same element. Where a voice's sample is
+// found is the caller's (`src`), so the player knows one kind of voice: one with a source.
+//
 // [LAW:effects-at-boundaries] The audio element is a parameter, so the check drives the
 // player over a stub; the page hands it `() => new Audio()`.
 
+import type { VoiceKey } from "./clonedVoice";
 import { MODEL_ASSETS, SHA_PREFIX_CHARS, type VoiceId } from "./modelAssets";
 
 export const SAMPLE_PREFIX = "/voices/";
@@ -43,25 +49,27 @@ export interface SampleAudio {
 
 export interface SamplePlayerConfig {
   readonly Audio: () => SampleAudio;
+  // Where a voice's sample is: `samplePath` for a hosted voice, a clone's recording as a URL.
+  readonly src: (voice: VoiceKey) => string;
   // The voice sounding, or null once it ends or is hushed; told on every change only.
-  readonly onChange: (voice: VoiceId | null) => void;
+  readonly onChange: (voice: VoiceKey | null) => void;
 }
 
 export interface SamplePlayer {
   // The voice's sample, from its start, replacing whatever was sounding.
-  readonly say: (voice: VoiceId) => void;
+  readonly say: (voice: VoiceKey) => void;
   readonly hush: () => void;
   readonly dispose: () => void;
 }
 
-export const createSamplePlayer = ({ Audio, onChange }: SamplePlayerConfig): SamplePlayer => {
+export const createSamplePlayer = ({ Audio, src, onChange }: SamplePlayerConfig): SamplePlayer => {
   // [LAW:no-shared-mutable-globals] One element, owned here, and the voice it is sounding.
   const audio = Audio();
-  let sounding: VoiceId | null = null;
+  let sounding: VoiceKey | null = null;
   // [LAW:types-are-the-program] Which play is speaking, not which voice: a `say` for the
   // voice already sounding is a new play too, and the one it supersedes must not unlight it.
   let plays = 0;
-  const settle = (voice: VoiceId | null): void => {
+  const settle = (voice: VoiceKey | null): void => {
     if (voice === sounding) return;
     sounding = voice;
     onChange(voice);
@@ -83,7 +91,7 @@ export const createSamplePlayer = ({ Audio, onChange }: SamplePlayerConfig): Sam
     say: (voice) => {
       const play = (plays += 1);
       audio.pause();
-      audio.src = samplePath(voice);
+      audio.src = src(voice);
       settle(voice);
       // A play the browser refuses — no gesture behind it, a network the sample never came
       // over — is said, and the voice is unlit [LAW:no-silent-failure]. A play superseded

@@ -15,7 +15,15 @@
 // the cache, and returns that head's attention logits for the newest query over the
 // cached text keys — the dot products `dotProductAttention` computes internally, read out
 // for one head before the softmax. No numeric op the audio depends on changed; each tensor
-// op is upstream's, in upstream's order.
+// op is upstream's, in upstream's order. (3) `runMimiEncode`, which upstream ships unused
+// and which voice cloning (pocketTtsRuntime.ts) is the one caller of, follows Kyutai's
+// encode rather than upstream's sketch: the waveform is zero-padded to whole frames, so a
+// partial last frame is encoded rather than dropped; the downsampling conv's causal padding
+// is the first column replicated (Kyutai's `pad_mode="replicate"`), not zeros, which put
+// frame 0's cosine against the reference at 0.857; and the conv is fed the rank-3 input
+// `runConv1d` reads, the batch axis dropped after, as every other conv call here. With
+// these, every frame of a clone prompt matches pocket_tts's `_encode_audio` at float16
+// precision (min cosine 0.9998, checked 2026-09-19 against the hosted weights).
 //
 // Reference-counting discipline (jax-js): `x.ref` hands out a counted reference; passing
 // an array without `.ref` consumes it. Upstream's placement of `.ref` and `dispose()` is
@@ -652,6 +660,9 @@ export type MimiModel = {
   upsample: StreamingConvTranspose1d; // note: depthwise
 };
 
+// Samples per Mimi frame at 24 kHz: the SEANet ratios (4·5·6) times the downsample stride.
+export const MIMI_FRAME_SAMPLES = 1920;
+
 export function runMimiEncode(
   {
     encoder,
@@ -665,6 +676,10 @@ export function runMimiEncode(
   x: np.Array, // [C, T] - audio waveform at 24kHz
 ): np.Array {
   tree.dispose([decoder, decoderTransformer, quantizer, upsample]);
+  // Whole frames: the tail is zero-padded up to the next frame, as pocket_tts pads it.
+  const [channels, samples] = dims2(x.shape);
+  const padded = Math.ceil(samples / MIMI_FRAME_SAMPLES) * MIMI_FRAME_SAMPLES;
+  if (padded !== samples) x = np.concatenate([x, np.zeros([channels, padded - samples], { dtype: x.dtype })], 1);
   x = runSEANetEncoder(encoder, x);
 
   // Encoder transformer (with transpose for [T, D] format)
@@ -684,11 +699,19 @@ export function runMimiEncode(
     tree.dispose([kvCache, q]);
   }
   offset.dispose();
-  x = x.transpose([1, 0]); // back to [C, T]
+  x = np.expandDims(x.transpose([1, 0]), 0); // back to [1, C, T]
 
-  // Downsample (stride 16)
-  [x] = runConv1d(downsample.conv, null, x, 16);
-  return x;
+  // Downsample (stride 16). Its causal padding replicates the first column, kernel - stride
+  // times; the conv's carry-over state is nothing to a one-shot encode.
+  const [, , kernel] = dims3(downsample.conv.weight.shape);
+  const stride = 16;
+  const first = x.ref.slice([], [], [0, 1]); // [1, C, 1]
+  const padding = np.concatenate(Array.from({ length: kernel - stride }, () => first.ref), 2);
+  first.dispose();
+  let state: np.Array;
+  [x, state] = runConv1d(downsample.conv, padding, x, stride);
+  state.dispose();
+  return x.slice(0); // [C, T / 16]
 }
 
 export type MimiDecodeState = {
