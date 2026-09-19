@@ -25,7 +25,8 @@
 import { readFileSync } from "node:fs";
 import { deriveDialogue, plainView } from "../src/dialogue";
 import type { AssetProgress } from "../src/modelAssetLoader";
-import { FRAME_MS, MODEL_ASSETS, MODEL_VERSION, type VoiceId } from "../src/modelAssets";
+import type { ClonedVoice, VoiceKey } from "../src/clonedVoice";
+import { FRAME_MS, MODEL_ASSETS, MODEL_VERSION } from "../src/modelAssets";
 import { parseChatgptShare } from "../src/parsers/chatgpt-share";
 import { deriveUtterances, type Utterance } from "../src/speech";
 import { wordish } from "./speechFixtures";
@@ -119,7 +120,9 @@ const stubModel = (config: StubModelConfig) => {
   const model: LoadedModel = {
     backend: "webgpu",
     countTokens: wordish,
-    async *generate(unit: UnitText, voice: VoiceId) {
+    addVoice: () => {},
+    removeVoice: () => {},
+    async *generate(unit: UnitText, voice: VoiceKey) {
       log.started.push(`${voice}:${unit.text}`);
       try {
         for (let i = 0; i < config.frames; i++) {
@@ -442,11 +445,102 @@ console.log("dispose:");
   assert("dispose during the probe: no capability is posted, disposed at once, phase disposed", box.posted.map((p) => p.message.kind).join() === "disposed" && handler.phase() === "disposed");
 }
 
+// ── clones ─────────────────────────────────────────────────────────────────────────────
+// A clone (clonedVoice.ts) is told in any phase and remembered; the model takes every one it
+// is told when it lands, and one told later at once; a synthesize naming a clone the worker
+// was never told is a typed failure; a clone the model refuses is said, and the model loads on.
+console.log("clones:");
+// A clone under a key shaped as a real one is: the name's bytes as hex, padded to a digest.
+const cloneOf = (name: string): ClonedVoice => ({
+  key: `clone:${Array.from(name, (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("").padEnd(64, "0")}`,
+  name,
+  samples: new Int16Array(new ArrayBuffer(48000)),
+});
+{
+  const taken: string[] = [];
+  const released: string[] = [];
+  const stub = stubModel({ frames: 1, end: EOS });
+  const model: LoadedModel = {
+    ...stub.model,
+    addVoice: (voice) => {
+      if (voice.name === "broken") throw new Error("no prompt for a broken voice");
+      taken.push(voice.key);
+    },
+    removeVoice: (voice) => void released.push(voice),
+  };
+  const box = mailbox();
+  const rt = stubRuntime(SUPPORTED, [{ ok: true, model }]);
+  const handler = handlerOf({ runtime: rt.runtime, post: box.post, now: clock() });
+  const early = cloneOf("early");
+  const broken = cloneOf("broken");
+  handler.receive({ kind: "clone", voice: early });
+  assert("a clone told while probing is remembered, not refused", box.of("refused").length === 0 && handler.phase() === "probing");
+  await box.waitFor("capability");
+  handler.receive({ kind: "clone", voice: broken });
+  handler.receive({ kind: "load" });
+  await box.waitFor("ready");
+  assert("the model takes every clone told before it landed, before ready is posted", taken.join() === early.key && box.posted.findIndex((p) => p.message.kind === "ready") > box.posted.findIndex((p) => p.message.kind === "clone-failed"));
+  const failed = box.of("clone-failed");
+  assert("a clone the model refuses is clone-failed with the reason, and the model is ready regardless", failed.length === 1 && failed[0]?.voice === broken.key && failed[0]?.message === "no prompt for a broken voice" && handler.phase() === "ready");
+  const late = cloneOf("late");
+  handler.receive({ kind: "clone", voice: late });
+  assert("a clone told while ready is taken at once", taken.join() === `${early.key},${late.key}`);
+  handler.receive({ kind: "synthesize", unitId: 0, text: unitOf("Hello there."), voice: late.key });
+  const done = await box.waitFor("done", (m) => m.unitId === 0);
+  assert("a unit in a clone the model holds is made in it", done.unitId === 0 && stub.log.started[0] === `${late.key}:${unitOf("Hello there.").text}`);
+  const stranger = cloneOf("stranger");
+  handler.receive({ kind: "synthesize", unitId: 1, text: unitOf("Hello there."), voice: stranger.key });
+  const unknown = await box.waitFor("failed", (m) => m.unitId === 1);
+  assert("a unit in a clone the worker was never told is failed{unknown-voice} naming it, and nothing is generated", unknown.reason.kind === "unknown-voice" && unknown.reason.voice === stranger.key && stub.log.started.length === 1);
+  handler.receive({ kind: "synthesize", unitId: 2, text: unitOf("Hello there."), voice: broken.key });
+  const refused = await box.waitFor("failed", (m) => m.unitId === 2);
+  assert("a unit in the clone the model refused is failed{unknown-voice} too", refused.reason.kind === "unknown-voice");
+  handler.receive({ kind: "clone", voice: { ...broken, name: "mended" } });
+  assert("a clone told again under its key is given to the model again", taken.at(-1) === broken.key);
+  // A re-telling the model refuses: the prompt it held for that key is gone, so the key must
+  // be unknown again rather than name a prompt nobody made.
+  handler.receive({ kind: "clone", voice: { ...late, name: "broken" } });
+  handler.receive({ kind: "synthesize", unitId: 3, text: unitOf("Hello there."), voice: late.key });
+  const stale = await box.waitFor("failed", (m) => m.unitId === 3);
+  assert("a clone whose re-telling the model refused is unknown again", stale.reason.kind === "unknown-voice" && box.of("clone-failed").at(-1)?.voice === late.key);
+  // `forget`: the page no longer keeps it, so no model holds it.
+  handler.receive({ kind: "clone", voice: late });
+  assert("the clone is held again once the model takes it", taken.at(-1) === late.key);
+  handler.receive({ kind: "forget", voice: late.key });
+  assert("a clone the page forgot is released by the model", released.at(-1) === late.key);
+  handler.receive({ kind: "synthesize", unitId: 4, text: unitOf("Hello there."), voice: late.key });
+  const forgotten = await box.waitFor("failed", (m) => m.unitId === 4);
+  assert("a unit in a clone since forgotten is failed{unknown-voice}", forgotten.reason.kind === "unknown-voice");
+  // The reader removes a voice with units still waiting in it: none may dequeue into a
+  // prompt that is gone, and the reader's status line must never be handed a content hash.
+  const going = cloneOf("going");
+  handler.receive({ kind: "clone", voice: going });
+  handler.receive({ kind: "synthesize", unitId: 5, text: unitOf("Running."), voice: going.key });
+  handler.receive({ kind: "synthesize", unitId: 6, text: unitOf("Waiting."), voice: going.key });
+  handler.receive({ kind: "synthesize", unitId: 7, text: unitOf("Elsewhere."), voice: "alba" });
+  handler.receive({ kind: "forget", voice: going.key });
+  await settle();
+  // Asked of what landed, never awaited: a unit that wrongly generates posts `done`, and a
+  // check that waited for the `failed` it will never get would hang instead of failing.
+  const stranded = box.of("failed").find((m) => m.unitId === 6);
+  const spoke = (unitId: number): boolean => box.of("done").some((m) => m.unitId === unitId);
+  assert(
+    "a unit still queued in a forgotten clone leaves as failed{unknown-voice} and is never generated, the one generating finishes, and a unit in another voice keeps its place",
+    stranded?.reason.kind === "unknown-voice" && stranded.reason.voice === going.key && !spoke(6) && spoke(5) && spoke(7),
+  );
+  handler.receive({ kind: "dispose" });
+  await box.waitFor("disposed");
+  handler.receive({ kind: "clone", voice: late });
+  assert("a clone told to a disposed worker is refused", box.of("refused").at(-1)?.phase === "disposed");
+  handler.receive({ kind: "forget", voice: late.key });
+  assert("a forget told to a disposed worker is refused", box.of("refused").at(-1)?.phase === "disposed");
+}
+
 // The protocol's closed set: a `Record` over the union is refused by the compiler when a
 // kind has no row, so a new message kind cannot land without one — and the tally says
 // whether the scenarios above actually exercised it.
-const TO_KINDS: Record<ToWorker["kind"], true> = { load: true, script: true, synthesize: true, cancel: true, dispose: true };
-const FROM_KINDS: Record<FromWorker["kind"], true> = { capability: true, progress: true, ready: true, "load-failed": true, script: true, audio: true, word: true, done: true, cancelled: true, failed: true, refused: true, disposed: true };
+const TO_KINDS: Record<ToWorker["kind"], true> = { load: true, script: true, synthesize: true, cancel: true, clone: true, forget: true, dispose: true };
+const FROM_KINDS: Record<FromWorker["kind"], true> = { capability: true, progress: true, ready: true, "load-failed": true, script: true, audio: true, word: true, done: true, cancelled: true, failed: true, refused: true, "clone-failed": true, disposed: true };
 const unexercised = [
   ...Object.keys(TO_KINDS).filter((kind) => !exercised.to.has(kind as ToWorker["kind"])),
   ...Object.keys(FROM_KINDS).filter((kind) => !exercised.from.has(kind as FromWorker["kind"])),

@@ -17,6 +17,18 @@
 // and there is no "voice not loaded" state to reject [LAW:dataflow-not-control-flow]. Cost,
 // stated once: 3.3 MB on top of the 236 MB weights, downloaded once per device.
 //
+// WHY `clone` IS LEGAL IN EVERY PHASE. A cloned voice (clonedVoice.ts) is samples the page
+// holds, not an asset the worker fetches: the page tells the worker each clone it keeps, and
+// the worker remembers every one it is told, in whatever phase it is in — the prompt is
+// derived from the samples the moment a model exists to derive it with, and at once when
+// one already does. So the page sends clones whenever it has them, never "once ready", and a
+// synthesize that names a clone the worker was never told is a typed `unknown-voice` failure
+// rather than a guess [LAW:no-silent-failure]. A clone whose prompt the model cannot make is
+// `clone-failed`, said once per model that failed it. `forget` is `clone`'s counterpart and
+// legal in the same phases: the page says which clones it keeps, both when it gains one and
+// when it loses one, so the worker holds neither samples nor prompt for a voice nobody can
+// pick, and no model load re-derives one.
+//
 // CONTRACTS THE TYPES CANNOT CARRY, stated here so both ends read the same sentence:
 //  - A fresh worker probes on its own; its first message is always `capability`, and no
 //    byte of model is fetched before the page says `load`.
@@ -46,8 +58,8 @@
 //    is nothing to release — so the page terminates the worker on a fact, not a guess. A
 //    second `dispose` produces nothing.
 
+import type { ClonedVoice, ClonedVoiceKey, VoiceKey } from "./clonedVoice";
 import type { AssetFailure, AssetProgress } from "./modelAssetLoader";
-import type { VoiceId } from "./modelAssets";
 import type { Utterance } from "./speech";
 import type { UnitReport } from "./speechManifest";
 import type { SynthesisUnit, UnitText } from "./speechScript";
@@ -81,6 +93,8 @@ export type UnitFailure =
   // The generation loop ran to its frame cap without the model signalling end of speech:
   // the model is looping, not speaking, and the frames streamed so far are void.
   | { readonly kind: "frame-cap"; readonly frames: number }
+  // The request named a clone the worker was never told, or one the model could not make.
+  | { readonly kind: "unknown-voice"; readonly voice: ClonedVoiceKey }
   | { readonly kind: "runtime"; readonly message: string };
 
 // The worker's coarse phase, named in `refused` so a sequencing bug reads as a fact.
@@ -90,8 +104,12 @@ export type ToWorker =
   | { readonly kind: "load" }
   | { readonly kind: "script"; readonly id: number; readonly utterances: ReadonlyArray<Utterance> }
   // The fed text and its source slice: what the model says and the words it is timed against.
-  | { readonly kind: "synthesize"; readonly unitId: number; readonly text: UnitText; readonly voice: VoiceId }
+  | { readonly kind: "synthesize"; readonly unitId: number; readonly text: UnitText; readonly voice: VoiceKey }
   | { readonly kind: "cancel"; readonly unitId: number }
+  // A clone the page keeps: remembered by the worker, made into a prompt by its model.
+  | { readonly kind: "clone"; readonly voice: ClonedVoice }
+  // A clone the page no longer keeps: forgotten by the worker, its prompt released.
+  | { readonly kind: "forget"; readonly voice: ClonedVoiceKey }
   | { readonly kind: "dispose" };
 
 export type FromWorker =
@@ -110,5 +128,7 @@ export type FromWorker =
   | { readonly kind: "cancelled"; readonly unitId: number }
   | { readonly kind: "failed"; readonly unitId: number; readonly reason: UnitFailure }
   | { readonly kind: "refused"; readonly request: ToWorker; readonly phase: Phase }
+  // The model could not make a prompt of a clone: the runtime's own words.
+  | { readonly kind: "clone-failed"; readonly voice: ClonedVoiceKey; readonly message: string }
   // The worker's last word: nothing of the model remains on the device.
   | { readonly kind: "disposed" };

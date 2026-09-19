@@ -27,8 +27,9 @@
 // worker is disposed at once and a generation cut short by dispose releases the model
 // only after the device is quiet — the phase value is the one owner of that ordering.
 
+import { isClonedKey, type ClonedVoice, type ClonedVoiceKey, type VoiceKey } from "./clonedVoice";
 import type { AssetProgress } from "./modelAssetLoader";
-import { FRAME_MS, MODEL_VERSION, type VoiceId } from "./modelAssets";
+import { FRAME_MS, MODEL_VERSION } from "./modelAssets";
 import type { ReportedAlignment } from "./speechManifest";
 import type { WordBegun } from "./wordAlignment";
 import { deriveSpeechScript, type TokenCount, type UnitText } from "./speechScript";
@@ -60,13 +61,19 @@ export interface GeneratedFrame {
   readonly begun: ReadonlyArray<WordBegun>;
 }
 
-// A loaded model: the two things the protocol asks of it. `generate` yields one decoded
+// A loaded model: the three things the protocol asks of it. `generate` yields one decoded
 // frame per step and returns how it ended; it must release device memory in a `finally`,
-// because the handler ends it early through `return()` on cancel.
+// because the handler ends it early through `return()` on cancel. `addVoice` derives a
+// clone's prompt from its samples and holds it under the clone's key, so `generate` may name
+// it; it throws when the model cannot, and the handler says so. Which clones a model holds
+// is the handler's to track: a `generate` for a key the model was never given is a bug there.
 export interface LoadedModel {
   readonly backend: Backend;
   readonly countTokens: TokenCount;
-  generate(unit: UnitText, voice: VoiceId): AsyncGenerator<GeneratedFrame, GenerationEnd>;
+  generate(unit: UnitText, voice: VoiceKey): AsyncGenerator<GeneratedFrame, GenerationEnd>;
+  addVoice(voice: ClonedVoice): void;
+  // Releases a clone's prompt. Idempotent: a key the model never held is nothing to free.
+  removeVoice(voice: ClonedVoiceKey): void;
   dispose(): void;
 }
 
@@ -103,7 +110,7 @@ export interface SynthesisHandler {
 interface Job {
   readonly unitId: number;
   readonly text: UnitText;
-  readonly voice: VoiceId;
+  readonly voice: VoiceKey;
   cancelled: boolean;
 }
 
@@ -112,6 +119,8 @@ interface Ready {
   readonly model: LoadedModel;
   readonly queue: Job[];
   running: Job | null;
+  // The clones this model holds a prompt for: every one it was given and did not refuse.
+  readonly known: Set<ClonedVoiceKey>;
 }
 
 type State =
@@ -130,6 +139,24 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
 // contract, and nothing is fetched until `load`.
 export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): SynthesisHandler => {
   let state: State = { kind: "probing" };
+  // [LAW:no-shared-mutable-globals] Every clone the page has told this worker, by key, in
+  // whatever phase it arrived: owned here, written by `clone` alone, read by each model as
+  // it lands. A clone told twice is the newer telling.
+  const told = new Map<ClonedVoiceKey, ClonedVoice>();
+
+  // The model takes a clone, or says why it could not [LAW:no-silent-failure].
+  const give = (ready: Ready, voice: ClonedVoice): void => {
+    try {
+      ready.model.addVoice(voice);
+      ready.known.add(voice.key);
+    } catch (e) {
+      // A re-telling that failed leaves the model holding whatever it held before, which is
+      // no longer this clone: it is unknown again, so a synthesize naming it is the typed
+      // `unknown-voice` rather than a read of a prompt nobody made [LAW:no-silent-failure].
+      ready.known.delete(voice.key);
+      post({ kind: "clone-failed", voice: voice.key, message: message(e) }, []);
+    }
+  };
 
   const refuse = (request: ToWorker): void => post({ kind: "refused", request, phase: state.kind }, []);
   // Posted exactly once per handler, by whichever completion finds the model released.
@@ -166,7 +193,9 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       return;
     }
     if (result.ok) {
-      state = { kind: "ready", model: result.model, queue: [], running: null };
+      const ready: Ready = { kind: "ready", model: result.model, queue: [], running: null, known: new Set() };
+      state = ready;
+      for (const voice of told.values()) give(ready, voice);
       post({ kind: "ready", backend: result.model.backend, modelVersion: MODEL_VERSION }, []);
     } else {
       state = { kind: "idle" };
@@ -245,6 +274,10 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       post({ kind: "failed", unitId: request.unitId, reason: { kind: "duplicate-unit" } }, []);
       return;
     }
+    if (isClonedKey(request.voice) && !ready.known.has(request.voice)) {
+      post({ kind: "failed", unitId: request.unitId, reason: { kind: "unknown-voice", voice: request.voice } }, []);
+      return;
+    }
     const job: Job = { unitId: request.unitId, text: request.text, voice: request.voice, cancelled: false };
     ready.queue.push(job);
     if (ready.running === null) {
@@ -312,6 +345,30 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
       case "cancel":
         if (state.kind !== "ready") return refuse(request);
         cancel(state, request.unitId);
+        return;
+      case "clone":
+        if (state.kind === "disposed") return refuse(request);
+        told.set(request.voice.key, request.voice);
+        if (state.kind === "ready") give(state, request.voice);
+        return;
+      case "forget":
+        // The counterpart of `clone`, legal in the same phases: a clone the device no longer
+        // keeps is one no model should hold a prompt for, nor re-derive on its next load.
+        if (state.kind === "disposed") return refuse(request);
+        told.delete(request.voice);
+        if (state.kind === "ready") {
+          // A unit still waiting its turn in this voice can no longer have one: it leaves
+          // with the typed reason the panel knows how to say, rather than dequeuing into a
+          // `promptOf` that throws the content hash into the reader's status line
+          // [LAW:no-silent-failure]. The unit generating now keeps its own reference to the
+          // prompt's data and finishes on it; only the map's handle is released here.
+          for (const job of state.queue.splice(0, state.queue.length)) {
+            if (job.voice === request.voice) post({ kind: "failed", unitId: job.unitId, reason: { kind: "unknown-voice", voice: request.voice } }, []);
+            else state.queue.push(job);
+          }
+          state.model.removeVoice(request.voice);
+          state.known.delete(request.voice);
+        }
         return;
       case "dispose":
         // Idempotent: a page's unconditional pagehide teardown may follow an explicit one.

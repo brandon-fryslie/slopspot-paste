@@ -149,7 +149,8 @@
 
 import { begin, estimate, record, remainingText, type Pace } from "./downloadPace";
 import { standingConsent, type StandingConsent } from "./listenConsent";
-import { downloadNeedsTap, type ConnectionReading, type VoiceId } from "./modelAssets";
+import type { ClonedVoice, ClonedVoiceKey, VoiceKey } from "./clonedVoice";
+import { downloadNeedsTap, type ConnectionReading } from "./modelAssets";
 import type { AssetProgress } from "./modelAssetLoader";
 import type { Keeping, Residency } from "./modelResidency";
 import { createNeuralPerformer, stateOf, type NeuralPerformer, type NeuralState, type NeuralView } from "./neuralPerformer";
@@ -165,7 +166,8 @@ import type { ListenPort } from "./synthesisClient";
 import type { FromWorker, LoadFailure, UnsupportedReason } from "./synthesisProtocol";
 import { clockText, cursorIn, estimated, landmark, landmarks, placeIn, pointAt, startAt, startIn, timeAt, timeOfStart, timelineOfUtterances, type Cursor, type Point, type Start, type Timeline } from "./timeline";
 import { MODEL_PCM, openDevice, type DeviceFactory, type OpenDevice } from "./unitPlayer";
-import { DEFAULT_PICK, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
+import { DEFAULT_PICK, previewText, samePick, voiceMapOf, type PickedVoice, type VoicePick } from "./voiceChoice";
+import { initialCloning, type Cloning, type CloningConfig, type CloningState } from "./voiceCloning";
 import { mountVoicePicker, type Audition, type VoicePicker, type VoicePickerHandlers, type VoicesReadout } from "./voicePicker";
 import { createPreviewer, type Previewer } from "./voicePreview";
 import { createSamplePlayer, type SampleAudio } from "./voiceSample";
@@ -267,9 +269,10 @@ export type PanelState =
       readonly home: Home;
       readonly keeping: Keeping | null;
       readonly consent: Consents;
-      readonly sounding: VoiceId | null;
+      readonly sounding: VoiceKey | null;
       readonly speed: Speed;
       readonly visibility: Visibility;
+      readonly cloning: CloningState;
     }
   // The voice on stage over its script's units; the view is the scheduler's, the cue where its
   // next Play starts while it stands idle, the consent kept for a fall, `sounding` the voice a
@@ -283,9 +286,12 @@ export type PanelState =
       readonly view: NeuralView;
       readonly cue: Start | null;
       readonly consent: Consents;
-      readonly sounding: VoiceId | null;
+      readonly sounding: VoiceKey | null;
       readonly speed: Speed;
       readonly visibility: StageVisibility;
+      // Where the making of a clone is (voiceCloning.ts): on both arms because it is the
+      // reader's, under way whatever the voice is doing.
+      readonly cloning: CloningState;
     };
 
 export type Tap = "play" | "stop";
@@ -372,11 +378,15 @@ export type PanelEvent =
   | { readonly kind: "view"; readonly view: NeuralView }
   // The reader tapped a voice's play: it is heard out, live or from its sample, over a paused
   // reading.
-  | { readonly kind: "preview"; readonly voice: VoiceId }
+  | { readonly kind: "preview"; readonly voice: VoiceKey }
   // The page went out of view, or came back into it.
   | { readonly kind: "visibility"; readonly hidden: boolean }
   // The previewer's or the sample player's word on which voice is sounding, or that none is.
-  | { readonly kind: "sounding"; readonly voice: VoiceId | null }
+  | { readonly kind: "sounding"; readonly voice: VoiceKey | null }
+  // The cloning machine's word on where the making of a clone is.
+  | { readonly kind: "cloning"; readonly state: CloningState }
+  // A clone the device kept is gone.
+  | { readonly kind: "forgot"; readonly voice: ClonedVoiceKey }
   // The device's pick changed: the map the voice on stage speaks with from now on. A voice
   // on its way reads the pick at its build, so it has nothing to do here.
   | { readonly kind: "voices"; readonly voices: VoiceMap }
@@ -405,9 +415,9 @@ export type Effect =
   | { readonly kind: "build"; readonly units: ReadonlyArray<SynthesisUnit>; readonly voices: VoiceMap; readonly kept: ReadonlyArray<UnitReport | undefined> }
   | { readonly kind: "perform"; readonly event: PerformerEvent }
   // The previewer says its phrase in the voice; on the tap's stack, which opens its device.
-  | { readonly kind: "preview"; readonly voice: VoiceId }
+  | { readonly kind: "preview"; readonly voice: VoiceKey }
   // The sample player plays the voice's sample; on the tap's stack, which lets it play.
-  | { readonly kind: "sample"; readonly voice: VoiceId }
+  | { readonly kind: "sample"; readonly voice: VoiceKey }
   // The previewer and the sample player are silenced.
   | { readonly kind: "hush" }
   // The performer is told the reader's voices.
@@ -438,16 +448,16 @@ const MODEL_IDLE: ModelPhase = { kind: "idle" };
 
 // Every entry to the start: the model in the given phase, the script, the cue, the consent,
 // the sample sounding and the speed kept, and the store asked afresh what it holds.
-const enter = (model: ModelPhase, script: Script, cue: Start | null, consent: Consents, sounding: VoiceId | null, speed: Speed, visibility: Visibility): Step => ({
-  state: { kind: "provisioning", model, script, cue, home: { kind: "reading" }, keeping: null, consent, sounding, speed, visibility },
+const enter = (model: ModelPhase, script: Script, cue: Start | null, consent: Consents, sounding: VoiceKey | null, speed: Speed, visibility: Visibility, cloning: CloningState): Step => ({
+  state: { kind: "provisioning", model, script, cue, home: { kind: "reading" }, keeping: null, consent, sounding, speed, visibility, cloning },
   effects: [{ kind: "home" }],
 });
 
-export const initialState = (): PanelState => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, null, NORMAL, "shown").state;
+export const initialState = (): PanelState => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, null, NORMAL, "shown", initialCloning()).state;
 // The panel's first step: the state, and the read of the store that fills its `home`. The
 // worker is not spawned here but by the `wake` that follows, so a dispose — which returns
 // here — spawns nothing on a page that is going away.
-export const start = (): Step => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, null, NORMAL, "shown");
+export const start = (): Step => enter(MODEL_IDLE, NO_SCRIPT, null, NO_CONSENT, null, NORMAL, "shown", initialCloning());
 
 // [LAW:single-enforcer] Where a cue falls on a timeline: the top when nobody named one.
 const timeOfCue = (line: Timeline, cue: Start | null): number => (cue === null ? 0 : timeOfStart(line, cue));
@@ -462,9 +472,12 @@ const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
 // One voice at a time, and the transport owns the audio: a phrase pauses the reading
 // (`preview`), and the phrase sounding is hushed by every transport gesture — a Play, a
 // Pause, a Stop, a seek — by the voice's own entry when it comes to speak, and by a
-// teardown. A consent is not a transport gesture: the hover's yes and a Download bring no
-// voice, and the phrase plays on through them. The hush is unconditional wherever it is
-// sent, since a hush on a silent player is its own no-op [LAW:dataflow-not-control-flow];
+// teardown — and by a clone's removal, which is the one sender that asks WHICH voice is
+// sounding, because deleting a row is not a transport gesture and has nothing to say about a
+// hosted voice being auditioned. A consent is not a transport gesture either: the hover's yes
+// and a Download bring no voice, and the phrase plays on through them. The hush is
+// unconditional wherever it IS sent, since a hush on a silent player is its own no-op
+// [LAW:dataflow-not-control-flow];
 // so the previewer and the sample player never sound together, and `sounding` is whichever
 // one spoke last [LAW:single-enforcer].
 const HUSH: Effect = { kind: "hush" };
@@ -673,6 +686,10 @@ const provision = (state: Provisioning, message: FromWorker, at: number): Step =
       return stay({ ...state, script: { kind: "held", units: message.units } });
     case "refused":
       throw new Error(`listen panel: the worker refused ${message.request.kind} in phase ${message.phase}`);
+    case "clone-failed":
+      // The cloning machine's (voiceCloning.ts): the driver hands it over, and the note it
+      // shows is that machine's word, not a second copy here [LAW:one-source-of-truth].
+      return stay(state);
     case "disposed":
       // Only `dispose` is answered so, and the port terminates the worker on it before the
       // panel could hear it.
@@ -712,6 +729,8 @@ const fromWorker = (state: PanelState, message: FromWorker, at: number): Step =>
       if (!onStage(model)) return fallback(state, model);
       return model.kind === "supported" ? reload({ ...state, model }) : stay({ ...state, model });
     }
+    case "clone-failed":
+      return stay(state);
     case "script":
     case "disposed":
       throw violation(state, message.kind);
@@ -739,7 +758,7 @@ const scriptOf = (state: PanelState): Script => (state.kind === "provisioning" ?
 // standing.
 const outlives = (consent: Consents): Consents => ({ ...consent, given: consent.given === "none" ? "none" : "download" });
 const fallback = (state: PanelState, model: ModelPhase): Step => {
-  const entered = enter(model, scriptOf(state), state.kind === "provisioning" ? state.cue : startOf(state), outlives(state.consent), state.sounding, state.speed, seen(state.visibility));
+  const entered = enter(model, scriptOf(state), state.kind === "provisioning" ? state.cue : startOf(state), outlives(state.consent), state.sounding, state.speed, seen(state.visibility), state.cloning);
   return { state: entered.state, effects: [{ kind: "release", worker: "terminate" }, ...entered.effects] };
 };
 
@@ -755,12 +774,13 @@ const keeping = (state: PanelState, answer: Keeping): Step =>
 // paused first where there is one — a pause on a paused or idle performer is the player's own
 // no-op — and the phrase sounding is hushed, whichever player it is on, so the new phrase is
 // heard alone.
-const preview = (state: PanelState, voice: VoiceId): Step =>
+const preview = (state: PanelState, voice: VoiceKey): Step =>
   state.kind === "neural"
     ? { state, effects: [perform({ kind: "pause" }), HUSH, state.model.kind === "ready" ? { kind: "preview", voice } : { kind: "sample", voice }] }
     : { state, effects: [HUSH, { kind: "sample", voice }] };
 
-const sounding = (state: PanelState, voice: VoiceId | null): Step => stay({ ...state, sounding: voice });
+const sounding = (state: PanelState, voice: VoiceKey | null): Step => stay({ ...state, sounding: voice });
+const cloning = (state: PanelState, making: CloningState): Step => stay({ ...state, cloning: making });
 
 // [LAW:single-enforcer] How far ahead the voice is made: further while the page is out of view
 // and the listen is on, the near window otherwise — which is also where every performer's
@@ -917,6 +937,14 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       return preview(state, event.voice);
     case "sounding":
       return sounding(state, event.voice);
+    case "cloning":
+      return cloning(state, event.state);
+    case "forgot":
+      // The voice the reader just removed must not still be speaking. A repick cancels the
+      // units on stage; nothing but this reaches the previewer, whose phrase runs on units of
+      // its own [LAW:no-silent-failure]. Only that voice: a removal is not a transport
+      // gesture, and a hosted voice the reader is hearing has nothing to do with the row.
+      return { state, effects: state.sounding === event.voice ? [HUSH] : [] };
     case "voices":
       return voices(state, event.voices);
     case "page":
@@ -942,7 +970,7 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       const speaks = granted(state) === "play";
       const rate = perform({ kind: "rate", to: state.speed });
       return {
-        state: { kind: "neural", model, units: script.units, view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: state.sounding, speed: state.speed, visibility: state.visibility },
+        state: { kind: "neural", model, units: script.units, view: event.view, cue: speaks ? null : state.cue, consent: state.consent, sounding: state.sounding, speed: state.speed, visibility: state.visibility, cloning: state.cloning },
         effects: speaks ? [HUSH, rate, perform({ kind: "seek", toMs: timeOfCue(event.view.timeline, state.cue) })] : [rate],
       };
     }
@@ -976,6 +1004,8 @@ export interface Visit {
   readonly metered: boolean;
   // The device's voice pick, read from storage at every render like `remembered`.
   readonly pick: VoicePick;
+  // The voices the reader recorded, kept on the device (clonedVoice.ts), read the same way.
+  readonly cloned: ReadonlyArray<ClonedVoice>;
   // The place kept for this paste on this device, read from storage at every render, when
   // it still names this page's text (keptPlace.ts).
   readonly resume: Place | null;
@@ -1072,12 +1102,18 @@ const loadFailureText = (failure: LoadFailure): string => {
   }
 };
 
-const unitFailureText = (reason: FailureReason): string => {
+const unitFailureText = (reason: FailureReason, cloned: ReadonlyArray<ClonedVoice>): string => {
   switch (reason.kind) {
     case "frame-cap":
       return `the model looped for ${reason.frames} frames without finishing`;
     case "runtime":
       return reason.message;
+    case "unknown-voice": {
+      // The reader named this voice; its key is a content hash, and no sentence should show
+      // one. A clone the device no longer keeps has no name left to give.
+      const held = cloned.find((clone) => clone.key === reason.voice);
+      return held === undefined ? "that voice is not on this device" : `the voice ${held.name} is not on this device`;
+    }
     case "bad-duration":
     case "word-count":
     case "times-out-of-order":
@@ -1185,7 +1221,7 @@ const where = (utterance: number, total: number): string => `passage ${utterance
 // The passage the voice's segment says — from inside a gap, the passage the gap leads into.
 // A voice waiting on its audio is synthesizing ahead once the model is ready, and waiting for
 // the model before; the model's own line follows while it is on its way.
-const neuralStatus = (state: Stage, total: number): string => {
+const neuralStatus = (state: Stage, total: number, cloned: ReadonlyArray<ClonedVoice>): string => {
   const { view, visibility, model } = state;
   const unitAt = (unitIndex: number): string => {
     const segment = view.units[unitIndex];
@@ -1193,7 +1229,7 @@ const neuralStatus = (state: Stage, total: number): string => {
     return where(segment.content.utterance, total);
   };
   const skipped = view.holdings.flatMap((holding, i) =>
-    holding.kind === "failed" ? [`${unitAt(i)} could not be synthesized: ${unitFailureText(holding.reason)}`] : [],
+    holding.kind === "failed" ? [`${unitAt(i)} could not be synthesized: ${unitFailureText(holding.reason, cloned)}`] : [],
   );
   const at = stateOf(view);
   const { player } = view;
@@ -1355,11 +1391,13 @@ const audition = (state: PanelState): Audition => {
   return { kind: "sample", note: state.model.kind === "unsupported" ? SAMPLES_ONLY : SAMPLES_UNTIL_READY };
 };
 
-const voicesReadout = (state: PanelState, pick: VoicePick): VoicesReadout => ({
-  picked: pick,
+const voicesReadout = (state: PanelState, visit: Pick<Visit, "pick" | "cloned">): VoicesReadout => ({
+  picked: visit.pick,
   audition: audition(state),
   sounding: state.sounding,
-  reset: !samePick(pick, DEFAULT_PICK),
+  reset: !samePick(visit.pick, DEFAULT_PICK),
+  cloned: visit.cloned,
+  cloning: state.cloning,
 });
 
 // How many of a place's words the offer quotes: enough to recognise the sentence, few enough
@@ -1399,12 +1437,12 @@ export const readout = (state: PanelState, page: Page, visit: Visit): Readout =>
   const total = page.utterances.length;
   const mark = markForm(state);
   const { remembered } = visit;
-  const voices = voicesReadout(state, visit.pick);
+  const voices = voicesReadout(state, visit);
   const rest = around(state, page);
   const mini = miniFace(mark, rest.skip, listening(state) || state.cue !== null, savable(state), visit);
   const offer = offerOf(state, page, mark, visit);
   if (state.kind === "neural") {
-    return { ...transport(state.view.player, state.visibility), ...rest, status: neuralStatus(state, total), progress: progressOf(state.model), mark, remembered, voices, mini, offer };
+    return { ...transport(state.view.player, state.visibility), ...rest, status: neuralStatus(state, total, visit.cloned), progress: progressOf(state.model), mark, remembered, voices, mini, offer };
   }
   const { model } = state;
   // On its way: Play is the retry after a failure, and otherwise the word that raises the
@@ -1555,6 +1593,16 @@ export interface ListenPanelConfig {
   // The device's voice pick, read at every render and at the build, written by the picker:
   // voiceChoice's two edges over the device's storage in the page, over a Map in the check.
   readonly pick: { readonly read: () => VoicePick; readonly write: (pick: VoicePick) => void };
+  // The clones the device keeps, read at every render: clonedVoice's read edge over the
+  // device's storage in the page, over a Map in the check.
+  readonly clones: { readonly read: () => ReadonlyArray<ClonedVoice> };
+  // The making of clones (voiceCloning.ts), built over the page's microphone, decoder and
+  // store — the panel hands it what it wants told: where the making is, and a clone kept or
+  // forgotten. A stub in the check.
+  readonly cloning: (told: Pick<CloningConfig, "onChange" | "onKept" | "onForgot">) => Cloning;
+  // Where a voice's sample is (voiceSample.ts): the hosted sample's path, or a clone's
+  // recording as a URL the page made of it.
+  readonly sampleSrc: (voice: VoiceKey) => string;
   readonly connection: () => ConnectionReading | undefined;
   // What opens the audio device: `AudioContext` in the page. Opened by the panel on the
   // first gesture or the first build, whichever comes first; closed with the worker.
@@ -1780,7 +1828,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     return previewer;
   };
   // The sample player outlives every performer: a sample needs no model and no worker.
-  const samples = createSamplePlayer({ Audio: config.Audio, onChange: (voice) => dispatch({ kind: "sounding", voice }) });
+  const samples = createSamplePlayer({ Audio: config.Audio, src: config.sampleSrc, onChange: (voice) => dispatch({ kind: "sounding", voice }) });
   // [LAW:no-ambient-temporal-coupling] One ask of each kind in flight, owned here: a new ask
   // supersedes the old, and only the current ask's answer is dispatched. The order two
   // promises settle in cannot put a stale store or browser answer over a fresh entry.
@@ -1901,6 +1949,9 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         return;
       case "spawn":
         port = config.spawn();
+        // Every clone the device keeps, told at once: the worker remembers them in any phase
+        // (synthesisProtocol.ts), so a pick naming one is speakable the moment the model is.
+        for (const voice of config.clones.read()) port.send({ kind: "clone", voice });
         unsubscribe = port.subscribe((message) => {
           // A script cut from a page that has since been re-seated: its units say text the
           // conversation no longer says, so it is dropped here rather than built over. Every
@@ -1908,6 +1959,13 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
           // panel is waiting for [LAW:no-silent-failure] — nothing is lost, because the ask
           // that superseded this one is already out.
           if (message.kind === "script" && message.id !== asking) return;
+          // A clone the model could not make is the cloning machine's to SAY — never to act
+          // on: it names a clone saved earlier, not the recording the reader may be making
+          // right now, and this arrives whenever the weights finish loading.
+          if (message.kind === "clone-failed") {
+            const held = config.clones.read().find((clone) => clone.key === message.voice);
+            cloner.send({ kind: "model-refused", name: held?.name ?? "That voice", message: message.message });
+          }
           dispatch({ kind: "worker", message, at: config.clock() });
         });
         unsubscribeErrors = port.errors((message) => dispatch({ kind: "worker-error", message }));
@@ -1958,7 +2016,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
         performer().send(effect.event);
         return;
       case "preview":
-        previewerOf().say(effect.voice);
+        previewerOf().say(effect.voice, previewText(effect.voice, config.clones.read()));
         return;
       case "sample":
         samples.say(effect.voice);
@@ -2013,10 +2071,33 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
   };
   // One set of handlers for every place the picker is offered: a tap means the same thing in
   // the panel and in the mini-player, because it IS the same thing [LAW:single-enforcer].
+  // The making of clones: a clone kept is told to the worker, if one is up, and picked for
+  // the reader's own role — hearing yourself is what a reader recorded for — and one
+  // forgotten leaves the pick, which reads it as the default now, re-derived. Both go
+  // through `repick`, so the rows and the voice on stage agree as they do for any pick.
+  const cloner: Cloning = config.cloning({
+    onChange: (making) => dispatch({ kind: "cloning", state: making }),
+    onKept: (voice) => {
+      port?.send({ kind: "clone", voice });
+      repick({ ...config.pick.read(), user: voice.key });
+    },
+    onForgot: (key) => {
+      // The pick is re-derived FIRST, so the unit under way in that voice is cancelled
+      // before the worker is told to release its prompt: the work stops, then the thing it
+      // worked from goes [LAW:no-ambient-temporal-coupling].
+      repick(config.pick.read());
+      dispatch({ kind: "forgot", voice: key });
+      port?.send({ kind: "forget", voice: key });
+    },
+  });
   const on: VoicePickerHandlers = {
-    pick: (role: PickedVoice, voice: VoiceId) => repick({ ...config.pick.read(), [role]: voice }),
+    pick: (role: PickedVoice, voice: VoiceKey) => repick({ ...config.pick.read(), [role]: voice }),
     preview: (voice) => dispatch({ kind: "preview", voice }),
     reset: () => repick(DEFAULT_PICK),
+    record: (name) => cloner.send({ kind: "make", name, source: { kind: "microphone" } }),
+    upload: (name, file) => cloner.send({ kind: "make", name, source: { kind: "file", file } }),
+    stop: () => cloner.send({ kind: "stop" }),
+    remove: (key: ClonedVoiceKey) => cloner.send({ kind: "remove", key }),
   };
   const picker = everyPicker(voicePlaces(controls).map((place) => mountVoicePicker(place.picker, on)));
 
@@ -2030,6 +2111,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     remembered: config.preference.read(),
     metered: downloadNeedsTap(config.connection()),
     pick: config.pick.read(),
+    cloned: config.clones.read(),
     resume: config.resume.read(),
     gone,
   });
@@ -2338,7 +2420,11 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
     // clears the position, and the controls say what the state says, so a page back from
     // the back-forward cache finds them right.
     // A dispose hushes the sample inside the machine, so a teardown from a bug hushes it too.
-    dispose: () => dispatch({ kind: "dispose" }),
+    // A recording under way is stopped with it.
+    dispose: () => {
+      cloner.dispose();
+      dispatch({ kind: "dispose" });
+    },
     reseat: (utterances, recue) => {
       // [LAW:parse-dont-validate] The one crossing: past it, the page and the script are
       // this list's and nothing holds the old one. `reseatable` is the page's to ask BEFORE

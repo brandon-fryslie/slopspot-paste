@@ -30,6 +30,7 @@
 // hash names a rendition client-side and never server state, and a unit's hash names the
 // audio the device keeps of it (keptAudio.ts) [LAW:one-way-deps].
 
+import { isClonedKey, type VoiceKey } from "./clonedVoice";
 import { contentHash } from "./contentHash";
 import { MAX_UNIT_TOKENS, MODEL_ASSETS, VOICE_IDS, assetVersion, type ModelAssetManifest, type VoiceId } from "./modelAssets";
 import type { Utterance, Voice } from "./speech";
@@ -103,10 +104,10 @@ export const sourceSpanOf = ({ sourceSpans }: PreparedText, fed: TextSpan): Text
   return { begin: first.begin, end: last.end };
 };
 
-// Which model voice speaks each role. A VALUE the reader picks (voiceChoice.ts derives it
-// from the pick kept on the device); changing it re-derives every rendition rather than
-// re-deploying an asset.
-export type VoiceMap = Readonly<Record<Voice, VoiceId>>;
+// Which model voice speaks each role — a hosted voice or a clone kept on the device
+// (clonedVoice.ts). A VALUE the reader picks (voiceChoice.ts derives it from the pick kept
+// on the device); changing it re-derives every rendition rather than re-deploying an asset.
+export type VoiceMap = Readonly<Record<Voice, VoiceKey>>;
 
 // ── text preparation ────────────────────────────────────────────────────────────────
 //
@@ -372,6 +373,11 @@ export const renditionVersions = (manifest: ModelAssetManifest): RenditionVersio
 
 export const RENDITION_VERSIONS: RenditionVersions = renditionVersions(MODEL_ASSETS);
 
+// [LAW:one-source-of-truth] The version of the voice a unit is spoken in: a hosted voice's
+// is its asset's; a clone's is its key, which IS the hash of its samples (clonedVoice.ts) —
+// the encoder that turns them into a prompt is the weights, already in `model`.
+export const voiceVersion = (versions: RenditionVersions, voice: VoiceKey): string => (isClonedKey(voice) ? voice : versions.voices[voice]);
+
 // [LAW:one-source-of-truth] The ONE identity of a rendition: which model, under which
 // rules and generation, said exactly which text in which voice, unit by unit. It hashes the version of
 // the voice each unit is actually spoken in rather than the whole voice map or the whole
@@ -387,7 +393,7 @@ export const renditionHash = (
     pipeline: versions.pipeline,
     generation: versions.generation,
     model: versions.model,
-    units: units.map((u) => [u.utterance.index, versions.voices[voiceMap[u.utterance.voice]], u.text]),
+    units: units.map((u) => [u.utterance.index, voiceVersion(versions, voiceMap[u.utterance.voice]), u.text]),
   });
 
 // [LAW:one-source-of-truth] One unit's identity: the rendition hash's term for a single
@@ -396,8 +402,8 @@ export const renditionHash = (
 // unit's audio under it (keptAudio.ts), so an edit, another voice, a new model or new rules
 // is another key and simply misses; and the same sentence in the same voice is one entry
 // wherever it is said.
-export const unitHash = (text: UnitText, voice: VoiceId, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
-  contentHash({ pipeline: versions.pipeline, generation: versions.generation, model: versions.model, voice: versions.voices[voice], text });
+export const unitHash = (text: UnitText, voice: VoiceKey, versions: RenditionVersions = RENDITION_VERSIONS): Promise<string> =>
+  contentHash({ pipeline: versions.pipeline, generation: versions.generation, model: versions.model, voice: voiceVersion(versions, voice), text });
 
 // [LAW:one-source-of-truth] A script's identity: exactly what `deriveSpeechScript` reads — each
 // utterance's index, anchor, voice and text — under the rules that cut it and the notation

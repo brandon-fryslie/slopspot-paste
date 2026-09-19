@@ -48,7 +48,7 @@ for (const id of VOICE_IDS) {
   const wav = join(work, `${id}.wav`);
   const m4a = join(work, `${id}.m4a`);
   console.log(`render-voice-samples: ${id} — rendering on ${MODEL_ASSETS.weights.release}…`);
-  execFileSync("uv", ["run", "--with", POCKET_TTS, "--with", "scipy", "python", join(here, "render-voice-sample.py"), embedding, MODEL_ASSETS.weights.release, previewText(id).text, wav], { stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync("uv", ["run", "--with", POCKET_TTS, "--with", "scipy", "python", join(here, "render-voice-sample.py"), embedding, MODEL_ASSETS.weights.release, previewText(id, []).text, wav], { stdio: ["ignore", "ignore", "pipe"] });
   // Mono AAC at the model's rate: a few seconds is a few tens of kilobytes, and every stock
   // player and browser opens it. No metadata, so the same audio is the same bytes.
   execFileSync("ffmpeg", ["-v", "error", "-y", "-i", wav, "-map_metadata", "-1", "-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", m4a], { stdio: ["ignore", "ignore", "pipe"] });
