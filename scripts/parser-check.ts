@@ -1044,6 +1044,26 @@ console.log("\nclaude-jsonl speaker attribution:");
     ]);
   }
 
+  // A partial envelope is still an envelope, and no tag may ever reach a reader. A
+  // <command-message> with no <command-name> beside it is not a second representation of
+  // anything — it is the only account of what the person ran, so it survives as their
+  // words rather than falling through to the prose path, which for a tag means printing
+  // the tag. An envelope carrying no words at all is no turn, not an empty one.
+  const PARTIAL = [
+    { type: "user", message: { role: "user", content: "<command-message>help</command-message>" } },
+    { type: "user", message: { role: "user", content: "<command-name></command-name>" } },
+    { type: "user", message: { role: "user", content: "<command-name>/model</command-name>\n<command-args></command-args>" } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rp = parseInput({ kind: "claude-jsonl", content: PARTIAL });
+  assert("partial-envelope sample parses", rp.ok);
+  if (rp.ok) {
+    const said = rp.turns.map((t) => (t.kind === "message" ? `${t.role}: ${t.content}` : t.kind));
+    assertEq("a partial envelope keeps what it says and shows no tag: the wordless one is no turn", said, [
+      "user: help",
+      "user: /model",
+    ]);
+  }
+
   // A subagent's spawn prompt is written by the agent that spawned it, so a captured
   // nested run opens in the system's voice, not the reader's.
   const NESTED = [

@@ -215,16 +215,23 @@ const COMMAND_PART = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
 // message before it may speak for it.
 // [LAW:types-are-the-program] The typed absence is what lets the caller express "a command
 // envelope projects to its command, anything else is cleaned as prose" as one value
-// expression rather than a branch that could forget a case.
+// expression rather than a branch that could forget a case. So the absence carries exactly
+// ONE fact — "this text is not an envelope" — and never doubles as "it is one, but has
+// nothing to say": an envelope with no words projects to the empty string, which the caller
+// already drops as an empty turn. Letting null mean both is what published raw markup to a
+// reader, since a <command-message> with no <command-name> reported itself as prose and the
+// caller dutifully cleaned it as prose — which, for a tag, is to print the tag.
 const commandLine = (raw: string): string | null => {
-  if (raw.replace(COMMAND_PART, "").trim().length > 0) return null;
-  const parts = [...raw.matchAll(COMMAND_PART)]
-    // <command-message> is the name without its slash — a second representation of a fact
-    // <command-name> already carries [LAW:one-source-of-truth].
-    .filter((m) => m[1] !== "message")
-    .map((m) => (m[2] ?? "").trim())
-    .filter((part) => part.length > 0);
-  return parts.length > 0 ? parts.join(" ") : null;
+  const tags = [...raw.matchAll(COMMAND_PART)];
+  if (tags.length === 0 || raw.replace(COMMAND_PART, "").trim().length > 0) return null;
+  const words = tags.map((m) => [m[1] ?? "", (m[2] ?? "").trim()] as const).filter(([, part]) => part.length > 0);
+  // <command-message> is the name without its slash — a SECOND representation of a fact
+  // <command-name> already carries, so it is dropped [LAW:one-source-of-truth]. Where no
+  // name is present it is not a second representation of anything: it is the only account
+  // of what the person ran, and dropping it would be the silent loss this file forbids
+  // [LAW:no-silent-failure].
+  const named = words.filter(([kind]) => kind !== "message");
+  return (named.length > 0 ? named : words).map(([, part]) => part).join(" ");
 };
 
 const stripEnvelope = (raw: string): string => {
@@ -258,10 +265,10 @@ const stripEnvelope = (raw: string): string => {
 //   promptSource system | sdk          → system   a script supplied the prompt
 //   isSidechain                        → system   a subagent's spawn prompt is written by
 //                                                 the agent that spawned it
-//   <local-command-stdout|caveat> text → system   the CLI's own output
+//   <local-command-stdout> whole text → system   the CLI's own output
 //   none of the above                  → user     see below
 //
-// THE FOURTH-FROM-LAST ROW closes the enumeration gap. Listing the machine origins
+// THE ANY-OTHER-NAMED-ORIGIN ROW closes the enumeration gap. Listing the machine origins
 // (task-notification, peer, auto-continuation — all three observed) would misattribute the
 // next one Claude Code invents. The stronger true theorem is its inverse: `origin` NAMES an
 // author and exactly one value is the person, so every other named origin is not-the-human
@@ -274,15 +281,21 @@ const stripEnvelope = (raw: string): string => {
 // CC version that wrote it. A <command-*> envelope lands here too, and deliberately: the
 // person ran that slash command, so the turn is theirs, carrying the command as its words.
 //
-// It reads the RAW text: stripEnvelope above removes exactly the tags two of these rows
-// match on, so a classifier keyed on cleaned text would silently stop matching.
+// It reads the RAW text: stripEnvelope above removes the very tags these shapes match on,
+// so a classifier keyed on cleaned text would silently stop matching.
 const SYSTEM_PROMPT_SOURCES: ReadonlySet<string> = new Set(["system", "sdk"]);
 // Whole-text, for the reason stated above stripEnvelope: a line the CLI wrote is the wrapped
 // block and nothing else, while a person quoting the tag has their own words around it. The
 // alternative — demanding a corroborating isMeta/promptSource before trusting the shape —
 // would retire the rule entirely, since these are exactly the lines that carry no provenance
 // field at all. That is the whole reason this row exists.
-const CLI_OUTPUT_TEXT = /^<(local-command-stdout|local-command-caveat)>[\s\S]*<\/\1>$/;
+//
+// <local-command-caveat> is deliberately NOT named here, and putting it back would add a row
+// that can never fire: DROPPED_WHOLE removes a caveat block wherever it sits, so a message
+// that is a caveat and nothing else — the only shape this whole-text rule could ever see —
+// cleans to nothing and is skipped as an empty turn before any speaker is read off it
+// [LAW:dataflow-not-control-flow].
+const CLI_OUTPUT_TEXT = /^<local-command-stdout>[\s\S]*<\/local-command-stdout>$/;
 
 const speakerOf = (ev: MessageEvent): Role => {
   if (ev.type === "assistant") return "assistant";

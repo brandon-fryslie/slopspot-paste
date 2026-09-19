@@ -2094,10 +2094,13 @@ console.log("createListenPanel: the voice picker in the mini-player — one pick
   assert("a voice picked in the mini-player is the voice the panel shows, and the device keeps", both() === "fantine/javert/eponine | fantine/javert/eponine" && readPick(r.store, []).user === "fantine");
   pickIn(dock.picker, "assistant", "marius");
   assert("and one picked in the panel is the voice the mini-player shows", both() === "fantine/marius/eponine | fantine/marius/eponine" && readPick(r.store, []).assistant === "marius");
-  // The newest row is a row like the others: it syncs across the two pickers and is kept.
+  // The newest row is a row like the others: it syncs across the two pickers, in BOTH
+  // directions, and is kept. Each direction is picked to a voice that is not the system's
+  // default, so a row that silently stopped syncing could not pass by standing still.
   pickIn(mini.picker, "system", "azelma");
   assert("the system's row syncs and is kept like any other", both() === "fantine/marius/azelma | fantine/marius/azelma" && readPick(r.store, []).system === "azelma");
-  pickIn(dock.picker, "system", "eponine");
+  pickIn(dock.picker, "system", "alba");
+  assert("and the system's row picked in the panel is the voice the mini-player shows", both() === "fantine/marius/alba | fantine/marius/alba" && readPick(r.store, []).system === "alba");
 
   // The sounding mark is written from the same readout as the check, so a voice heard from
   // one picker cannot be lit in that one alone.
