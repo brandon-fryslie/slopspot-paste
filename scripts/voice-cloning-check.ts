@@ -413,7 +413,7 @@ console.log("createCloning: a recording becomes a kept clone the panel is told o
   assert("remove: forgotten on the device, the panel told, and the form says nothing about a voice that is gone", readClones(r.store).length === 0 && r.forgot.join() === key && r.states.at(-1) === "idle");
 }
 
-// The ten-second cap: the edge ends the recording and the reader never tapped Stop. The form
+// The cap at RECORDING_SECONDS: the edge ends the recording and the reader never tapped Stop. The form
 // must leave "recording" all the same — a Stop button over a closed microphone does nothing.
 console.log("createCloning: a recording the cap ends is a recording the form knows ended");
 {

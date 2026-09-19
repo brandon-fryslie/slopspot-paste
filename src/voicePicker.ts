@@ -242,7 +242,13 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   // no tap and no clock the reader controls — only a file whose own first seconds either hold their
   // first word or do not. "Start within a few seconds of tapping" was an instruction half the readers
   // of it could not act on, and a promise that was false for their file [LAW:one-type-per-behavior].
-  read.textContent = `Read this aloud, or upload a recording of yourself reading it. The ${CLONE_SECONDS} seconds kept begin at your first word, as long as it comes in the first few seconds. These words cover every sound English makes:`;
+  // UP TO, not a flat promise. The passage is cut to fit a SLOW reader inside CLONE_SECONDS, so an
+  // ordinary pace finishes it early and taps Stop, and what is kept is however long they spoke. That
+  // is the right answer — those are the same words, minus the room tone that used to be padded onto
+  // them — but a sentence promising ten flat says a reader got something they did not
+  // [LAW:no-silent-failure]. The number still has to appear, because it is the ceiling an unhurried
+  // twenty-second take is cut to.
+  read.textContent = `Read this aloud, or upload a recording of yourself reading it. Up to ${CLONE_SECONDS} seconds are kept, beginning at your first word as long as it comes in the first few seconds. These words cover every sound English makes:`;
   const passage = el("p", "voice-clone-passage");
   passage.id = `${scope}-clone-passage`;
   passage.textContent = CLONE_PASSAGE;
