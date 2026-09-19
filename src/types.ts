@@ -123,7 +123,9 @@ export type NonEmptyTurns = readonly [Turn, ...ReadonlyArray<Turn>];
 // subagent files were bundled, or the file was absent) — all the source still
 // holds is the spawn prompt and the final returned result. A "captured but
 // empty" or "both" state is unrepresentable. The prompt of a captured run is its
-// transcript's first user turn, so it is not duplicated here.
+// transcript's FIRST MESSAGE turn, so it is not duplicated here — its first *user* turn
+// would be wrong, and usually absent: nobody typed a spawn prompt. The agent that spawned
+// the run wrote it, and the parser attributes it accordingly (parsers/jsonl.ts speakerOf).
 export type SubagentTranscript =
   | { readonly kind: "captured"; readonly turns: NonEmptyTurns }
   | { readonly kind: "summary-only"; readonly prompt: string; readonly result: string };
