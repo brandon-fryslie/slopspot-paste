@@ -1025,6 +1025,25 @@ console.log("\nclaude-jsonl speaker attribution:");
     assertEq("the paste is titled from the human's first words", deriveTitle(r.turns), "what's in the repo?");
   }
 
+  // This site is a transcript-paste tool, so the people using it write ABOUT these tags.
+  // A message that mentions an envelope is prose, not an envelope: it keeps every word and
+  // stays the reader's [LAW:no-silent-failure]. Recognition is whole-text, never substring.
+  const QUOTING = [
+    { type: "user", origin: { kind: "human" }, message: { role: "user", content: "why does <command-name>/clear</command-name> show up in my paste? I never typed that." } },
+    { type: "user", origin: { kind: "human" }, message: { role: "user", content: "and what is <local-command-stdout>hi</local-command-stdout> meant to be?" } },
+    { type: "user", message: { role: "user", content: "no provenance either: <local-command-stdout>hi</local-command-stdout> came out of nowhere" } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rq = parseInput({ kind: "claude-jsonl", content: QUOTING });
+  assert("quoting sample parses", rq.ok);
+  if (rq.ok) {
+    const said = rq.turns.map((t) => (t.kind === "message" ? `${t.role}: ${t.content}` : t.kind));
+    assertEq("a message that only mentions an envelope keeps all of its words, in the reader's name", said, [
+      "user: why does <command-name>/clear</command-name> show up in my paste? I never typed that.",
+      "user: and what is <local-command-stdout>hi</local-command-stdout> meant to be?",
+      "user: no provenance either: <local-command-stdout>hi</local-command-stdout> came out of nowhere",
+    ]);
+  }
+
   // A subagent's spawn prompt is written by the agent that spawned it, so a captured
   // nested run opens in the system's voice, not the reader's.
   const NESTED = [

@@ -1948,7 +1948,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   radio("user", "alba").click();
   // The name says nothing, and Kyutai's say something false: Alba is a man's voice.
   const about = (role: string, voice: string): HTMLElement => part<HTMLElement>(option(role, voice), ".voice-about");
-  assert("each voice says what it is like beside its name, in both rows", about("user", "alba").textContent === "Low and lively · American · masculine" && about("assistant", "alba").textContent === about("user", "alba").textContent);
+  assert("each voice says what it is like beside its name, the same words in every row", about("user", "alba").textContent === "Low and lively · American · masculine" && PICKED_VOICES.every((role) => about(role, "alba").textContent === about("user", "alba").textContent));
   assert("every option carries one, and no two rows share an id", picker.querySelectorAll(".voice-about").length === PICKED_VOICES.length * VOICE_IDS.length && new Set([...picker.querySelectorAll(".voice-about")].map((el) => el.id)).size === PICKED_VOICES.length * VOICE_IDS.length);
   // A document resolves a name's `for` to the first id that matches, so two pickers sharing
   // a namespace would leave the second one driving the first. The root lends its own.
@@ -2027,13 +2027,13 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   // The reload: a fresh page over the same device storage.
   const again = rig({ storage: { store: r.store } });
   const reloaded = mount(again);
-  const checkedAgain = (): string => ["user", "assistant"].map((role) => again.voices.picker.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
-  assert("after a reload the pick is still chosen", checkedAgain() === "fantine/marius" && !part<HTMLButtonElement>(again.voices.picker, ".voice-reset").disabled);
+  const checkedAgain = (): string => PICKED_VOICES.map((role) => again.voices.picker.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
+  assert("after a reload the pick is still chosen, every row of it", checkedAgain() === "fantine/marius/eponine" && !part<HTMLButtonElement>(again.voices.picker, ".voice-reset").disabled);
   again.play.click();
   await arrive(again);
   assert("and the voice arrives with it", (again.sent.at(-1) as { voice: string }).voice === "fantine");
   part<HTMLButtonElement>(again.voices.picker, ".voice-reset").click();
-  assert("reset: the defaults again, nothing left on the device, the request under the cursor withdrawn", checkedAgain() === "alba/javert" && again.store.keys().includes("listen.voices") === false && again.said().endsWith("cancel 0"));
+  assert("reset: the defaults again, nothing left on the device, the request under the cursor withdrawn", checkedAgain() === "alba/javert/eponine" && again.store.keys().includes("listen.voices") === false && again.said().endsWith("cancel 0"));
   again.emit({ kind: "cancelled", unitId: 0 });
   assert("the cancel lands: the unit under the cursor is asked again in Alba", again.said().endsWith("cancel 0,synthesize 0") && (again.sent.at(-1) as { voice: string }).voice === "alba");
   again.stop.click();
@@ -2054,7 +2054,7 @@ console.log("createListenPanel: the voice picker in the mini-player — one pick
   const dock = r.voices;
   const mini = r.mini.voices;
   const pickedIn = (root: HTMLElement): string =>
-    ["user", "assistant"].map((role) => root.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
+    PICKED_VOICES.map((role) => root.querySelector<HTMLInputElement>(`.voice-row[data-role="${role}"] input:checked`)?.value ?? "none").join("/");
   const optionIn = (root: HTMLElement, role: string, voice: string): HTMLElement => {
     const found = root.querySelector<HTMLElement>(`.voice-row[data-role="${role}"] .voice-option[data-voice="${voice}"]`);
     if (found === null) throw new Error(`fixture: no option ${role}/${voice} in ${root.id}`);
@@ -2089,11 +2089,15 @@ console.log("createListenPanel: the voice picker in the mini-player — one pick
   // twice the options with colliding ids, and nothing would throw.
   assert("each block is named for what it is by class and for which it is by id, so neither can be selected in the other's place", dock.picker.classList.contains("voice-picker") && mini.picker.classList.contains("voice-picker") && dock.picker.id === "speech-voices" && mini.picker.id === "listen-mini-picker" && r.doc.querySelectorAll(".voice-picker").length === 2 && r.doc.querySelectorAll("#speech-voices").length === 1);
 
-  assert("the defaults are checked in both", both() === "alba/javert | alba/javert");
+  assert("the defaults are checked in both", both() === "alba/javert/eponine | alba/javert/eponine");
   pickIn(mini.picker, "user", "fantine");
-  assert("a voice picked in the mini-player is the voice the panel shows, and the device keeps", both() === "fantine/javert | fantine/javert" && readPick(r.store, []).user === "fantine");
+  assert("a voice picked in the mini-player is the voice the panel shows, and the device keeps", both() === "fantine/javert/eponine | fantine/javert/eponine" && readPick(r.store, []).user === "fantine");
   pickIn(dock.picker, "assistant", "marius");
-  assert("and one picked in the panel is the voice the mini-player shows", both() === "fantine/marius | fantine/marius" && readPick(r.store, []).assistant === "marius");
+  assert("and one picked in the panel is the voice the mini-player shows", both() === "fantine/marius/eponine | fantine/marius/eponine" && readPick(r.store, []).assistant === "marius");
+  // The newest row is a row like the others: it syncs across the two pickers and is kept.
+  pickIn(mini.picker, "system", "azelma");
+  assert("the system's row syncs and is kept like any other", both() === "fantine/marius/azelma | fantine/marius/azelma" && readPick(r.store, []).system === "azelma");
+  pickIn(dock.picker, "system", "eponine");
 
   // The sounding mark is written from the same readout as the check, so a voice heard from
   // one picker cannot be lit in that one alone.
@@ -2107,7 +2111,7 @@ console.log("createListenPanel: the voice picker in the mini-player — one pick
   // voice it just cleared.
   assert("the reset is offered in both while the pick stands away from the defaults", !partIn<HTMLButtonElement>(mini.picker, ".voice-reset").disabled && !partIn<HTMLButtonElement>(dock.picker, ".voice-reset").disabled);
   partIn<HTMLButtonElement>(mini.picker, ".voice-reset").click();
-  assert("reset from the mini-player: the defaults in both, nothing left on the device, and neither reset still offered", both() === "alba/javert | alba/javert" && !r.store.keys().includes("listen.voices") && partIn<HTMLButtonElement>(mini.picker, ".voice-reset").disabled && partIn<HTMLButtonElement>(dock.picker, ".voice-reset").disabled);
+  assert("reset from the mini-player: the defaults in both, nothing left on the device, and neither reset still offered", both() === "alba/javert/eponine | alba/javert/eponine" && !r.store.keys().includes("listen.voices") && partIn<HTMLButtonElement>(mini.picker, ".voice-reset").disabled && partIn<HTMLButtonElement>(dock.picker, ".voice-reset").disabled);
 
   // The reset takes itself away in the render its own tap causes, and a browser drops focus
   // from a control it disables. `handOff` is the one place that lands focus and it answers by

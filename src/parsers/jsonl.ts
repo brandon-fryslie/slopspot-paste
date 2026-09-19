@@ -197,23 +197,43 @@ const resultText = (content: ToolResultBlock["content"]): string => {
 // <user-prompt-submit-hook>) that appear in no transcript as envelopes, behind a
 // backreference that could never close a <command-name> open tag — so it stripped nothing
 // and published the raw XML.
+//
+// RECOGNITION IS WHOLE-TEXT, NOT SUBSTRING. A message is an envelope only when the envelope
+// is ALL of it. This site is a transcript-paste tool, so the people using it write about
+// these very tags: "what does <local-command-stdout> mean?" is prose that MENTIONS an
+// envelope, and treating a mention as the thing would throw the rest of their sentence away
+// [LAW:no-silent-failure]. The same rule guards speakerOf's reading below.
 const DROPPED_WHOLE = /<(system-reminder|local-command-caveat)>[\s\S]*?<\/\1>/g;
-const STDOUT_TAG = /<\/?local-command-stdout>/g;
-const COMMAND_PART = /<command-(name|args)>([\s\S]*?)<\/command-\1>/g;
+const STDOUT_BLOCK = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/;
+const COMMAND_PART = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
 
-// The command a slash-command envelope stands for, or null when the text is not one.
+// The command a slash-command envelope stands for, or null when the text is not one — which
+// includes prose that merely quotes the tags, since the envelope must account for the whole
+// message before it may speak for it.
 // [LAW:types-are-the-program] The typed absence is what lets the caller express "a command
 // envelope projects to its command, anything else is cleaned as prose" as one value
 // expression rather than a branch that could forget a case.
 const commandLine = (raw: string): string | null => {
+  if (raw.replace(COMMAND_PART, "").trim().length > 0) return null;
   const parts = [...raw.matchAll(COMMAND_PART)]
+    // <command-message> is the name without its slash — a second representation of a fact
+    // <command-name> already carries [LAW:one-source-of-truth].
+    .filter((m) => m[1] !== "message")
     .map((m) => (m[2] ?? "").trim())
     .filter((part) => part.length > 0);
   return parts.length > 0 ? parts.join(" ") : null;
 };
 
-const stripEnvelope = (raw: string): string =>
-  commandLine(raw) ?? raw.replace(DROPPED_WHOLE, "").replace(STDOUT_TAG, "").trim();
+const stripEnvelope = (raw: string): string => {
+  // The reminder and caveat blocks are removed WHEREVER they sit, because that is the shape
+  // of the source: the harness appends a reminder to the end of the very line the person
+  // typed, so there is no whole-text rule to apply. The cost is stated rather than hidden —
+  // a message quoting a reminder loses the quote, and nothing in the source distinguishes
+  // the two. Everything below is whole-text, where the distinction does exist.
+  const cleaned = raw.replace(DROPPED_WHOLE, "").trim();
+  const stdout = STDOUT_BLOCK.exec(cleaned);
+  return commandLine(cleaned) ?? (stdout === null ? cleaned : (stdout[1] ?? "").trim());
+};
 
 // [LAW:types-are-the-program] WHO WROTE THIS LINE — the one place that decides.
 //
@@ -254,7 +274,12 @@ const stripEnvelope = (raw: string): string =>
 // It reads the RAW text: stripEnvelope above removes exactly the tags two of these rows
 // match on, so a classifier keyed on cleaned text would silently stop matching.
 const SYSTEM_PROMPT_SOURCES: ReadonlySet<string> = new Set(["system", "sdk"]);
-const CLI_OUTPUT_TEXT = /^\s*<(?:local-command-stdout|local-command-caveat)>/;
+// Whole-text, for the reason stated above stripEnvelope: a line the CLI wrote is the wrapped
+// block and nothing else, while a person quoting the tag has their own words around it. The
+// alternative — demanding a corroborating isMeta/promptSource before trusting the shape —
+// would retire the rule entirely, since these are exactly the lines that carry no provenance
+// field at all. That is the whole reason this row exists.
+const CLI_OUTPUT_TEXT = /^<(local-command-stdout|local-command-caveat)>[\s\S]*<\/\1>$/;
 
 const speakerOf = (ev: MessageEvent): Role => {
   if (ev.type === "assistant") return "assistant";
@@ -265,7 +290,7 @@ const speakerOf = (ev: MessageEvent): Role => {
   if (named !== null) return "system";
   if (ev.promptSource !== undefined && SYSTEM_PROMPT_SOURCES.has(ev.promptSource)) return "system";
   if (ev.isSidechain === true) return "system";
-  const raw = contentText(ev.message?.content);
+  const raw = contentText(ev.message?.content).trim();
   if (CLI_OUTPUT_TEXT.test(raw)) return "system";
   return "user";
 };
