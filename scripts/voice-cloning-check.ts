@@ -8,7 +8,7 @@
 import { CLONE_SAMPLES, CLONE_SECONDS, cloneVoice, readClones, writeClones, type ClonedVoice } from "../src/clonedVoice";
 import { SAMPLE_RATE } from "../src/modelAssets";
 import type { PreferenceStore } from "../src/preferenceStore";
-import { CLONE_FILE_BYTES, createVoiceCapture, monoOf, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
+import { CLONE_FILE_SECONDS, createVoiceCapture, monoOf, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
 import { BUSY, REFUSED, REMOVAL_REFUSED, createCloning, initialCloning, step, type CloningEvent, type CloningState } from "../src/voiceCloning";
 import { memoryPreferences } from "./preferenceStub";
 
@@ -137,10 +137,16 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
   const mic = stubMic(new Blob([new Uint8Array(4)]));
   let asked = 0;
   let decodes = 0;
+  let measured = 0;
+  let long = 30;
   const capture: VoiceCapture = createVoiceCapture({
     Decoder: () => {
       decodes += 1;
       return decoderOf(stereo(left, right));
+    },
+    duration: async () => {
+      measured += 1;
+      return long;
     },
     microphone: async () => {
       asked += 1;
@@ -155,15 +161,26 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
       timers[handle as number]!.cleared = true;
     },
   });
-  assert("a file decodes to the model's mono waveform, no microphone asked", (await capture.decode(file)).length === left.length && asked === 0 && decodes === 1);
-  // An hour of podcast, picked by mistake: held raw and decoded at once is the tab on a
-  // phone, and the form has nothing to tap while it happens.
-  let heavy = "";
-  await capture.decode(new Blob([new Uint8Array(CLONE_FILE_BYTES + 1)])).catch((e: unknown) => (heavy = e instanceof Error ? e.message : String(e)));
-  assert("a file too heavy to be a ten-second voice is refused before a byte of it is decoded", heavy.includes("more than a ten-second voice can be") && heavy.includes("16 MB") && decodes === 1);
+  assert("a file decodes to the model's mono waveform, no microphone asked", (await capture.decode(file)).length === left.length && asked === 0 && decodes === 1 && measured === 1);
+  // An hour of podcast, picked by mistake: `decodeAudioData` holds all of it as samples, on
+  // the thread that draws the form, which has nothing to tap while it happens.
+  const refusal = async (): Promise<string> => {
+    const said = await capture.decode(file).then(() => "", (e: unknown) => (e instanceof Error ? e.message : String(e)));
+    return said;
+  };
+  long = CLONE_FILE_SECONDS + 1;
+  const hour = await refusal();
+  assert("a recording longer than a clone may be cut from is refused before a sample of it exists, and says how long it is", hour === `that recording is 11 minutes — a voice is cloned from one of 10 minutes or less` && decodes === 1);
+  long = Infinity;
+  const unreadable = await refusal();
+  assert("a file whose length the browser cannot tell is refused too, rather than decoded to find out", unreadable.includes("cannot tell how long") && decodes === 1);
+  long = 30;
 
   const recording: Capture = capture.record();
   await settle();
+  // What MediaRecorder writes for a duration is commonly Infinity, so measuring the recorder's
+  // own blob would refuse every recording this edge makes. The cap owns that road's length.
+  assert("a recording is never measured: its length is the cap's, not the metadata's", measured === 3);
   assert(
     "a recording asks the microphone once, starts the recorder, arms the cap — and announces no end while it runs",
     asked === 1 && timers.length === 1 && timers[0]?.ms === CLONE_SECONDS * 1000 && !(await settled(recording.ended)),
@@ -186,7 +203,7 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
   await early.pcm.catch((e: unknown) => (refused = e instanceof Error ? e.message : String(e)));
   assert("a stop before the microphone answered records nothing, says so, and still releases the microphone", refused.includes("before it began") && mic.stream.stopped() === 3);
 
-  const denied = createVoiceCapture({ Decoder: () => decoderOf(stereo(left, right)), microphone: () => Promise.reject(new DOMException("Permission denied", "NotAllowedError")), Recorder: () => mic.recorder(), setTimeout: () => 0, clearTimeout: () => {} });
+  const denied = createVoiceCapture({ Decoder: () => decoderOf(stereo(left, right)), microphone: () => Promise.reject(new DOMException("Permission denied", "NotAllowedError")), Recorder: () => mic.recorder(), duration: async () => 1, setTimeout: () => 0, clearTimeout: () => {} });
   let why = "";
   await denied.record().pcm.catch((e: unknown) => (why = e instanceof Error ? e.message : String(e)));
   assert("a microphone the browser denies is the browser's own reason", why === "Permission denied");

@@ -386,7 +386,7 @@ export type PanelEvent =
   // The cloning machine's word on where the making of a clone is.
   | { readonly kind: "cloning"; readonly state: CloningState }
   // A clone the device kept is gone.
-  | { readonly kind: "forgot" }
+  | { readonly kind: "forgot"; readonly voice: ClonedVoiceKey }
   // The device's pick changed: the map the voice on stage speaks with from now on. A voice
   // on its way reads the pick at its build, so it has nothing to do here.
   | { readonly kind: "voices"; readonly voices: VoiceMap }
@@ -472,9 +472,12 @@ const perform = (event: PerformerEvent): Effect => ({ kind: "perform", event });
 // One voice at a time, and the transport owns the audio: a phrase pauses the reading
 // (`preview`), and the phrase sounding is hushed by every transport gesture — a Play, a
 // Pause, a Stop, a seek — by the voice's own entry when it comes to speak, and by a
-// teardown. A consent is not a transport gesture: the hover's yes and a Download bring no
-// voice, and the phrase plays on through them. The hush is unconditional wherever it is
-// sent, since a hush on a silent player is its own no-op [LAW:dataflow-not-control-flow];
+// teardown — and by a clone's removal, which is the one sender that asks WHICH voice is
+// sounding, because deleting a row is not a transport gesture and has nothing to say about a
+// hosted voice being auditioned. A consent is not a transport gesture either: the hover's yes
+// and a Download bring no voice, and the phrase plays on through them. The hush is
+// unconditional wherever it IS sent, since a hush on a silent player is its own no-op
+// [LAW:dataflow-not-control-flow];
 // so the previewer and the sample player never sound together, and `sounding` is whichever
 // one spoke last [LAW:single-enforcer].
 const HUSH: Effect = { kind: "hush" };
@@ -938,9 +941,10 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       return cloning(state, event.state);
     case "forgot":
       // The voice the reader just removed must not still be speaking. A repick cancels the
-      // units on stage; nothing but this reaches the previewer, whose phrase runs on units
-      // of its own [LAW:no-silent-failure].
-      return { state, effects: [HUSH] };
+      // units on stage; nothing but this reaches the previewer, whose phrase runs on units of
+      // its own [LAW:no-silent-failure]. Only that voice: a removal is not a transport
+      // gesture, and a hosted voice the reader is hearing has nothing to do with the row.
+      return { state, effects: state.sounding === event.voice ? [HUSH] : [] };
     case "voices":
       return voices(state, event.voices);
     case "page":
@@ -2082,7 +2086,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       // before the worker is told to release its prompt: the work stops, then the thing it
       // worked from goes [LAW:no-ambient-temporal-coupling].
       repick(config.pick.read());
-      dispatch({ kind: "forgot" });
+      dispatch({ kind: "forgot", voice: key });
       port?.send({ kind: "forget", voice: key });
     },
   });

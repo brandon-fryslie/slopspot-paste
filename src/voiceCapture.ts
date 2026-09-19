@@ -7,8 +7,9 @@
 // ONE ROAD IN. A microphone recording is a Blob the browser's recorder made and an uploaded
 // file is a Blob the reader chose; both go through the one decode below, so the recorder
 // never resamples on its own and a file the browser can play is a file it can clone from
-// [LAW:one-type-per-behavior] — if it is small enough to be a voice at all: the one weighing
-// is there, at the road's head, and nowhere else [LAW:single-enforcer]. The decode is the browser's `decodeAudioData` on an offline
+// [LAW:one-type-per-behavior]. What differs is who bounds the length: the recording's is the
+// cap's (below), and the file's is read from its metadata before it is decoded at all — one
+// measure each, at the head of its own road [LAW:single-enforcer]. The decode is the browser's `decodeAudioData` on an offline
 // context at the model's rate — the spec has it resample to the context's rate — then the
 // channels averaged to one and the first CLONE_SECONDS kept.
 //
@@ -24,12 +25,17 @@
 
 import { CLONE_SAMPLES, CLONE_SECONDS } from "./clonedVoice";
 
-// [LAW:parse-dont-validate] The most a ten-second voice can weigh. Ten seconds of the fattest
-// audio a browser will decode — stereo 32-bit float at 96 kHz — is 7.7 MB, so a file past
-// this is not a recording of a voice; it is a file the reader took for one. It matters
-// because the decode is neither cut nor cancellable: an hour of podcast is 30 MB that
-// becomes 345 MB of samples on the thread drawing the form, which on a phone is the tab.
-export const CLONE_FILE_BYTES = 16 * 1024 * 1024;
+// [LAW:parse-dont-validate] The longest recording a clone may be cut from. The clone is its
+// first CLONE_SECONDS, so anything past that is the reader's convenience — but `decodeAudioData`
+// holds the WHOLE file as samples at the model's rate, and the decode is neither cut nor
+// cancellable, so an hour of podcast picked by mistake is 690 MB on the thread that draws the
+// form, which on a phone is the tab. Ten minutes is 115 MB at worst, which a phone survives.
+//
+// WHY LENGTH AND NOT BYTES. Bytes cannot tell the two apart: 16 MB of speech at 64 kbps is
+// half an hour, and 16 MB of CD-quality WAV is a minute and a half. A cap on size would
+// refuse the minute and a half — which this can clone from, and always could — while waving
+// the half hour through [LAW:one-source-of-truth].
+export const CLONE_FILE_SECONDS = 10 * 60;
 
 // A recording under way: its samples once it ends, the fact that it has ended — by the
 // reader's tap or by the cap — and the reader's way to end it.
@@ -75,6 +81,9 @@ export interface CaptureConfig {
   readonly microphone: () => Promise<Stream>;
   // `new MediaRecorder(stream)` in the page.
   readonly Recorder: (stream: Stream) => Recorder;
+  // `new Audio()` over a blob URL in the page: how long the reader's file is, read from its
+  // metadata, without decoding a sample of it.
+  readonly duration: (file: Blob) => Promise<number>;
   readonly setTimeout: (fn: () => void, ms: number) => unknown;
   readonly clearTimeout: (handle: unknown) => void;
 }
@@ -91,11 +100,17 @@ export const monoOf = (audio: DecodedAudio): Float32Array<ArrayBuffer> => {
 };
 
 export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
+  // The one decode, for whichever road the audio came in on.
+  const samplesOf = async (audio: Blob): Promise<Float32Array<ArrayBuffer>> => monoOf(await config.Decoder().decodeAudioData(await audio.arrayBuffer()));
+
+  // [LAW:parse-dont-validate] The reader's file crossing into audio this can clone from: it
+  // is measured before a sample of it exists, because past that line it is held twice over,
+  // raw and decoded, with nothing on the form to tap while it happens.
   const decode = async (file: Blob): Promise<Float32Array<ArrayBuffer>> => {
-    // Weighed before a byte is read: past here the file is held twice over, raw and decoded,
-    // with nothing the reader can tap to stop it [LAW:no-silent-failure].
-    if (file.size > CLONE_FILE_BYTES) throw new Error(`that file is ${Math.round(file.size / (1024 * 1024))} MB — more than a ten-second voice can be`);
-    return monoOf(await config.Decoder().decodeAudioData(await file.arrayBuffer()));
+    const seconds = await config.duration(file);
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("this browser cannot tell how long that recording is");
+    if (seconds > CLONE_FILE_SECONDS) throw new Error(`that recording is ${Math.ceil(seconds / 60)} minutes — a voice is cloned from one of ${CLONE_FILE_SECONDS / 60} minutes or less`);
+    return samplesOf(file);
   };
 
   const record = (): Capture => {
@@ -135,7 +150,9 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
           made.addEventListener("error", (event) => reject(event.error instanceof Error ? event.error : new Error("the recorder failed")));
         });
         made.start();
-        return await decode(await blob);
+        // The recorder's blob is NOT measured: its length is the cap's to own, and what
+        // MediaRecorder writes for a duration is commonly Infinity.
+        return await samplesOf(await blob);
       } finally {
         config.clearTimeout(timer);
         release();

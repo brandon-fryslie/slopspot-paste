@@ -1242,6 +1242,23 @@ const dockTools = DOCK_TOOLS.filter((tool) => present[tool.id]);
                 Decoder: () => new OfflineAudioContext(1, 1, SAMPLE_RATE),
                 microphone: () => navigator.mediaDevices.getUserMedia({ audio: true }),
                 Recorder: (stream) => new MediaRecorder(stream as MediaStream),
+                // How long the reader's file is, before a sample of it exists: the browser
+                // opens the container and reads its metadata, never the audio.
+                duration: (file) =>
+                  new Promise<number>((resolve, reject) => {
+                    const probe = new Audio();
+                    const url = URL.createObjectURL(file);
+                    probe.preload = "metadata";
+                    probe.addEventListener("loadedmetadata", () => {
+                      URL.revokeObjectURL(url);
+                      resolve(probe.duration);
+                    });
+                    probe.addEventListener("error", () => {
+                      URL.revokeObjectURL(url);
+                      reject(new Error("this browser cannot open that file as audio"));
+                    });
+                    probe.src = url;
+                  }),
                 setTimeout: (fn, ms) => window.setTimeout(fn, ms),
                 clearTimeout: (handle) => window.clearTimeout(handle as number),
               }),

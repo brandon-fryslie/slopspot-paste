@@ -47,7 +47,7 @@ import { encodeFile } from "../src/renditionFile";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
-import { cloneVoice, isClonedKey, readClones, writeClones } from "../src/clonedVoice";
+import { cloneVoice, isClonedKey, readClones, writeClones, type ClonedVoiceKey } from "../src/clonedVoice";
 import { DEFAULT_PICK, DEFAULT_VOICES, PICKED_VOICES, readPick, writePick } from "../src/voiceChoice";
 import { createCloning } from "../src/voiceCloning";
 import { RECORD_LABEL, STOP_LABEL, mountVoicePicker } from "../src/voicePicker";
@@ -351,7 +351,6 @@ console.log("step: a script in hand puts the voice on stage before the model is 
   };
   assert("a download is offered once the model is ready, and not while the voice plays what the device keeps ahead of it — nothing is rendered until then", !savable(kept.state) && !savable(waiting.state) && savable(warmed));
   assert("a voice heard before the model is ready: the reading paused, its sample played; once ready, the voice itself", effects(step(waiting.state, { kind: "preview", voice: "marius" })) === "perform pause,hush,sample" && effects(step(warmed, { kind: "preview", voice: "marius" })) === "perform pause,hush,preview");
-  assert("a clone the reader removes silences the phrase previewing it: the previewer says its phrase on units of its own, which no repick reaches", effects(step(warmed, { kind: "forgot" })) === "hush");
 
   const failed = step(downloading.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
   assert("a load that fails behind a playing voice is on the line, where it stopped, and the voice plays on", failed.state.kind === "neural" && effects(failed) === "" && shown(failed.state) === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline | bar 120000000/239000000");
@@ -627,6 +626,16 @@ console.log("readout: the voice picker, cold, warm and mid-listen");
   const heard = step(speaking, { kind: "sounding", voice: "azelma" }).state;
   assert("the previewer's word: the voice sounding shows", voices(heard) === "alba/javert | live | azelma | reset off");
   assert("and clears when it is over", voices(step(heard, { kind: "sounding", voice: null }).state) === "alba/javert | live | silent | reset off");
+  const CLONE: ClonedVoiceKey = `clone:${"c".repeat(64)}`;
+  const auditioned = step(speaking, { kind: "sounding", voice: CLONE }).state;
+  assert(
+    "a clone removed while its own phrase sounds is hushed: the previewer speaks on units of its own, which the repick's cancel never reaches",
+    effects(step(auditioned, { kind: "forgot", voice: CLONE })) === "hush",
+  );
+  assert(
+    "a clone removed while another voice is being heard leaves it sounding: deleting a row is not a transport gesture",
+    effects(step(heard, { kind: "forgot", voice: CLONE })) === "" && effects(step(speaking, { kind: "forgot", voice: CLONE })) === "",
+  );
   const sampled = step(probing, { kind: "sounding", voice: "azelma" }).state;
   assert("the sample player's word before the voice is on stage: the voice sounding shows there too", voices(sampled) === "alba/javert | samples: Samples · the voice itself plays once it is ready on this device. | azelma | reset off");
   const staged = step(step(step(step(step(step(sampled, supported).state, yes).state, progress(1, 1)).state, ready).state, scriptBack).state, { kind: "view", view: viewOf({ kind: "idle" }) }).state;
@@ -1847,9 +1856,14 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   // by the name the reader gave it, never its key.
   r.emit({ kind: "clone-failed", voice: mine.key, message: "no prompt" });
   assert("a clone the model could not make is said on the form, by name", picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Brandon cannot be spoken on this device: no prompt");
+  // Their own voice auditioned, then removed mid-phrase. The pure arm above proves the
+  // machine hushes; this proves the removal ever reaches it — a reducer arm nothing dispatches
+  // is a fix the check cannot see [LAW:verifiable-goals].
+  picker.querySelector<HTMLButtonElement>(`.voice-option[data-voice="${mine.key}"] .voice-preview`)?.click();
+  assert("heard with the model ready: the phrase is asked of the worker under an id below zero, in their own voice", r.said().endsWith("synthesize -1") && (r.sent.at(-1) as { voice: string }).voice === mine.key);
   picker.querySelector<HTMLButtonElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-remove`)?.click();
   assert("removed: gone from the device, from both pickers' rows and shelves, and the pick reads the reader's default — the other role kept", readClones(r.store).length === 0 && optionsOf(picker, "user").length === 6 && r.mini.voices.picker.querySelector(".voice-clone") === null && checked(picker) === "alba/fantine");
-  assert("the voice on stage is told the new map, and the worker is told to forget it after the unit under way gives way", r.said().endsWith("synthesize 0,cancel 0,forget"));
+  assert("the voice on stage is told the new map, the phrase sounding in that voice is withdrawn, and only then is the worker told to forget it — the work stops before the thing it worked from goes", r.said().endsWith("synthesize -1,cancel 0,cancel -1,forget"));
   panel.dispose();
 }
 
