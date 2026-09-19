@@ -220,10 +220,11 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   // AND BOTH ARE TOLD THE LENGTH, because both are cut to it. `clonePrompt` keeps CLONE_SAMPLES
   // of whatever it is handed, so a leisurely twenty-second take of this passage — an entirely
   // ordinary thing to record on a phone — still becomes ten seconds, and a reader who is not told
-  // so clones a voice that never said `worth` or `mile`. Record wears its budget on the button
-  // (RECORD_LABEL); Upload accepts files up to CLONE_FILE_SECONDS and wore nothing at all, so a
-  // sentence promising "nothing goes missing" promised the opposite of what the code does. Saying
-  // the number is what makes the promise true [LAW:no-silent-failure].
+  // so clones a voice that never said `worth` or `mile`. NEITHER BUTTON CARRIES THE NUMBER — Record
+  // names the action alone, because there are two durations now and one figure on a button claimed
+  // to be both (RECORD_LABEL, asserted to hold no digit), and Upload never named one — so this
+  // sentence is the only place either reader learns what is kept, and without it a form promising
+  // "nothing goes missing" promised the opposite of what the code does [LAW:no-silent-failure].
   //
   // AND IT SAYS WHERE THE TEN SECONDS BEGIN, which is the reader's first word rather than the tap:
   // voiceCapture.ts records past its cap and takes the clone from where the voice begins

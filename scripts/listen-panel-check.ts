@@ -1867,11 +1867,11 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   assert("the Record button claims no duration, since there are two of them and it cannot name both", !/\d/.test(RECORD_LABEL));
   // [LAW:no-silent-failure] The microphone outlasts the clone it collects — it runs to
   // RECORDING_SECONDS so that ten seconds of VOICE survive a reader who takes a moment to begin — and
-  // the button still reads "Record 10 s", which now names the kept length rather than the recording's.
-  // So the running note is the one place a reader learns when it closes itself, and a reader who
-  // pauses mid-sentence has it close from under them if nothing said so.
+  // the button names no duration at all, as the assertion just above holds it to. So the running note
+  // is the ONE place a reader learns when the recording closes itself, and a reader who pauses
+  // mid-sentence has it close from under them if nothing said so.
   assert(
-    "the note names the cap the microphone really runs to, since the button names the kept length instead",
+    "the note names the cap the microphone really runs to, since the button names no duration at all",
     picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.includes(`${RECORDING_SECONDS} s`) === true,
   );
   // Stop is not described by the passage: read out over a running ten-second recording, the

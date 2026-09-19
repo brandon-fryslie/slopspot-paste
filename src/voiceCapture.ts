@@ -132,9 +132,17 @@ const FRAME_SAMPLES = SAMPLE_RATE / 50;
 //
 // [LAW:types-are-the-program] A frame above a floor is not speech, and treating it as one is a
 // weaker theorem than the domain supports: speech SUSTAINS — a vowel runs 50 to 200 ms — while the
-// things that share a recording with it do not. A lip smack, a chair creak, a breath, a key is 5 to
-// 20 ms, clears the floor on its own, and opened the window on it. Three frames is 60 ms: inside any
-// real word, past anything that merely ticks.
+// SHARPEST things that share a recording with it do not. A lip smack, a click, a key, the tick of
+// the button itself is 5 to 20 ms, clears the floor on its own, and opened the window on it. Three
+// frames is 60 ms: inside any real word, past anything that merely ticks.
+//
+// It rejects IMPULSES, and claims nothing beyond them. A knock with a tail — a phone set down, a
+// chair creak, a breath into a close mic — runs 150 to 500 ms, which is 8 to 25 frames: it sustains
+// past any run length a real word would also survive, so NO value of this constant separates those
+// two. What that costs is bounded and falls the benign way — the window opens early, on room tone,
+// which is where every recording started before this function existed. Buying the thump off with a
+// longer run would cost a softly-spoken first word, which is the loss the whole function exists to
+// prevent [LAW:no-silent-failure].
 //
 // Hardening the floor against transients (SPEECH_PERCENTILE) was only half of it. That kept one thud
 // from raising the floor above the whole passage; this keeps one tick from passing for its first
@@ -171,8 +179,9 @@ const VOICE_FRACTION_OF_SPEECH = 0.03;
 // ABSOLUTE, where the trim's floor is relative, and the difference is not taste — it is which
 // question each answers. "Where does the voice start" is scale-free, so it must be relative. "Is
 // there a voice here at all" is the one question a relative measure CANNOT answer, because room tone
-// scaled up is indistinguishable from speech by any ratio you care to take. So it gets a real level:
-// −40 dBFS, quieter than any recording a voice can be cloned from, louder than a silent room.
+// scaled up is indistinguishable from speech by any ratio you care to take. So it gets a real level,
+// read off the same `speechLevel` the trim's floor is drawn from: −40 dBFS, quieter than any
+// recording a voice can be cloned from, louder than a silent room.
 //
 // Without it, length is the only thing standing between the reader and a clone of nothing. Thirteen
 // seconds of room tone trims to exactly CLONE_SAMPLES of room tone, which is a whole clone long and
@@ -183,6 +192,41 @@ export const SILENT_BELOW = 0.01;
 // Backed off from the frame that crossed the floor, so the attack of the first word is inside the
 // clone rather than merely the thing that located it.
 const PREROLL_SAMPLES = Math.round(0.05 * SAMPLE_RATE);
+
+// Every 20 ms frame's level, as RMS.
+//
+// Bounded here rather than trusted to arrive bounded: only PROMPT_SAMPLES of a recording can become
+// a clone, so that is both the most worth scanning and the stretch a level should be read off,
+// whatever length the caller happens to hand over [LAW:parse-dont-validate].
+const frameLevels = (mono: Float32Array): Float32Array => {
+  const frames = Math.floor(Math.min(mono.length, PROMPT_SAMPLES) / FRAME_SAMPLES);
+  const level = new Float32Array(frames);
+  for (let frame = 0; frame < frames; frame++) {
+    const at = frame * FRAME_SAMPLES;
+    let square = 0;
+    for (let i = at; i < at + FRAME_SAMPLES; i++) square += (mono[i] ?? 0) ** 2;
+    level[frame] = Math.sqrt(square / FRAME_SAMPLES);
+  }
+  return level;
+};
+
+// SPEECH_PERCENTILE of those frame levels, which is the whole of what this file means by loudness.
+const levelOf = (level: Float32Array): number => {
+  if (level.length === 0) return 0;
+  const ranked = Float32Array.from(level).sort();
+  return ranked[Math.min(level.length - 1, Math.floor(level.length * SPEECH_PERCENTILE))] ?? 0;
+};
+
+// How loud the voice in a recording is. [LAW:single-enforcer] the ONE way loudness is measured here,
+// for both of the questions asked of it: WHERE the voice starts, and WHETHER there is one.
+//
+// The second used to answer it its own way, and answered it with a PEAK — the estimator the thirty
+// lines above exist to argue against, reintroduced under the floor they were written for. A peak is
+// defeated by one sample: a single startup pop off a USB or Bluetooth capture, at 0.05, carries a
+// muted microphone's whole thirteen seconds of room tone past SILENT_BELOW, and the reader is handed
+// a clone of their empty room that synthesises as silence. Two ways of asking one question is how
+// the two answers come to disagree [LAW:one-source-of-truth].
+export const speechLevel = (mono: Float32Array): number => levelOf(frameLevels(mono));
 
 // The decoded audio as the model's mono waveform, bounded to the part that can become a clone.
 export const monoOf = (audio: DecodedAudio): Float32Array<ArrayBuffer> => {
@@ -212,20 +256,10 @@ export const monoOf = (audio: DecodedAudio): Float32Array<ArrayBuffer> => {
 // Neither answer is a judgement about whether there is a voice in the recording, and this is the
 // wrong place to make one: this reports WHERE, and SILENT_BELOW decides WHETHER.
 export const speechStart = (mono: Float32Array): number => {
-  // Bounded here rather than trusted to arrive bounded: only PROMPT_SAMPLES of a recording can
-  // become a clone, so that is both the most worth scanning and the stretch the floor should be
-  // calibrated on, whatever length the caller happens to hand over [LAW:parse-dont-validate].
-  const frames = Math.floor(Math.min(mono.length, PROMPT_SAMPLES) / FRAME_SAMPLES);
+  const level = frameLevels(mono);
+  const frames = level.length;
   if (frames === 0) return 0;
-  const level = new Float32Array(frames);
-  for (let frame = 0; frame < frames; frame++) {
-    const at = frame * FRAME_SAMPLES;
-    let square = 0;
-    for (let i = at; i < at + FRAME_SAMPLES; i++) square += (mono[i] ?? 0) ** 2;
-    level[frame] = Math.sqrt(square / FRAME_SAMPLES);
-  }
-  const ranked = Float32Array.from(level).sort();
-  const floor = (ranked[Math.min(frames - 1, Math.floor(frames * SPEECH_PERCENTILE))] ?? 0) * VOICE_FRACTION_OF_SPEECH;
+  const floor = levelOf(level) * VOICE_FRACTION_OF_SPEECH;
   if (floor <= 0) return 0;
   // The run may be CONFIRMED past the allowance even though it must BEGIN inside it, so a word
   // starting on the allowance's last frame is still a word rather than a truncated near-miss.
@@ -271,9 +305,7 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
   // for whichever road the audio came in on.
   const samplesOf = async (audio: Blob): Promise<Float32Array<ArrayBuffer>> => {
     const prompt = clonePrompt(monoOf(await config.Decoder().decodeAudioData(await audio.arrayBuffer())));
-    let peak = 0;
-    for (const x of prompt) peak = Math.max(peak, Math.abs(x));
-    if (peak < SILENT_BELOW) throw new Error("there is no voice in that recording — it may be silent, or the microphone may not have been heard");
+    if (speechLevel(prompt) < SILENT_BELOW) throw new Error("there is no voice in that recording — it may be silent, or the microphone may not have been heard");
     return prompt;
   };
 

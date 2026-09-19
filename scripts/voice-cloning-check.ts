@@ -8,7 +8,7 @@
 import { CLONE_SAMPLES, CLONE_SECONDS, cloneVoice, readClones, writeClones, type ClonedVoice } from "../src/clonedVoice";
 import { SAMPLE_RATE } from "../src/modelAssets";
 import type { PreferenceStore } from "../src/preferenceStore";
-import { CLONE_FILE_SECONDS, LEAD_IN_SAMPLES, LEAD_IN_SECONDS, PROMPT_SAMPLES, RECORDING_SECONDS, clonePrompt, createVoiceCapture, monoOf, speechStart, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
+import { CLONE_FILE_SECONDS, LEAD_IN_SAMPLES, LEAD_IN_SECONDS, PROMPT_SAMPLES, RECORDING_SECONDS, SILENT_BELOW, clonePrompt, createVoiceCapture, monoOf, speechLevel, speechStart, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
 import { BUSY, REFUSED, REMOVAL_REFUSED, createCloning, initialCloning, step, type CloningEvent, type CloningState } from "../src/voiceCloning";
 import { memoryPreferences } from "./preferenceStub";
 
@@ -306,6 +306,19 @@ console.log("the clone is ten seconds of voice, not ten seconds of clock");
   let hushed = "";
   await hush.decode(new Blob([new Uint8Array(4)])).catch((e: unknown) => (hushed = e instanceof Error ? e.message : String(e)));
   assert("a recording with no voice in it is refused, since being a whole clone long says nothing about that", hushed.includes("no voice in that recording"));
+
+  // [LAW:one-source-of-truth] And it is refused by the SAME measure the trim's floor is drawn from,
+  // because a peak would not refuse it. One startup pop — a single sample at 0.05, which USB and
+  // Bluetooth captures open with routinely — is 0.0023 of a frame's level and nothing at all to a
+  // percentile, while it drags a peak to five times SILENT_BELOW on its own. Measuring loudness one
+  // way for "where does the voice start" and another for "is there a voice" let a muted microphone
+  // through on the strength of its own click.
+  const popped = tone(PROMPT_SAMPLES / SAMPLE_RATE, 0.001);
+  popped[Math.round(2 * SAMPLE_RATE)] = 0.05;
+  assert(
+    "a pop is not a voice: one loud sample does not carry a silent room past the refusal",
+    speechLevel(popped) < SILENT_BELOW && peakOf(popped, 0, popped.length) > SILENT_BELOW * 4,
+  );
 
   // [LAW:verifiable-goals] The ordinary reader, who is the one the passage is NOT cut for: it fits a
   // SLOW reader inside the clone's length, so an ordinary pace finishes early and taps Stop. The

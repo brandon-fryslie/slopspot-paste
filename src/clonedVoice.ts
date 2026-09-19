@@ -76,7 +76,10 @@ export const cloneName = (raw: string): string => {
 // reinstating the old truncation for whoever adds the next road in [LAW:no-silent-failure].
 export const quantize = (pcm: Float32Array): Int16Array<ArrayBuffer> => {
   if (pcm.length > CLONE_SAMPLES) {
-    throw new Error(`a clone is ${CLONE_SECONDS} s at most and these samples are ${(pcm.length / SAMPLE_RATE).toFixed(1)} s: they did not come through clonePrompt`);
+    // The reader sees this verbatim ("Could not make the voice: …"), so it says whose fault it is
+    // before it says anything they cannot act on: a broken invariant is not a thing about their
+    // recording [LAW:no-silent-failure].
+    throw new Error(`that recording could not be prepared to clone from, which is a fault in this page rather than in the recording — ${(pcm.length / SAMPLE_RATE).toFixed(1)} s of samples where a clone is ${CLONE_SECONDS} s at most, so they did not come through clonePrompt`);
   }
   const samples = new Int16Array(new ArrayBuffer(pcm.length * 2));
   for (const [i, x] of pcm.entries()) samples[i] = Math.round(Math.max(-1, Math.min(1, x)) * 32767);
