@@ -202,7 +202,10 @@ const resultText = (content: ToolResultBlock["content"]): string => {
 // is ALL of it. This site is a transcript-paste tool, so the people using it write about
 // these very tags: "what does <local-command-stdout> mean?" is prose that MENTIONS an
 // envelope, and treating a mention as the thing would throw the rest of their sentence away
-// [LAW:no-silent-failure]. The same rule guards speakerOf's reading below.
+// [LAW:no-silent-failure]. The same rule guards speakerOf's reading below. The dropped-whole
+// pair is the one exception, for a reason stated where it happens: the harness writes a
+// reminder onto the end of the very line the person typed, so there is no whole-text rule
+// left to apply to it.
 const DROPPED_WHOLE = /<(system-reminder|local-command-caveat)>[\s\S]*?<\/\1>/g;
 const STDOUT_BLOCK = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/;
 const COMMAND_PART = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
