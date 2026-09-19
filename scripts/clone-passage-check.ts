@@ -8,7 +8,7 @@
 // however you like: this check tells you which sound you just dropped.
 
 import { CLONE_SECONDS } from "../src/clonedVoice";
-import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, LEAD_IN_SECONDS, READING_WORDS_PER_MINUTE, VOWEL_SOUNDS, passageWords } from "../src/clonePassage";
+import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, LEAD_IN_SECONDS, SLOWEST_READING_WORDS_PER_MINUTE, VOWEL_SOUNDS, passageWords } from "../src/clonePassage";
 
 // [LAW:one-source-of-truth] The sounds of General American English, which is a fact about the
 // language and not about this passage — so it is declared here, against which the module's table
@@ -19,6 +19,16 @@ const CONSONANTS = "p b t d k g f v θ ð s z ʃ ʒ h tʃ dʒ m n ŋ l r w j".sp
 const VOWELS = "i ɪ eɪ ɛ æ ɑ ɔ oʊ ʊ u ʌ ɜr aɪ aʊ ɔɪ ə".split(" ");
 
 const sameSet = (got: ReadonlyArray<string>, want: ReadonlyArray<string>): boolean => got.length === want.length && [...want].sort().join() === [...got].sort().join();
+
+// [LAW:no-silent-failure] Why a discrepancy names BOTH sides: a row for a sound the language does
+// not have is as wrong as a missing one, and reporting only what is missing can print a reason
+// that contradicts itself — a duplicated or extra row fails `sameSet` on length while nothing at
+// all is missing, which used to read `off by none missing` and named nothing to go and fix.
+const offBy = (got: ReadonlyArray<string>, want: ReadonlyArray<string>): string =>
+  [
+    ...want.filter((p) => !got.includes(p)).map((p) => `/${p}/ missing`),
+    ...got.filter((p) => !want.includes(p)).map((p) => `/${p}/ is not one of them`),
+  ].join(", ") || "one of them listed twice";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -60,8 +70,8 @@ console.log("the inventory is whole and says each sound once");
 {
   const consonants = CONSONANT_SOUNDS.map(({ phoneme }) => phoneme);
   const vowels = VOWEL_SOUNDS.map(({ phoneme }) => phoneme);
-  assert(`the 24 consonants of the language, each one carried (found ${consonants.length}${sameSet(consonants, CONSONANTS) ? "" : `, off by ${CONSONANTS.filter((p) => !consonants.includes(p)).map((p) => `/${p}/`).join(" ") || "none missing"}`})`, sameSet(consonants, CONSONANTS));
-  assert(`the 16 vowels, each one carried (found ${vowels.length}${sameSet(vowels, VOWELS) ? "" : `, off by ${VOWELS.filter((p) => !vowels.includes(p)).map((p) => `/${p}/`).join(" ") || "none missing"}`})`, sameSet(vowels, VOWELS));
+  assert(`the 24 consonants of the language, each one carried (found ${consonants.length}${sameSet(consonants, CONSONANTS) ? "" : `, off by ${offBy(consonants, CONSONANTS)}`})`, sameSet(consonants, CONSONANTS));
+  assert(`the 16 vowels, each one carried (found ${vowels.length}${sameSet(vowels, VOWELS) ? "" : `, off by ${offBy(vowels, VOWELS)}`})`, sameSet(vowels, VOWELS));
   const phonemes = CLONE_PASSAGE_SOUNDS.map(({ phoneme }) => phoneme);
   const twice = phonemes.filter((p, i) => phonemes.indexOf(p) !== i);
   assert(`no sound is listed twice${twice.length === 0 ? "" : ` — ${[...new Set(twice)].map((p) => `/${p}/`).join(", ")}`}`, twice.length === 0);
@@ -72,13 +82,19 @@ console.log("the passage fits inside the recording");
 {
   // The recording's clock starts when the microphone opens, not at the reader's first word, and
   // the capture keeps the FIRST ten seconds — so the lead-in is spent out of the same budget and
-  // anything still unread when the cap fires is cut off with no sign to the reader. Budget both.
-  const reading = (words.length / READING_WORDS_PER_MINUTE) * 60;
-  const spoken = reading + LEAD_IN_SECONDS;
-  assert(`${words.length} words at ${READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s, and ${spoken.toFixed(1)} s with the ${LEAD_IN_SECONDS} s lead-in — inside the ${CLONE_SECONDS} s recording`, spoken <= CLONE_SECONDS);
-  // A passage that fits with seconds to spare is one that could be carrying more sounds in more
-  // contexts; this floor says it is not wastefully short.
-  assert(`and long enough to be worth the recording (${spoken.toFixed(1)} s of ${CLONE_SECONDS} s used)`, spoken >= CLONE_SECONDS * 0.7);
+  // anything still unread when the cap fires is cut off with no sign to the reader. What the
+  // reader actually gets for reading is therefore the recording MINUS the lead-in.
+  const readingWindow = CLONE_SECONDS - LEAD_IN_SECONDS;
+  const reading = (words.length / SLOWEST_READING_WORDS_PER_MINUTE) * 60;
+  // [LAW:verifiable-goals] The rate below which the tail is really lost — one derived number, and
+  // the only one a human can argue with, so the check states it either way instead of reporting
+  // pass/fail against an assumed pace. Both bounds below read off this same reading time
+  // [LAW:one-source-of-truth]: one quantity, two edges, no second constant to drift.
+  const cutOffBelow = (words.length / readingWindow) * 60;
+  assert(`${words.length} words at ${SLOWEST_READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s of the ${readingWindow.toFixed(1)} s the reader gets once the ${LEAD_IN_SECONDS} s lead-in is spent — so the tail is lost only below ${cutOffBelow.toFixed(0)} wpm`, reading <= readingWindow);
+  // A passage that leaves most of the window empty is one that could be carrying more sounds in
+  // more contexts; this floor says it is not wastefully short.
+  assert(`and long enough to be worth the recording (${((reading / readingWindow) * 100).toFixed(0)}% of that window used)`, reading >= readingWindow * 0.7);
 }
 
 console.log("the passage is plain enough to read cold");

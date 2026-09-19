@@ -1861,6 +1861,11 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   assert("Stop is described by the note saying where the making is, not by the passage", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.getAttribute("aria-describedby") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert("the microphone refused: idle again, the reason on the form", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no microphone in the check");
+  // The button says Record again, but what needs saying is why the last one failed — so the
+  // description follows the note and not the phase. Pointed back at the passage here, a reader
+  // arriving at the button by keyboard is read the words to say and never the reason it failed.
+  assert("a Record offered after a failure is described by the reason, not by the passage again", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.getAttribute("aria-describedby") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
+  assert("and the reason is a status region, so it is announced where it lands rather than waiting to be found", picker.querySelector<HTMLElement>(".voice-clone-note")?.getAttribute("role") === "status" && r.mini.voices.picker.querySelector<HTMLElement>(".voice-clone-note")?.getAttribute("role") === "status");
   // A clone the model refused, said by the worker, lands on the form too — naming the clone
   // by the name the reader gave it, never its key.
   r.emit({ kind: "clone-failed", voice: mine.key, message: "no prompt" });

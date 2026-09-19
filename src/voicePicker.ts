@@ -207,7 +207,15 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   // Both ways in get the same instruction: an uploaded recording of arbitrary speech is thin in
   // exactly the sounds it missed, the same as an improvised one, so naming only Record here
   // would leave the Upload path with the defect this passage exists to remove.
-  read.textContent = "Read this aloud to record, or upload a recording of yourself reading it — it covers every sound English makes, so nothing in your voice goes missing:";
+  //
+  // AND BOTH ARE TOLD THE LENGTH, because both are cut to it. voiceCapture.ts's `monoOf` keeps
+  // the FIRST CLONE_SAMPLES of whatever it is handed, so a leisurely twenty-second take of this
+  // passage — an entirely ordinary thing to record on a phone — is silently truncated to the
+  // first ten and clones a voice that never said `worth` or `mile`. Record at least wears its
+  // budget on the button (RECORD_LABEL); Upload accepts files up to CLONE_FILE_SECONDS and wore
+  // nothing at all, so a sentence promising "nothing goes missing" was promising the opposite of
+  // what the code does. Saying the number is what makes the promise true [LAW:no-silent-failure].
+  read.textContent = `Read this aloud, or upload a recording of yourself reading it — only the first ${CLONE_SECONDS} seconds are kept, and this covers every sound English makes, so nothing in your voice goes missing:`;
   const passage = el("p", "voice-clone-passage");
   passage.id = `${scope}-clone-passage`;
   passage.textContent = CLONE_PASSAGE;
@@ -219,9 +227,9 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   name.setAttribute("aria-label", "Name for the voice");
   const record = el("button", "mono-pill voice-clone-record");
   record.type = "button";
-  // Its `aria-describedby` is written by `render` from the state, not set once here: the button
-  // is Record before the tap and Stop during, and those two ask to be described by different
-  // things [LAW:one-source-of-truth] — one writer for the attribute, the render.
+  // Its `aria-describedby` is written by `render`, not set once here: what usefully describes
+  // this button is the words to read until there is a note, and the note from then on
+  // [LAW:one-source-of-truth] — one writer for the attribute, the render.
   record.addEventListener("click", () => (record.dataset.recording === "true" ? on.stop() : on.record(name.value)));
   const upload = el("button", "mono-pill voice-clone-upload");
   upload.type = "button";
@@ -239,6 +247,11 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   });
   const making = el("p", "voice-note voice-clone-note");
   making.id = `${scope}-clone-note`;
+  // [LAW:no-silent-failure] A status region, because this is where a failure lands. "Could not
+  // make the voice: no microphone" arrives while focus is still on Record and nothing moves to
+  // it, so without a live region the reason is written to a screen nobody is looking at — and a
+  // reader using a screen reader is told only that the button says Record again.
+  making.setAttribute("role", "status");
   attach(form, name, record, upload, file);
   attach(own, ownLegend, clones, read, passage, form, making);
   attach(root, own);
@@ -295,10 +308,6 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       built.record.dataset.recording = String(phase.kind === "recording");
       built.record.textContent = phase.kind === "recording" ? STOP_LABEL : RECORD_LABEL;
       built.record.disabled = phase.kind === "making";
-      // Described by the words to read while it is Record, and by the line saying where the
-      // making is once it is Stop: reading the whole passage out over a running ten-second
-      // recording would outlast the recording it was meant to help end.
-      built.record.setAttribute("aria-describedby", phase.kind === "recording" ? built.making.id : built.passage.id);
       built.upload.disabled = phase.kind !== "idle";
       built.name.disabled = phase.kind !== "idle";
       // The note is the last word said to the reader and outranks the phase's own line: a
@@ -307,6 +316,14 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       const said = note ?? (phase.kind === "recording" ? `Recording ${phase.name || "your voice"}… speak for up to ${CLONE_SECONDS} seconds.` : phase.kind === "making" ? MAKING_NOTE : null);
       built.making.textContent = said ?? "";
       built.making.hidden = said === null;
+      // [LAW:dataflow-not-control-flow] Described by whatever was last said to the reader when
+      // there is anything, and by the words to read when there is not. Keyed on `said` rather
+      // than on the phase because `said` is the thing that decides whether a note exists at all:
+      // a failure leaves the button reading Record with the reason sitting in the note, and a
+      // rule that enumerated phases pointed that reader back at the passage and announced the
+      // reason nowhere. Reading the whole passage out over a running recording would likewise
+      // outlast the recording it was meant to help end, and this covers that by construction.
+      built.record.setAttribute("aria-describedby", said === null ? built.passage.id : built.making.id);
     },
   };
 };

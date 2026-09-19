@@ -28,11 +28,17 @@
 // Read aloud at an unhurried pace, this is what the reader records. It is ordinary English a
 // person can read cold, because a tongue-twister is read in a tongue-twister's voice and the
 // prosody is part of what gets cloned.
-export const CLONE_PASSAGE = "She found one huge beige garage, then proudly walked home singing that Joyce's church visit would be worth every mile.";
+export const CLONE_PASSAGE = "She walked home from Joyce's huge beige garage, chanting proudly that it looked worth every mile.";
 
-// The pace the passage is budgeted against. Conversation runs nearer 190 wpm, but a reader
-// reading a sentence off a screen into a microphone slows down.
-export const READING_WORDS_PER_MINUTE = 150;
+// The slowest reader the passage must survive — a bound, not an average, and the difference is
+// the whole point. A fluent adult reads prose aloud nearer 150 wpm, but the typical rate is not
+// the number that matters here, because the two ways of being wrong cost wildly different
+// amounts [LAW:no-silent-failure]: budget generously and a slower reader is cut off mid-sentence,
+// which is silent and takes whichever sounds live in the tail out of the clone for good; budget
+// tightly and a quicker reader leaves a second of room tone on the end, which costs nothing. So
+// the passage is held to the slow edge, and the check reports the rate below which the tail is
+// actually lost rather than a pass against an assumed pace.
+export const SLOWEST_READING_WORDS_PER_MINUTE = 120;
 
 // [LAW:no-ambient-temporal-coupling] The recording's clock does NOT start at the reader's first
 // word. voiceCapture.ts arms the cap when the microphone opens and keeps the FIRST
@@ -84,24 +90,24 @@ export interface Sound {
 export const CONSONANT_SOUNDS: ReadonlyArray<Sound> = [
   { phoneme: "p", word: "proudly" },
   { phoneme: "b", word: "beige" },
-  { phoneme: "t", word: "that" },
-  { phoneme: "d", word: "would" },
-  { phoneme: "k", word: "walked" },
+  { phoneme: "t", word: "walked" },
+  { phoneme: "d", word: "proudly" },
+  { phoneme: "k", word: "looked" },
   { phoneme: "g", word: "garage" },
-  { phoneme: "f", word: "found" },
-  { phoneme: "v", word: "visit" },
+  { phoneme: "f", word: "from" },
+  { phoneme: "v", word: "every" },
   { phoneme: "θ", word: "worth" },
-  { phoneme: "ð", word: "then" },
-  { phoneme: "s", word: "singing" },
+  { phoneme: "ð", word: "that" },
+  { phoneme: "s", word: "Joyce's" },
   { phoneme: "z", word: "Joyce's" },
   { phoneme: "ʃ", word: "she" },
   { phoneme: "ʒ", word: "beige" },
   { phoneme: "h", word: "home" },
-  { phoneme: "tʃ", word: "church" },
+  { phoneme: "tʃ", word: "chanting" },
   { phoneme: "dʒ", word: "huge" },
   { phoneme: "m", word: "mile" },
-  { phoneme: "n", word: "one" },
-  { phoneme: "ŋ", word: "singing" },
+  { phoneme: "n", word: "chanting" },
+  { phoneme: "ŋ", word: "chanting" },
   { phoneme: "l", word: "proudly" },
   { phoneme: "r", word: "proudly" },
   { phoneme: "w", word: "walked" },
@@ -112,19 +118,19 @@ export const CONSONANT_SOUNDS: ReadonlyArray<Sound> = [
 // holds no /ʊ/, no /ɔɪ/ and no /aʊ/ at all.
 export const VOWEL_SOUNDS: ReadonlyArray<Sound> = [
   { phoneme: "i", word: "she" },
-  { phoneme: "ɪ", word: "visit" },
+  { phoneme: "ɪ", word: "it" },
   { phoneme: "eɪ", word: "beige" },
-  { phoneme: "ɛ", word: "then" },
+  { phoneme: "ɛ", word: "every" },
   { phoneme: "æ", word: "that" },
   { phoneme: "ɑ", word: "garage" },
   { phoneme: "ɔ", word: "walked" },
   { phoneme: "oʊ", word: "home" },
-  { phoneme: "ʊ", word: "would" },
+  { phoneme: "ʊ", word: "looked" },
   { phoneme: "u", word: "huge" },
-  { phoneme: "ʌ", word: "one" },
+  { phoneme: "ʌ", word: "from" },
   { phoneme: "ɜr", word: "worth" },
   { phoneme: "aɪ", word: "mile" },
-  { phoneme: "aʊ", word: "found" },
+  { phoneme: "aʊ", word: "proudly" },
   { phoneme: "ɔɪ", word: "Joyce's" },
   { phoneme: "ə", word: "garage" },
 ];
