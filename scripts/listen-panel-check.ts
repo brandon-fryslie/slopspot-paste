@@ -47,10 +47,11 @@ import { encodeFile } from "../src/renditionFile";
 import type { FromWorker, ToWorker } from "../src/synthesisProtocol";
 import { SCHEDULE_LEAD_S, type SegmentOffset } from "../src/unitPlayer";
 import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
-import { cloneVoice, isClonedKey, readClones, writeClones, type ClonedVoiceKey } from "../src/clonedVoice";
+import { CLONE_SECONDS, cloneVoice, isClonedKey, readClones, writeClones, type ClonedVoiceKey } from "../src/clonedVoice";
 import { DEFAULT_PICK, DEFAULT_VOICES, PICKED_VOICES, readPick, writePick } from "../src/voiceChoice";
 import { createCloning } from "../src/voiceCloning";
 import { CLONE_PASSAGE } from "../src/clonePassage";
+import { RECORDING_SECONDS } from "../src/voiceCapture";
 import { RECORD_LABEL, STOP_LABEL, mountVoicePicker } from "../src/voicePicker";
 import { samplePath } from "../src/voiceSample";
 import { FRAME_S, frame, StubAudio, StubDevice } from "./playbackStub";
@@ -1860,8 +1861,30 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   // fails and says so — on both forms, since both are views of one machine.
   picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.click();
   assert("a tap on Record: recording, the button now Stop, the note saying so", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.startsWith("Recording") === true && r.mini.voices.picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL);
-  // Stop is not described by the passage: read out over a running ten-second recording, the
-  // whole passage would outlast the recording it was meant to help end.
+  // [LAW:one-source-of-truth] The button names the action and NO duration. There are two durations
+  // now — the clone's length and the cap the microphone runs to — and a single number on the button
+  // silently claimed to be both, understating the cap while being the only figure a reader saw.
+  assert("the Record button claims no duration, since there are two of them and it cannot name both", !/\d/.test(RECORD_LABEL));
+
+  // [LAW:no-silent-failure] And the kept length is stated as a CEILING, because that is what it is:
+  // the reader who finishes the passage early and taps Stop keeps what they said, which is less. A
+  // flat "the 10 seconds kept" told the majority of readers they got a duration they did not.
+  assert(
+    "the instruction offers the kept length as a ceiling rather than a promise",
+    picker.querySelector<HTMLElement>(".voice-clone-read")?.textContent?.includes(`Up to ${CLONE_SECONDS} seconds are kept`) === true,
+  );
+  // [LAW:no-silent-failure] The microphone outlasts the clone it collects — it runs to
+  // RECORDING_SECONDS so that ten seconds of VOICE survive a reader who takes a moment to begin — and
+  // the button names no duration at all, as the assertion just above holds it to. So the running note
+  // is the ONE place a reader learns when the recording closes itself, and a reader who pauses
+  // mid-sentence has it close from under them if nothing said so.
+  assert(
+    "the note names the cap the microphone really runs to, since the button names no duration at all",
+    picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.includes(`${RECORDING_SECONDS} s`) === true,
+  );
+  // Stop is not described by the passage: announced over a recording already under way, the whole
+  // passage would still be reading itself out while the seconds it was meant to help spend ran down.
+  // (It used to say "a running ten-second recording" — the cap is RECORDING_SECONDS now.)
   assert("Stop is described by the note saying where the making is, and by nothing else", describes(".voice-clone-record").join(" ") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert("the microphone refused: idle again, the reason on the form", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no microphone in the check");

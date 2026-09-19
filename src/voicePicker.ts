@@ -40,6 +40,7 @@
 import { CLONE_PASSAGE } from "./clonePassage";
 import { CLONE_SECONDS, NAME_LENGTH, isClonedKey, type ClonedVoice, type ClonedVoiceKey, type VoiceKey } from "./clonedVoice";
 import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
+import { RECORDING_SECONDS } from "./voiceCapture";
 import { CLONE_CREDIT, PICKED_VOICES, ROLE_LABELS, voiceDescription, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
 import type { CloningState } from "./voiceCloning";
 
@@ -80,7 +81,13 @@ export const voiceCredit = (id: VoiceId): string => {
   return `${asset.attribution} · ${asset.licence}`;
 };
 
-export const RECORD_LABEL = `● Record ${CLONE_SECONDS} s`;
+// [LAW:one-source-of-truth] The button names the ACTION and no duration, because there are two now
+// and it was quietly claiming to be both. It used to be literally the cap; since the microphone runs
+// to RECORDING_SECONDS so that CLONE_SECONDS of voice can fit, "Record 10 s" understated how long it
+// stays open while also being the only number a reader saw. The kept length is stated in the
+// instruction that explains it, and the cap in the note for the recording actually under way — one
+// number in each place, each beside the thing it describes.
+export const RECORD_LABEL = "● Record";
 export const STOP_LABEL = "■ Stop";
 export const MAKING_NOTE = "Making the voice…";
 
@@ -210,22 +217,38 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   // exactly the sounds it missed, the same as an improvised one, so naming only Record here
   // would leave the Upload path with the defect this passage exists to remove.
   //
-  // AND IT OPENS BY SAYING WHEN TO START, because the reader is the only one who can spend the
-  // lead-in and nothing in the interface spends it for them: the cap is armed at mic-open, so
-  // clonePassage.ts budgets LEAD_IN_SECONDS out of the same ten and then has no way to make a
-  // reader honour it. The button says "Record 10 s" and the running note says "up to 10 seconds",
-  // both true, and both of them invite exactly the unhurried start that costs the tail. Until
-  // slopspot-voices-4f5 moves the clock to the reader's first word, this sentence is the whole
-  // mechanism [LAW:no-ambient-temporal-coupling].
+  // AND BOTH ARE TOLD THE LENGTH, because both are cut to it. `clonePrompt` keeps CLONE_SAMPLES
+  // of whatever it is handed, so a leisurely twenty-second take of this passage — an entirely
+  // ordinary thing to record on a phone — still becomes ten seconds, and a reader who is not told
+  // so clones a voice that never said `worth` or `mile`. NEITHER BUTTON CARRIES THE NUMBER — Record
+  // names the action alone, because there are two durations now and one figure on a button claimed
+  // to be both (RECORD_LABEL, asserted to hold no digit), and Upload never named one — so this
+  // sentence is the only place either reader learns what is kept, and without it a form promising
+  // "nothing goes missing" promised the opposite of what the code does [LAW:no-silent-failure].
   //
-  // AND BOTH ARE TOLD THE LENGTH, because both are cut to it. voiceCapture.ts's `monoOf` keeps
-  // the FIRST CLONE_SAMPLES of whatever it is handed, so a leisurely twenty-second take of this
-  // passage — an entirely ordinary thing to record on a phone — is silently truncated to the
-  // first ten and clones a voice that never said `worth` or `mile`. Record at least wears its
-  // budget on the button (RECORD_LABEL); Upload accepts files up to CLONE_FILE_SECONDS and wore
-  // nothing at all, so a sentence promising "nothing goes missing" was promising the opposite of
-  // what the code does. Saying the number is what makes the promise true [LAW:no-silent-failure].
-  read.textContent = `Start reading the moment you tap Record, or upload a recording of yourself reading it. Only the first ${CLONE_SECONDS} seconds are kept, and these words cover every sound English makes:`;
+  // AND IT SAYS WHERE THE TEN SECONDS BEGIN, which is the reader's first word rather than the tap:
+  // voiceCapture.ts records past its cap and takes the clone from where the voice begins
+  // (slopspot-voices-4f5). This used to read "Start reading the moment you tap Record" — a request
+  // standing in for a mechanism, because the lead-in was spent out of the same ten and nothing but
+  // the reader's haste could save it [LAW:no-ambient-temporal-coupling].
+  //
+  // BUT IT NAMES THE BOUND, because the mechanism has one and the promise must not outrun it.
+  // `speechStart` looks through LEAD_IN_SECONDS of silence and no further, so a first word later than
+  // that gets a window clamped to the allowance's end and loses a second of reading for every second
+  // more it took. "The ten seconds begin at your first word" read alone invites exactly that delay
+  // [LAW:no-silent-failure].
+  //
+  // AND IT NAMES IT WITHOUT SAYING "TAP", because this same sentence describes Upload, where there is
+  // no tap and no clock the reader controls — only a file whose own first seconds either hold their
+  // first word or do not. "Start within a few seconds of tapping" was an instruction half the readers
+  // of it could not act on, and a promise that was false for their file [LAW:one-type-per-behavior].
+  // UP TO, not a flat promise. The passage is cut to fit a SLOW reader inside CLONE_SECONDS, so an
+  // ordinary pace finishes it early and taps Stop, and what is kept is however long they spoke. That
+  // is the right answer — those are the same words, minus the room tone that used to be padded onto
+  // them — but a sentence promising ten flat says a reader got something they did not
+  // [LAW:no-silent-failure]. The number still has to appear, because it is the ceiling an unhurried
+  // twenty-second take is cut to.
+  read.textContent = `Read this aloud, or upload a recording of yourself reading it. Up to ${CLONE_SECONDS} seconds are kept, beginning at your first word as long as it comes in the first few seconds. These words cover every sound English makes:`;
   const passage = el("p", "voice-clone-passage");
   passage.id = `${scope}-clone-passage`;
   passage.textContent = CLONE_PASSAGE;
@@ -329,7 +352,7 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       // The note is the last word said to the reader and outranks the phase's own line: a
       // word arrives only when there is something to say, and the phase is plain from the
       // buttons [LAW:no-silent-failure].
-      const said = note ?? (phase.kind === "recording" ? `Recording ${phase.name || "your voice"}… speak for up to ${CLONE_SECONDS} seconds.` : phase.kind === "making" ? MAKING_NOTE : null);
+      const said = note ?? (phase.kind === "recording" ? `Recording ${phase.name || "your voice"}… read the passage. It stops itself after ${RECORDING_SECONDS} s, or tap Stop.` : phase.kind === "making" ? MAKING_NOTE : null);
       built.making.textContent = said ?? "";
       // [LAW:dataflow-not-control-flow] `aria-describedby` takes a LIST, and the two things worth
       // saying are independent, so they are computed independently and joined — never chosen
@@ -346,8 +369,8 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       const toRead = phase.kind === "recording" ? [] : [built.read.id, built.passage.id];
       // Upload is described by the same words as Record. Naming only Record here would leave the
       // Upload path with precisely the defect the passage exists to remove — a reader tabbing to
-      // it in focus mode would be told nothing about what to read, nor that only the first ten
-      // seconds of what they send survives [LAW:single-enforcer].
+      // it in focus mode would be told nothing about what to read, nor that ten seconds of what
+      // they send is what survives [LAW:single-enforcer].
       const describing = [saying, ...toRead].filter((id): id is string => id !== null).join(" ");
       built.record.setAttribute("aria-describedby", describing);
       built.upload.setAttribute("aria-describedby", describing);

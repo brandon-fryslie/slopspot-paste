@@ -11,10 +11,19 @@
 // cap's (below), and the file's is read from its metadata before it is decoded at all — one
 // measure each, at the head of its own road [LAW:single-enforcer]. The decode is the browser's `decodeAudioData` on an offline
 // context at the model's rate — the spec has it resample to the context's rate — then the
-// channels averaged to one and the first CLONE_SECONDS kept.
+// channels averaged to one and the clone's own CLONE_SECONDS found in them (`clonePrompt`).
+//
+// TEN SECONDS OF VOICE, NOT TEN SECONDS OF CLOCK. A reader moves their eyes to the passage and
+// draws breath before saying anything, so the head of a recording is room tone — and keeping the
+// FIRST CLONE_SAMPLES spent the clone's length on that twice over: the tail of the passage was
+// cut off to make room for it, and the prompt the encoder attends over opened on it. So the
+// window is found rather than assumed to start at sample zero — `speechStart` reports where the
+// voice begins and `clonePrompt` takes the clone's length from there. Both roads in get it,
+// because an uploaded voice memo opens on fumbling exactly the way a live one does
+// [LAW:single-enforcer].
 //
 // WHO STOPS THE RECORDING, AND WHO HEARS IT END. The recording ends on the reader's tap or
-// at CLONE_SECONDS, whichever is first, and the timer that ends it is the recording's own,
+// at RECORDING_SECONDS, whichever is first, and the timer that ends it is the recording's own,
 // cleared when the reader ends it: one owner of the end [LAW:no-ambient-temporal-coupling].
 // Both ends resolve `ended`, because the machine that drew the Stop button cannot see the
 // cap fire: a recording the cap ended would otherwise leave the form saying "Stop" over a
@@ -24,12 +33,14 @@
 // and the page hands it the window's own.
 
 import { CLONE_SAMPLES, CLONE_SECONDS } from "./clonedVoice";
+import { SAMPLE_RATE } from "./modelAssets";
 
-// [LAW:parse-dont-validate] The longest recording a clone may be cut from. The clone is its
-// first CLONE_SECONDS, so anything past that is the reader's convenience — but `decodeAudioData`
-// holds the WHOLE file as samples at the model's rate, and the decode is neither cut nor
-// cancellable, so an hour of podcast picked by mistake is 690 MB on the thread that draws the
-// form, which on a phone is the tab. Ten minutes is 115 MB at worst, which a phone survives.
+// [LAW:parse-dont-validate] The longest recording a clone may be cut from. The clone is
+// CLONE_SECONDS of it taken from where the voice starts, so anything past that is the reader's
+// convenience — but `decodeAudioData` holds the WHOLE file as samples at the model's rate, and the
+// decode is neither cut nor cancellable, so an hour of podcast picked by mistake is 690 MB on the
+// thread that draws the form, which on a phone is the tab. Ten minutes is 115 MB at worst, which
+// a phone survives.
 //
 // WHY LENGTH AND NOT BYTES. Bytes cannot tell the two apart: 16 MB of speech at 64 kbps is
 // half an hour, and 16 MB of CD-quality WAV is a minute and a half. A cap on size would
@@ -88,9 +99,138 @@ export interface CaptureConfig {
   readonly clearTimeout: (handle: unknown) => void;
 }
 
-// The decoded audio as the model's mono waveform, cut to a clone's length.
+// ── which CLONE_SECONDS of a recording the clone is made of ──────────────────────
+
+// [LAW:one-source-of-truth] How long a reader may take to reach their first word. ONE constant,
+// because it answers two questions that have to agree: how much longer than a clone the
+// microphone runs, and how much silence at the head `speechStart` will look through. Two numbers
+// could drift into a cap that stops before the lead-in it allows has even been skipped.
+//
+// It is a BOUND on the slowest starter, not a typical pause, and the asymmetry is the reason
+// [LAW:no-silent-failure]: set it tight and a reader who hesitates is cut off mid-passage, which
+// is silent and takes whichever sounds live in the tail out of the clone for good; set it
+// generously and a prompt reader waits a moment with a Stop button already in front of them,
+// which costs nothing. Three seconds is far longer than anyone needs to begin a sentence that is
+// already on the screen in front of them.
+export const LEAD_IN_SECONDS = 3;
+
+export const LEAD_IN_SAMPLES = LEAD_IN_SECONDS * SAMPLE_RATE;
+
+// How long the microphone runs. A clone's length PLUS the allowance, so a reader who spends all
+// of the allowance still leaves CLONE_SECONDS of voice behind rather than CLONE_SECONDS of clock.
+export const RECORDING_SECONDS = CLONE_SECONDS + LEAD_IN_SECONDS;
+
+// The most of a recording that can become a clone, and so the only part of it worth looking at:
+// the allowance, plus the clone's length after it. Bounding the work here is what keeps a
+// ten-minute upload from being measured end to end when all but its first seconds are discarded.
+export const PROMPT_SAMPLES = LEAD_IN_SAMPLES + CLONE_SAMPLES;
+
+// The scan's frame: 20 ms — short enough that the start of a word lands inside one frame.
+const FRAME_SAMPLES = SAMPLE_RATE / 50;
+
+// How many frames in a row must clear the floor before it counts as a word.
+//
+// [LAW:types-are-the-program] A frame above a floor is not speech, and treating it as one is a
+// weaker theorem than the domain supports: speech SUSTAINS — a vowel runs 50 to 200 ms — while the
+// SHARPEST things that share a recording with it do not. A lip smack, a click, a key, the tick of
+// the button itself is 5 to 20 ms, clears the floor on its own, and opened the window on it. Three
+// frames is 60 ms: inside any real word, past anything that merely ticks.
+//
+// It rejects IMPULSES, and claims nothing beyond them. A knock with a tail — a phone set down, a
+// chair creak, a breath into a close mic — runs 150 to 500 ms, which is 8 to 25 frames: it sustains
+// past any run length a real word would also survive, so NO value of this constant separates those
+// two. What that costs is bounded and falls the benign way — the window opens early, on room tone,
+// which is where every recording started before this function existed. Buying the thump off with a
+// longer run would cost a softly-spoken first word, which is the loss the whole function exists to
+// prevent [LAW:no-silent-failure].
+//
+// Hardening the floor against transients (SPEECH_PERCENTILE) was only half of it. That kept one thud
+// from raising the floor above the whole passage; this keeps one tick from passing for its first
+// word. The same failure, once at each end of the same decision [LAW:no-silent-failure].
+const SUSTAINED_FRAMES = 3;
+
+// How loud the reader's voice is, read off the recording as a high percentile of its frame levels
+// rather than as its loudest frame. The difference is not precision, it is WHICH WAY THE ESTIMATE
+// FAILS [LAW:no-silent-failure].
+//
+// A maximum fails UPWARD. One clipped transient — a door, a knock, a hand on the desk — is two
+// frames of six hundred, and it drags a maximum to full scale while leaving a percentile
+// untouched. With the floor drawn off that maximum, no frame of a quietly-recorded passage clears
+// it, `speechStart` concludes the reader was silent throughout the allowance, and the clone begins
+// three seconds into the passage: the opening words gone, silently, and worse than not trimming at
+// all.
+//
+// A percentile fails DOWNWARD. When it underestimates — a recording that is mostly silence, so
+// even the ninetieth percentile lands in room tone — the floor collapses toward that room tone,
+// the very first frame clears it, and the clone starts at the top. Which is exactly what every
+// recording did before this existed. The benign failure is the one worth having.
+const SPEECH_PERCENTILE = 0.9;
+
+// What counts as voice, as a fraction of that level. RELATIVE, because no absolute number is right
+// twice: a phone held at the chin clips near −3 dBFS and a laptop across a desk peaks nearer −30,
+// and a floor that suits either admits or refuses everything on the other. About −30 dB down — an
+// order of magnitude above the room tone of a quiet room, and far enough below a vowel to catch the
+// fricative that opens `She`. Room tone within 30 dB of the voice keeps frame zero above the floor,
+// so a recording made in a genuinely noisy room is not trimmed at all rather than trimmed wrongly.
+const VOICE_FRACTION_OF_SPEECH = 0.03;
+
+// The quietest a recording can be and still have a voice in it.
+//
+// ABSOLUTE, where the trim's floor is relative, and the difference is not taste — it is which
+// question each answers. "Where does the voice start" is scale-free, so it must be relative. "Is
+// there a voice here at all" is the one question a relative measure CANNOT answer, because room tone
+// scaled up is indistinguishable from speech by any ratio you care to take. So it gets a real level,
+// read off the same `speechLevel` the trim's floor is drawn from: −40 dBFS, quieter than any
+// recording a voice can be cloned from, louder than a silent room.
+//
+// Without it, length is the only thing standing between the reader and a clone of nothing. Thirteen
+// seconds of room tone trims to exactly CLONE_SAMPLES of room tone, which is a whole clone long and
+// passes every length check there is — so a song's intro, or a memo whose speech starts after the
+// allowance, was stored as a voice and synthesised over in silence [LAW:no-silent-failure].
+export const SILENT_BELOW = 0.01;
+
+// Backed off from the frame that crossed the floor, so the attack of the first word is inside the
+// clone rather than merely the thing that located it.
+const PREROLL_SAMPLES = Math.round(0.05 * SAMPLE_RATE);
+
+// Every 20 ms frame's level, as RMS.
+//
+// Bounded here rather than trusted to arrive bounded: only PROMPT_SAMPLES of a recording can become
+// a clone, so that is both the most worth scanning and the stretch a level should be read off,
+// whatever length the caller happens to hand over [LAW:parse-dont-validate].
+const frameLevels = (mono: Float32Array): Float32Array => {
+  const frames = Math.floor(Math.min(mono.length, PROMPT_SAMPLES) / FRAME_SAMPLES);
+  const level = new Float32Array(frames);
+  for (let frame = 0; frame < frames; frame++) {
+    const at = frame * FRAME_SAMPLES;
+    let square = 0;
+    for (let i = at; i < at + FRAME_SAMPLES; i++) square += (mono[i] ?? 0) ** 2;
+    level[frame] = Math.sqrt(square / FRAME_SAMPLES);
+  }
+  return level;
+};
+
+// SPEECH_PERCENTILE of those frame levels, which is the whole of what this file means by loudness.
+const levelOf = (level: Float32Array): number => {
+  if (level.length === 0) return 0;
+  const ranked = Float32Array.from(level).sort();
+  return ranked[Math.min(level.length - 1, Math.floor(level.length * SPEECH_PERCENTILE))] ?? 0;
+};
+
+// How loud the voice in a recording is. [LAW:single-enforcer] the ONE way loudness is measured here,
+// for both of the questions asked of it: WHERE the voice starts, and WHETHER there is one.
+//
+// The second used to answer it its own way, and answered it with a PEAK — the estimator the thirty
+// lines above exist to argue against, reintroduced under the floor they were written for. A peak is
+// defeated by one sample: a single startup pop off a USB or Bluetooth capture, at 0.05, carries a
+// muted microphone's whole thirteen seconds of room tone past SILENT_BELOW, and the reader is handed
+// a clone of their empty room that synthesises as silence. Two ways of asking one question is how
+// the two answers come to disagree [LAW:one-source-of-truth].
+export const speechLevel = (mono: Float32Array): number => levelOf(frameLevels(mono));
+
+// The decoded audio as the model's mono waveform, bounded to the part that can become a clone.
 export const monoOf = (audio: DecodedAudio): Float32Array<ArrayBuffer> => {
-  const length = Math.min(audio.length, CLONE_SAMPLES);
+  const length = Math.min(audio.length, PROMPT_SAMPLES);
   const mono = new Float32Array(new ArrayBuffer(length * 4));
   for (let channel = 0; channel < audio.numberOfChannels; channel++) {
     const data = audio.getChannelData(channel);
@@ -99,9 +239,80 @@ export const monoOf = (audio: DecodedAudio): Float32Array<ArrayBuffer> => {
   return mono;
 };
 
+// Where the reader's voice begins: the first frame of the allowance whose level clears a floor set
+// by how loud the reader's voice is across the whole window, less a moment of pre-roll.
+//
+// The level is read off ALL of the audio that could become the clone and not merely the stretch
+// searched, because the speech that calibrates the floor is normally AFTER the silence being
+// measured — a floor drawn from the lead-in alone would be a floor drawn from room tone
+// [LAW:one-source-of-truth].
+//
+// TWO ANSWERS, EACH RIGHT FOR ITS OWN REASON. When no sustained run of the allowance clears the
+// floor the reader really was silent throughout it, so the whole allowance was lead-in and the clone
+// starts at its end. When the waveform has nothing in it anywhere its peak is zero, there is no
+// floor to clear, and the clone starts at the top — which is what this did for every recording
+// before it existed.
+//
+// Neither answer is a judgement about whether there is a voice in the recording, and this is the
+// wrong place to make one: this reports WHERE, and SILENT_BELOW decides WHETHER.
+export const speechStart = (mono: Float32Array): number => {
+  const level = frameLevels(mono);
+  const frames = level.length;
+  if (frames === 0) return 0;
+  const floor = levelOf(level) * VOICE_FRACTION_OF_SPEECH;
+  if (floor <= 0) return 0;
+  // The run may be CONFIRMED past the allowance even though it must BEGIN inside it, so a word
+  // starting on the allowance's last frame is still a word rather than a truncated near-miss.
+  const searched = Math.min(frames, Math.ceil(LEAD_IN_SAMPLES / FRAME_SAMPLES));
+  let run = 0;
+  for (let frame = 0; frame < frames; frame++) {
+    if ((level[frame] ?? 0) < floor) {
+      run = 0;
+      continue;
+    }
+    run += 1;
+    if (run < SUSTAINED_FRAMES) continue;
+    const began = frame - run + 1;
+    if (began >= searched) break;
+    return Math.max(0, began * FRAME_SAMPLES - PREROLL_SAMPLES);
+  }
+  return Math.min(LEAD_IN_SAMPLES, mono.length);
+};
+
+// The clone's prompt: AT MOST CLONE_SAMPLES of the reader's voice, taken from where the voice starts.
+// [LAW:single-enforcer] the one place that decides WHICH ten seconds a clone is made of, for the
+// microphone and the reader's file alike.
+//
+// AT MOST, and for the ordinary reader rather than the rare one. The passage is cut to fit a SLOW
+// reader inside the clone's length (clonePassage.ts), so anyone reading at an ordinary pace finishes
+// it early, taps Stop, and leaves less than CLONE_SAMPLES behind: `subarray` then yields what they
+// actually said. That is the right answer and not a truncation — the same reader used to get those
+// same words PADDED with their lead-in silence, and silence is not signal the encoder can use. What
+// the passage guarantees is that all forty sounds have been said by the time they stop, which is true
+// at any pace; what it never guaranteed is a duration.
+//
+// So the cap is NOT extended once speech is heard, though it could be. Holding the microphone open
+// after a reader has finished reading to collect seconds they have no words left for is the opposite
+// of handing them something to read and be done with.
+export const clonePrompt = (mono: Float32Array<ArrayBuffer>): Float32Array<ArrayBuffer> => {
+  const from = speechStart(mono);
+  return mono.subarray(from, from + CLONE_SAMPLES);
+};
+
 export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
   // The one decode, for whichever road the audio came in on.
-  const samplesOf = async (audio: Blob): Promise<Float32Array<ArrayBuffer>> => monoOf(await config.Decoder().decodeAudioData(await audio.arrayBuffer()));
+  // [LAW:single-enforcer] One decode, one trim, and one refusal of a recording with no voice in it,
+  // for whichever road the audio came in on.
+  const samplesOf = async (audio: Blob): Promise<Float32Array<ArrayBuffer>> => {
+    const prompt = clonePrompt(monoOf(await config.Decoder().decodeAudioData(await audio.arrayBuffer())));
+    // Says WHAT WAS FOUND, not what it guesses caused it. The two roads in fail this the same way
+    // and for opposite reasons — a microphone that was never heard, or a file whose speaking starts
+    // past the only stretch a clone can come from — so a message naming either one is a false
+    // statement to half the readers who see it. An uploaded voice memo beginning at 0:30 is audible,
+    // and has a microphone that worked perfectly [LAW:no-silent-failure].
+    if (speechLevel(prompt) < SILENT_BELOW) throw new Error(`there is no voice in the first ${RECORDING_SECONDS} s of that recording, which is all a clone can be taken from`);
+    return prompt;
+  };
 
   // [LAW:parse-dont-validate] The reader's file crossing into audio this can clone from: it
   // is measured before a sample of it exists, because past that line it is held twice over,
@@ -143,7 +354,7 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
       // this browser will not build, or will not start, must still give the microphone back
       // — an unreleased track leaves the browser's recording light on for the life of the
       // page, with nothing the reader can tap to end it.
-      const timer = config.setTimeout(end, CLONE_SECONDS * 1000);
+      const timer = config.setTimeout(end, RECORDING_SECONDS * 1000);
       try {
         const made = config.Recorder(stream);
         recorder = made;

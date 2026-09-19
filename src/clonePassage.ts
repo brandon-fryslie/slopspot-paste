@@ -40,18 +40,6 @@ export const CLONE_PASSAGE = "She walked home from Joyce's huge beige garage, ch
 // actually lost rather than a pass against an assumed pace.
 export const SLOWEST_READING_WORDS_PER_MINUTE = 120;
 
-// [LAW:no-ambient-temporal-coupling] The recording's clock does NOT start at the reader's first
-// word. voiceCapture.ts arms the cap when the microphone opens and keeps the FIRST
-// CLONE_SAMPLES, so the seconds a reader spends moving their eyes to the passage and drawing
-// breath are spent out of the same ten — and whatever is still unread when the cap fires is cut
-// off silently. The tail is the worst thing to lose: the sounds that appear once appear
-// wherever they appear, and a truncated read drops them with no sign to the reader.
-//
-// So the budget the passage is held to is reading time PLUS this allowance, not reading time
-// alone. It is stated here, and enforced in scripts/clone-passage-check.ts, rather than left as
-// the margin that happens to be lying around after the reading time is counted.
-export const LEAD_IN_SECONDS = 1.5;
-
 // [LAW:parse-dont-validate] The passage as bare comparable words: lowercased, and stripped of
 // everything that is not a letter at either end of a word — so `garage,` is `garage`, `(home)`
 // is `home`, and `'wow'` is `wow`.
