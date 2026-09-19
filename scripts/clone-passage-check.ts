@@ -25,7 +25,11 @@ const spoken = new Set(words);
 console.log("the words the passage is read as");
 {
   assert("punctuation around a word is not part of it: a trailing comma is not read", passageWords("garage,").join() === "garage");
-  assert("an apostrophe inside a word is part of it: a possessive is one word, not two", passageWords("Joyce's").join() === "joyce's");
+  assert("an apostrophe between letters is part of the word: a possessive is one word, not two", passageWords("Joyce's").join() === "joyce's");
+  // The same character does both jobs in English, and only its position tells them apart: a
+  // word quoted with straight apostrophes must still match its row in the sounds table.
+  assert("an apostrophe at a word's edge is punctuation: a quoted word comes back bare", passageWords("'wow'").join() === "wow");
+  assert("both jobs at once, in one line", passageWords("'Joyce's' walked").join() === "joyce's,walked");
   assert("the quoted, the bracketed and the dashed come back bare", passageWords("(home) —mile— church!").join() === "home,mile,church");
   assert("case is not a difference: the passage's first word matches its table row", passageWords("She").join() === "she");
   assert("whitespace of any width separates words, and no empty word survives", passageWords("  took \n  one\tgood  ").join() === "took,one,good");

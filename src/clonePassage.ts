@@ -38,16 +38,22 @@ export const CLONE_PASSAGE = "She found the huge beige garage, took one good loo
 export const READING_WORDS_PER_MINUTE = 150;
 
 // [LAW:parse-dont-validate] The passage as bare comparable words: lowercased, and stripped of
-// the punctuation that sits *around* a word but never of what sits inside one, so `garage,` is
-// `garage` while `Joyce's` stays `Joyce's` — the apostrophe is part of the word a reader says.
+// everything that is not a letter at either end of a word — so `garage,` is `garage`, `(home)`
+// is `home`, and `'wow'` is `wow`.
+//
+// An apostrophe survives only where it sits *between* letters, which is the only place it is
+// part of a word a reader says: `Joyce's` stays whole, while the same character used as a
+// quotation mark is stripped like any other punctuation. That falls out of anchoring at the
+// ends rather than naming the apostrophe as a special case — an edge class of `[^a-z]` cannot
+// reach inside a word, so there is no rule here to get wrong twice.
 export const passageWords = (text: string): ReadonlyArray<string> =>
   text
     .split(/\s+/)
     .map((word) =>
       word
         .toLowerCase()
-        .replace(/^[^a-z']+/, "")
-        .replace(/[^a-z']+$/, ""),
+        .replace(/^[^a-z]+/, "")
+        .replace(/[^a-z]+$/, ""),
     )
     .filter((word) => word !== "");
 
@@ -61,8 +67,8 @@ export interface Sound {
 }
 
 // The 24 consonants of General American English. Several share a word on purpose: `huge` is
-// the passage's only /j/, and carrying /h/, /j/, /u/ and /dʒ/ in one syllable is why it is
-// there at all.
+// the passage's only /j/, and one short syllable of it answers for /j/, /dʒ/ and /u/ — which is
+// why it is there at all.
 export const CONSONANT_SOUNDS: ReadonlyArray<Sound> = [
   { phoneme: "p", word: "proudly" },
   { phoneme: "b", word: "beige" },
