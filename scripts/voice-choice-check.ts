@@ -8,7 +8,7 @@
 
 import { MODEL_ASSETS, VOICE_IDS } from "../src/modelAssets";
 import type { ClonedVoice } from "../src/clonedVoice";
-import { CLONE_CREDIT, DEFAULT_PICK, DEFAULT_VOICES, PICK_KEY, SYSTEM_VOICE, previewText, readPick, samePick, voiceDescription, voiceMapOf, voiceName, writePick } from "../src/voiceChoice";
+import { CLONE_CREDIT, DEFAULT_PICK, DEFAULT_VOICES, PICK_KEY, previewText, readPick, samePick, voiceDescription, voiceMapOf, voiceName, writePick } from "../src/voiceChoice";
 import type { VoicePick } from "../src/voiceChoice";
 import { memoryPreferences, refusedPreferences } from "./preferenceStub";
 
@@ -31,7 +31,7 @@ const throws = (label: string, act: () => unknown): void => {
   assert(label, threw);
 };
 
-const CHOSEN: VoicePick = { user: "marius", assistant: "fantine" };
+const CHOSEN: VoicePick = { user: "marius", assistant: "fantine", system: "azelma" };
 
 console.log("the pick's round trip");
 {
@@ -45,7 +45,7 @@ console.log("the pick's round trip");
   assert("the default written is the key removed: a reset device and a fresh one are the same device", store.keys().length === 0 && samePick(readPick(store, []), DEFAULT_PICK));
   const trips = VOICE_IDS.flatMap((user) =>
     VOICE_IDS.map((assistant) => {
-      const pick: VoicePick = { user, assistant };
+      const pick: VoicePick = { ...DEFAULT_PICK, user, assistant };
       writePick(store, pick);
       return samePick(readPick(store, []), pick);
     }),
@@ -53,13 +53,29 @@ console.log("the pick's round trip");
   assert(`every hosted voice survives the trip in either role (${trips.length} pairs)`, trips.every(Boolean));
 }
 
-console.log("a stored value this build did not write reads as the default");
+console.log("a stored value this build did not write reads as the default, role by role");
 {
-  const garbage = ["not json", '"alba"', "[]", "{}", '{"user":"alba"}', '{"user":"alba","assistant":"nobody"}', '{"user":7,"assistant":"alba"}', "null"];
+  // A shape that names no role at all: every role reads as its default.
+  const garbage = ["not json", '"alba"', "[]", "{}", '{"user":"alba"}', "null"];
   for (const raw of garbage) {
     const store = memoryPreferences();
     store.setItem(PICK_KEY, raw);
     assert(`${JSON.stringify(raw)} reads as the default`, samePick(readPick(store, []), DEFAULT_PICK));
+  }
+
+  // A role whose stored voice this device cannot speak with reads as THAT role's default,
+  // alone — the reader's other choices are still the reader's. The same rule carries a
+  // pick across a build that gave speech another row: the roles it knows survive, the new
+  // one starts at its default, and nobody's preference is thrown away wholesale.
+  const partial: ReadonlyArray<readonly [string, VoicePick]> = [
+    ['{"user":7,"assistant":"alba"}', { ...DEFAULT_PICK, assistant: "alba" }],
+    ['{"user":"alba","assistant":"nobody"}', { ...DEFAULT_PICK, user: "alba" }],
+    ['{"user":"marius","assistant":"fantine"}', { ...DEFAULT_PICK, user: "marius", assistant: "fantine" }],
+  ];
+  for (const [raw, expected] of partial) {
+    const store = memoryPreferences();
+    store.setItem(PICK_KEY, raw);
+    assert(`${JSON.stringify(raw)}: the roles it names survive, the rest read as their default`, samePick(readPick(store, []), expected));
   }
   const refusing = refusedPreferences();
   assert("a browser that refuses storage: the default, no throw", samePick(readPick(refusing, []), DEFAULT_PICK));
@@ -72,12 +88,14 @@ console.log("a stored value this build did not write reads as the default");
   assert("a write the browser refuses does not throw: the pick is simply not kept", !threw);
 }
 
-console.log("the rule: two rows, four voices");
+console.log("the rule: a row per speaker, four voices");
 {
   const map = voiceMapOf(CHOSEN);
   assert("the reader's row speaks for the user, Claude's for the assistant", map.user === "marius" && map.assistant === "fantine");
   assert("the narrator takes Claude's voice", map.narrator === "fantine");
-  assert("the system message keeps a voice of its own, not the reader's and not Claude's", map.system === SYSTEM_VOICE && map.system !== map.user && map.system !== map.assistant);
+  // The system is a SPEAKER, so it is a row the reader picks — a Claude Code transcript is
+  // full of words the harness wrote and the reader never typed (parsers/jsonl.ts speakerOf).
+  assert("the system's row speaks for the system, in the voice the reader gave it", map.system === "azelma" && map.system !== map.user && map.system !== map.assistant);
   assert("the defaults: Alba for the reader, Javert for Claude and the narrator, Eponine for the system", DEFAULT_VOICES.user === "alba" && DEFAULT_VOICES.assistant === "javert" && DEFAULT_VOICES.narrator === "javert" && DEFAULT_VOICES.system === "eponine");
   assert("the same pick is the same pick; a pick that differs in one role is not", samePick(CHOSEN, { ...CHOSEN }) && !samePick(CHOSEN, { ...CHOSEN, user: "alba" }));
 }
@@ -86,15 +104,15 @@ console.log("a clone is picked like any voice, and read back only while the devi
 {
   const store = memoryPreferences();
   const mine: ClonedVoice = { key: `clone:${"a".repeat(64)}`, name: "Brandon", samples: new Int16Array(new ArrayBuffer(48000)) };
-  writePick(store, { user: mine.key, assistant: "fantine" });
+  writePick(store, { ...DEFAULT_PICK, user: mine.key, assistant: "fantine" });
   assert("a pick naming a kept clone reads back as picked", readPick(store, [mine]).user === mine.key && readPick(store, [mine]).assistant === "fantine");
-  assert("the same pick on a device that no longer keeps the clone reads that role as its default, the other role kept", samePick(readPick(store, []), { user: DEFAULT_PICK.user, assistant: "fantine" }));
+  assert("the same pick on a device that no longer keeps the clone reads that role as its default, the other role kept", samePick(readPick(store, []), { ...DEFAULT_PICK, user: DEFAULT_PICK.user, assistant: "fantine" }));
   store.setItem(PICK_KEY, JSON.stringify({ user: "clone:not-a-hash", assistant: "fantine" }));
-  assert("a clone key that is not a content hash is not a pick this build wrote: the default", samePick(readPick(store, [mine]), DEFAULT_PICK));
+  assert("a clone key that is not a content hash is not a voice this device speaks with: that role reads as its default, the others kept", samePick(readPick(store, [mine]), { ...DEFAULT_PICK, assistant: "fantine" }));
   assert("a clone is named by the reader, described as their recording, and credited as their own", voiceName(mine.key, [mine]) === "Brandon" && voiceDescription(mine.key, [mine]) === "Your recording · 1 s · kept on this device" && CLONE_CREDIT.startsWith("Recorded on this device"));
   assert("its preview phrase says the reader's name", previewText(mine.key, [mine]).source.includes("this is Brandon"));
   throws("a clone the device does not keep cannot be named: a pick that escaped the parse is a bug", () => voiceName(mine.key, []));
-  assert("the map derived from a pick carries the clone for its role, and the narrator with Claude's", voiceMapOf({ user: mine.key, assistant: mine.key }).narrator === mine.key && voiceMapOf({ user: mine.key, assistant: "alba" }).user === mine.key);
+  assert("the map derived from a pick carries the clone for its role, and the narrator with Claude's", voiceMapOf({ ...DEFAULT_PICK, user: mine.key, assistant: mine.key }).narrator === mine.key && voiceMapOf({ ...DEFAULT_PICK, user: mine.key, assistant: "alba" }).user === mine.key);
 }
 
 console.log("the voices as the reader meets them");

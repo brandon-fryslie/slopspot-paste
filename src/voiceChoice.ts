@@ -9,12 +9,15 @@
 // only while the device still keeps the clone — a pick naming a clone since removed reads as
 // the default for that role, so the map never names a voice nobody can speak with.
 //
-// TWO ROWS, NOT FOUR. The speech has four voices (speech.ts: user, assistant, system,
-// narrator) and the picker offers two: the reader's own and Claude's. The other two follow
-// a rule rather than a row — the narrator, our own words announcing a code block or a
-// folded turn, speaks with the assistant's voice, and the system message keeps a voice of
-// its own — so the picker cannot grow a row per role the speech invents. The rule is
-// `voiceMapOf`, the one derivation of the map from the pick [LAW:one-source-of-truth].
+// THREE ROWS, NOT FOUR. The speech has four voices (speech.ts: user, assistant, system,
+// narrator) and the picker offers three: the reader's own, Claude's, and the system's. A
+// role earns a row by being a SPEAKER — someone whose own words appear in the conversation
+// — which is why the system gained one: a Claude Code transcript is full of words the
+// harness wrote and the reader never typed (parsers/jsonl.ts speakerOf), and they are as
+// much a voice in the room as Claude is. The narrator is the one that still follows a rule
+// rather than a row: it is OUR words announcing a code block or a folded turn, not a
+// participant, so it speaks with the assistant's voice. The rule is `voiceMapOf`, the one
+// derivation of the map from the pick [LAW:one-source-of-truth].
 //
 // A VALUE, NOT AN ASSET. All six voices are loaded beside the weights, so a pick downloads
 // nothing and changes no asset: the map is data the performer reads, and the rendition
@@ -31,25 +34,26 @@ import type { PreferenceStore } from "./preferenceStore";
 import { prepareText, type UnitText, type VoiceMap } from "./speechScript";
 
 // [LAW:types-are-the-program] The roles the reader picks a voice for: the picker's rows.
-export const PICKED_VOICES = ["user", "assistant"] as const;
+export const PICKED_VOICES = ["user", "assistant", "system"] as const;
 export type PickedVoice = (typeof PICKED_VOICES)[number];
 export type VoicePick = Readonly<Record<PickedVoice, VoiceKey>>;
 
-// What the rows are called: the reader, and the assistant by the name the site gives it.
-export const ROLE_LABELS: Readonly<Record<PickedVoice, string>> = { user: "You", assistant: "Claude" };
+// What the rows are called: the reader, the assistant by the name the site gives it, and
+// the harness by what the page already calls it in every bubble it speaks from.
+export const ROLE_LABELS: Readonly<Record<PickedVoice, string>> = { user: "You", assistant: "Claude", system: "System" };
 
 // Until the reader picks, the q35.1 spike's word-accuracy ranking chooses: the voices
-// Whisper transcribed with zero errors take the roles that say the most.
-export const DEFAULT_PICK: VoicePick = { user: "alba", assistant: "javert" };
-
-// The system message's own voice: not picked, not the reader's, not Claude's.
-export const SYSTEM_VOICE: VoiceId = "eponine";
+// Whisper transcribed with zero errors take the roles that say the most. The system's
+// default is the voice it always spoke with before it had a row, so a device that never
+// picks hears exactly what it heard before [LAW:one-source-of-truth]: this constant is the
+// whole definition of "the system's voice", with no second copy to drift from it.
+export const DEFAULT_PICK: VoicePick = { user: "alba", assistant: "javert", system: "eponine" };
 
 // The rule: the map the script is derived with, from the pick.
 export const voiceMapOf = (pick: VoicePick): VoiceMap => ({
   user: pick.user,
   assistant: pick.assistant,
-  system: SYSTEM_VOICE,
+  system: pick.system,
   narrator: pick.assistant,
 });
 
@@ -66,20 +70,26 @@ export const PICK_KEY = "listen.voices";
 
 const isVoiceId = (value: unknown): value is VoiceId => typeof value === "string" && (VOICE_IDS as ReadonlyArray<string>).includes(value);
 
-// [LAW:parse-dont-validate] The stored string becomes a pick or the default: a value that
-// is not a pick this build wrote — another build's shape, a voice no longer hosted, a hand
-// edit, a string that is not JSON at all — is not a preference, and reads as none. A role
-// naming a clone the device no longer keeps reads as that role's default, alone: the other
-// role's pick is still the reader's.
+// [LAW:parse-dont-validate] The stored string becomes a pick ROLE BY ROLE: a role whose
+// stored voice is not one this device can speak with — another build's shape, a voice no
+// longer hosted, a clone since removed, a hand edit, a string that is not JSON at all —
+// reads as that role's default, ALONE, and every other role keeps the reader's choice. A
+// pick written before a role had a row is the same case: that role takes its default
+// rather than the whole preference reading as none [LAW:no-silent-failure].
+//
+// [LAW:dataflow-not-control-flow] The fold starts at the defaults and lets a speakable
+// stored voice override one, so "reads as that role's default" is stated once, as the seed
+// — and the rows are data: giving speech another speaker adds a tuple entry and a label,
+// never an edit here.
 const parsePick = (raw: string | null, clones: ReadonlyArray<ClonedVoice>): VoicePick => {
-  if (raw === null) return DEFAULT_PICK;
-  const parsed = jsonOf(raw);
-  if (typeof parsed !== "object" || parsed === null) return DEFAULT_PICK;
-  const { user, assistant } = parsed as Record<string, unknown>;
-  const isKey = (value: unknown): value is VoiceKey => isVoiceId(value) || (typeof value === "string" && isClonedKey(value));
-  if (!isKey(user) || !isKey(assistant)) return DEFAULT_PICK;
-  const kept = (voice: VoiceKey, role: PickedVoice): VoiceKey => (isClonedKey(voice) && !clones.some((clone) => clone.key === voice) ? DEFAULT_PICK[role] : voice);
-  return { user: kept(user, "user"), assistant: kept(assistant, "assistant") };
+  const parsed = raw === null ? null : jsonOf(raw);
+  const stored: Record<string, unknown> = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  const speakable = (value: unknown): value is VoiceKey =>
+    isVoiceId(value) || (typeof value === "string" && isClonedKey(value) && clones.some((clone) => clone.key === value));
+  return PICKED_VOICES.reduce<VoicePick>(
+    (pick, role) => (speakable(stored[role]) ? { ...pick, [role]: stored[role] } : pick),
+    DEFAULT_PICK,
+  );
 };
 
 // A stored string's JSON, or null when it is not JSON.
