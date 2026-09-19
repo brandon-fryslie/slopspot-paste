@@ -118,6 +118,7 @@ interface Built {
   readonly note: HTMLElement;
   readonly reset: HTMLButtonElement;
   readonly clones: HTMLElement;
+  readonly passage: HTMLElement;
   readonly name: HTMLInputElement;
   readonly record: HTMLButtonElement;
   readonly upload: HTMLButtonElement;
@@ -203,7 +204,10 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   // to read it first, and a reader mid-recording has no time to start reading it. Written once
   // at build because it never varies, so `render` has no stale state to leave behind.
   const read = el("p", "voice-clone-read");
-  read.textContent = "Read this aloud when you tap Record — it covers every sound English makes, so nothing in your voice goes missing:";
+  // Both ways in get the same instruction: an uploaded recording of arbitrary speech is thin in
+  // exactly the sounds it missed, the same as an improvised one, so naming only Record here
+  // would leave the Upload path with the defect this passage exists to remove.
+  read.textContent = "Read this aloud to record, or upload a recording of yourself reading it — it covers every sound English makes, so nothing in your voice goes missing:";
   const passage = el("p", "voice-clone-passage");
   passage.id = `${scope}-clone-passage`;
   passage.textContent = CLONE_PASSAGE;
@@ -215,9 +219,9 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   name.setAttribute("aria-label", "Name for the voice");
   const record = el("button", "mono-pill voice-clone-record");
   record.type = "button";
-  // The passage is what the button is asking for, so the button says so: a reader who reaches
-  // Record by keyboard hears the words to read rather than finding out after the tap.
-  record.setAttribute("aria-describedby", passage.id);
+  // Its `aria-describedby` is written by `render` from the state, not set once here: the button
+  // is Record before the tap and Stop during, and those two ask to be described by different
+  // things [LAW:one-source-of-truth] — one writer for the attribute, the render.
   record.addEventListener("click", () => (record.dataset.recording === "true" ? on.stop() : on.record(name.value)));
   const upload = el("button", "mono-pill voice-clone-upload");
   upload.type = "button";
@@ -234,6 +238,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
     file.value = "";
   });
   const making = el("p", "voice-note voice-clone-note");
+  making.id = `${scope}-clone-note`;
   attach(form, name, record, upload, file);
   attach(own, ownLegend, clones, read, passage, form, making);
   attach(root, own);
@@ -252,7 +257,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
     return row;
   };
 
-  return { hosted, rows, note, reset, clones, name, record, upload, file, making, option, cloneRow };
+  return { hosted, rows, note, reset, clones, passage, name, record, upload, file, making, option, cloneRow };
 };
 
 export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): VoicePicker => {
@@ -290,6 +295,10 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       built.record.dataset.recording = String(phase.kind === "recording");
       built.record.textContent = phase.kind === "recording" ? STOP_LABEL : RECORD_LABEL;
       built.record.disabled = phase.kind === "making";
+      // Described by the words to read while it is Record, and by the line saying where the
+      // making is once it is Stop: reading the whole passage out over a running ten-second
+      // recording would outlast the recording it was meant to help end.
+      built.record.setAttribute("aria-describedby", phase.kind === "recording" ? built.making.id : built.passage.id);
       built.upload.disabled = phase.kind !== "idle";
       built.name.disabled = phase.kind !== "idle";
       // The note is the last word said to the reader and outranks the phase's own line: a

@@ -28,14 +28,23 @@
 // Read aloud at an unhurried pace, this is what the reader records. It is ordinary English a
 // person can read cold, because a tongue-twister is read in a tongue-twister's voice and the
 // prosody is part of what gets cloned.
-export const CLONE_PASSAGE = "She found the huge beige garage, took one good look, then proudly walked home singing that Joyce's church visit was worth every mile.";
+export const CLONE_PASSAGE = "She found one huge beige garage, then proudly walked home singing that Joyce's church visit would be worth every mile.";
 
 // The pace the passage is budgeted against. Conversation runs nearer 190 wpm, but a reader
-// reading a sentence off a screen into a microphone slows down, and the passage has to fit
-// inside the recording rather than nearly fit: the capture stops at CLONE_SECONDS whether the
-// reader has finished or not, and a truncated tail is precisely the sounds at the end going
-// missing — the failure this module exists to prevent. 150 leaves the margin that buys.
+// reading a sentence off a screen into a microphone slows down.
 export const READING_WORDS_PER_MINUTE = 150;
+
+// [LAW:no-ambient-temporal-coupling] The recording's clock does NOT start at the reader's first
+// word. voiceCapture.ts arms the cap when the microphone opens and keeps the FIRST
+// CLONE_SAMPLES, so the seconds a reader spends moving their eyes to the passage and drawing
+// breath are spent out of the same ten — and whatever is still unread when the cap fires is cut
+// off silently. The tail is the worst thing to lose: the sounds that appear once appear
+// wherever they appear, and a truncated read drops them with no sign to the reader.
+//
+// So the budget the passage is held to is reading time PLUS this allowance, not reading time
+// alone. It is stated here, and enforced in scripts/clone-passage-check.ts, rather than left as
+// the margin that happens to be lying around after the reading time is counted.
+export const LEAD_IN_SECONDS = 1.5;
 
 // [LAW:parse-dont-validate] The passage as bare comparable words: lowercased, and stripped of
 // everything that is not a letter at either end of a word — so `garage,` is `garage`, `(home)`
@@ -62,7 +71,10 @@ export const passageWords = (text: string): ReadonlyArray<string> =>
 export interface Sound {
   // The phoneme, in IPA.
   readonly phoneme: string;
-  // The word of CLONE_PASSAGE that carries it, spelled as the passage spells it.
+  // The word of CLONE_PASSAGE that carries it, as a bare word — the passage's own spelling
+  // minus whatever punctuation happens to sit against it there, since `garage` ends a clause in
+  // the text and `garage,` is not a word anybody says. The check reads both sides through
+  // `passageWords`, so writing it either way matches [LAW:single-enforcer].
   readonly word: string;
 }
 
@@ -72,14 +84,14 @@ export interface Sound {
 export const CONSONANT_SOUNDS: ReadonlyArray<Sound> = [
   { phoneme: "p", word: "proudly" },
   { phoneme: "b", word: "beige" },
-  { phoneme: "t", word: "took" },
-  { phoneme: "d", word: "good" },
-  { phoneme: "k", word: "look" },
+  { phoneme: "t", word: "that" },
+  { phoneme: "d", word: "would" },
+  { phoneme: "k", word: "walked" },
   { phoneme: "g", word: "garage" },
   { phoneme: "f", word: "found" },
   { phoneme: "v", word: "visit" },
   { phoneme: "θ", word: "worth" },
-  { phoneme: "ð", word: "the" },
+  { phoneme: "ð", word: "then" },
   { phoneme: "s", word: "singing" },
   { phoneme: "z", word: "Joyce's" },
   { phoneme: "ʃ", word: "she" },
@@ -90,7 +102,7 @@ export const CONSONANT_SOUNDS: ReadonlyArray<Sound> = [
   { phoneme: "m", word: "mile" },
   { phoneme: "n", word: "one" },
   { phoneme: "ŋ", word: "singing" },
-  { phoneme: "l", word: "look" },
+  { phoneme: "l", word: "proudly" },
   { phoneme: "r", word: "proudly" },
   { phoneme: "w", word: "walked" },
   { phoneme: "j", word: "huge" },
@@ -107,7 +119,7 @@ export const VOWEL_SOUNDS: ReadonlyArray<Sound> = [
   { phoneme: "ɑ", word: "garage" },
   { phoneme: "ɔ", word: "walked" },
   { phoneme: "oʊ", word: "home" },
-  { phoneme: "ʊ", word: "took" },
+  { phoneme: "ʊ", word: "would" },
   { phoneme: "u", word: "huge" },
   { phoneme: "ʌ", word: "one" },
   { phoneme: "ɜr", word: "worth" },

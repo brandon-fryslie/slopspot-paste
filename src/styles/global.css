@@ -3485,12 +3485,22 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   line-height: 1.5;
   color: var(--fg-muted);
 }
+/* Tinted against the surface, not `--bg-elev`: that is the colour of BOTH surfaces this block
+   sits on (`.tool-panel`, and `.listen-mini-picker`'s 96% mix of it), so setting it here paints
+   the quoted block in exactly its background and leaves only the accent rule to mark it. A mix
+   of two opaque colours is the tint the comment claims.
+
+   It is deliberately NOT sticky. The obvious worry — that in the mini-player's short scroll box
+   the reader must push the passage out of view to reach Record — was measured in Chrome at
+   390×760 and does not happen: with Record scrolled into view the passage sits 98px into a
+   284px box, and pinning it changes nothing, because `.voice-own` (312px) barely exceeds the
+   box and the passage already sits near its foot. */
 .voice-clone-passage {
   margin: 0;
   padding: 8px 10px;
   border-left: 2px solid var(--accent);
   border-radius: 4px;
-  background: var(--bg-elev);
+  background: color-mix(in srgb, var(--fg) 7%, var(--bg-elev));
   color: var(--fg);
   font-size: 15px;
   line-height: 1.6;

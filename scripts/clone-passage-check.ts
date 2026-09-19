@@ -8,7 +8,17 @@
 // however you like: this check tells you which sound you just dropped.
 
 import { CLONE_SECONDS } from "../src/clonedVoice";
-import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, READING_WORDS_PER_MINUTE, VOWEL_SOUNDS, passageWords } from "../src/clonePassage";
+import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, LEAD_IN_SECONDS, READING_WORDS_PER_MINUTE, VOWEL_SOUNDS, passageWords } from "../src/clonePassage";
+
+// [LAW:one-source-of-truth] The sounds of General American English, which is a fact about the
+// language and not about this passage — so it is declared here, against which the module's table
+// is held, rather than read back out of the table it is meant to check. Counting rows cannot
+// catch a mistyped symbol: `ʐ` for `ʒ` keeps the count at 24 and the duplicate check green while
+// the sound the passage was built to carry is asserted nowhere.
+const CONSONANTS = "p b t d k g f v θ ð s z ʃ ʒ h tʃ dʒ m n ŋ l r w j".split(" ");
+const VOWELS = "i ɪ eɪ ɛ æ ɑ ɔ oʊ ʊ u ʌ ɜr aɪ aʊ ɔɪ ə".split(" ");
+
+const sameSet = (got: ReadonlyArray<string>, want: ReadonlyArray<string>): boolean => got.length === want.length && [...want].sort().join() === [...got].sort().join();
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -37,15 +47,21 @@ console.log("the words the passage is read as");
 
 console.log("every sound the passage claims is really in the passage");
 {
-  const missing = CLONE_PASSAGE_SOUNDS.filter(({ word }) => !spoken.has(word.toLowerCase()));
+  // Both sides go through the one parser, so a row written `mile.` or `Garage,` matches exactly
+  // as `mile` and `garage` do — the table cannot disagree with the passage over punctuation.
+  const bare = ({ word }: { readonly word: string }): string => passageWords(word).join(" ");
+  const missing = CLONE_PASSAGE_SOUNDS.filter((sound) => !spoken.has(bare(sound)));
   const named = missing.map(({ phoneme, word }) => `/${phoneme}/ wants ${word}`).join("; ");
   assert(`all ${CLONE_PASSAGE_SOUNDS.length} sounds name a word the reader actually says${missing.length === 0 ? "" : ` — ${named}`}`, missing.length === 0);
+  assert("every row names exactly one word, so a row can never half-match the passage", CLONE_PASSAGE_SOUNDS.every((sound) => passageWords(sound.word).length === 1));
 }
 
 console.log("the inventory is whole and says each sound once");
 {
-  assert(`24 consonants, one row each (found ${CONSONANT_SOUNDS.length})`, CONSONANT_SOUNDS.length === 24);
-  assert(`16 vowels, one row each (found ${VOWEL_SOUNDS.length})`, VOWEL_SOUNDS.length === 16);
+  const consonants = CONSONANT_SOUNDS.map(({ phoneme }) => phoneme);
+  const vowels = VOWEL_SOUNDS.map(({ phoneme }) => phoneme);
+  assert(`the 24 consonants of the language, each one carried (found ${consonants.length}${sameSet(consonants, CONSONANTS) ? "" : `, off by ${CONSONANTS.filter((p) => !consonants.includes(p)).map((p) => `/${p}/`).join(" ") || "none missing"}`})`, sameSet(consonants, CONSONANTS));
+  assert(`the 16 vowels, each one carried (found ${vowels.length}${sameSet(vowels, VOWELS) ? "" : `, off by ${VOWELS.filter((p) => !vowels.includes(p)).map((p) => `/${p}/`).join(" ") || "none missing"}`})`, sameSet(vowels, VOWELS));
   const phonemes = CLONE_PASSAGE_SOUNDS.map(({ phoneme }) => phoneme);
   const twice = phonemes.filter((p, i) => phonemes.indexOf(p) !== i);
   assert(`no sound is listed twice${twice.length === 0 ? "" : ` — ${[...new Set(twice)].map((p) => `/${p}/`).join(", ")}`}`, twice.length === 0);
@@ -54,13 +70,15 @@ console.log("the inventory is whole and says each sound once");
 
 console.log("the passage fits inside the recording");
 {
-  // The capture stops at CLONE_SECONDS whether the reader has finished or not, so a passage
-  // that overruns loses its own tail — the sounds at the end, silently.
-  const seconds = (words.length / READING_WORDS_PER_MINUTE) * 60;
-  assert(`${words.length} words read at ${READING_WORDS_PER_MINUTE} wpm is ${seconds.toFixed(1)} s, inside the ${CLONE_SECONDS} s recording`, seconds <= CLONE_SECONDS);
+  // The recording's clock starts when the microphone opens, not at the reader's first word, and
+  // the capture keeps the FIRST ten seconds — so the lead-in is spent out of the same budget and
+  // anything still unread when the cap fires is cut off with no sign to the reader. Budget both.
+  const reading = (words.length / READING_WORDS_PER_MINUTE) * 60;
+  const spoken = reading + LEAD_IN_SECONDS;
+  assert(`${words.length} words at ${READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s, and ${spoken.toFixed(1)} s with the ${LEAD_IN_SECONDS} s lead-in — inside the ${CLONE_SECONDS} s recording`, spoken <= CLONE_SECONDS);
   // A passage that fits with seconds to spare is one that could be carrying more sounds in more
   // contexts; this floor says it is not wastefully short.
-  assert(`and long enough to be worth the recording (${seconds.toFixed(1)} s of ${CLONE_SECONDS} s)`, seconds >= CLONE_SECONDS * 0.7);
+  assert(`and long enough to be worth the recording (${spoken.toFixed(1)} s of ${CLONE_SECONDS} s used)`, spoken >= CLONE_SECONDS * 0.7);
 }
 
 console.log("the passage is plain enough to read cold");

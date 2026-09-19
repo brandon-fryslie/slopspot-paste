@@ -1856,6 +1856,9 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   // fails and says so — on both forms, since both are views of one machine.
   picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.click();
   assert("a tap on Record: recording, the button now Stop, the note saying so", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.startsWith("Recording") === true && r.mini.voices.picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL);
+  // Stop is not described by the passage: read out over a running ten-second recording, the
+  // whole passage would outlast the recording it was meant to help end.
+  assert("Stop is described by the note saying where the making is, not by the passage", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.getAttribute("aria-describedby") === picker.querySelector<HTMLElement>(".voice-clone-note")?.id);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert("the microphone refused: idle again, the reason on the form", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent === "Could not make the voice: no microphone in the check");
   // A clone the model refused, said by the worker, lands on the form too — naming the clone
