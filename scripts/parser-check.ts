@@ -5,7 +5,7 @@
 // No test framework — just throws on failure. Run before deploys to keep the
 // parser honest as we add new sources.
 
-import { canonicalize, detectSources, ingestPaste, isUrl, parseFallback, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
+import { canonicalize, deriveTitle, detectSources, ingestPaste, isUrl, parseFallback, parseInput, parsePaste, reprojectOrigin } from "../src/parser";
 import { decodeRequest } from "../src/paste-request";
 import { augmentJsonlWithSubagents } from "../src/parsers/jsonl";
 import { parseClaudeShare, parseClaudeShareWithCharts } from "../src/parsers/claude-share";
@@ -955,6 +955,133 @@ console.log("\nclaude-jsonl parser (T4):");
   ].map((e) => JSON.stringify(e)).join("\n");
   const r4 = parseInput({ kind: "claude-jsonl", content: noMsgs });
   assert("JSONL with no message events fails cleanly", !r4.ok);
+}
+
+console.log("\nclaude-jsonl speaker attribution:");
+{
+  // Claude Code pushes everything it injects into the model's context down the SAME
+  // "user" CHANNEL the person types into: hook feedback, task notifications,
+  // slash-command expansions and their output, skill bodies, /compact carry-overs,
+  // subagent spawn prompts. Reading the channel as the author published two of every
+  // three messages in a real session under the reader's name. One line here per rule in
+  // speakerOf's table, each shape taken from a real transcript.
+  //
+  // [LAW:behavior-not-structure] The contract asserted is the role and words of the turns
+  // that come out — never the classifier itself, which is free to change beneath it.
+  const SPEAKERS = [
+    { type: "user", origin: { kind: "human" }, message: { role: "user", content: "what's in the repo?" } },
+    { type: "user", turnOrigin: "human", message: { role: "user", content: "and the tests?" } },
+    { type: "user", isMeta: true, message: { role: "user", content: "Base directory for this skill: /laws/code" } },
+    { type: "user", isCompactSummary: true, message: { role: "user", content: "This session is being continued from a previous conversation." } },
+    { type: "user", interruptedMessageId: "msg_01", message: { role: "user", content: "[Request interrupted by user]" } },
+    { type: "user", origin: { kind: "task-notification" }, promptSource: "system", message: { role: "user", content: "<task-notification>Agent \"Explore\" finished</task-notification>" } },
+    // The gap-closing rule: an origin kind this build has never heard of is still a NAMED
+    // author, and the one named author who is the person is "human". A future kind must
+    // land on system without an edit to the parser.
+    { type: "user", origin: { kind: "telepathy" }, message: { role: "user", content: "a kind no build has seen" } },
+    { type: "user", promptSource: "sdk", message: { role: "user", content: "You are a hostile reviewer." } },
+    { type: "user", message: { role: "user", content: "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>" } },
+    { type: "user", message: { role: "user", content: "<local-command-stdout>Set model to Opus.</local-command-stdout>" } },
+    { type: "user", isMeta: true, message: { role: "user", content: "<local-command-caveat>Caveat: generated while running local commands.</local-command-caveat>" } },
+    { type: "user", message: { role: "user", content: "a bare line, from a session older than every field above" } },
+    { type: "assistant", message: { role: "assistant", id: "m1", content: [{ type: "text", text: "Two entries." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } },
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "src" }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+
+  const r = parseInput({ kind: "claude-jsonl", content: SPEAKERS });
+  assert("speaker sample parses", r.ok);
+  if (r.ok) {
+    const said = r.turns
+      .filter((t) => t.kind === "message")
+      .map((t) => (t.kind === "message" ? `${t.role}: ${t.content}` : ""));
+    assertEq("every line is attributed to whoever actually wrote it", said, [
+      "user: what's in the repo?",
+      "user: and the tests?",
+      "system: Base directory for this skill: /laws/code",
+      "system: This session is being continued from a previous conversation.",
+      "system: [Request interrupted by user]",
+      'system: <task-notification>Agent "Explore" finished</task-notification>',
+      "system: a kind no build has seen",
+      "system: You are a hostile reviewer.",
+      // The envelope projects to the command the person ran — dropping it whole would
+      // delete their turn, and publishing it raw would show them XML they never typed.
+      "user: /model opus",
+      "system: Set model to Opus.",
+      "user: a bare line, from a session older than every field above",
+      "assistant: Two entries.",
+    ]);
+    // The caveat's whole body is harness boilerplate: it leaves no turn at all.
+    assert("a caveat-only line says nothing, so it speaks no turn",
+      !said.some((line) => line.includes("Caveat")));
+    // A tool_result rides the user channel too, and is output, not speech.
+    assertEq("the tool result pairs into its call, and no message",
+      kinds(r.turns), ["message", "message", "message", "message", "message", "message",
+        "message", "message", "message", "message", "message", "message", "tool-call"]);
+    const call = r.turns[12]!;
+    assert("the Bash call carries its output", call.kind === "tool-call" && call.output?.text === "src");
+    // [LAW:one-source-of-truth] The title is derived from the first thing the HUMAN said.
+    // Before this fix it read the first user-CHANNEL line, which in a real session is
+    // almost always a caveat block or a command envelope.
+    assertEq("the paste is titled from the human's first words", deriveTitle(r.turns), "what's in the repo?");
+  }
+
+  // This site is a transcript-paste tool, so the people using it write ABOUT these tags.
+  // A message that mentions an envelope is prose, not an envelope: it keeps every word and
+  // stays the reader's [LAW:no-silent-failure]. Recognition is whole-text, never substring.
+  const QUOTING = [
+    { type: "user", origin: { kind: "human" }, message: { role: "user", content: "why does <command-name>/clear</command-name> show up in my paste? I never typed that." } },
+    { type: "user", origin: { kind: "human" }, message: { role: "user", content: "and what is <local-command-stdout>hi</local-command-stdout> meant to be?" } },
+    { type: "user", message: { role: "user", content: "no provenance either: <local-command-stdout>hi</local-command-stdout> came out of nowhere" } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rq = parseInput({ kind: "claude-jsonl", content: QUOTING });
+  assert("quoting sample parses", rq.ok);
+  if (rq.ok) {
+    const said = rq.turns.map((t) => (t.kind === "message" ? `${t.role}: ${t.content}` : t.kind));
+    assertEq("a message that only mentions an envelope keeps all of its words, in the reader's name", said, [
+      "user: why does <command-name>/clear</command-name> show up in my paste? I never typed that.",
+      "user: and what is <local-command-stdout>hi</local-command-stdout> meant to be?",
+      "user: no provenance either: <local-command-stdout>hi</local-command-stdout> came out of nowhere",
+    ]);
+  }
+
+  // A partial envelope is still an envelope, and no tag may ever reach a reader. A
+  // <command-message> with no <command-name> beside it is not a second representation of
+  // anything — it is the only account of what the person ran, so it survives as their
+  // words rather than falling through to the prose path, which for a tag means printing
+  // the tag. An envelope carrying no words at all is no turn, not an empty one.
+  const PARTIAL = [
+    { type: "user", message: { role: "user", content: "<command-message>help</command-message>" } },
+    { type: "user", message: { role: "user", content: "<command-name></command-name>" } },
+    { type: "user", message: { role: "user", content: "<command-name>/model</command-name>\n<command-args></command-args>" } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rp = parseInput({ kind: "claude-jsonl", content: PARTIAL });
+  assert("partial-envelope sample parses", rp.ok);
+  if (rp.ok) {
+    const said = rp.turns.map((t) => (t.kind === "message" ? `${t.role}: ${t.content}` : t.kind));
+    assertEq("a partial envelope keeps what it says and shows no tag: the wordless one is no turn", said, [
+      "user: help",
+      "user: /model",
+    ]);
+  }
+
+  // A subagent's spawn prompt is written by the agent that spawned it, so a captured
+  // nested run opens in the system's voice, not the reader's.
+  const NESTED = [
+    { type: "user", origin: { kind: "human" }, message: { role: "user", content: "scout the repo" } },
+    { type: "assistant", message: { role: "assistant", id: "m1", content: [{ type: "tool_use", id: "t1", name: "Agent", input: { subagent_type: "Explore", description: "Scout", prompt: "Find the config files" } }] } },
+    { type: "user", toolUseResult: { agentId: "a1", totalToolUseCount: 0 }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "Found 2" }] } },
+    { type: "user", isSidechain: true, agentId: "a1", message: { role: "user", content: "Find the config files" } },
+    { type: "assistant", isSidechain: true, agentId: "a1", message: { role: "assistant", id: "s1", content: [{ type: "text", text: "Found 2" }] } },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const rn = parseInput({ kind: "claude-jsonl", content: NESTED });
+  assert("nested bundle parses", rn.ok);
+  if (rn.ok) {
+    const sub = rn.turns.find((t) => t.kind === "subagent")!;
+    assert("the spawn prompt is the nested run's first turn, spoken by the system",
+      sub.kind === "subagent" && sub.transcript.kind === "captured" &&
+      sub.transcript.turns[0].kind === "message" && sub.transcript.turns[0].role === "system" &&
+      sub.transcript.turns[0].content === "Find the config files");
+  }
 }
 
 console.log("\nclaude-jsonl token usage (display-tba):");

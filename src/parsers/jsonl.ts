@@ -1,4 +1,4 @@
-import type { Turn, ToolOutput, ToolOutputKind, Usage, SubagentTranscript } from "../types";
+import type { Role, Turn, ToolOutput, ToolOutputKind, Usage, SubagentTranscript } from "../types";
 import { isNonEmptyTurns } from "../types";
 
 // [LAW:types-are-the-program] Input is a Claude Code session JSONL — one
@@ -74,6 +74,22 @@ interface MessageEvent {
   readonly agentId?: string;
   readonly isSidechain?: boolean;
   readonly toolUseResult?: unknown;
+  // [LAW:single-enforcer] The line's own account of WHO WROTE IT — the fields speakerOf
+  // reads, named here, in the one owner of this wire schema, and nowhere else. `type`
+  // above is the CHANNEL a line rode in on; these are the AUTHOR. All optional: a line
+  // written before a given field existed simply carries none of it.
+  //   origin / turnOrigin  — the named author ("human", "task-notification", "peer",
+  //                          "auto-continuation", …); two spellings, different CC eras.
+  //   isMeta               — harness-injected (skill bodies, hook feedback, caveats).
+  //   isCompactSummary     — the /compact carry-over, written by the model.
+  //   interruptedMessageId — the harness's "[Request interrupted by user]" notice.
+  //   promptSource         — who supplied the prompt (typed / queued / system / sdk).
+  readonly origin?: { readonly kind?: string };
+  readonly turnOrigin?: string;
+  readonly isMeta?: boolean;
+  readonly isCompactSummary?: boolean;
+  readonly interruptedMessageId?: string;
+  readonly promptSource?: string;
   // The uploader folds a subagent group's sibling agent-<id>.meta.json onto the
   // group's first sidechain line as these top-level fields. Only the orphan
   // branch reads them (a tool-spawned group takes its type from the main-stream
@@ -156,16 +172,143 @@ const resultText = (content: ToolResultBlock["content"]): string => {
     .join("\n");
 };
 
-// Strip the structural envelope CC wraps user messages in (system reminders,
-// hook output, prompt-submit annotations). The conversational substance is
-// what appears OUTSIDE the <system-reminder>...</system-reminder> tags.
+// The structural envelope CC wraps user-channel text in, removed by ONE rule:
+//
+//   ENVELOPE TAGS ARE STRUCTURE, NOT SPEECH — unwrap the tag and keep the words; drop a
+//   block whole only when its entire body is harness boilerplate.
+//
+// DROPPED WHOLE: <system-reminder> and <local-command-caveat>. Their bodies are the
+// harness briefing the model about the session, never conversational substance.
+//
+// PROJECTED: the <command-*> family. Dropping it whole would delete the human's `/clear`
+// turn outright (the caller skips empty content), so the envelope projects to the command
+// they actually ran — name plus args. <command-message> is discarded as a second
+// representation of the name [LAW:one-source-of-truth].
+//
+// UNWRAPPED: <local-command-stdout> — a command's own output is substance; only its tag
+// is structure.
+//
+// LEFT VERBATIM: <task-notification>. Its body carries a background agent's returned
+// report — substance, and discarding it would be a silent content loss
+// [LAW:no-silent-failure]. Rendering it more kindly is a display concern, not a parse one.
+//
+// The tag names here are the ones Claude Code emits TODAY, checked against the corpus.
+// The list this replaced named five tags (<command>, <local-command>, <stdout>, <stderr>,
+// <user-prompt-submit-hook>) that appear in no transcript as envelopes, behind a
+// backreference that could never close a <command-name> open tag — so it stripped nothing
+// and published the raw XML.
+//
+// RECOGNITION IS WHOLE-TEXT, NOT SUBSTRING. A message is an envelope only when the envelope
+// is ALL of it. This site is a transcript-paste tool, so the people using it write about
+// these very tags: "what does <local-command-stdout> mean?" is prose that MENTIONS an
+// envelope, and treating a mention as the thing would throw the rest of their sentence away
+// [LAW:no-silent-failure]. The same rule guards speakerOf's reading below. The dropped-whole
+// pair is the one exception, for a reason stated where it happens: the harness writes a
+// reminder onto the end of the very line the person typed, so there is no whole-text rule
+// left to apply to it.
+const DROPPED_WHOLE = /<(system-reminder|local-command-caveat)>[\s\S]*?<\/\1>/g;
+const STDOUT_BLOCK = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/;
+const COMMAND_PART = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
+
+// The command a slash-command envelope stands for, or null when the text is not one — which
+// includes prose that merely quotes the tags, since the envelope must account for the whole
+// message before it may speak for it.
+// [LAW:types-are-the-program] The typed absence is what lets the caller express "a command
+// envelope projects to its command, anything else is cleaned as prose" as one value
+// expression rather than a branch that could forget a case. So the absence carries exactly
+// ONE fact — "this text is not an envelope" — and never doubles as "it is one, but has
+// nothing to say": an envelope with no words projects to the empty string, which the caller
+// already drops as an empty turn. Letting null mean both is what published raw markup to a
+// reader, since a <command-message> with no <command-name> reported itself as prose and the
+// caller dutifully cleaned it as prose — which, for a tag, is to print the tag.
+const commandLine = (raw: string): string | null => {
+  const tags = [...raw.matchAll(COMMAND_PART)];
+  if (tags.length === 0 || raw.replace(COMMAND_PART, "").trim().length > 0) return null;
+  const words = tags.map((m) => [m[1] ?? "", (m[2] ?? "").trim()] as const).filter(([, part]) => part.length > 0);
+  // <command-message> is the name without its slash — a SECOND representation of a fact
+  // <command-name> already carries, so it is dropped [LAW:one-source-of-truth]. Where no
+  // name is present it is not a second representation of anything: it is the only account
+  // of what the person ran, and dropping it would be the silent loss this file forbids
+  // [LAW:no-silent-failure].
+  const named = words.filter(([kind]) => kind !== "message");
+  return (named.length > 0 ? named : words).map(([, part]) => part).join(" ");
+};
+
 const stripEnvelope = (raw: string): string => {
-  // Remove every <system-reminder>...</system-reminder> block (and stray
-  // command-* / local-command-* envelopes). What's left is what the human
-  // actually typed.
-  let s = raw.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "");
-  s = s.replace(/<(command|local-command|stdout|stderr|user-prompt-submit-hook)[^>]*>[\s\S]*?<\/\1>/g, "");
-  return s.trim();
+  // The reminder and caveat blocks are removed WHEREVER they sit, because that is the shape
+  // of the source: the harness appends a reminder to the end of the very line the person
+  // typed, so there is no whole-text rule to apply. The cost is stated rather than hidden —
+  // a message quoting a reminder loses the quote, and nothing in the source distinguishes
+  // the two. Everything below is whole-text, where the distinction does exist.
+  const cleaned = raw.replace(DROPPED_WHOLE, "").trim();
+  const stdout = STDOUT_BLOCK.exec(cleaned);
+  return commandLine(cleaned) ?? (stdout === null ? cleaned : (stdout[1] ?? "").trim());
+};
+
+// [LAW:types-are-the-program] WHO WROTE THIS LINE — the one place that decides.
+//
+// The JSONL's `type` is the CHANNEL a line rode in on, not its author. Claude Code pushes
+// everything it injects into the model's context — hook feedback, task notifications,
+// slash-command expansions and their output, skill bodies, /compact carry-overs, subagent
+// spawn prompts — down the SAME "user" channel the person types into. Reading the channel
+// as the author published two of every three messages under the reader's name (measured
+// across 80 real sessions: 1,013 of 1,536 user-channel messages were written by nobody).
+//
+// [LAW:dataflow-not-control-flow] A total projection over one event, in the order below.
+// Every row is a signal READ FROM THE SOURCE — never inferred from tone or wording:
+//
+//   assistant channel                  → assistant
+//   origin / turnOrigin says "human"   → user     an explicit authorship claim wins
+//   isMeta, isCompactSummary,
+//     interruptedMessageId             → system   the harness's own words
+//   ANY OTHER named origin/turnOrigin  → system   see below
+//   promptSource system | sdk          → system   a script supplied the prompt
+//   isSidechain                        → system   a subagent's spawn prompt is written by
+//                                                 the agent that spawned it
+//   <local-command-stdout> whole text → system   the CLI's own output
+//   none of the above                  → user     see below
+//
+// THE ANY-OTHER-NAMED-ORIGIN ROW closes the enumeration gap. Listing the machine origins
+// (task-notification, peer, auto-continuation — all three observed) would misattribute the
+// next one Claude Code invents. The stronger true theorem is its inverse: `origin` NAMES an
+// author and exactly one value is the person, so every other named origin is not-the-human
+// by construction and a future kind needs no edit here.
+//
+// THE LAST ROW is an honest default, not a shrug, and it carries two cases. A bare
+// user-channel line with no provenance at all IS a human prompt — defaulting the other way
+// would misattribute every message in every transcript written before these fields existed
+// [LAW:no-ambient-temporal-coupling] — stored data is never read through the lens of the
+// CC version that wrote it. A <command-*> envelope lands here too, and deliberately: the
+// person ran that slash command, so the turn is theirs, carrying the command as its words.
+//
+// It reads the RAW text: stripEnvelope above removes the very tags these shapes match on,
+// so a classifier keyed on cleaned text would silently stop matching.
+const SYSTEM_PROMPT_SOURCES: ReadonlySet<string> = new Set(["system", "sdk"]);
+// Whole-text, for the reason stated above stripEnvelope: a line the CLI wrote is the wrapped
+// block and nothing else, while a person quoting the tag has their own words around it. The
+// alternative — demanding a corroborating isMeta/promptSource before trusting the shape —
+// would retire the rule entirely, since these are exactly the lines that carry no provenance
+// field at all. That is the whole reason this row exists.
+//
+// <local-command-caveat> is deliberately NOT named here, and putting it back would add a row
+// that can never fire: DROPPED_WHOLE removes a caveat block wherever it sits, so a message
+// that is a caveat and nothing else — the only shape this whole-text rule could ever see —
+// cleans to nothing and is skipped as an empty turn before any speaker is read off it
+// [LAW:dataflow-not-control-flow].
+const CLI_OUTPUT_TEXT = /^<local-command-stdout>[\s\S]*<\/local-command-stdout>$/;
+
+const speakerOf = (ev: MessageEvent): Role => {
+  if (ev.type === "assistant") return "assistant";
+  const named = ev.origin?.kind ?? ev.turnOrigin ?? null;
+  if (named === "human") return "user";
+  if (ev.isMeta === true || ev.isCompactSummary === true) return "system";
+  if (ev.interruptedMessageId !== undefined) return "system";
+  if (named !== null) return "system";
+  if (ev.promptSource !== undefined && SYSTEM_PROMPT_SOURCES.has(ev.promptSource)) return "system";
+  if (ev.isSidechain === true) return "system";
+  const raw = contentText(ev.message?.content).trim();
+  if (CLI_OUTPUT_TEXT.test(raw)) return "system";
+  return "user";
 };
 
 // [LAW:types-are-the-program] A subagent run reattached to its spawning Agent
@@ -297,25 +440,33 @@ function buildTurns(
       flushUsage();
       continue;
     }
-    const role = ev.type === "user" ? "user" : "assistant";
+    // [LAW:one-source-of-truth] Two facts, two names. `channel` is the stream the line
+    // rode in on: it owns usage accounting and envelope cleaning, both properties of the
+    // TRANSPORT. `speaker` is who wrote the words, and owns nothing but the emitted role.
+    // One variable answering both questions is the bug this split fixes — and the split
+    // has to fall this way round: cleaning keyed on `speaker` would stop stripping
+    // <system-reminder> from a system-authored line and grow the boilerplate back into
+    // the published text.
+    const channel = ev.type;
+    const speaker = speakerOf(ev);
     const msgId = typeof msg.id === "string" ? msg.id : null;
 
     // Another line of the SAME pending message continues it; anything else (a
     // new message, a user turn) closes the pending one out first. An id we have
     // already counted never re-arms — its usage Turn is in the stream once.
     const continuesMessage =
-      role === "assistant" && msgId !== null && msgId === pendingMsgId;
+      channel === "assistant" && msgId !== null && msgId === pendingMsgId;
     if (!continuesMessage) flushUsage();
-    if (role === "assistant" && msgId !== null && !emittedUsage.has(msgId)) {
+    if (channel === "assistant" && msgId !== null && !emittedUsage.has(msgId)) {
       pendingMsgId = msgId;
     }
 
     const content = msg.content;
 
     if (typeof content === "string") {
-      const cleaned = role === "user" ? stripEnvelope(content) : content.trim();
+      const cleaned = channel === "user" ? stripEnvelope(content) : content.trim();
       if (cleaned.length === 0) continue;
-      turns.push({ kind: "message", role, content: cleaned });
+      turns.push({ kind: "message", role: speaker, content: cleaned });
       continue;
     }
 
@@ -330,9 +481,9 @@ function buildTurns(
       if (block.type === "text") {
         const text = (block as TextBlock).text;
         if (typeof text !== "string") continue;
-        const cleaned = role === "user" ? stripEnvelope(text) : text.trim();
+        const cleaned = channel === "user" ? stripEnvelope(text) : text.trim();
         if (cleaned.length === 0) continue;
-        turns.push({ kind: "message", role, content: cleaned });
+        turns.push({ kind: "message", role: speaker, content: cleaned });
       } else if (block.type === "thinking") {
         // [LAW:dataflow-not-control-flow] A thinking block is a content-only Turn,
         // emitted like any other; the renderer (not this parser) decides it folds
