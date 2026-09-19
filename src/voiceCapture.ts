@@ -108,7 +108,10 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
   // raw and decoded, with nothing on the form to tap while it happens.
   const decode = async (file: Blob): Promise<Float32Array<ArrayBuffer>> => {
     const seconds = await config.duration(file);
-    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("this browser cannot tell how long that recording is");
+    // A container that carries no duration — what MediaRecorder writes is commonly Infinity —
+    // is refused rather than decoded to find out, which is the whole danger. The reader is
+    // given the way out, because the file itself is likely fine.
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("this browser cannot tell how long that recording is — try a .wav, .mp3 or .m4a");
     if (seconds > CLONE_FILE_SECONDS) throw new Error(`that recording is ${Math.ceil(seconds / 60)} minutes — a voice is cloned from one of ${CLONE_FILE_SECONDS / 60} minutes or less`);
     return samplesOf(file);
   };
