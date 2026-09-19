@@ -111,14 +111,18 @@ console.log("the passage fits inside the recording");
   // pass/fail against an assumed pace. Both bounds below read off this same reading time
   // [LAW:one-source-of-truth]: one quantity, two edges, no second constant to drift.
   const cutOffBelow = (words.length / readingWindow) * 60;
-  assert(`${words.length} words at ${SLOWEST_READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s of the ${readingWindow.toFixed(1)} s the reader gets from their first word — so the tail is lost only below ${cutOffBelow.toFixed(0)} wpm`, reading <= readingWindow);
-  // [LAW:verifiable-goals] That window is the clone's WHOLE length only while the reader begins
-  // inside the allowance voiceCapture.ts looks through; past it `speechStart` clamps, and every
-  // further second they take comes off the reading. So the honest figure is not the allowance alone
-  // but the allowance plus whatever the passage leaves spare — the moment the tail starts to go.
-  // Stated here because the bound above is the one a reader would otherwise believe unconditionally.
+  // [LAW:verifiable-goals] Two figures, one bound. The window is the clone's WHOLE length only while
+  // the reader's first word lands inside the allowance voiceCapture.ts looks through; past it
+  // `speechStart` clamps and every further second comes off the reading. So the message reports the
+  // rate below which the tail goes AND the moment from the tap at which it starts to go — both
+  // derived from this one reading time, with nothing asserted twice. The bound is strict rather than
+  // `<=` because a passage that exactly fills the window leaves the reader no margin at all, and the
+  // clamp is exercised where it lives, in voice-cloning-check.ts, not restated here.
   const grace = LEAD_IN_SECONDS + (readingWindow - reading);
-  assert(`and they have ${grace.toFixed(1)} s from the tap before any of it is at risk: the ${LEAD_IN_SECONDS} s the capture looks through, plus the ${(readingWindow - reading).toFixed(1)} s the passage leaves spare`, grace > LEAD_IN_SECONDS);
+  assert(
+    `${words.length} words at ${SLOWEST_READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s of the ${readingWindow.toFixed(1)} s the reader gets from their first word — so the tail is lost only below ${cutOffBelow.toFixed(0)} wpm, or if that word comes later than ${grace.toFixed(1)} s after the tap`,
+    reading < readingWindow,
+  );
   // A passage that leaves most of the window empty is one that could be carrying more sounds in
   // more contexts; this floor says it is not wastefully short.
   assert(`and long enough to be worth the recording (${((reading / readingWindow) * 100).toFixed(0)}% of that window used)`, reading >= readingWindow * 0.7);

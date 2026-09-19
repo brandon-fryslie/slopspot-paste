@@ -1861,6 +1861,10 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   // fails and says so — on both forms, since both are views of one machine.
   picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.click();
   assert("a tap on Record: recording, the button now Stop, the note saying so", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL && picker.querySelector<HTMLElement>(".voice-clone-note")?.textContent?.startsWith("Recording") === true && r.mini.voices.picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === STOP_LABEL);
+  // [LAW:one-source-of-truth] The button names the action and NO duration. There are two durations
+  // now — the clone's length and the cap the microphone runs to — and a single number on the button
+  // silently claimed to be both, understating the cap while being the only figure a reader saw.
+  assert("the Record button claims no duration, since there are two of them and it cannot name both", !/\d/.test(RECORD_LABEL));
   // [LAW:no-silent-failure] The microphone outlasts the clone it collects — it runs to
   // RECORDING_SECONDS so that ten seconds of VOICE survive a reader who takes a moment to begin — and
   // the button still reads "Record 10 s", which now names the kept length rather than the recording's.

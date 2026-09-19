@@ -277,6 +277,47 @@ console.log("the clone is ten seconds of voice, not ten seconds of clock");
   // level: both must answer zero, and calibrating on the maximum makes only the first one disagree.
   assert("and the same take without it answers the same", speechStart(tone(13, 0.014)) === 0);
 
+  // [LAW:no-silent-failure] A 5 ms tick at 0.3 s — a lip smack, a chair creak, a key. It clears the
+  // floor on its own, and accepting the FIRST frame over the floor opened the window on it: the clone
+  // began at 0.25 s, spent its first 1.7 s on room tone, and closed 1.7 s early, cutting the tail.
+  // The thud above cannot catch this, because it sits OUTSIDE the searched allowance on purpose; this
+  // one sits inside it, which is the half the percentile did not fix.
+  const ticked = afterSilence(2, 11, 0.0002);
+  const tickAt = Math.round(0.3 * SAMPLE_RATE);
+  for (let i = 0; i < Math.round(0.005 * SAMPLE_RATE); i++) ticked[tickAt + i] = 0.05;
+  assert(
+    `a tick too brief to be a word is not taken for one (found ${(speechStart(ticked) / SAMPLE_RATE).toFixed(2)} s, where the first frame over the floor said 0.25 s)`,
+    Math.abs(speechStart(ticked) / SAMPLE_RATE - 2.0) < 0.1,
+  );
+
+  // [LAW:no-silent-failure] Thirteen seconds of room tone trims to exactly CLONE_SAMPLES of room
+  // tone, so it is a whole clone LONG and length was the only thing standing in its way. A song's
+  // intro, or a memo whose speech starts past the allowance, was stored as a voice.
+  const hush = createVoiceCapture({
+    Decoder: () => ({ decodeAudioData: async () => ({ numberOfChannels: 1, length: PROMPT_SAMPLES, getChannelData: () => tone(PROMPT_SAMPLES / SAMPLE_RATE, 0.001) }) }),
+    microphone: () => Promise.reject(new Error("not this road")),
+    Recorder: () => {
+      throw new Error("not this road");
+    },
+    duration: async () => PROMPT_SAMPLES / SAMPLE_RATE,
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+  });
+  let hushed = "";
+  await hush.decode(new Blob([new Uint8Array(4)])).catch((e: unknown) => (hushed = e instanceof Error ? e.message : String(e)));
+  assert("a recording with no voice in it is refused, since being a whole clone long says nothing about that", hushed.includes("no voice in that recording"));
+
+  // [LAW:verifiable-goals] The ordinary reader, who is the one the passage is NOT cut for: it fits a
+  // SLOW reader inside the clone's length, so an ordinary pace finishes early and taps Stop. The
+  // prompt is then as long as they spoke — the same words they always got, minus the lead-in silence
+  // that used to be padded onto them.
+  const stoppedEarly = afterSilence(1.5, 6.5);
+  const early = clonePrompt(stoppedEarly);
+  assert(
+    `a reader who finishes and stops keeps every word they said and none of the silence (${(early.length / SAMPLE_RATE).toFixed(2)} s of voice out of an ${(stoppedEarly.length / SAMPLE_RATE).toFixed(1)} s recording)`,
+    early.length < CLONE_SAMPLES && Math.abs(early.length / SAMPLE_RATE - 6.55) < 0.1 && peakOf(early, 0, Math.round(0.1 * SAMPLE_RATE)) > 0.1,
+  );
+
   // A quiet microphone and a loud one both work, because the floor is a fraction of the
   // recording's OWN peak: the same lead-in is found in a take 25 times fainter.
   assert(
@@ -378,7 +419,7 @@ console.log("createCloning: every way it fails is said on the form");
   const short = rig(tone(0.3));
   short.cloner.send({ kind: "make", name: "Blip", source: { kind: "file", file } });
   await settle();
-  assert("a file too short to be a voice: not kept, the reason shown, and named as speech rather than as the file", short.states.at(-1)?.startsWith("idle: Could not make the voice: only 0.3 s of that recording is speech") === true && short.kept.length === 0);
+  assert("a file too short to be a voice: not kept, and the reason names what there was to clone from rather than the reader's file", short.states.at(-1)?.startsWith("idle: Could not make the voice: there is only 0.3 s to clone from") === true && short.kept.length === 0);
 
   const held = new Map<string, string>();
   const full: PreferenceStore & { readonly keys: () => string[] } = { getItem: (k) => held.get(k) ?? null, setItem: () => undefined, removeItem: (k) => void held.delete(k), keys: () => [...held.keys()] };

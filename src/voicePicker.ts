@@ -81,7 +81,13 @@ export const voiceCredit = (id: VoiceId): string => {
   return `${asset.attribution} · ${asset.licence}`;
 };
 
-export const RECORD_LABEL = `● Record ${CLONE_SECONDS} s`;
+// [LAW:one-source-of-truth] The button names the ACTION and no duration, because there are two now
+// and it was quietly claiming to be both. It used to be literally the cap; since the microphone runs
+// to RECORDING_SECONDS so that CLONE_SECONDS of voice can fit, "Record 10 s" understated how long it
+// stays open while also being the only number a reader saw. The kept length is stated in the
+// instruction that explains it, and the cap in the note for the recording actually under way — one
+// number in each place, each beside the thing it describes.
+export const RECORD_LABEL = "● Record";
 export const STOP_LABEL = "■ Stop";
 export const MAKING_NOTE = "Making the voice…";
 
@@ -225,12 +231,17 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   // standing in for a mechanism, because the lead-in was spent out of the same ten and nothing but
   // the reader's haste could save it [LAW:no-ambient-temporal-coupling].
   //
-  // BUT IT STILL ASKS THEM TO BEGIN SOON, because the mechanism is BOUNDED and the promise must not
-  // outrun it. `speechStart` looks through LEAD_IN_SECONDS of silence and no further, so a reader
-  // who dawdles past it gets a window clamped to its end and loses a second of reading for every
-  // second more they take. "The ten seconds begin at your first word" read alone invites exactly
-  // that dawdle; the clause after it is what keeps the sentence true [LAW:no-silent-failure].
-  read.textContent = `Read this aloud, or upload a recording of yourself reading it. The ${CLONE_SECONDS} seconds kept begin at your first word, so start within a few seconds of tapping. These words cover every sound English makes:`;
+  // BUT IT NAMES THE BOUND, because the mechanism has one and the promise must not outrun it.
+  // `speechStart` looks through LEAD_IN_SECONDS of silence and no further, so a first word later than
+  // that gets a window clamped to the allowance's end and loses a second of reading for every second
+  // more it took. "The ten seconds begin at your first word" read alone invites exactly that delay
+  // [LAW:no-silent-failure].
+  //
+  // AND IT NAMES IT WITHOUT SAYING "TAP", because this same sentence describes Upload, where there is
+  // no tap and no clock the reader controls — only a file whose own first seconds either hold their
+  // first word or do not. "Start within a few seconds of tapping" was an instruction half the readers
+  // of it could not act on, and a promise that was false for their file [LAW:one-type-per-behavior].
+  read.textContent = `Read this aloud, or upload a recording of yourself reading it. The ${CLONE_SECONDS} seconds kept begin at your first word, as long as it comes in the first few seconds. These words cover every sound English makes:`;
   const passage = el("p", "voice-clone-passage");
   passage.id = `${scope}-clone-passage`;
   passage.textContent = CLONE_PASSAGE;

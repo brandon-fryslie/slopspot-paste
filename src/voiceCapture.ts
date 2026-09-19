@@ -125,9 +125,21 @@ export const RECORDING_SECONDS = CLONE_SECONDS + LEAD_IN_SECONDS;
 // ten-minute upload from being measured end to end when all but its first seconds are discarded.
 export const PROMPT_SAMPLES = LEAD_IN_SAMPLES + CLONE_SAMPLES;
 
-// The scan's frame: 20 ms — short enough that the start of a word lands inside one frame, long
-// enough that a few samples of crackle cannot pass for speech.
+// The scan's frame: 20 ms — short enough that the start of a word lands inside one frame.
 const FRAME_SAMPLES = SAMPLE_RATE / 50;
+
+// How many frames in a row must clear the floor before it counts as a word.
+//
+// [LAW:types-are-the-program] A frame above a floor is not speech, and treating it as one is a
+// weaker theorem than the domain supports: speech SUSTAINS — a vowel runs 50 to 200 ms — while the
+// things that share a recording with it do not. A lip smack, a chair creak, a breath, a key is 5 to
+// 20 ms, clears the floor on its own, and opened the window on it. Three frames is 60 ms: inside any
+// real word, past anything that merely ticks.
+//
+// Hardening the floor against transients (SPEECH_PERCENTILE) was only half of it. That kept one thud
+// from raising the floor above the whole passage; this keeps one tick from passing for its first
+// word. The same failure, once at each end of the same decision [LAW:no-silent-failure].
+const SUSTAINED_FRAMES = 3;
 
 // How loud the reader's voice is, read off the recording as a high percentile of its frame levels
 // rather than as its loudest frame. The difference is not precision, it is WHICH WAY THE ESTIMATE
@@ -154,6 +166,20 @@ const SPEECH_PERCENTILE = 0.9;
 // so a recording made in a genuinely noisy room is not trimmed at all rather than trimmed wrongly.
 const VOICE_FRACTION_OF_SPEECH = 0.03;
 
+// The quietest a recording can be and still have a voice in it.
+//
+// ABSOLUTE, where the trim's floor is relative, and the difference is not taste — it is which
+// question each answers. "Where does the voice start" is scale-free, so it must be relative. "Is
+// there a voice here at all" is the one question a relative measure CANNOT answer, because room tone
+// scaled up is indistinguishable from speech by any ratio you care to take. So it gets a real level:
+// −40 dBFS, quieter than any recording a voice can be cloned from, louder than a silent room.
+//
+// Without it, length is the only thing standing between the reader and a clone of nothing. Thirteen
+// seconds of room tone trims to exactly CLONE_SAMPLES of room tone, which is a whole clone long and
+// passes every length check there is — so a song's intro, or a memo whose speech starts after the
+// allowance, was stored as a voice and synthesised over in silence [LAW:no-silent-failure].
+export const SILENT_BELOW = 0.01;
+
 // Backed off from the frame that crossed the floor, so the attack of the first word is inside the
 // clone rather than merely the thing that located it.
 const PREROLL_SAMPLES = Math.round(0.05 * SAMPLE_RATE);
@@ -177,12 +203,14 @@ export const monoOf = (audio: DecodedAudio): Float32Array<ArrayBuffer> => {
 // measured — a floor drawn from the lead-in alone would be a floor drawn from room tone
 // [LAW:one-source-of-truth].
 //
-// TWO ANSWERS, EACH RIGHT FOR ITS OWN REASON. When no frame of the allowance clears the floor the
-// reader really was silent throughout it, so the whole allowance was lead-in and the clone starts
-// at its end. When the waveform has nothing in it anywhere its peak is zero, there is no floor to
-// clear, and the clone starts at the top — which is what this did for every recording before, so
-// a recording of silence is no worse than it was and `cloneVoice` still refuses one too short to
-// be a voice.
+// TWO ANSWERS, EACH RIGHT FOR ITS OWN REASON. When no sustained run of the allowance clears the
+// floor the reader really was silent throughout it, so the whole allowance was lead-in and the clone
+// starts at its end. When the waveform has nothing in it anywhere its peak is zero, there is no
+// floor to clear, and the clone starts at the top — which is what this did for every recording
+// before it existed.
+//
+// Neither answer is a judgement about whether there is a voice in the recording, and this is the
+// wrong place to make one: this reports WHERE, and SILENT_BELOW decides WHETHER.
 export const speechStart = (mono: Float32Array): number => {
   // Bounded here rather than trusted to arrive bounded: only PROMPT_SAMPLES of a recording can
   // become a clone, so that is both the most worth scanning and the stretch the floor should be
@@ -199,16 +227,39 @@ export const speechStart = (mono: Float32Array): number => {
   const ranked = Float32Array.from(level).sort();
   const floor = (ranked[Math.min(frames - 1, Math.floor(frames * SPEECH_PERCENTILE))] ?? 0) * VOICE_FRACTION_OF_SPEECH;
   if (floor <= 0) return 0;
+  // The run may be CONFIRMED past the allowance even though it must BEGIN inside it, so a word
+  // starting on the allowance's last frame is still a word rather than a truncated near-miss.
   const searched = Math.min(frames, Math.ceil(LEAD_IN_SAMPLES / FRAME_SAMPLES));
-  for (let frame = 0; frame < searched; frame++) {
-    if ((level[frame] ?? 0) >= floor) return Math.max(0, frame * FRAME_SAMPLES - PREROLL_SAMPLES);
+  let run = 0;
+  for (let frame = 0; frame < frames; frame++) {
+    if ((level[frame] ?? 0) < floor) {
+      run = 0;
+      continue;
+    }
+    run += 1;
+    if (run < SUSTAINED_FRAMES) continue;
+    const began = frame - run + 1;
+    if (began >= searched) break;
+    return Math.max(0, began * FRAME_SAMPLES - PREROLL_SAMPLES);
   }
   return Math.min(LEAD_IN_SAMPLES, mono.length);
 };
 
-// The clone's prompt: CLONE_SAMPLES of the reader's voice, taken from where the voice starts.
+// The clone's prompt: AT MOST CLONE_SAMPLES of the reader's voice, taken from where the voice starts.
 // [LAW:single-enforcer] the one place that decides WHICH ten seconds a clone is made of, for the
 // microphone and the reader's file alike.
+//
+// AT MOST, and for the ordinary reader rather than the rare one. The passage is cut to fit a SLOW
+// reader inside the clone's length (clonePassage.ts), so anyone reading at an ordinary pace finishes
+// it early, taps Stop, and leaves less than CLONE_SAMPLES behind: `subarray` then yields what they
+// actually said. That is the right answer and not a truncation — the same reader used to get those
+// same words PADDED with their lead-in silence, and silence is not signal the encoder can use. What
+// the passage guarantees is that all forty sounds have been said by the time they stop, which is true
+// at any pace; what it never guaranteed is a duration.
+//
+// So the cap is NOT extended once speech is heard, though it could be. Holding the microphone open
+// after a reader has finished reading to collect seconds they have no words left for is the opposite
+// of handing them something to read and be done with.
 export const clonePrompt = (mono: Float32Array<ArrayBuffer>): Float32Array<ArrayBuffer> => {
   const from = speechStart(mono);
   return mono.subarray(from, from + CLONE_SAMPLES);
@@ -216,7 +267,15 @@ export const clonePrompt = (mono: Float32Array<ArrayBuffer>): Float32Array<Array
 
 export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
   // The one decode, for whichever road the audio came in on.
-  const samplesOf = async (audio: Blob): Promise<Float32Array<ArrayBuffer>> => clonePrompt(monoOf(await config.Decoder().decodeAudioData(await audio.arrayBuffer())));
+  // [LAW:single-enforcer] One decode, one trim, and one refusal of a recording with no voice in it,
+  // for whichever road the audio came in on.
+  const samplesOf = async (audio: Blob): Promise<Float32Array<ArrayBuffer>> => {
+    const prompt = clonePrompt(monoOf(await config.Decoder().decodeAudioData(await audio.arrayBuffer())));
+    let peak = 0;
+    for (const x of prompt) peak = Math.max(peak, Math.abs(x));
+    if (peak < SILENT_BELOW) throw new Error("there is no voice in that recording — it may be silent, or the microphone may not have been heard");
+    return prompt;
+  };
 
   // [LAW:parse-dont-validate] The reader's file crossing into audio this can clone from: it
   // is measured before a sample of it exists, because past that line it is held twice over,

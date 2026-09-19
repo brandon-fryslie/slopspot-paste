@@ -55,9 +55,11 @@ console.log("a recording becomes a clone");
   } catch (e) {
     refused = e instanceof Error ? e.message : String(e);
   }
-  // What reaches cloneVoice is the speech clonePrompt found, not the file the reader chose, so the
-  // refusal must not call 0.5 s "the recording" when they uploaded three and a half seconds.
-  assert("less than a second of speech is refused, named as speech and with the least a voice needs", refused.includes("0.4 s of that recording is speech") && refused.includes("at least 1 s"));
+  // What reaches cloneVoice is what clonePrompt found, not the file the reader chose. So the refusal
+  // must not call 0.5 s "the recording" when they uploaded three and a half seconds — nor call it
+  // speech, which is false the other way round on every recording that was never trimmed at all. It
+  // claims a length to clone from, which is the one thing true on both branches.
+  assert("less than a second is refused as what there is to clone from, with the least a voice needs", refused.includes("only 0.4 s to clone from") && refused.includes("at least 1 s"));
   const loud = await cloneVoice("Loud", Float32Array.from([2, -2, 0.5, ...tone(1)]));
   assert("samples beyond full scale are clipped, not wrapped", loud.samples[0] === 32767 && loud.samples[1] === -32767);
 }

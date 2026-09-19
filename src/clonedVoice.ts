@@ -89,16 +89,18 @@ export const toFloat = (samples: Int16Array): Float32Array<ArrayBuffer> => Float
 // shorter one is not a voice — a tap that ended before anything was said, or a file whose every
 // other second is room tone — and is refused with the reason a reader can act on.
 //
-// What arrives here has already been through `clonePrompt`, so its length is the speech that was
-// found and not the length of the file the reader chose. The refusal says so: telling someone who
-// uploaded three and a half seconds that "the recording is 0.5 s" is a false statement about their
-// file, and sends them to record a longer one when the problem was that only half a second of it
-// was voice [LAW:no-silent-failure].
+// What arrives here has already been through `clonePrompt`, so its length is what there is to clone
+// FROM and not the length of the file the reader chose. The refusal says that and no more. Telling
+// someone who uploaded three and a half seconds that "the recording is 0.5 s" is a false statement
+// about their file; telling them "only 0.5 s of it is speech" is false the other way round when no
+// trim happened at all — which is every recording whose first frames already clear the floor. The
+// wording has to hold on both branches, so it claims a length and not a measurement of speech
+// [LAW:no-silent-failure].
 export const MIN_SECONDS = 1;
 
 export const cloneVoice = async (name: string, pcm: Float32Array): Promise<ClonedVoice> => {
   if (pcm.length < MIN_SECONDS * SAMPLE_RATE) {
-    throw new Error(`only ${(pcm.length / SAMPLE_RATE).toFixed(1)} s of that recording is speech; a voice needs at least ${MIN_SECONDS} s`);
+    throw new Error(`there is only ${(pcm.length / SAMPLE_RATE).toFixed(1)} s to clone from; a voice needs at least ${MIN_SECONDS} s`);
   }
   const samples = quantize(pcm);
   return { key: `clone:${await contentHash(base64Of(samples))}`, name: cloneName(name), samples };
