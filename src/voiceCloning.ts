@@ -17,6 +17,11 @@
 // touching a recording under way [LAW:types-are-the-program]. Fused, the only way to say
 // anything was to end the making, which threw the reader's recording away mid-tap.
 //
+// EVERY END OF A RECORDING IS ONE EVENT. The reader's tap and the capture's own cap at
+// CLONE_SECONDS both arrive as `stop`, so the phase leaves "recording" exactly when the
+// microphone does, by the one path [LAW:dataflow-not-control-flow]. The edge is told to stop
+// either way; a recording already over takes it as the no-op it is.
+//
 // ONE MAKING AT A TIME. A second record or upload while one is under way is refused as a
 // value, not queued: the reader's tap on a busy form does nothing, and the note says why.
 
@@ -45,7 +50,8 @@ export type Source = { readonly kind: "microphone" } | { readonly kind: "file"; 
 export type CloningEvent =
   // The reader's tap: a recording from the microphone, or a file they chose, under a name.
   | { readonly kind: "make"; readonly name: string; readonly source: Source }
-  // The reader's tap on a recording under way: it ends, and what was recorded is made.
+  // A recording under way is over — the reader's tap, or the capture's cap at CLONE_SECONDS
+  // (voiceCapture.ts `ended`) — and what was recorded is made.
   | { readonly kind: "stop" }
   // The capture answered: the samples became a clone, or the reason they did not.
   | { readonly kind: "made"; readonly voice: ClonedVoice }
@@ -57,7 +63,10 @@ export type CloningEvent =
   // The store answered `keep`.
   | { readonly kind: "kept"; readonly voice: ClonedVoice }
   // The reader is done with a clone.
-  | { readonly kind: "remove"; readonly key: ClonedVoiceKey };
+  | { readonly kind: "remove"; readonly key: ClonedVoiceKey }
+  // The store would not take the removal. It names a clone the device therefore still keeps,
+  // so — like `model-refused` — it is said and nothing else.
+  | { readonly kind: "remove-refused" };
 
 export type CloningEffect =
   | { readonly kind: "capture"; readonly source: Source; readonly name: string }
@@ -77,6 +86,7 @@ const noting = (state: CloningState, note: string): CloningStep => ({ state: { .
 const ended = (note: string): CloningStep => ({ state: { phase: { kind: "idle" }, note }, effects: [] });
 
 export const BUSY = "One voice at a time: wait for the one being made.";
+export const REMOVAL_REFUSED = "Could not forget that voice: this browser refused to change what it keeps.";
 
 // [LAW:dataflow-not-control-flow] One row per event, total over the state.
 export const step = (state: CloningState, event: CloningEvent): CloningStep => {
@@ -106,7 +116,14 @@ export const step = (state: CloningState, event: CloningEvent): CloningStep => {
     case "kept":
       return ended(`Saved ${event.voice.name}.`);
     case "remove":
-      return { state, effects: [{ kind: "forget", key: event.key }] };
+      // The note is the last outcome, and the voice it spoke of is going: a "Saved Brandon."
+      // left standing over a shelf without Brandon describes nothing on the form.
+      return { state: { ...state, note: null }, effects: [{ kind: "forget", key: event.key }] };
+    case "remove-refused":
+      // [LAW:no-silent-failure] The device still keeps the clone, so the shelf still shows it
+      // and the model can still speak it. Saying so beats forgetting it everywhere but in the
+      // one place that decides whether it exists.
+      return noting(state, REMOVAL_REFUSED);
   }
 };
 
@@ -143,8 +160,16 @@ export const createCloning = (config: CloningConfig): Cloning => {
   const perform = (effect: CloningEffect): void => {
     switch (effect.kind) {
       case "capture": {
-        const started = effect.source.kind === "microphone" ? config.capture.record() : { pcm: config.capture.decode(effect.source.file), stop: () => undefined };
+        const started =
+          effect.source.kind === "microphone"
+            ? config.capture.record()
+            : // A file is not a recording: it is over before it starts, and the phase is
+              // already `making`, where a `stop` is the no-op the machine says it is.
+              { pcm: config.capture.decode(effect.source.file), ended: Promise.resolve(), stop: () => undefined };
         capture = started;
+        // [LAW:one-source-of-truth] When the recording ended is the edge's to say — the cap
+        // ends one the reader never tapped, and only this tells the phase.
+        void started.ended.then(() => dispatch({ kind: "stop" }));
         void started.pcm
           .then((pcm) => cloneVoice(effect.name, pcm))
           .then(
@@ -167,11 +192,13 @@ export const createCloning = (config: CloningConfig): Cloning => {
         return;
       }
       case "forget": {
-        // A refused removal is a store that will not write at all, which the read edge
-        // already reads as nothing: nothing to say beyond the console.
+        // [LAW:one-source-of-truth] The store decides what the device keeps, so the panel is
+        // told to release the recording and drop the pick only once the removal is in it. A
+        // store that reads but will not write would otherwise leave the row on the shelf and
+        // the voice unpickable — forgotten everywhere but where it is kept.
         const saving = writeClones(config.store, withoutClone(readClones(config.store), effect.key));
-        if (saving.kind === "refused") console.warn(`voice cloning: the browser refused to forget ${effect.key}`);
-        config.onForgot(effect.key);
+        if (saving.kind === "kept") config.onForgot(effect.key);
+        else dispatch({ kind: "remove-refused" });
         return;
       }
     }

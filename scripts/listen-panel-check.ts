@@ -1075,7 +1075,7 @@ const mount = (r: Rig): ReturnType<typeof createListenPanel> =>
     preference: { read: () => readPreference(r.store), write: (remembered) => writePreference(r.store, remembered) },
     pick: { read: () => readPick(r.store, readClones(r.store)), write: (pick) => writePick(r.store, pick) },
     clones: { read: () => readClones(r.store) },
-    cloning: (told) => createCloning({ ...told, store: r.store, capture: { record: () => ({ pcm: Promise.reject(new Error("no microphone in the check")), stop: () => {} }), decode: () => Promise.reject(new Error("no decoder in the check")) } }),
+    cloning: (told) => createCloning({ ...told, store: r.store, capture: { record: () => ({ pcm: Promise.reject(new Error("no microphone in the check")), ended: new Promise<void>(() => undefined), stop: () => {} }), decode: () => Promise.reject(new Error("no decoder in the check")) } }),
     sampleSrc: (voice) => (isClonedKey(voice) ? `blob:${voice}` : samplePath(voice)),
     connection: () => r.connection.reading,
     Device: StubDevice,

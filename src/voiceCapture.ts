@@ -11,18 +11,23 @@
 // context at the model's rate — the spec has it resample to the context's rate — then the
 // channels averaged to one and the first CLONE_SECONDS kept.
 //
-// WHO STOPS THE RECORDING. The recording ends on the reader's tap or at CLONE_SECONDS,
-// whichever is first, and the timer that ends it is the recording's own, cleared when the
-// reader ends it: one owner of the end [LAW:no-ambient-temporal-coupling].
+// WHO STOPS THE RECORDING, AND WHO HEARS IT END. The recording ends on the reader's tap or
+// at CLONE_SECONDS, whichever is first, and the timer that ends it is the recording's own,
+// cleared when the reader ends it: one owner of the end [LAW:no-ambient-temporal-coupling].
+// Both ends resolve `ended`, because the machine that drew the Stop button cannot see the
+// cap fire: a recording the cap ended would otherwise leave the form saying "Stop" over a
+// microphone already closed [LAW:one-source-of-truth].
 //
 // Every browser surface is a parameter, so scripts/voice-cloning-check.ts drives a stub
 // and the page hands it the window's own.
 
 import { CLONE_SAMPLES, CLONE_SECONDS } from "./clonedVoice";
 
-// A recording under way: its samples once it ends, and the reader's way to end it.
+// A recording under way: its samples once it ends, the fact that it has ended — by the
+// reader's tap or by the cap — and the reader's way to end it.
 export interface Capture {
   readonly pcm: Promise<Float32Array<ArrayBuffer>>;
+  readonly ended: Promise<void>;
   readonly stop: () => void;
 }
 
@@ -82,9 +87,14 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
 
   const record = (): Capture => {
     let recorder: Recorder | null = null;
-    let ended = false;
+    let over = false;
+    let announce: () => void = () => undefined;
+    const ended = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
     const end = (): void => {
-      ended = true;
+      over = true;
+      announce();
       if (recorder !== null && recorder.state === "recording") recorder.stop();
     };
     const pcm = (async (): Promise<Float32Array<ArrayBuffer>> => {
@@ -93,7 +103,7 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
         for (const track of stream.getTracks()) track.stop();
       };
       // The reader ended it before the microphone answered: nothing was recorded.
-      if (ended) {
+      if (over) {
         release();
         throw new Error("the recording was stopped before it began");
       }
@@ -118,7 +128,7 @@ export const createVoiceCapture = (config: CaptureConfig): VoiceCapture => {
         release();
       }
     })();
-    return { pcm, stop: end };
+    return { pcm, ended, stop: end };
   };
 
   return { record, decode };

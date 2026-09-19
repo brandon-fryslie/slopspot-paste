@@ -1,14 +1,15 @@
 // The making of clones (slopspot-voices-9p4.8j6): the machine's every arm — a recording
-// stopped, a file too short, one voice at a time, a store that refuses — and the driver over
-// a stub microphone and decoder, with the capture edge's own rules: the recording ends on
-// the reader's tap or at the cap, the channels are averaged and the tail cut. Run:
+// stopped, a file too short, one voice at a time, a store that refuses to keep and one that
+// refuses to forget — and the driver over a stub microphone and decoder, with the capture
+// edge's own rules: the recording ends on the reader's tap or at the cap, either end is
+// announced, the channels are averaged and the tail cut. Run:
 // `tsx scripts/voice-cloning-check.ts`.
 
 import { CLONE_SAMPLES, CLONE_SECONDS, cloneVoice, readClones, writeClones, type ClonedVoice } from "../src/clonedVoice";
 import { SAMPLE_RATE } from "../src/modelAssets";
 import type { PreferenceStore } from "../src/preferenceStore";
 import { createVoiceCapture, monoOf, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
-import { BUSY, REFUSED, createCloning, initialCloning, step, type CloningEvent, type CloningState } from "../src/voiceCloning";
+import { BUSY, REFUSED, REMOVAL_REFUSED, createCloning, initialCloning, step, type CloningEvent, type CloningState } from "../src/voiceCloning";
 import { memoryPreferences } from "./preferenceStub";
 
 const assert = (label: string, cond: boolean): void => {
@@ -23,6 +24,10 @@ const assert = (label: string, cond: boolean): void => {
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+// Whether a promise resolved — never a hang if it does not: a settle's worth of turns is
+// every turn a resolved one needs.
+const settled = async (promise: Promise<void>): Promise<boolean> => Promise.race([promise.then(() => true), settle().then(() => false)]);
 
 const tone = (seconds: number, scale = 0.5): Float32Array<ArrayBuffer> => Float32Array.from({ length: Math.round(seconds * SAMPLE_RATE) }, (_, i) => scale * Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE));
 
@@ -61,6 +66,9 @@ console.log("step: one voice at a time, and every way a making ends");
   assert("kept: idle, saying so", shown(step(making.state, { kind: "kept", voice }).state) === "idle: Saved Me.");
   assert("failed: idle, saying why", shown(step(recording.state, { kind: "failed", message: "no microphone" }).state) === "idle: Could not make the voice: no microphone");
   assert("remove: forgotten, wherever the making is", effects(idle, { kind: "remove", key: voice.key }) === "forget" && effects(recording.state, { kind: "remove", key: voice.key }) === "forget");
+  assert("remove: the word about the voice just saved goes with its row", shown(step(step(making.state, { kind: "kept", voice }).state, { kind: "remove", key: voice.key }).state) === "idle");
+  const stuck = step(recording.state, { kind: "remove-refused" });
+  assert("a removal the store refuses is said, and the recording under way is left alone", stuck.effects.length === 0 && shown(stuck.state) === `recording Me: ${REMOVAL_REFUSED}`);
   const refused = step(recording.state, { kind: "model-refused", name: "Me", message: "out of memory" });
   assert(
     "the model refusing a saved clone is said, and the recording under way is left alone",
@@ -150,12 +158,15 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
   assert("a recording asks the microphone once, starts the recorder, and arms the cap", asked === 1 && timers.length === 1 && timers[0]?.ms === CLONE_SECONDS * 1000);
   recording.stop();
   const pcm = await recording.pcm;
-  assert("the reader's stop ends it: the chunk is decoded, the cap disarmed, the microphone released", pcm.length === left.length && timers[0]?.cleared === true && mic.stream.stopped() === 1);
+  assert(
+    "the reader's stop ends it: the chunk is decoded, the end announced, the cap disarmed, the microphone released",
+    pcm.length === left.length && (await settled(recording.ended)) && timers[0]?.cleared === true && mic.stream.stopped() === 1,
+  );
 
   const capped = capture.record();
   await settle();
   timers[1]!.fn();
-  assert("the cap ends it the same way", (await capped.pcm).length === left.length && mic.stream.stopped() === 2);
+  assert("the cap ends it the same way, announced the same way — nobody tapped anything", (await capped.pcm).length === left.length && (await settled(capped.ended)) && mic.stream.stopped() === 2);
 
   const early = capture.record();
   early.stop();
@@ -178,6 +189,8 @@ interface Rig {
   readonly forgot: string[];
   readonly cloner: ReturnType<typeof createCloning>;
   readonly stops: () => number;
+  // The capture edge's own cap firing: the recording is over with no tap to stop it.
+  readonly cap: () => void;
 }
 
 const rig = (pcm: Float32Array<ArrayBuffer>, store = memoryPreferences()): Rig => {
@@ -186,18 +199,24 @@ const rig = (pcm: Float32Array<ArrayBuffer>, store = memoryPreferences()): Rig =
   const forgot: string[] = [];
   let stops = 0;
   let resolve: (pcm: Float32Array<ArrayBuffer>) => void = () => undefined;
+  let over: () => void = () => undefined;
+  const end = (): void => {
+    over();
+    resolve(pcm);
+  };
   const capture: VoiceCapture = {
     record: () => ({
       pcm: new Promise((r) => (resolve = r)),
+      ended: new Promise<void>((r) => (over = r)),
       stop: () => {
         stops += 1;
-        resolve(pcm);
+        end();
       },
     }),
     decode: async () => pcm,
   };
   const cloner = createCloning({ store, capture, onChange: (state) => states.push(shown(state)), onKept: (voice) => kept.push(voice.name), onForgot: (key) => forgot.push(key) });
-  return { store, states, kept, forgot, cloner, stops: () => stops };
+  return { store, states, kept, forgot, cloner, stops: () => stops, cap: end };
 };
 
 console.log("createCloning: a recording becomes a kept clone the panel is told of");
@@ -213,7 +232,21 @@ console.log("createCloning: a recording becomes a kept clone the panel is told o
   await settle();
   assert("an upload of the same recording: the same key, now under the newer name", r.states.at(-1) === "idle: Saved File." && readClones(r.store).map((c) => `${c.name}:${c.key === key}`).join() === "File:true");
   r.cloner.send({ kind: "remove", key });
-  assert("remove: forgotten on the device, the panel told", readClones(r.store).length === 0 && r.forgot.join() === key);
+  assert("remove: forgotten on the device, the panel told, and the form says nothing about a voice that is gone", readClones(r.store).length === 0 && r.forgot.join() === key && r.states.at(-1) === "idle");
+}
+
+// The ten-second cap: the edge ends the recording and the reader never tapped Stop. The form
+// must leave "recording" all the same — a Stop button over a closed microphone does nothing.
+console.log("createCloning: a recording the cap ends is a recording the form knows ended");
+{
+  const r = rig(tone(2));
+  r.cloner.send({ kind: "make", name: "Capped", source: { kind: "microphone" } });
+  r.cap();
+  await settle();
+  assert(
+    "the cap moves the form off recording and the clone is kept, with no tap to stop",
+    r.states.join(" | ") === "recording Capped | making Capped | idle: Saved Capped." && r.kept.join() === "Capped" && readClones(r.store).map((c) => c.name).join() === "Capped",
+  );
 }
 
 console.log("createCloning: every way it fails is said on the form");
@@ -229,6 +262,27 @@ console.log("createCloning: every way it fails is said on the form");
   refused.cloner.send({ kind: "make", name: "Nowhere", source: { kind: "file", file } });
   await settle();
   assert("a store that refuses: not kept, the panel not told, the refusal shown", refused.states.at(-1) === `idle: Could not make the voice: ${REFUSED}` && refused.kept.length === 0);
+
+  // A store that reads but will not write: the removal cannot land, so the clone is still
+  // the device's and the panel must not be told to release its recording or drop the pick.
+  const stuck = new Map<string, string>();
+  let writable = true;
+  const sticky: PreferenceStore & { readonly keys: () => string[] } = {
+    getItem: (k) => stuck.get(k) ?? null,
+    setItem: (k, v) => void (writable && stuck.set(k, v)),
+    removeItem: (k) => void (writable && stuck.delete(k)),
+    keys: () => [...stuck.keys()],
+  };
+  const standing = await cloneVoice("Standing", tone(2));
+  writeClones(sticky, [standing]);
+  writable = false;
+  const forgetful = rig(tone(2), sticky);
+  forgetful.cloner.send({ kind: "remove", key: standing.key });
+  await settle();
+  assert(
+    "a store that will not take the removal: the clone is still kept, the panel not told, the refusal shown",
+    readClones(sticky).map((c) => c.name).join() === "Standing" && forgetful.forgot.length === 0 && forgetful.states.at(-1) === `idle: ${REMOVAL_REFUSED}`,
+  );
 
   const busy = rig(tone(2));
   busy.cloner.send({ kind: "make", name: "One", source: { kind: "microphone" } });
