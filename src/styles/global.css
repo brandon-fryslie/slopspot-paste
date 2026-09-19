@@ -3475,6 +3475,41 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   cursor: pointer;
 }
 .voice-clone-remove:hover { color: var(--fg); border-color: var(--accent); }
+/* The line above the passage, saying what to do with it and how much of it is kept. It is an
+   instruction and not prose to be spoken, so it takes the mono face and the small size the rest
+   of this form's chrome uses, and stays muted: the reader's eyes belong on the passage below. */
+.voice-clone-read {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+/* The passage itself — what the reader's eyes are on while the microphone is open, so it is set
+   larger than the chrome around it and in the reading face rather than the mono one: it is prose
+   to be spoken, not a control.
+
+   Tinted against the surface, not `--bg-elev`: that is the colour of BOTH surfaces this block
+   sits on (`.tool-panel`, and `.listen-mini-picker`'s 96% mix of it), so setting it here paints
+   the quoted block in exactly its background and leaves only the accent rule to mark it. A mix
+   of two opaque colours is the tint the comment claims.
+
+   It is deliberately NOT sticky. The obvious worry — that in the mini-player's short scroll box
+   the reader must push the passage out of view to reach Record — was measured in Chrome at
+   390×760 and does not happen: with Record scrolled into view the passage sits 98px into a
+   284px box, and pinning it changes nothing, because `.voice-own` (312px) barely exceeds the
+   box and the passage already sits near its foot. */
+.voice-clone-passage {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 7%, var(--bg-elev));
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
 .voice-clone-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .voice-clone-name {
   flex: 1 1 120px;

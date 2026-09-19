@@ -25,10 +25,19 @@
 // chooses by. It is the radio's `aria-describedby`, so the option announces as its name
 // and then what it sounds like, rather than as one long name.
 //
-// THE FORM. Under the rows: a name, a Record button that becomes Stop while the microphone
-// is open, an Upload that takes a file, and a line that says where the making is. A clone
-// is removed from its own row's ✕, once per picker, not per role.
+// THE FORM. Under the rows: the passage to read (clonePassage.ts), a name, a Record button
+// that becomes Stop while the microphone is open, an Upload that takes a file, and a line that
+// says where the making is. A clone is removed from its own row's ✕, once per picker, not per
+// role.
+//
+// THE PASSAGE IS NOT OPTIONAL CHROME. A reader left to improvise ten seconds says whatever
+// comes to mind, and the clone can only ever say sounds the recording held — so the passage is
+// the difference between cloning a voice and cloning the corner of it that got practised. It
+// is shown always rather than only while recording, because it is read *before* the tap, and
+// it is the Record button's `aria-describedby` so reaching the button by keyboard is hearing
+// what to read.
 
+import { CLONE_PASSAGE } from "./clonePassage";
 import { CLONE_SECONDS, NAME_LENGTH, isClonedKey, type ClonedVoice, type ClonedVoiceKey, type VoiceKey } from "./clonedVoice";
 import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
 import { CLONE_CREDIT, PICKED_VOICES, ROLE_LABELS, voiceDescription, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
@@ -109,6 +118,8 @@ interface Built {
   readonly note: HTMLElement;
   readonly reset: HTMLButtonElement;
   readonly clones: HTMLElement;
+  readonly read: HTMLElement;
+  readonly passage: HTMLElement;
   readonly name: HTMLInputElement;
   readonly record: HTMLButtonElement;
   readonly upload: HTMLButtonElement;
@@ -189,6 +200,35 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   const ownLegend = el("legend", "voice-own-legend");
   ownLegend.textContent = "Your voices";
   const clones = el("div", "voice-clones");
+  // [LAW:dataflow-not-control-flow] The passage stands in the form always — not only once the
+  // microphone is open. A reader who has not tapped Record yet is exactly the reader who needs
+  // to read it first, and a reader mid-recording has no time to start reading it. Written once
+  // at build because it never varies, so `render` has no stale state to leave behind.
+  const read = el("p", "voice-clone-read");
+  read.id = `${scope}-clone-read`;
+  // Both ways in get the same instruction: an uploaded recording of arbitrary speech is thin in
+  // exactly the sounds it missed, the same as an improvised one, so naming only Record here
+  // would leave the Upload path with the defect this passage exists to remove.
+  //
+  // AND IT OPENS BY SAYING WHEN TO START, because the reader is the only one who can spend the
+  // lead-in and nothing in the interface spends it for them: the cap is armed at mic-open, so
+  // clonePassage.ts budgets LEAD_IN_SECONDS out of the same ten and then has no way to make a
+  // reader honour it. The button says "Record 10 s" and the running note says "up to 10 seconds",
+  // both true, and both of them invite exactly the unhurried start that costs the tail. Until
+  // slopspot-voices-4f5 moves the clock to the reader's first word, this sentence is the whole
+  // mechanism [LAW:no-ambient-temporal-coupling].
+  //
+  // AND BOTH ARE TOLD THE LENGTH, because both are cut to it. voiceCapture.ts's `monoOf` keeps
+  // the FIRST CLONE_SAMPLES of whatever it is handed, so a leisurely twenty-second take of this
+  // passage — an entirely ordinary thing to record on a phone — is silently truncated to the
+  // first ten and clones a voice that never said `worth` or `mile`. Record at least wears its
+  // budget on the button (RECORD_LABEL); Upload accepts files up to CLONE_FILE_SECONDS and wore
+  // nothing at all, so a sentence promising "nothing goes missing" was promising the opposite of
+  // what the code does. Saying the number is what makes the promise true [LAW:no-silent-failure].
+  read.textContent = `Start reading the moment you tap Record, or upload a recording of yourself reading it. Only the first ${CLONE_SECONDS} seconds are kept, and these words cover every sound English makes:`;
+  const passage = el("p", "voice-clone-passage");
+  passage.id = `${scope}-clone-passage`;
+  passage.textContent = CLONE_PASSAGE;
   const form = el("div", "voice-clone-form");
   const name = el("input", "voice-clone-name");
   name.type = "text";
@@ -197,6 +237,9 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   name.setAttribute("aria-label", "Name for the voice");
   const record = el("button", "mono-pill voice-clone-record");
   record.type = "button";
+  // Its `aria-describedby` is written by `render`, not set once here: what usefully describes
+  // this button is the words to read until there is a note, and the note from then on
+  // [LAW:one-source-of-truth] — one writer for the attribute, the render.
   record.addEventListener("click", () => (record.dataset.recording === "true" ? on.stop() : on.record(name.value)));
   const upload = el("button", "mono-pill voice-clone-upload");
   upload.type = "button";
@@ -213,8 +256,20 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
     file.value = "";
   });
   const making = el("p", "voice-note voice-clone-note");
+  making.id = `${scope}-clone-note`;
+  // [LAW:no-silent-failure] A status region, because this is where a failure lands. "Could not
+  // make the voice: no microphone" arrives while focus is still on Record and nothing moves to
+  // it, so without a live region the reason is written to a screen nobody is looking at — and a
+  // reader using a screen reader is told only that the button says Record again.
+  //
+  // It is never `hidden`, and that is the whole point rather than an oversight. A region that is
+  // `display: none` at the instant its text is written was not in the accessibility tree to be
+  // watched, so the change goes unannounced — which is the very path this attribute was added
+  // for. So it stands empty instead, costing one grid gap of blank space and buying the one
+  // announcement that matters. `render` writes "" where it used to write `hidden`.
+  making.setAttribute("role", "status");
   attach(form, name, record, upload, file);
-  attach(own, ownLegend, clones, form, making);
+  attach(own, ownLegend, clones, read, passage, form, making);
   attach(root, own);
 
   const cloneRow = (voice: ClonedVoice): HTMLElement => {
@@ -231,7 +286,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
     return row;
   };
 
-  return { hosted, rows, note, reset, clones, name, record, upload, file, making, option, cloneRow };
+  return { hosted, rows, note, reset, clones, read, passage, name, record, upload, file, making, option, cloneRow };
 };
 
 export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): VoicePicker => {
@@ -276,7 +331,26 @@ export const mountVoicePicker = (root: HTMLElement, on: VoicePickerHandlers): Vo
       // buttons [LAW:no-silent-failure].
       const said = note ?? (phase.kind === "recording" ? `Recording ${phase.name || "your voice"}… speak for up to ${CLONE_SECONDS} seconds.` : phase.kind === "making" ? MAKING_NOTE : null);
       built.making.textContent = said ?? "";
-      built.making.hidden = said === null;
+      // [LAW:dataflow-not-control-flow] `aria-describedby` takes a LIST, and the two things worth
+      // saying are independent, so they are computed independently and joined — never chosen
+      // between. Picking one was the bug: describing the button by the note whenever a note
+      // existed sounded right, until `Saved Brandon.` — which the reducer leaves standing through
+      // the whole idle phase after a clone is kept — permanently replaced the words to read, so
+      // a reader recording a second voice was told about the first one instead, for the rest of
+      // the session. Describing it by the passage instead loses the reason a take just failed.
+      // Both are true at once, and the reader wants both.
+      //
+      // What to read is withheld in exactly one state: the button is Stop mid-recording, where
+      // reading the whole passage out would outlast the recording it was meant to help end.
+      const saying = said === null ? null : built.making.id;
+      const toRead = phase.kind === "recording" ? [] : [built.read.id, built.passage.id];
+      // Upload is described by the same words as Record. Naming only Record here would leave the
+      // Upload path with precisely the defect the passage exists to remove — a reader tabbing to
+      // it in focus mode would be told nothing about what to read, nor that only the first ten
+      // seconds of what they send survives [LAW:single-enforcer].
+      const describing = [saying, ...toRead].filter((id): id is string => id !== null).join(" ");
+      built.record.setAttribute("aria-describedby", describing);
+      built.upload.setAttribute("aria-describedby", describing);
     },
   };
 };
