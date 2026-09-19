@@ -8,7 +8,7 @@
 import { CLONE_SAMPLES, CLONE_SECONDS, cloneVoice, readClones, writeClones, type ClonedVoice } from "../src/clonedVoice";
 import { SAMPLE_RATE } from "../src/modelAssets";
 import type { PreferenceStore } from "../src/preferenceStore";
-import { CLONE_FILE_SECONDS, createVoiceCapture, monoOf, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
+import { CLONE_FILE_SECONDS, LEAD_IN_SAMPLES, LEAD_IN_SECONDS, PROMPT_SAMPLES, RECORDING_SECONDS, clonePrompt, createVoiceCapture, monoOf, speechStart, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
 import { BUSY, REFUSED, REMOVAL_REFUSED, createCloning, initialCloning, step, type CloningEvent, type CloningState } from "../src/voiceCloning";
 import { memoryPreferences } from "./preferenceStub";
 
@@ -30,6 +30,24 @@ const settle = async (): Promise<void> => {
 const settled = async (promise: Promise<void>): Promise<boolean> => Promise.race([promise.then(() => true), settle().then(() => false)]);
 
 const tone = (seconds: number, scale = 0.5): Float32Array<ArrayBuffer> => Float32Array.from({ length: Math.round(seconds * SAMPLE_RATE) }, (_, i) => scale * Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE));
+
+// A recording that opens on room tone and then a voice: `quiet` seconds of a very faint signal at
+// the level a microphone idles at, then `loud` seconds at speech level. Deterministic, so the
+// levels below are arithmetic rather than a sample that happened to come out that way.
+const afterSilence = (quiet: number, loud: number, hiss = 0.002, level = 0.5): Float32Array<ArrayBuffer> => {
+  const head = tone(quiet, hiss);
+  const voice = tone(loud, level);
+  const all = new Float32Array(new ArrayBuffer((head.length + voice.length) * 4));
+  all.set(head, 0);
+  all.set(voice, head.length);
+  return all;
+};
+
+const peakOf = (pcm: Float32Array, from: number, to: number): number => {
+  let peak = 0;
+  for (let i = from; i < Math.min(to, pcm.length); i++) peak = Math.max(peak, Math.abs(pcm[i] ?? 0));
+  return peak;
+};
 
 const shown = (state: CloningState): string =>
   `${state.phase.kind === "idle" ? "idle" : `${state.phase.kind} ${state.phase.name}`}${state.note === null ? "" : `: ${state.note}`}`;
@@ -131,7 +149,8 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
   const right = tone(2, 0.2);
   const mono = monoOf(stereo(left, right));
   assert("channels are averaged to one", mono.length === left.length && Math.abs(mono[100]! - (left[100]! + right[100]!) / 2) < 1e-6);
-  assert("a recording longer than a clone is cut to one", monoOf(stereo(tone(12), tone(12))).length === CLONE_SAMPLES);
+  assert("a recording longer than a clone and the allowance it may be found in is bounded to that much", monoOf(stereo(tone(20), tone(20))).length === PROMPT_SAMPLES);
+  assert("and what is taken out of it for the clone is exactly a clone long", clonePrompt(monoOf(stereo(tone(20), tone(20)))).length === CLONE_SAMPLES);
 
   const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
   const mic = stubMic(new Blob([new Uint8Array(4)]));
@@ -183,7 +202,7 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
   assert("a recording is never measured: its length is the cap's, not the metadata's", measured === 3);
   assert(
     "a recording asks the microphone once, starts the recorder, arms the cap — and announces no end while it runs",
-    asked === 1 && timers.length === 1 && timers[0]?.ms === CLONE_SECONDS * 1000 && !(await settled(recording.ended)),
+    asked === 1 && timers.length === 1 && timers[0]?.ms === RECORDING_SECONDS * 1000 && !(await settled(recording.ended)),
   );
   recording.stop();
   const pcm = await recording.pcm;
@@ -207,6 +226,68 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
   let why = "";
   await denied.record().pcm.catch((e: unknown) => (why = e instanceof Error ? e.message : String(e)));
   assert("a microphone the browser denies is the browser's own reason", why === "Permission denied");
+}
+
+console.log("the clone is ten seconds of voice, not ten seconds of clock");
+{
+  const tenth = Math.round(0.1 * SAMPLE_RATE);
+
+  // A reader who took a moment: a second and a half of room tone, then eleven and a half of
+  // reading. Every figure below is arithmetic on that, not a measurement of a real voice.
+  const late = afterSilence(1.5, 11.5);
+  const from = speechStart(late);
+  assert(
+    `the window opens at the reader's first word (found it ${(from / SAMPLE_RATE).toFixed(2)} s in, after a 1.5 s lead-in)`,
+    Math.abs(from / SAMPLE_RATE - 1.5) < 0.1,
+  );
+  assert("and a moment before it, so the attack of that word is inside the clone and not merely what located it", from < 1.5 * SAMPLE_RATE);
+
+  const prompt = clonePrompt(late);
+  assert("the prompt is a whole clone long", prompt.length === CLONE_SAMPLES);
+  assert(
+    "and it opens on voice, where keeping the FIRST ten seconds opened on the room",
+    peakOf(late.subarray(0, CLONE_SAMPLES), 0, tenth) < 0.01 && peakOf(prompt, 0, tenth) > 0.1,
+  );
+  // [LAW:verifiable-goals] The cost the lead-in used to carry, as the one number a reader would
+  // have felt: the old window ended while they were still reading, and the speech between the two
+  // ends is what was silently dropped from the clone.
+  assert(
+    `it ends ${((from + CLONE_SAMPLES) / SAMPLE_RATE).toFixed(2)} s in rather than ${CLONE_SECONDS} s, and the reader was still reading in between`,
+    peakOf(late, CLONE_SAMPLES, from + CLONE_SAMPLES) > 0.1,
+  );
+
+  assert("a reader who begins at once keeps the very start of what they said", speechStart(tone(12)) === 0);
+  assert(
+    `a reader still silent when the ${LEAD_IN_SECONDS} s allowance runs out gets a window starting at its end`,
+    speechStart(afterSilence(LEAD_IN_SECONDS + 1, 5)) === LEAD_IN_SAMPLES,
+  );
+  assert("a recording with nothing in it anywhere has no floor to clear, and starts at the top as it always did", speechStart(new Float32Array(CLONE_SAMPLES)) === 0);
+
+  // A quiet microphone and a loud one both work, because the floor is a fraction of the
+  // recording's OWN peak: the same lead-in is found in a take 25 times fainter.
+  assert(
+    "a faint recording is trimmed where a loud one is, because the floor is relative to its own peak",
+    Math.abs(speechStart(afterSilence(1.5, 5, 0.00008, 0.02)) / SAMPLE_RATE - 1.5) < 0.1,
+  );
+
+  // [LAW:single-enforcer] The reader's FILE comes through the same one rule. An uploaded voice
+  // memo opens on fumbling for the mic exactly the way a live take does, and only one road would
+  // have been fixed by arming the cap on live audio instead.
+  const uploaded = createVoiceCapture({
+    Decoder: () => ({ decodeAudioData: async () => ({ numberOfChannels: 1, length: late.length, getChannelData: () => late }) }),
+    microphone: () => Promise.reject(new Error("the file road does not open the microphone")),
+    Recorder: () => {
+      throw new Error("the file road does not record");
+    },
+    duration: async () => late.length / SAMPLE_RATE,
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+  });
+  const fromFile = await uploaded.decode(new Blob([new Uint8Array(4)]));
+  assert(
+    "an uploaded recording is trimmed by the same rule as the microphone's, so a memo that opens on fumbling is not a clone of the fumbling",
+    fromFile.length === CLONE_SAMPLES && peakOf(fromFile, 0, tenth) > 0.1,
+  );
 }
 
 // ── the driver ─────────────────────────────────────────────────────────────────────────

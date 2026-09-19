@@ -8,7 +8,7 @@
 // however you like: this check tells you which sound you just dropped.
 
 import { CLONE_SECONDS } from "../src/clonedVoice";
-import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, LEAD_IN_SECONDS, SLOWEST_READING_WORDS_PER_MINUTE, VOWEL_SOUNDS, passageWords } from "../src/clonePassage";
+import { CLONE_PASSAGE, CLONE_PASSAGE_SOUNDS, CONSONANT_SOUNDS, SLOWEST_READING_WORDS_PER_MINUTE, VOWEL_SOUNDS, passageWords } from "../src/clonePassage";
 
 // [LAW:one-source-of-truth] The sounds of General American English, which is a fact about the
 // language and not about this passage — so it is declared here, against which the module's table
@@ -97,18 +97,20 @@ console.log("every vowel rides a word the reader stresses");
 
 console.log("the passage fits inside the recording");
 {
-  // The recording's clock starts when the microphone opens, not at the reader's first word, and
-  // the capture keeps the FIRST ten seconds — so the lead-in is spent out of the same budget and
-  // anything still unread when the cap fires is cut off with no sign to the reader. What the
-  // reader actually gets for reading is therefore the recording MINUS the lead-in.
-  const readingWindow = CLONE_SECONDS - LEAD_IN_SECONDS;
+  // The whole of the clone's length is the reader's to read in, because the recording's clock
+  // starts at their first word: voiceCapture.ts records past the cap and `clonePrompt` takes
+  // CLONE_SAMPLES from where the voice begins, so the seconds spent moving eyes to the passage and
+  // drawing breath are no longer spent out of this budget. It was not always so — the window used
+  // to be the clone's length MINUS a lead-in allowance, and slopspot-voices-4f5 is what removed
+  // the subtraction [LAW:no-ambient-temporal-coupling].
+  const readingWindow = CLONE_SECONDS;
   const reading = (words.length / SLOWEST_READING_WORDS_PER_MINUTE) * 60;
   // [LAW:verifiable-goals] The rate below which the tail is really lost — one derived number, and
   // the only one a human can argue with, so the check states it either way instead of reporting
   // pass/fail against an assumed pace. Both bounds below read off this same reading time
   // [LAW:one-source-of-truth]: one quantity, two edges, no second constant to drift.
   const cutOffBelow = (words.length / readingWindow) * 60;
-  assert(`${words.length} words at ${SLOWEST_READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s of the ${readingWindow.toFixed(1)} s the reader gets once the ${LEAD_IN_SECONDS} s lead-in is spent — so the tail is lost only below ${cutOffBelow.toFixed(0)} wpm`, reading <= readingWindow);
+  assert(`${words.length} words at ${SLOWEST_READING_WORDS_PER_MINUTE} wpm is ${reading.toFixed(1)} s of the ${readingWindow.toFixed(1)} s the reader gets, all of it reading time — so the tail is lost only below ${cutOffBelow.toFixed(0)} wpm`, reading <= readingWindow);
   // A passage that leaves most of the window empty is one that could be carrying more sounds in
   // more contexts; this floor says it is not wastefully short.
   assert(`and long enough to be worth the recording (${((reading / readingWindow) * 100).toFixed(0)}% of that window used)`, reading >= readingWindow * 0.7);
