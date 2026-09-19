@@ -3475,6 +3475,27 @@ body:has(.diff-aligned) main { max-width: 1400px; }
   cursor: pointer;
 }
 .voice-clone-remove:hover { color: var(--fg); border-color: var(--accent); }
+/* The passage to read, and the line that says why. The passage is the thing the reader's eyes
+   go to while the microphone is open, so it is set larger than the chrome around it and in the
+   reading face rather than the mono one — it is prose to be spoken, not a control. */
+.voice-clone-read {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.voice-clone-passage {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
 .voice-clone-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .voice-clone-name {
   flex: 1 1 120px;

@@ -25,10 +25,19 @@
 // chooses by. It is the radio's `aria-describedby`, so the option announces as its name
 // and then what it sounds like, rather than as one long name.
 //
-// THE FORM. Under the rows: a name, a Record button that becomes Stop while the microphone
-// is open, an Upload that takes a file, and a line that says where the making is. A clone
-// is removed from its own row's ✕, once per picker, not per role.
+// THE FORM. Under the rows: the passage to read (clonePassage.ts), a name, a Record button
+// that becomes Stop while the microphone is open, an Upload that takes a file, and a line that
+// says where the making is. A clone is removed from its own row's ✕, once per picker, not per
+// role.
+//
+// THE PASSAGE IS NOT OPTIONAL CHROME. A reader left to improvise ten seconds says whatever
+// comes to mind, and the clone can only ever say sounds the recording held — so the passage is
+// the difference between cloning a voice and cloning the corner of it that got practised. It
+// is shown always rather than only while recording, because it is read *before* the tap, and
+// it is the Record button's `aria-describedby` so reaching the button by keyboard is hearing
+// what to read.
 
+import { CLONE_PASSAGE } from "./clonePassage";
 import { CLONE_SECONDS, NAME_LENGTH, isClonedKey, type ClonedVoice, type ClonedVoiceKey, type VoiceKey } from "./clonedVoice";
 import { MODEL_ASSETS, VOICE_IDS, type VoiceId } from "./modelAssets";
 import { CLONE_CREDIT, PICKED_VOICES, ROLE_LABELS, voiceDescription, voiceName, type PickedVoice, type VoicePick } from "./voiceChoice";
@@ -189,6 +198,15 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   const ownLegend = el("legend", "voice-own-legend");
   ownLegend.textContent = "Your voices";
   const clones = el("div", "voice-clones");
+  // [LAW:dataflow-not-control-flow] The passage stands in the form always — not only once the
+  // microphone is open. A reader who has not tapped Record yet is exactly the reader who needs
+  // to read it first, and a reader mid-recording has no time to start reading it. Written once
+  // at build because it never varies, so `render` has no stale state to leave behind.
+  const read = el("p", "voice-clone-read");
+  read.textContent = "Read this aloud when you tap Record — it covers every sound English makes, so nothing in your voice goes missing:";
+  const passage = el("p", "voice-clone-passage");
+  passage.id = `${scope}-clone-passage`;
+  passage.textContent = CLONE_PASSAGE;
   const form = el("div", "voice-clone-form");
   const name = el("input", "voice-clone-name");
   name.type = "text";
@@ -197,6 +215,9 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   name.setAttribute("aria-label", "Name for the voice");
   const record = el("button", "mono-pill voice-clone-record");
   record.type = "button";
+  // The passage is what the button is asking for, so the button says so: a reader who reaches
+  // Record by keyboard hears the words to read rather than finding out after the tap.
+  record.setAttribute("aria-describedby", passage.id);
   record.addEventListener("click", () => (record.dataset.recording === "true" ? on.stop() : on.record(name.value)));
   const upload = el("button", "mono-pill voice-clone-upload");
   upload.type = "button";
@@ -214,7 +235,7 @@ const build = (root: HTMLElement, on: VoicePickerHandlers): Built => {
   });
   const making = el("p", "voice-note voice-clone-note");
   attach(form, name, record, upload, file);
-  attach(own, ownLegend, clones, form, making);
+  attach(own, ownLegend, clones, read, passage, form, making);
   attach(root, own);
 
   const cloneRow = (voice: ClonedVoice): HTMLElement => {

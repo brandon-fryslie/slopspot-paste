@@ -50,6 +50,7 @@ import { BACKGROUND_LOOKAHEAD, LOOKAHEAD } from "../src/scheduler";
 import { cloneVoice, isClonedKey, readClones, writeClones, type ClonedVoiceKey } from "../src/clonedVoice";
 import { DEFAULT_PICK, DEFAULT_VOICES, PICKED_VOICES, readPick, writePick } from "../src/voiceChoice";
 import { createCloning } from "../src/voiceCloning";
+import { CLONE_PASSAGE } from "../src/clonePassage";
 import { RECORD_LABEL, STOP_LABEL, mountVoicePicker } from "../src/voicePicker";
 import { samplePath } from "../src/voiceSample";
 import { FRAME_S, frame, StubAudio, StubDevice } from "./playbackStub";
@@ -1840,6 +1841,11 @@ console.log("createListenPanel: the reader's own voices — a kept clone is a ro
   assert("the pick naming it is shown checked, and reset is offered", checked(picker) === `${mine.key}/fantine` && !picker.querySelector<HTMLButtonElement>(".voice-reset")!.disabled);
   assert("its shelf row carries its name and a remove named for it", picker.querySelector<HTMLElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-label`)?.textContent === "Brandon" && picker.querySelector<HTMLButtonElement>(`.voice-clone[data-voice="${mine.key}"] .voice-clone-remove`)?.getAttribute("aria-label") === "Remove Brandon");
   assert("the form is idle: Record offered, Upload offered, no note", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.textContent === RECORD_LABEL && picker.querySelector<HTMLButtonElement>(".voice-clone-upload")?.disabled === false && picker.querySelector<HTMLElement>(".voice-clone-note")?.hidden === true);
+  // The reader is never asked to think up ten seconds of speech: the passage stands in the form
+  // before the tap, in whichever picker they opened, and the Record button points at it.
+  assert("the passage to read stands in the form of both pickers, before any tap", picker.querySelector<HTMLElement>(".voice-clone-passage")?.textContent === CLONE_PASSAGE && r.mini.voices.picker.querySelector<HTMLElement>(".voice-clone-passage")?.textContent === CLONE_PASSAGE);
+  assert("Record is described by the passage, so reaching it by keyboard is hearing what to read", picker.querySelector<HTMLButtonElement>(".voice-clone-record")?.getAttribute("aria-describedby") === picker.querySelector<HTMLElement>(".voice-clone-passage")?.id);
+  assert("each picker's passage carries its own scoped id, so neither describes the other's button", picker.querySelector<HTMLElement>(".voice-clone-passage")?.id.startsWith(`${picker.id}-`) === true && r.mini.voices.picker.querySelector<HTMLElement>(".voice-clone-passage")?.id.startsWith(`${r.mini.voices.picker.id}-`) === true);
   picker.querySelector<HTMLButtonElement>(`.voice-option[data-voice="${mine.key}"] .voice-preview`)?.click();
   assert("heard cold: its recording plays, where a hosted voice's sample would", r.audio().plays.join() === `blob:${mine.key}`);
   r.play.click();
