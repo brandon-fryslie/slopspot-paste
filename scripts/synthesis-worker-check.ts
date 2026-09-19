@@ -511,6 +511,23 @@ const cloneOf = (name: string): ClonedVoice => ({
   handler.receive({ kind: "synthesize", unitId: 4, text: unitOf("Hello there."), voice: late.key });
   const forgotten = await box.waitFor("failed", (m) => m.unitId === 4);
   assert("a unit in a clone since forgotten is failed{unknown-voice}", forgotten.reason.kind === "unknown-voice");
+  // The reader removes a voice with units still waiting in it: none may dequeue into a
+  // prompt that is gone, and the reader's status line must never be handed a content hash.
+  const going = cloneOf("going");
+  handler.receive({ kind: "clone", voice: going });
+  handler.receive({ kind: "synthesize", unitId: 5, text: unitOf("Running."), voice: going.key });
+  handler.receive({ kind: "synthesize", unitId: 6, text: unitOf("Waiting."), voice: going.key });
+  handler.receive({ kind: "synthesize", unitId: 7, text: unitOf("Elsewhere."), voice: "alba" });
+  handler.receive({ kind: "forget", voice: going.key });
+  await settle();
+  // Asked of what landed, never awaited: a unit that wrongly generates posts `done`, and a
+  // check that waited for the `failed` it will never get would hang instead of failing.
+  const stranded = box.of("failed").find((m) => m.unitId === 6);
+  const spoke = (unitId: number): boolean => box.of("done").some((m) => m.unitId === unitId);
+  assert(
+    "a unit still queued in a forgotten clone leaves as failed{unknown-voice} and is never generated, the one generating finishes, and a unit in another voice keeps its place",
+    stranded?.reason.kind === "unknown-voice" && stranded.reason.voice === going.key && !spoke(6) && spoke(5) && spoke(7),
+  );
   handler.receive({ kind: "dispose" });
   await box.waitFor("disposed");
   handler.receive({ kind: "clone", voice: late });

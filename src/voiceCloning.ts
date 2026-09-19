@@ -17,10 +17,16 @@
 // touching a recording under way [LAW:types-are-the-program]. Fused, the only way to say
 // anything was to end the making, which threw the reader's recording away mid-tap.
 //
-// EVERY END OF A RECORDING IS ONE EVENT. The reader's tap and the capture's own cap at
-// CLONE_SECONDS both arrive as `stop`, so the phase leaves "recording" exactly when the
-// microphone does, by the one path [LAW:dataflow-not-control-flow]. The edge is told to stop
-// either way; a recording already over takes it as the no-op it is.
+// EVERY END OF A RECORDING IS THE SAME EVENT. The reader's tap arrives as `stop` from the
+// panel; the capture's own cap at CLONE_SECONDS arrives as `stop` too, when the edge
+// announces it ended (voiceCapture.ts `ended`). Two tellers, one event, and the arm absorbs
+// the second: whichever comes first moves the phase and stops the edge, and the other finds
+// a phase already moved and an edge already stopped [LAW:dataflow-not-control-flow].
+//
+// The tap does not wait on the edge to answer. A phase that could only leave "recording"
+// when a promise resolved would be the bug this paragraph exists to prevent, one edge away:
+// the form sat on "Stop" over a closed microphone for the whole of the decode, because the
+// cap ended the recording behind the machine's back and nothing told it.
 //
 // ONE MAKING AT A TIME. A second record or upload while one is under way is refused as a
 // value, not queued: the reader's tap on a busy form does nothing, and the note says why.
@@ -116,8 +122,9 @@ export const step = (state: CloningState, event: CloningEvent): CloningStep => {
     case "kept":
       return ended(`Saved ${event.voice.name}.`);
     case "remove":
-      // The note is the last outcome, and the voice it spoke of is going: a "Saved Brandon."
-      // left standing over a shelf without Brandon describes nothing on the form.
+      // The note is the last outcome and the reader has just made a newer one — the same
+      // reason a `make` starts with none, and as blind to which voice it spoke of. A "Saved
+      // Brandon." left standing over a shelf without Brandon describes nothing on the form.
       return { state: { ...state, note: null }, effects: [{ kind: "forget", key: event.key }] };
     case "remove-refused":
       // [LAW:no-silent-failure] The device still keeps the clone, so the shelf still shows it
@@ -167,8 +174,11 @@ export const createCloning = (config: CloningConfig): Cloning => {
               // already `making`, where a `stop` is the no-op the machine says it is.
               { pcm: config.capture.decode(effect.source.file), ended: Promise.resolve(), stop: () => undefined };
         capture = started;
-        // [LAW:one-source-of-truth] When the recording ended is the edge's to say — the cap
-        // ends one the reader never tapped, and only this tells the phase.
+        // [LAW:one-source-of-truth] The recording is the edge's, so when it ended is the
+        // edge's to say: the cap ends one the reader never tapped, and a phase that heard of
+        // ends only from the panel would sit on "Stop" over a closed microphone. On the tap
+        // the phase has already moved by the time this lands, and the `stop` arm takes the
+        // second telling as the no-op it is.
         void started.ended.then(() => dispatch({ kind: "stop" }));
         void started.pcm
           .then((pcm) => cloneVoice(effect.name, pcm))

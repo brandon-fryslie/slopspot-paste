@@ -357,6 +357,15 @@ export const createSynthesisHandler = ({ runtime, post, now }: HandlerConfig): S
         if (state.kind === "disposed") return refuse(request);
         told.delete(request.voice);
         if (state.kind === "ready") {
+          // A unit still waiting its turn in this voice can no longer have one: it leaves
+          // with the typed reason the panel knows how to say, rather than dequeuing into a
+          // `promptOf` that throws the content hash into the reader's status line
+          // [LAW:no-silent-failure]. The unit generating now keeps its own reference to the
+          // prompt's data and finishes on it; only the map's handle is released here.
+          for (const job of state.queue.splice(0, state.queue.length)) {
+            if (job.voice === request.voice) post({ kind: "failed", unitId: job.unitId, reason: { kind: "unknown-voice", voice: request.voice } }, []);
+            else state.queue.push(job);
+          }
           state.model.removeVoice(request.voice);
           state.known.delete(request.voice);
         }

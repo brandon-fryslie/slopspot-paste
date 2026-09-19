@@ -351,6 +351,7 @@ console.log("step: a script in hand puts the voice on stage before the model is 
   };
   assert("a download is offered once the model is ready, and not while the voice plays what the device keeps ahead of it — nothing is rendered until then", !savable(kept.state) && !savable(waiting.state) && savable(warmed));
   assert("a voice heard before the model is ready: the reading paused, its sample played; once ready, the voice itself", effects(step(waiting.state, { kind: "preview", voice: "marius" })) === "perform pause,hush,sample" && effects(step(warmed, { kind: "preview", voice: "marius" })) === "perform pause,hush,preview");
+  assert("a clone the reader removes silences the phrase previewing it: the previewer says its phrase on units of its own, which no repick reaches", effects(step(warmed, { kind: "forgot" })) === "hush");
 
   const failed = step(downloading.state, worker({ kind: "load-failed", failure: { kind: "network", url: "u", message: "offline" } }));
   assert("a load that fails behind a playing voice is on the line, where it stopped, and the voice plays on", failed.state.kind === "neural" && effects(failed) === "" && shown(failed.state) === "Pause | stop | Playing · passage 1 of 2 · the voice could not load: network error fetching u: offline | bar 120000000/239000000");

@@ -8,7 +8,7 @@
 import { CLONE_SAMPLES, CLONE_SECONDS, cloneVoice, readClones, writeClones, type ClonedVoice } from "../src/clonedVoice";
 import { SAMPLE_RATE } from "../src/modelAssets";
 import type { PreferenceStore } from "../src/preferenceStore";
-import { createVoiceCapture, monoOf, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
+import { CLONE_FILE_BYTES, createVoiceCapture, monoOf, type Capture, type Recorder, type Stream, type VoiceCapture } from "../src/voiceCapture";
 import { BUSY, REFUSED, REMOVAL_REFUSED, createCloning, initialCloning, step, type CloningEvent, type CloningState } from "../src/voiceCloning";
 import { memoryPreferences } from "./preferenceStub";
 
@@ -136,8 +136,12 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
   const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
   const mic = stubMic(new Blob([new Uint8Array(4)]));
   let asked = 0;
+  let decodes = 0;
   const capture: VoiceCapture = createVoiceCapture({
-    Decoder: () => decoderOf(stereo(left, right)),
+    Decoder: () => {
+      decodes += 1;
+      return decoderOf(stereo(left, right));
+    },
     microphone: async () => {
       asked += 1;
       return mic.stream;
@@ -151,11 +155,19 @@ console.log("the capture edge: decode, mixdown, cut, and who ends a recording");
       timers[handle as number]!.cleared = true;
     },
   });
-  assert("a file decodes to the model's mono waveform, no microphone asked", (await capture.decode(file)).length === left.length && asked === 0);
+  assert("a file decodes to the model's mono waveform, no microphone asked", (await capture.decode(file)).length === left.length && asked === 0 && decodes === 1);
+  // An hour of podcast, picked by mistake: held raw and decoded at once is the tab on a
+  // phone, and the form has nothing to tap while it happens.
+  let heavy = "";
+  await capture.decode(new Blob([new Uint8Array(CLONE_FILE_BYTES + 1)])).catch((e: unknown) => (heavy = e instanceof Error ? e.message : String(e)));
+  assert("a file too heavy to be a ten-second voice is refused before a byte of it is decoded", heavy.includes("more than a ten-second voice can be") && heavy.includes("16 MB") && decodes === 1);
 
   const recording: Capture = capture.record();
   await settle();
-  assert("a recording asks the microphone once, starts the recorder, and arms the cap", asked === 1 && timers.length === 1 && timers[0]?.ms === CLONE_SECONDS * 1000);
+  assert(
+    "a recording asks the microphone once, starts the recorder, arms the cap — and announces no end while it runs",
+    asked === 1 && timers.length === 1 && timers[0]?.ms === CLONE_SECONDS * 1000 && !(await settled(recording.ended)),
+  );
   recording.stop();
   const pcm = await recording.pcm;
   assert(

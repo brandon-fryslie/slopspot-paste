@@ -385,6 +385,8 @@ export type PanelEvent =
   | { readonly kind: "sounding"; readonly voice: VoiceKey | null }
   // The cloning machine's word on where the making of a clone is.
   | { readonly kind: "cloning"; readonly state: CloningState }
+  // A clone the device kept is gone.
+  | { readonly kind: "forgot" }
   // The device's pick changed: the map the voice on stage speaks with from now on. A voice
   // on its way reads the pick at its build, so it has nothing to do here.
   | { readonly kind: "voices"; readonly voices: VoiceMap }
@@ -934,6 +936,11 @@ const transition = (state: PanelState, event: PanelEvent, page: Page): Step => {
       return sounding(state, event.voice);
     case "cloning":
       return cloning(state, event.state);
+    case "forgot":
+      // The voice the reader just removed must not still be speaking. A repick cancels the
+      // units on stage; nothing but this reaches the previewer, whose phrase runs on units
+      // of its own [LAW:no-silent-failure].
+      return { state, effects: [HUSH] };
     case "voices":
       return voices(state, event.voices);
     case "page":
@@ -2075,6 +2082,7 @@ export const createListenPanel = (config: ListenPanelConfig): ListenPanel => {
       // before the worker is told to release its prompt: the work stops, then the thing it
       // worked from goes [LAW:no-ambient-temporal-coupling].
       repick(config.pick.read());
+      dispatch({ kind: "forgot" });
       port?.send({ kind: "forget", voice: key });
     },
   });
