@@ -26,27 +26,84 @@
 // to remember to bump a version string when a hash changes: MODEL_VERSION is derived from
 // the hashes, so it changes exactly when the bytes do [FRAMING:representation].
 
+// [LAW:types-are-the-program] Where an asset's bytes come from, as one value that carries
+// its whole provenance — so no asset can half-name a source, and the deploy edge decides
+// nothing: it reads the arm it is given (scripts/modelAssetMirror.ts).
+//
+// `mirrored` is the ordinary case: upstream publishes these exact bytes at this URL, and
+// the build fetches and hash-checks them.
+//
+// `exported` is the voices Kyutai now publishes ONLY as an already-prompted flow-model
+// state — six layers of KV cache, 6–8 MB, a shape pocketTtsRuntime.ts has no way to speak
+// from. The prompt it was made of is recovered by encoding the recording upstream also
+// publishes (scripts/export-voice-prompt.py says how, and why it uses this site's own
+// weights), which is the same operation Kyutai's export-voice performs. Those bytes cannot
+// be fetched from anywhere, so they live in the repo under `exportedVoiceFile`; `upstream`
+// is the primed state the export is proven against, which is what keeps this an act of
+// recovery rather than of invention [FRAMING:representation].
+export type AssetOrigin =
+  | { readonly kind: "mirrored"; readonly url: string }
+  | { readonly kind: "exported"; readonly recording: string; readonly upstream: string };
+
 // [LAW:types-are-the-program] A pinned asset. `sha256` is the identity the loader verifies
 // after download and the build script verifies before publishing; `source` is provenance —
-// the exact upstream URL the bytes were mirrored from — never something the browser fetches.
+// where the bytes came from — never something the browser fetches.
 export interface ModelAsset {
   readonly name: string;
   readonly bytes: number;
   readonly sha256: string;
-  readonly source: string;
+  readonly source: AssetOrigin;
   readonly licence: "MIT" | "CC0-1.0" | "CC-BY-4.0";
   readonly attribution: string;
 }
 
-// The six voice candidates the q35.1 spike produced samples for, under CC0 or CC-BY-4.0
-// only (expresso and ears voices are CC-BY-NC and are excluded). All six are hosted so the
-// per-role pick — the user's, by ear — is a VALUE (the voice map in the speech script), not
-// an asset redeploy.
-export const VOICE_IDS = ["alba", "marius", "javert", "fantine", "eponine", "azelma"] as const;
+// The voices this site hosts, in the order the picker offers them: by name, so a reader
+// scanning a list of eleven can find one again. Every one of them was chosen BY EAR from a
+// twenty-two voice audition (slopspot-voices-9p4.3d3) — measurement described them, it did
+// not pick them. Under CC0 or CC-BY-4.0 only: the expresso and ears corpora are CC-BY-NC
+// and are excluded, which is also why Cosette, of Kyutai's original eight, is not here.
+//
+// All eleven are hosted so the per-role pick — the reader's, by ear — is a VALUE (the voice
+// map in the speech script), not an asset redeploy.
+export const VOICE_IDS = [
+  "caro_davy",
+  "charles",
+  "eponine",
+  "eve",
+  "george",
+  "jane",
+  "javert",
+  "michael",
+  "paul",
+  "peter_yearsley",
+  "vera",
+] as const;
 export type VoiceId = (typeof VOICE_IDS)[number];
 
+// Kyutai's first eight voices, published as the prompt the runtime speaks with.
 const KYUTAI_VOICES =
   "https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/resolve/fbf82802feb1f92664f3bcf6a0f01295a678853c";
+
+// The catalogue as it stands now: every voice added since, as a primed state only.
+const KYUTAI_CATALOGUE =
+  "https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/resolve/e81d79e8194ad4c7ce879c87a4258ef20cbf2487/embeddings_v3";
+
+// The recordings all of them were made of — VCTK's speakers, LibriVox's readers, and the
+// donations — which is the corpus this catalogue is drawn from.
+const KYUTAI_RECORDINGS = "https://huggingface.co/kyutai/tts-voices/resolve/323332d33f997de8394f24a193e1a76df720e01a";
+
+const mirrored = (url: string): AssetOrigin => ({ kind: "mirrored", url });
+
+const mirroredVoice = (id: VoiceId): AssetOrigin => mirrored(`${KYUTAI_VOICES}/embeddings/${id}.safetensors`);
+
+// [LAW:one-source-of-truth] The id names the state upstream publishes for this voice, so a
+// voice cannot be checked against another one's: only the recording is a free string, and
+// it is the one fact the id does not already carry.
+const exported = (id: VoiceId, recording: string): AssetOrigin => ({
+  kind: "exported",
+  recording: `${KYUTAI_RECORDINGS}/${recording}`,
+  upstream: `${KYUTAI_CATALOGUE}/${id}.safetensors`,
+});
 
 // [LAW:types-are-the-program] What a hosted voice is declared with, each fact named: a
 // catalogue of fifty voices (slopspot-voices-9p4.3d3) is fifty of these, and a positional
@@ -55,19 +112,20 @@ interface VoiceEntry {
   readonly id: VoiceId;
   readonly bytes: number;
   readonly sha256: string;
+  readonly source: AssetOrigin;
   readonly licence: "CC0-1.0" | "CC-BY-4.0";
   readonly attribution: string;
   readonly sample: Pinned;
   readonly qualities: VoiceQualities;
 }
 
-const voice = ({ id, bytes, sha256, licence, attribution, sample, qualities }: VoiceEntry): VoiceAsset => ({
+const voice = ({ id, bytes, sha256, source, licence, attribution, sample, qualities }: VoiceEntry): VoiceAsset => ({
   name: `voice-${id}`,
   bytes,
   sha256,
   sample,
   qualities,
-  source: `${KYUTAI_VOICES}/embeddings/${id}.safetensors`,
+  source,
   licence,
   attribution,
 });
@@ -175,8 +233,9 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     release: "english_2026-01",
     bytes: 235738516,
     sha256: "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
-    source:
+    source: mirrored(
       "https://huggingface.co/ekzhang/jax-js-models/resolve/2b0fc51b4f76ff56611741ab9267593decde7639/kyutai-pocket-tts_b6369a24-fp16.safetensors",
+    ),
     licence: "CC-BY-4.0",
     attribution: "Kyutai Pocket TTS (b6369a24), fp16 conversion by Eric Zhang for jax-js",
   },
@@ -184,64 +243,120 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     name: "tokenizer",
     bytes: 59339,
     sha256: "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6",
-    source: `${KYUTAI_VOICES}/tokenizer.model`,
+    source: mirrored(`${KYUTAI_VOICES}/tokenizer.model`),
     licence: "CC-BY-4.0",
     attribution: "Kyutai Pocket TTS SentencePiece tokenizer",
   },
   voices: {
-    alba: voice({
-      id: "alba",
-      bytes: 512088,
-      sha256: "ad234695323e4030336b6afc8a050c97e3110603e11ecd8226d9562488300a50",
-      licence: "CC-BY-4.0",
-      attribution: "alba-mackenna/casual via Kyutai tts-voices",
-      sample: { bytes: 24810, sha256: "8f00054d5f28fc6f57f5dd8af8b7b48348215d4f2cf0bce2bf45b252f8bfe4b6" },
-      qualities: { character: "Low and lively", accent: "American", register: "masculine" },
-    }),
-    marius: voice({
-      id: "marius",
-      bytes: 512088,
-      sha256: "33f75e45fac0005630671f4b1bb632d51b6a083b18417de94855bbd7596a0630",
+    caro_davy: voice({
+      id: "caro_davy",
+      bytes: 434264,
+      sha256: "e2e4c81fee0f07d7cfca6dbd79d1ff37ee9956c59b9f6ddd8042bdc1b45847c2",
+      source: exported("caro_davy", "voice-zero/caro_davy.wav"),
       licence: "CC0-1.0",
-      attribution: "voice-donations/Selfie via Kyutai tts-voices",
-      sample: { bytes: 21820, sha256: "f8442c6bd2cb0ff95ba8aba8ccb765fc55266f51f45a3fde240e907bacb20219" },
-      qualities: { character: "Raspy and quick", accent: "American", register: "masculine" },
+      attribution: "LibriVox reader Caro Davy via Kyutai tts-voices",
+      sample: { bytes: 31470, sha256: "e5fcfcb2fb28a1f4de57e07cdeaa9d83378fd086f60fa30379dee3ea56972a9d" },
+      qualities: { character: "Rich and unhurried", accent: "English", register: "feminine" },
     }),
-    javert: voice({
-      id: "javert",
+    charles: voice({
+      id: "charles",
       bytes: 512088,
-      sha256: "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91",
-      licence: "CC0-1.0",
-      attribution: "voice-donations/Butter via Kyutai tts-voices",
-      sample: { bytes: 39672, sha256: "db03a37eedc8df9bc6490f2ea76cf7a405b968c94e0c8b58bac2f2dc7eb5af0f" },
-      qualities: { character: "Deep and breathy", accent: "American", register: "masculine" },
-    }),
-    fantine: voice({
-      id: "fantine",
-      bytes: 540760,
-      sha256: "b6918a2ece002d2d9037ff53c4ea38730175e8798786658b0958443edf49d355",
+      sha256: "75efd9b32a2e93379bc8f9218c9fdc9ef42b70b151c6dbdd2b26d706151a72ed",
+      source: exported("charles", "vctk/p254_023_enhanced.wav"),
       licence: "CC-BY-4.0",
-      attribution: "VCTK p244 via Kyutai tts-voices",
-      sample: { bytes: 21805, sha256: "004cad76ecfda9939c6a355bbba5a27de2c0dbea915d0c648875b6b8106bd592" },
-      qualities: { character: "Bright and quick", accent: "English", register: "feminine" },
+      attribution: "VCTK p254 via Kyutai tts-voices",
+      sample: { bytes: 24608, sha256: "1a4be840adda35adcd42cd711d9c834310d12086213dc00e8825b1a1b233797a" },
+      qualities: { character: "Deep and gravelly", accent: "English", register: "masculine" },
     }),
     eponine: voice({
       id: "eponine",
       bytes: 573528,
       sha256: "bb31940f62da665391de139da2e57d740757df26b73d7ec24152c78a3b8ac0c5",
+      source: mirroredVoice("eponine"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p262 via Kyutai tts-voices",
       sample: { bytes: 28241, sha256: "9a1be33f7646d06fc8ac6b75cda3be47cb5a9ff8c1f12bf4d95dc76995532ef8" },
       qualities: { character: "Warm and even", accent: "North American", register: "feminine" },
     }),
-    azelma: voice({
-      id: "azelma",
-      bytes: 659544,
-      sha256: "ef33fad34437cb187d2702f0a946d8ba7a01efdb8efbc8088c770d49c181ba73",
+    eve: voice({
+      id: "eve",
+      bytes: 540760,
+      sha256: "1803aec45779b118b55c314ad222ceb3ab82077b2053f436884b311ad90f8070",
+      source: exported("eve", "vctk/p361_023_enhanced.wav"),
       licence: "CC-BY-4.0",
-      attribution: "VCTK p303 via Kyutai tts-voices",
-      sample: { bytes: 37903, sha256: "5f41ad6fec65b06b99b8eb7dfa80145f1f7141e53300ffabf3b00e70dbad6c41" },
-      qualities: { character: "Clear and unhurried", accent: "North American", register: "feminine" },
+      attribution: "VCTK p361 via Kyutai tts-voices",
+      sample: { bytes: 19496, sha256: "a477da95b725a6a9fbc63c5a1165c268e877f084a45745219e8560ebf0b0d082" },
+      qualities: { character: "Bright and quick", accent: "American", register: "feminine" },
+    }),
+    george: voice({
+      id: "george",
+      bytes: 516184,
+      sha256: "bbd8d7f9f72fe51c15d645a6324c58911b70f5a107d06d5f7d5398c3440da7ed",
+      source: exported("george", "vctk/p315_023_enhanced.wav"),
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p315 via Kyutai tts-voices",
+      sample: { bytes: 22295, sha256: "6556d80cc5c5dbf906626a7c14b3071f91037173382ac66bb79776bfdbe813a5" },
+      qualities: { character: "Husky and quick", accent: "American", register: "masculine" },
+    }),
+    jane: voice({
+      id: "jane",
+      bytes: 610392,
+      sha256: "0db8e9923b75032161bc9aa9ae3860f4df7991679c8af97bfa47e3f1eedd80f1",
+      source: exported("jane", "vctk/p339_023_enhanced.wav"),
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p339 via Kyutai tts-voices",
+      sample: { bytes: 22843, sha256: "0502098acb3c8a157f3f53f631a8e6e60559712e1ac920e8c46e418c99d1f817" },
+      qualities: { character: "Crisp and clear", accent: "North American", register: "feminine" },
+    }),
+    javert: voice({
+      id: "javert",
+      bytes: 512088,
+      sha256: "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91",
+      source: mirroredVoice("javert"),
+      licence: "CC0-1.0",
+      attribution: "voice-donations/Butter via Kyutai tts-voices",
+      sample: { bytes: 39672, sha256: "db03a37eedc8df9bc6490f2ea76cf7a405b968c94e0c8b58bac2f2dc7eb5af0f" },
+      qualities: { character: "Deep and breathy", accent: "American", register: "masculine" },
+    }),
+    michael: voice({
+      id: "michael",
+      bytes: 602200,
+      sha256: "065367ae2f905a7b98c797b7b5c8b0d2f61b1e5be8a533e2be1a095c22e7ebc2",
+      source: exported("michael", "vctk/p360_023_enhanced.wav"),
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p360 via Kyutai tts-voices",
+      sample: { bytes: 24830, sha256: "f006d36144163b2c24ce47acf759be931e3def32baedae0ca3741fd703769884" },
+      qualities: { character: "Low and steady", accent: "North American", register: "masculine" },
+    }),
+    paul: voice({
+      id: "paul",
+      bytes: 577624,
+      sha256: "94b9391c450969a43ab6528083b73c85279e99fd99d0c37c170da078d69961e0",
+      source: exported("paul", "vctk/p259_023_enhanced.wav"),
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p259 via Kyutai tts-voices",
+      sample: { bytes: 24097, sha256: "e1a073089b88574fb96d82f559757cf9ee238a222e0003d956f35525682eea09" },
+      qualities: { character: "Dry and even", accent: "English", register: "masculine" },
+    }),
+    peter_yearsley: voice({
+      id: "peter_yearsley",
+      bytes: 307288,
+      sha256: "d9bfa20ce5817e83924f03c7de71bcbc88976f8e91421fdaa26968a209da602c",
+      source: exported("peter_yearsley", "voice-zero/peter_yearsley.wav"),
+      licence: "CC0-1.0",
+      attribution: "LibriVox reader Peter Yearsley via Kyutai tts-voices",
+      sample: { bytes: 26271, sha256: "37e1052409f4764990477ac56ab986706a18aa3d94911630e0f76d549c03ccf8" },
+      qualities: { character: "Low and lively", accent: "English", register: "masculine" },
+    }),
+    vera: voice({
+      id: "vera",
+      bytes: 557144,
+      sha256: "964319ff19c8f27a167f96e288f032de0d72a98cb14c7842b7f8badda2c251ee",
+      source: exported("vera", "vctk/p229_023_enhanced.wav"),
+      licence: "CC-BY-4.0",
+      attribution: "VCTK p229 via Kyutai tts-voices",
+      sample: { bytes: 22885, sha256: "fa7987240e31992d7acb2c559aaada24e4b15beacceb5d353f62535853001024" },
+      qualities: { character: "Smooth and calm", accent: "English", register: "feminine" },
     }),
   },
 };
@@ -269,6 +384,19 @@ export const SHA_PREFIX_CHARS = 12;
 // so a cached entry can only ever mean the bytes published at that path.
 export const assetKey = (asset: ModelAsset): string =>
   `${MODEL_ASSET_PREFIX}${asset.name}-${asset.sha256.slice(0, SHA_PREFIX_CHARS)}`;
+
+// Where an `exported` asset's bytes are kept, relative to the repo root. Content-addressed
+// like every other path here [LAW:one-source-of-truth]: re-exporting a voice writes a new
+// file rather than editing one, so a stale copy is never mistaken for the current pin.
+//
+// These bytes are checked in — the only model bytes that are — because nobody publishes
+// them (see `AssetOrigin`), and a deploy that had to run torch to get them would be a
+// deploy nobody could run. They are the same kind of derived-but-committed artifact as the
+// voice samples under public/voices/, made by a script from pinned inputs.
+export const EXPORTED_VOICE_DIR = "assets/voices";
+
+export const exportedVoiceFile = (asset: ModelAsset): string =>
+  `${EXPORTED_VOICE_DIR}/${asset.name}-${asset.sha256.slice(0, SHA_PREFIX_CHARS)}.safetensors`;
 
 export interface Shard {
   readonly url: string;

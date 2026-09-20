@@ -41,9 +41,9 @@ defaultDevice("wasm");
 
 console.log("prompt frames");
 {
-  assert("a [frames, dim] prompt occupies `frames` cache positions", promptFrames("alba", np.zeros([7, 4], { dtype: np.float32 })) === 7);
-  throws("a rank-1 prompt is thrown", () => promptFrames("alba", np.zeros([7], { dtype: np.float32 })));
-  throws("a rank-3 prompt is thrown", () => promptFrames("alba", np.zeros([7, 4, 1], { dtype: np.float32 })));
+  assert("a [frames, dim] prompt occupies `frames` cache positions", promptFrames("charles", np.zeros([7, 4], { dtype: np.float32 })) === 7);
+  throws("a rank-1 prompt is thrown", () => promptFrames("charles", np.zeros([7], { dtype: np.float32 })));
+  throws("a rank-3 prompt is thrown", () => promptFrames("charles", np.zeros([7, 4, 1], { dtype: np.float32 })));
 }
 
 console.log("step reading");

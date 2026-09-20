@@ -364,18 +364,18 @@ console.log("\nCutting rules:");
 
 console.log("\nRendition hash:");
 {
-  const voices: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+  const voices: VoiceMap = { user: "charles", assistant: "paul", system: "javert", narrator: "jane" };
   const units = deriveSpeechScript([utter("Hi there.", "user", 0), utter("Hello.", "assistant", 1)], wordish);
   const rehashed = <A extends ModelAsset>(asset: A): A => ({ ...asset, sha256: "f".repeat(64) });
   const [same, again, assistantChanged, unusedChanged, pipelineChanged, modelChanged, usedVoiceRehashed, unusedVoiceRehashed, textChanged] = await Promise.all([
     renditionHash(units, voices),
     renditionHash(units, voices),
     renditionHash(units, { ...voices, assistant: "eponine" }),
-    renditionHash(units, { ...voices, narrator: "azelma" }),
+    renditionHash(units, { ...voices, narrator: "vera" }),
     renditionHash(units, voices, { ...RENDITION_VERSIONS, pipeline: `${RENDITION_VERSIONS.pipeline}-next` }),
     renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, weights: rehashed(MODEL_ASSETS.weights) })),
-    renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, alba: rehashed(MODEL_ASSETS.voices.alba) } })),
-    renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, fantine: rehashed(MODEL_ASSETS.voices.fantine) } })),
+    renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, charles: rehashed(MODEL_ASSETS.voices.charles) } })),
+    renditionHash(units, voices, renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, jane: rehashed(MODEL_ASSETS.voices.jane) } })),
     renditionHash(deriveSpeechScript([utter("Hi there.", "user", 0), utter("Hello!", "assistant", 1)], wordish), voices),
   ]);
   assert("the same script under the same voices hashes the same", same === again);
@@ -395,14 +395,14 @@ console.log("\nUnit hash:");
   if (hi === undefined || hello === undefined) throw new Error("fixture: two units");
   const rehashed = <A extends ModelAsset>(asset: A): A => ({ ...asset, sha256: "f".repeat(64) });
   const [same, elsewhere, otherVoice, generationChanged, pipelineChanged, voiceRehashed, otherVoiceRehashed, sourceChanged] = await Promise.all([
-    unitHash(unitText(hi), "alba"),
-    unitHash(unitText(hello), "alba"),
-    unitHash(unitText(hi), "marius"),
-    unitHash(unitText(hi), "alba", { ...RENDITION_VERSIONS, generation: `${RENDITION_VERSIONS.generation}-next` }),
-    unitHash(unitText(hi), "alba", { ...RENDITION_VERSIONS, pipeline: `${RENDITION_VERSIONS.pipeline}-next` }),
-    unitHash(unitText(hi), "alba", renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, alba: rehashed(MODEL_ASSETS.voices.alba) } })),
-    unitHash(unitText(hi), "alba", renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, fantine: rehashed(MODEL_ASSETS.voices.fantine) } })),
-    unitHash({ ...unitText(hi), source: "Hi  there." }, "alba"),
+    unitHash(unitText(hi), "charles"),
+    unitHash(unitText(hello), "charles"),
+    unitHash(unitText(hi), "paul"),
+    unitHash(unitText(hi), "charles", { ...RENDITION_VERSIONS, generation: `${RENDITION_VERSIONS.generation}-next` }),
+    unitHash(unitText(hi), "charles", { ...RENDITION_VERSIONS, pipeline: `${RENDITION_VERSIONS.pipeline}-next` }),
+    unitHash(unitText(hi), "charles", renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, charles: rehashed(MODEL_ASSETS.voices.charles) } })),
+    unitHash(unitText(hi), "charles", renditionVersions({ ...MODEL_ASSETS, voices: { ...MODEL_ASSETS.voices, jane: rehashed(MODEL_ASSETS.voices.jane) } })),
+    unitHash({ ...unitText(hi), source: "Hi  there." }, "charles"),
   ]);
   assert("the same text in the same voice is one unit wherever it is said", same === elsewhere);
   assert("another voice is another unit", same !== otherVoice);

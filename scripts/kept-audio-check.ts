@@ -44,7 +44,7 @@ const assert = (label: string, cond: boolean): void => {
 
 // ── fixtures ──────────────────────────────────────────────────────────────────────────
 
-const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+const VOICES: VoiceMap = { user: "charles", assistant: "paul", system: "javert", narrator: "jane" };
 const unitOf = (index: number, text: string): SynthesisUnit => ({
   utterance: { index, anchor: `t${index}`, origin: "page", voice: index % 2 === 0 ? "assistant" : "user", text },
   start: 0,
@@ -92,7 +92,7 @@ console.log("keep and find");
   await cache.keep(requestOf(first), frames, report(240));
   const found = await cache.find(requestOf(first));
   assert("kept: the same frames back, to 16-bit precision, and the report", found !== null && close(found.frames, frames) && found.report.durationMs === 240);
-  assert("the same text in another voice is another unit: a miss", (await cache.find(requestOf(first, { ...VOICES, assistant: "azelma" }))) === null);
+  assert("the same text in another voice is another unit: a miss", (await cache.find(requestOf(first, { ...VOICES, assistant: "vera" }))) === null);
   assert("another text in the same voice: a miss", (await cache.find({ ...requestOf(first), text: { ...unitText(first), text: "Hello there!" } })) === null);
 }
 
@@ -110,7 +110,7 @@ console.log("a read after a keep");
   clock.now = 7;
   void cache.keep(requestOf(zero), framesOf(2, 0), report(160));
   assert("asked while the keep is still encoding: found, and held", (await cache.find(requestOf(zero))) !== null && (await cache.holds(requestOf(zero))) === "held");
-  assert("a unit never kept: not held", (await cache.holds(requestOf(one))) === "absent" && (await cache.holds(requestOf(zero, { ...VOICES, assistant: "azelma" }))) === "absent");
+  assert("a unit never kept: not held", (await cache.holds(requestOf(one))) === "absent" && (await cache.holds(requestOf(zero, { ...VOICES, assistant: "vera" }))) === "absent");
   await flush();
   clock.now = 9;
   await cache.holds(requestOf(zero));
@@ -130,7 +130,7 @@ console.log("restore");
   assert("each unit's kept report, index for index, undefined where none", restored.length === script.length && restored[0]?.durationMs === 160 && restored[1] === undefined && restored[2]?.durationMs === 160);
   const ledger = await store.ledger();
   assert("the restored units are recent again", ledger.every((entry) => entry.playedAt === 50));
-  const revoiced = await cache.restore(script, { ...VOICES, assistant: "azelma" });
+  const revoiced = await cache.restore(script, { ...VOICES, assistant: "vera" });
   assert("in another voice for their role, the same units are not kept", revoiced.every((kept) => kept === undefined));
 }
 

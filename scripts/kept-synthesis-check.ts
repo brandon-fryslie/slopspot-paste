@@ -93,7 +93,7 @@ Object.defineProperty(crypto.subtle, "digest", {
 });
 const report = (durationMs: number): UnitReport => ({ durationMs, alignment: { kind: "unit" } });
 const text = { ...prepareText("Hello there."), source: "Hello there." };
-const synthesize = (unitId: number, voice: SynthesizeRequest["voice"] = "alba"): SynthesizeRequest => ({ kind: "synthesize", unitId, text, voice });
+const synthesize = (unitId: number, voice: SynthesizeRequest["voice"] = "charles"): SynthesizeRequest => ({ kind: "synthesize", unitId, text, voice });
 const READY: FromWorker = { kind: "ready", backend: "webgpu", modelVersion: "v" };
 const said: ReadonlyArray<Utterance> = [{ index: 0, anchor: "t0", origin: "page", voice: "user", text: "Hello there." }];
 const cutUnits: ReadonlyArray<SynthesisUnit> = [{ utterance: { index: 0, anchor: "t0", origin: "page", voice: "user", text: "Hello there." }, start: 0, end: 12, ...prepareText("Hello there.") }];
@@ -496,11 +496,11 @@ console.log("the listen comes first");
   const { worker, store, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3)]);
   await flush();
-  port.send(synthesize(3, "marius"));
+  port.send(synthesize(3, "paul"));
   assert("the fill's unit asked for in another voice: the fill cancelled, nothing looked up yet", worker.said() === "synthesize 3,cancel 3" && store.lookups.length === 0);
   worker.emit({ kind: "audio", unitId: 3, frameIndex: 0, pcm: frame(3, 0) });
   worker.emit({ kind: "cancelled", unitId: 3 });
-  assert("its terminal heard by nobody; then the request is looked up", ear.messages.length === 0 && store.lookups.length === 1 && store.lookups[0]?.request.voice === "marius");
+  assert("its terminal heard by nobody; then the request is looked up", ear.messages.length === 0 && store.lookups.length === 1 && store.lookups[0]?.request.voice === "paul");
   answer(store, 0, null);
   await flush();
   assert("and goes to the worker", worker.said() === "synthesize 3,cancel 3,synthesize 3");
@@ -509,7 +509,7 @@ console.log("the listen comes first");
   const { worker, store, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3)]);
   await flush();
-  port.send(synthesize(3, "marius"));
+  port.send(synthesize(3, "paul"));
   port.send({ kind: "cancel", unitId: 3 });
   await flush();
   assert("the request waiting behind the fill cancelled: cancelled at once", ear.said() === "cancelled 3");
@@ -521,7 +521,7 @@ console.log("the listen comes first");
   const { worker, port, ear } = setup({ allowed: true });
   port.ahead([synthesize(3)]);
   await flush();
-  port.send({ kind: "synthesize", unitId: -1, text, voice: "marius" });
+  port.send({ kind: "synthesize", unitId: -1, text, voice: "paul" });
   assert("a voice preview: the fill cancelled, the preview straight through", worker.said() === "synthesize 3,cancel 3,synthesize -1");
   worker.emit({ kind: "cancelled", unitId: 3 });
   worker.emit({ kind: "word", unitId: -1, word: 0, startMs: 0 });
@@ -538,7 +538,7 @@ console.log("the listen comes first");
   port.ahead([synthesize(3)]);
   await flush();
   assert("a new order with the fill in it: left to finish", worker.said() === "synthesize 3");
-  port.ahead([synthesize(3, "marius")]);
+  port.ahead([synthesize(3, "paul")]);
   assert("a new order without it — its voice changed: cancelled", worker.said() === "synthesize 3,cancel 3");
   worker.emit({ kind: "cancelled", unitId: 3 });
   await flush();
@@ -638,7 +638,7 @@ const hearer = () => {
   answer(store, 0, null);
   await flush();
   const render = hearer();
-  port.render([synthesize(0), synthesize(1), synthesize(2, "marius")], render.onUnit);
+  port.render([synthesize(0), synthesize(1), synthesize(2, "paul")], render.onUnit);
   await flush();
   assert("the worker busy with the listen: the render waits", store.lookups.length === 1 && worker.said() === "synthesize 0");
   worker.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
@@ -734,7 +734,7 @@ console.log("a lookup that rejects, and dispose");
 
 console.log("a scheduler over it, twice over one cache: the second listen needs no synthesis");
 {
-  const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+  const VOICES: VoiceMap = { user: "charles", assistant: "paul", system: "javert", narrator: "jane" };
   const unitOf = (index: number, said: string): SynthesisUnit => ({
     utterance: { index, anchor: "t0", origin: "page", voice: "assistant", text: said },
     start: 0,
@@ -787,7 +787,7 @@ console.log("a scheduler over it, twice over one cache: the second listen needs 
 
 console.log("a scheduler over it, made ahead: an idle listen fills the paste, and the listen is served first");
 {
-  const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+  const VOICES: VoiceMap = { user: "charles", assistant: "paul", system: "javert", narrator: "jane" };
   // One turn of eight sentences, a unit each: one speech segment per unit, no gaps.
   const words = ["One.", "Two.", "Three.", "Four.", "Five.", "Six.", "Seven.", "Eight."];
   const passage = words.join(" ");
@@ -902,7 +902,7 @@ console.log("a scheduler over it, made ahead: an idle listen fills the paste, an
 
 console.log("a scheduler over it, rendered whole: every unit heard once while the listen plays");
 {
-  const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+  const VOICES: VoiceMap = { user: "charles", assistant: "paul", system: "javert", narrator: "jane" };
   const words = ["One.", "Two.", "Three.", "Four.", "Five.", "Six."];
   const passage = words.join(" ");
   const utterance: Utterance = { index: 0, anchor: "t0", origin: "page", voice: "assistant", text: passage };

@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { MODEL_ASSETS, shardPlan } from "../src/modelAssets";
 import { parseTokenizer, pieceOf } from "../src/pocketTtsRuntime";
 import { tokenSpans } from "../src/wordAlignment";
-import { mirror } from "./modelAssetMirror";
+import { mirror, readSource } from "./modelAssetMirror";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -52,7 +52,7 @@ const fixture = JSON.parse(readFileSync(join(root, "test", "fixtures", "word-ali
 
 const same = <T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
-const mirrored = await mirror(publicDir, fetch, MODEL_ASSETS.tokenizer);
+const mirrored = await mirror(publicDir, readSource(root, fetch), MODEL_ASSETS.tokenizer);
 console.log(`tokenizer asset ${mirrored.action}`);
 const bytes = Buffer.concat(shardPlan(MODEL_ASSETS.tokenizer).map((s) => readFileSync(join(publicDir, s.url))));
 const { encode, pieces } = parseTokenizer(bytes);

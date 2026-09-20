@@ -46,11 +46,12 @@
 //   persist resolves true / false /    -> keeping granted / denied / failed{message}
 //   throws
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  EXPORTED_VOICE_DIR,
   MODEL_ASSETS,
   MODEL_ASSET_PREFIX,
   MODEL_VERSION,
@@ -59,6 +60,7 @@ import {
   allModelAssets,
   assetKey,
   downloadNeedsTap,
+  exportedVoiceFile,
   modelVersion,
   SHA_PREFIX_CHARS,
   shardPlan,
@@ -67,7 +69,7 @@ import {
 } from "../src/modelAssets";
 import { loadAsset, loadAssets, pruneStaleAssets, type AssetStore } from "../src/modelAssetLoader";
 import { askToKeep, readResidency, residencyOf } from "../src/modelResidency";
-import { mirror, mirrorIsCorrect, pruneStaleParts } from "./modelAssetMirror";
+import { mirror, mirrorIsCorrect, pruneStaleParts, readSource } from "./modelAssetMirror";
 
 const assert = (label: string, cond: boolean): void => {
   if (!cond) {
@@ -86,6 +88,17 @@ assert("asset names are unique", new Set(assets.map((a) => a.name)).size === ass
 assert("every voice id has an asset", VOICE_IDS.every((id) => MODEL_ASSETS.voices[id].name === `voice-${id}`));
 assert("no voice is CC-BY-NC (only MIT, CC0, CC-BY-4.0 appear)", assets.every((a) => ["MIT", "CC0-1.0", "CC-BY-4.0"].includes(a.licence)));
 assert("shard size is under the 25 MiB static-asset ceiling", SHARD_BYTES < 25 * 1024 * 1024);
+
+// The one invariant that keeps the checked-in exports honest: a voice the manifest says is
+// exported must be in the repo, at the path its own hash names, holding exactly those bytes.
+// Without this the first sign of a missed re-export would be a failed deploy.
+const exportedVoices = VOICE_IDS.map((id) => MODEL_ASSETS.voices[id]).filter((asset) => asset.source.kind === "exported");
+for (const asset of exportedVoices) {
+  const path = new URL(`../${exportedVoiceFile(asset)}`, import.meta.url);
+  const bytes = existsSync(path) ? readFileSync(path) : null;
+  assert(`${asset.name}: ${exportedVoiceFile(asset)} holds the ${asset.bytes} bytes the manifest pins`, bytes !== null && bytes.byteLength === asset.bytes && createHash("sha256").update(bytes).digest("hex") === asset.sha256);
+}
+assert("every exported voice is one part, so its repo file is the whole asset", exportedVoices.every((asset) => shardPlan(asset).length === 1));
 
 for (const asset of assets) {
   const plan = shardPlan(asset);
@@ -118,7 +131,7 @@ const synth: ModelAsset = {
   name: "synthetic",
   bytes: SYNTH_BYTES,
   sha256: createHash("sha256").update(synthData).digest("hex"),
-  source: "test://synthetic",
+  source: { kind: "mirrored", url: "test://synthetic" },
   licence: "MIT",
   attribution: "check fixture",
 };
@@ -364,23 +377,26 @@ console.log("residency:");
 console.log("mirror:");
 {
   const dir = mkdtempSync(join(tmpdir(), "model-mirror-"));
+  const repo = mkdtempSync(join(tmpdir(), "model-repo-"));
   const served: string[] = [];
-  const source = (bytes: Uint8Array) => async (url: string) => {
+  const serving = (bytes: Uint8Array) => async (url: string) => {
     served.push(url);
     return new Response(bytes.slice());
   };
+  // The mirror takes a byte reader, so every case below is driven through the real one.
+  const source = (bytes: Uint8Array) => readSource(repo, serving(bytes));
   const listed = () => readdirSync(join(dir, MODEL_ASSET_PREFIX)).sort().join(",");
   const expected = shardPlan(synth).map((s) => s.url.slice(MODEL_ASSET_PREFIX.length)).sort().join(",");
 
   assert("an empty directory is not a correct mirror", !mirrorIsCorrect(dir, synth));
   const first = await mirror(dir, source(synthData), synth);
-  assert("a missing asset is fetched once and cut into its parts", first.action === "fetched" && served.length === 1 && listed() === expected);
+  assert("a missing asset is fetched once and cut into its parts", first.action === "written" && served.length === 1 && listed() === expected);
   assert("the parts have their planned sizes", shardPlan(synth).every((s) => statSync(join(dir, s.url)).size === s.end - s.start));
   assert("a correct mirror is verified without a fetch", (await mirror(dir, source(synthData), synth)).action === "verified" && served.length === 1);
 
   writeFileSync(join(dir, shardPlan(synth)[1]!.url), synthData.subarray(0, 10));
   assert("a wrong-sized part makes the mirror incorrect", !mirrorIsCorrect(dir, synth));
-  assert("and is refetched", (await mirror(dir, source(synthData), synth)).action === "fetched" && served.length === 2 && mirrorIsCorrect(dir, synth));
+  assert("and is refetched", (await mirror(dir, source(synthData), synth)).action === "written" && served.length === 2 && mirrorIsCorrect(dir, synth));
 
   const flipped = synthData.slice();
   flipped.fill(0xaa, SHARD_BYTES + 3, SHARD_BYTES + 4);
@@ -388,21 +404,42 @@ console.log("mirror:");
   assert("a right-sized part with wrong bytes makes the mirror incorrect", !mirrorIsCorrect(dir, synth));
   const mismatch = await mirror(dir, source(flipped), synth).catch((e: Error) => e.message);
   assert("a source whose bytes do not hash to the manifest aborts by asset name", typeof mismatch === "string" && mismatch.startsWith("synthetic: SHA-256 mismatch"));
-  const refused = await mirror(dir, async () => { throw new TypeError("fetch failed"); }, synth).catch((e: Error) => e.message);
-  assert("a source that cannot be fetched aborts by asset name", refused === `synthetic: ${synth.source} — fetch failed`);
-  const cut = await mirror(dir, async () => new Response(new ReadableStream({ start: (c) => c.error(new TypeError("terminated")) })), synth).catch((e: Error) => e.message);
-  assert("a source whose body fails mid-read aborts by asset name", cut === `synthetic: ${synth.source} — terminated`);
-  const denied = await mirror(dir, async () => new Response(null, { status: 403 }), synth).catch((e: Error) => e.message);
-  assert("a source that refuses aborts by asset name with the status", denied === `synthetic: ${synth.source} — responded 403`);
   const short = await mirror(dir, source(synthData.subarray(0, 100)), synth).catch((e: Error) => e.message);
   assert("a source of the wrong size aborts by asset name", typeof short === "string" && short.startsWith("synthetic: expected"));
   assert("a failed refetch writes nothing: the incorrect part is still the old one", !mirrorIsCorrect(dir, synth));
 
+  // The reader is where an origin's two arms are told apart, so its failures are asserted
+  // on it rather than on the mirror that merely passes them on [LAW:single-enforcer].
+  const url = synth.source.kind === "mirrored" ? synth.source.url : "";
+  const read = (fetchSource: (url: string) => Promise<Response>) => readSource(repo, fetchSource)(synth).catch((e: Error) => e.message);
+  assert("a source that cannot be fetched aborts by asset name", (await read(async () => { throw new TypeError("fetch failed"); })) === `synthetic: ${url} — fetch failed`);
+  assert("a source whose body fails mid-read aborts by asset name", (await read(async () => new Response(new ReadableStream({ start: (c) => c.error(new TypeError("terminated")) })))) === `synthetic: ${url} — terminated`);
+  assert("a source that refuses aborts by asset name with the status", (await read(async () => new Response(null, { status: 403 }))) === `synthetic: ${url} — responded 403`);
+
+  // An exported voice's bytes come off the disk, and never off the network: nothing about
+  // its recording is a URL the build fetches.
+  const exportedData = new Uint8Array([1, 2, 3, 4]);
+  const exportedAsset: ModelAsset = {
+    name: "voice-synthetic",
+    bytes: exportedData.byteLength,
+    sha256: createHash("sha256").update(exportedData).digest("hex"),
+    source: { kind: "exported", recording: "test://recording.wav", upstream: "test://upstream.safetensors" },
+    licence: "CC0-1.0",
+    attribution: "check fixture",
+  };
+  const missing = await mirror(dir, source(exportedData), exportedAsset).catch((e: Error) => e.message);
+  assert("an export the repo does not hold aborts by asset name, saying how to remake it", typeof missing === "string" && missing.startsWith(`voice-synthetic: ${exportedVoiceFile(exportedAsset)}`) && missing.includes("export-voice-prompts"));
+  mkdirSync(join(repo, EXPORTED_VOICE_DIR), { recursive: true });
+  writeFileSync(join(repo, exportedVoiceFile(exportedAsset)), exportedData);
+  const fromRepo = await mirror(dir, source(exportedData), exportedAsset);
+  assert("an export the repo holds is mirrored from it, with no fetch", fromRepo.action === "written" && served.length === 4 && mirrorIsCorrect(dir, exportedAsset));
+
   await mirror(dir, source(synthData), synth);
   writeFileSync(join(dir, `${MODEL_ASSET_PREFIX}weights-000000000000.part0`), new Uint8Array(3));
-  const removed = pruneStaleParts(dir, [synth]);
-  assert("prune removes only parts no current plan names", removed.join() === `${MODEL_ASSET_PREFIX}weights-000000000000.part0` && listed() === expected);
+  const removed = pruneStaleParts(dir, [synth, exportedAsset]);
+  assert("prune removes only parts no current plan names", removed.join() === `${MODEL_ASSET_PREFIX}weights-000000000000.part0`);
   rmSync(dir, { recursive: true });
+  rmSync(repo, { recursive: true });
 }
 
 // ── 4. published headers and the ignore rule ──────────────────────────────────

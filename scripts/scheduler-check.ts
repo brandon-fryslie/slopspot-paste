@@ -81,7 +81,7 @@ const throws = (label: string, fn: () => void): void => {
 
 // ── fixtures ──────────────────────────────────────────────────────────────────────────
 
-const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+const VOICES: VoiceMap = { user: "charles", assistant: "paul", system: "javert", narrator: "jane" };
 
 const unitOf = (index: number, text: string, voice: Utterance["voice"] = "assistant"): SynthesisUnit => ({
   utterance: { index, anchor: `t${index}`, origin: "page", voice, text },
@@ -157,7 +157,7 @@ console.log("step: from idle to the first audio");
   const message = step(fresh, reported(speaking(0)), speaking(0)).commands[0];
   assert(
     "the request carries the unit's text and the voice for its role",
-    message?.kind === "worker" && message.message.kind === "synthesize" && message.message.text.text === "Unit 0 says hello." && message.message.voice === "marius",
+    message?.kind === "worker" && message.message.kind === "synthesize" && message.message.text.text === "Unit 0 says hello." && message.message.voice === "paul",
   );
 
   const again = step(played.state, reported(speaking(0)), speaking(0));
@@ -349,7 +349,7 @@ console.log("step: failure is skipped, not waited on");
   assert("failed when not the frontier: frames dropped at once, the gap requested", failedBehindGap.commands.join() === "drop 2,synthesize 1");
 
   throws("failed{duplicate-unit} is a scheduler bug", () => step(going.state, worker({ kind: "failed", unitId: 2, reason: { kind: "duplicate-unit" } }), speaking(0)));
-  throws("a refused synthesize is a scheduler bug", () => step(going.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: 2, text: unitText(unitOf(2, "")), voice: "alba" }, phase: "idle" }), speaking(0)));
+  throws("a refused synthesize is a scheduler bug", () => step(going.state, worker({ kind: "refused", request: { kind: "synthesize", unitId: 2, text: unitText(unitOf(2, "")), voice: "charles" }, phase: "idle" }), speaking(0)));
   throws("a refused cancel is a scheduler bug", () => step(going.state, worker({ kind: "refused", request: { kind: "cancel", unitId: 2 }, phase: "idle" }), speaking(0)));
   const others = run(going.state, speaking(0), worker({ kind: "refused", request: { kind: "load" }, phase: "ready" }), worker({ kind: "progress", progress: { loadedBytes: 1, totalBytes: 2 } }), worker({ kind: "capability", support: { kind: "supported", backend: "webgpu" } }));
   assert("the panel's messages pass by untouched", others.commands.length === 0 && others.state === going.state);
@@ -395,7 +395,7 @@ console.log("step: the reader's voices");
   const at1 = run(built.state, speaking(1, 0, "audio"), reported(speaking(1, 0, "audio")));
   assert("setup: 0..3 held, 4 requested", kinds(at1.state) === "hhhhra");
   const voices = (map: VoiceMap): Event => ({ kind: "voices", voices: map });
-  const userVoice: VoiceMap = { ...VOICES, user: "fantine" };
+  const userVoice: VoiceMap = { ...VOICES, user: "jane" };
 
   const same = run(at1.state, speaking(1, 300, "audio"), voices(VOICES));
   assert("the same voices: nothing dropped, nothing asked, the very same state", same.commands.length === 0 && same.state === at1.state);
@@ -405,34 +405,34 @@ console.log("step: the reader's voices");
     "the user's voice changes while unit 1 speaks: paused, the user's held units dropped, seeked to 1's start, played; then the in-flight assistant unit gives way and 1 is asked again",
     mid.commands.join() === `pause,drop 1,drop 3,seek ${slotOf(1)}:0,play,cancel 4,drop 4,synthesize 1`,
   );
-  assert("state: the assistant's units untouched, the user's forgotten, 1 requested", kinds(mid.state) === "hrhaca" && mid.state.voices.user === "fantine");
+  assert("state: the assistant's units untouched, the user's forgotten, 1 requested", kinds(mid.state) === "hrhaca" && mid.state.voices.user === "jane");
   assert("the user's records are voided, the assistant's kept", mid.state.manifest.units[1] === undefined && mid.state.manifest.units[3] === undefined && mid.state.manifest.units[0]?.durationMs === 1000 && mid.state.manifest.units[2]?.durationMs === 1000);
   const asked = mid.state;
   const request = step(at1.state, voices(userVoice), speaking(1, 300, "audio")).commands.at(-1);
-  assert("the new request is in the new voice", request?.kind === "worker" && request.message.kind === "synthesize" && request.message.unitId === 1 && request.message.voice === "fantine");
+  assert("the new request is in the new voice", request?.kind === "worker" && request.message.kind === "synthesize" && request.message.unitId === 1 && request.message.voice === "jane");
   const settled = run(asked, speaking(1), worker({ kind: "cancelled", unitId: 4 }), done(1, 900));
   assert("the cancel lands and the new rendition arrives: held with its record, the next user unit asked", settled.commands.join() === "complete 1,synthesize 3" && settled.state.manifest.units[1]?.durationMs === 900);
 
-  const other = run(at1.state, speaking(1, 300, "audio"), voices({ ...VOICES, assistant: "azelma" }));
+  const other = run(at1.state, speaking(1, 300, "audio"), voices({ ...VOICES, assistant: "vera" }));
   assert(
     "Claude's voice changes while the user's unit speaks: unit 2 ahead may be cued in the old voice, so held before the drops — the in-flight assistant unit's with them — and played on from the same sample, no seek; the next assistant unit asked in the new voice",
     other.commands.join() === "pause,drop 0,drop 2,cancel 4,drop 4,play,synthesize 2" && kinds(other.state) === "ahrhca",
   );
 
-  const bothVoices: VoiceMap = { ...VOICES, user: "fantine", assistant: "azelma" };
+  const bothVoices: VoiceMap = { ...VOICES, user: "jane", assistant: "vera" };
   const both = run(at1.state, speaking(1, 300, "audio"), voices(bothVoices));
   assert(
     "both voices change while unit 1 speaks: one pause, every held unit dropped, the in-flight one cancelled, one seek to 1's start and play, then 1 asked again",
     both.commands.join() === `pause,drop 0,drop 1,drop 2,drop 3,cancel 4,drop 4,seek ${slotOf(1)}:0,play,synthesize 1` && kinds(both.state) === "araaca",
   );
   const bothAsked = step(at1.state, voices(bothVoices), speaking(1, 300, "audio")).commands.at(-1);
-  assert("unit 1 is asked in the new user voice", bothAsked?.kind === "worker" && bothAsked.message.kind === "synthesize" && bothAsked.message.unitId === 1 && bothAsked.message.voice === "fantine");
+  assert("unit 1 is asked in the new user voice", bothAsked?.kind === "worker" && bothAsked.message.kind === "synthesize" && bothAsked.message.unitId === 1 && bothAsked.message.voice === "jane");
   const bothCancelled = run(both.state, speaking(1), worker({ kind: "cancelled", unitId: 4 }));
   const bothSettled = run(bothCancelled.state, speaking(1), done(1, 900));
   const nextAsked = step(bothCancelled.state, done(1, 900), speaking(1)).commands.at(-1);
   assert(
     "the cancel lands and 1 arrives: held, and the next unit, Claude's, asked in the new assistant voice",
-    bothCancelled.commands.length === 0 && bothSettled.commands.join() === "complete 1,synthesize 2" && kinds(bothSettled.state) === "ahraaa" && nextAsked?.kind === "worker" && nextAsked.message.kind === "synthesize" && nextAsked.message.unitId === 2 && nextAsked.message.voice === "azelma",
+    bothCancelled.commands.length === 0 && bothSettled.commands.join() === "complete 1,synthesize 2" && kinds(bothSettled.state) === "ahraaa" && nextAsked?.kind === "worker" && nextAsked.message.kind === "synthesize" && nextAsked.message.unitId === 2 && nextAsked.message.voice === "vera",
   );
 
   const heldStill = run(at1.state, paused(1, 300), voices(userVoice));
@@ -449,7 +449,7 @@ console.log("step: the reader's voices");
   const going = run(short, speaking(0, 0, "audio"), reported(speaking(0)), done(0), done(1), audio(2, 0));
   const capped = run(going.state, speaking(0, 0, "audio"), worker({ kind: "failed", unitId: 2, reason: { kind: "frame-cap", frames: 1000 } }));
   assert("setup: 2 failed with its frames in the player, 3 in flight", kinds(capped.state) === "hhfr");
-  const retried = run(capped.state, speaking(0, 100, "audio"), voices({ ...VOICES, assistant: "azelma" }));
+  const retried = run(capped.state, speaking(0, 100, "audio"), voices({ ...VOICES, assistant: "vera" }));
   assert("a failed unit of the changed voice is forgotten with its frames: the new voice gets its own try", retried.commands.join() === "pause,drop 0,drop 2,seek 0:0,play,cancel 3,drop 3,synthesize 0" && kinds(retried.state) === "rhac");
 
   const foreign = run(
@@ -459,7 +459,7 @@ console.log("step: the reader's voices");
     done(-1),
     worker({ kind: "cancelled", unitId: -1 }),
     worker({ kind: "failed", unitId: -1, reason: { kind: "runtime", message: "x" } }),
-    worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: unitText(unitOf(2, "")), voice: "alba" }, phase: "idle" }),
+    worker({ kind: "refused", request: { kind: "synthesize", unitId: -1, text: unitText(unitOf(2, "")), voice: "charles" }, phase: "idle" }),
     worker({ kind: "refused", request: { kind: "cancel", unitId: -1 }, phase: "idle" }),
   );
   assert("a voice preview's messages, ids below zero, pass by untouched — the refusals of its requests too", foreign.commands.length === 0 && foreign.state === at1.state);
@@ -523,9 +523,9 @@ console.log("driver: a voice change mid-unit restarts it in the new voice, over 
   device.advance(SCHEDULE_LEAD_S + FRAME_S + GAP_S + 0.01);
   assert("setup: every unit held, the cursor inside the user's unit 1, past the gap before it", describe(scheduler.view().player) === `speaking/audio@${slotOf(1)}:10.000` && scheduler.view().holdings.every((h) => h.kind === "held"));
   scheduler.voices(VOICES);
-  assert("the same voices: nothing sent", said() === "synthesize 0 marius,synthesize 1 alba,synthesize 2 marius,synthesize 3 alba");
-  scheduler.voices({ ...VOICES, user: "fantine" });
-  assert("the user's voice changes: the player took the pause, the drops and the seek, and waits at 1's start for the new rendition", describe(scheduler.view().player) === `speaking/waiting@${slotOf(1)}:0.000` && said().endsWith("synthesize 1 fantine"));
+  assert("the same voices: nothing sent", said() === "synthesize 0 paul,synthesize 1 charles,synthesize 2 paul,synthesize 3 charles");
+  scheduler.voices({ ...VOICES, user: "jane" });
+  assert("the user's voice changes: the player took the pause, the drops and the seek, and waits at 1's start for the new rendition", describe(scheduler.view().player) === `speaking/waiting@${slotOf(1)}:0.000` && said().endsWith("synthesize 1 jane"));
   assert("the user's units are gone from the view, the assistant's held", scheduler.view().holdings.map((h) => h.kind[0]).join("") === "hrha" && scheduler.view().manifest.units[1] === undefined && scheduler.view().manifest.units[0] !== undefined);
   emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
   assert("the new rendition's first frame plays from the unit's start", describe(scheduler.view().player) === `speaking/audio@${slotOf(1)}:0.000`);
@@ -569,10 +569,10 @@ console.log("driver: a voice change in the gap before a unit still streaming, ov
   emit({ kind: "audio", unitId: 1, frameIndex: 0, pcm: frame(1, 0) });
   device.advance(SCHEDULE_LEAD_S + FRAME_S + GAP_S / 2);
   assert("setup: inside the gap before unit 1, unit 1 streaming", describe(scheduler.view().player).startsWith(`speaking/audio@${gapBefore(1)}:`) && scheduler.view().holdings[1]?.kind === "requested");
-  scheduler.voices({ ...VOICES, user: "fantine" });
+  scheduler.voices({ ...VOICES, user: "jane" });
   assert("the user's voice changes: no throw, still in the gap, the streaming rendition cancelled", describe(scheduler.view().player).startsWith(`speaking/audio@${gapBefore(1)}:`) && sent.at(-1)?.kind === "cancel");
   emit({ kind: "cancelled", unitId: 1 });
-  assert("the cancel lands: unit 1 asked in the new voice", sent.some((m) => m.kind === "synthesize" && m.unitId === 1 && m.voice === "fantine"));
+  assert("the cancel lands: unit 1 asked in the new voice", sent.some((m) => m.kind === "synthesize" && m.unitId === 1 && m.voice === "jane"));
   device.advance(GAP_S);
   assert("past the gap's end the old rendition is not heard: the player waits at unit 1's start", describe(scheduler.view().player) === `speaking/waiting@${slotOf(1)}:0.000`);
   scheduler.dispose();
@@ -614,7 +614,7 @@ console.log("driver: a stub port, the real player, a hand-moved clock");
   if (device === undefined) throw new Error("the scheduler did not build its player");
 
   assert("fresh: idle, nothing sent, one subscriber", scheduler.view().player.kind === "idle" && sent.length === 0 && listeners.size === 1);
-  assert("fresh: told every unit is worth making ahead, from the top, each in its voice", told.join("|") === "0 marius 1 alba 2 marius 3 alba");
+  assert("fresh: told every unit is worth making ahead, from the top, each in its voice", told.join("|") === "0 paul 1 charles 2 paul 3 charles");
 
   scheduler.send({ kind: "play" });
   assert("play: the player waits at 0 and unit 0 is requested", describe(scheduler.view().player) === "speaking/waiting@0:0.000" && said() === "synthesize 0");

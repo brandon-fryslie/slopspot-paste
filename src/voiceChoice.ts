@@ -42,12 +42,18 @@ export type VoicePick = Readonly<Record<PickedVoice, VoiceKey>>;
 // the harness by what the page already calls it in every bubble it speaks from.
 export const ROLE_LABELS: Readonly<Record<PickedVoice, string>> = { user: "You", assistant: "Claude", system: "System" };
 
-// Until the reader picks, the q35.1 spike's word-accuracy ranking chooses: the voices
-// Whisper transcribed with zero errors take the roles that say the most. The system's
-// default is the voice it always spoke with before it had a row, so a device that never
-// picks hears exactly what it heard before [LAW:one-source-of-truth]: this constant is the
-// whole definition of "the system's voice", with no second copy to drift from it.
-export const DEFAULT_PICK: VoicePick = { user: "alba", assistant: "javert", system: "eponine" };
+// Until the reader picks, these three speak. Chosen by ear, from the twenty-two voice
+// audition (slopspot-voices-9p4.3d3): Javert and Éponine keep the roles they already had —
+// both came back a clear yes, Javert with the warmest note of the whole board — so a device
+// that never picked hears Claude and the harness exactly as it heard them before
+// [LAW:no-ambient-temporal-coupling].
+//
+// The reader's own voice had to move: it was Alba, and Alba did not survive the audition.
+// Charles takes it as the one shipped voice marked "great" rather than merely kept, and as
+// a masculine voice like Alba, so the change of default is a change of quality and not of
+// character. [LAW:one-source-of-truth] this constant is the whole definition of each role's
+// voice, with no second copy to drift from it.
+export const DEFAULT_PICK: VoicePick = { user: "charles", assistant: "javert", system: "eponine" };
 
 // The rule: the map the script is derived with, from the pick.
 export const voiceMapOf = (pick: VoicePick): VoiceMap => ({
@@ -123,10 +129,18 @@ export const cloneOf = (voice: ClonedVoiceKey, clones: ReadonlyArray<ClonedVoice
   return clone;
 };
 
-// Each hosted voice is named for a person, the id being the name in lower case; a clone is
-// named by the reader who made it.
+// Each hosted voice is named for a person and its id is that name written as a slug, so the
+// name is read back off the id rather than stored twice [LAW:one-source-of-truth]: each
+// underscore-separated part capitalised, which is "Javert" for the donated voices and
+// "Peter Yearsley" for the LibriVox readers who go by both their names. A clone is named by
+// the reader who made it.
 export const voiceName = (voice: VoiceKey, clones: ReadonlyArray<ClonedVoice>): string =>
-  isClonedKey(voice) ? cloneOf(voice, clones).name : voice.charAt(0).toUpperCase() + voice.slice(1);
+  isClonedKey(voice)
+    ? cloneOf(voice, clones).name
+    : voice
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
 
 // What a voice is like, in one line beside its name — because the name says nothing, and
 // Kyutai's Les Misérables names say something false: Alba is a man's voice. The three

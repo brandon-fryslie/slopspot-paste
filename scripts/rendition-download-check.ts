@@ -27,7 +27,7 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await flush();
 };
 
-const VOICES: VoiceMap = { user: "alba", assistant: "marius", system: "javert", narrator: "fantine" };
+const VOICES: VoiceMap = { user: "charles", assistant: "paul", system: "javert", narrator: "jane" };
 // Two turns: the user's one unit, the assistant's two.
 const unitOf = (anchor: string, voice: "user" | "assistant", text: string): SynthesisUnit => ({
   utterance: { index: anchor === "t0" ? 0 : 1, anchor, origin: "page", voice, text },
