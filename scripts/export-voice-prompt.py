@@ -54,11 +54,12 @@ config = yaml.safe_load(packaged.read_text())
 config["weights_path"] = str(pathlib.Path(weights).resolve())
 # Only present to point at the encoder-less build; keeping it would let it be chosen.
 config.pop("weights_path_without_voice_cloning", None)
-with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as handle:
-    yaml.safe_dump(config, handle)
-    local = handle.name
-
-model = TTSModel.load_model(config=local)
+# load_model wants a path, so the config is a file for exactly as long as that call — the
+# directory takes itself away after, rather than leaving one temp file per voice per run.
+with tempfile.TemporaryDirectory() as scratch:
+    local = pathlib.Path(scratch) / f"{release}.yaml"
+    local.write_text(yaml.safe_dump(config))
+    model = TTSModel.load_model(config=str(local))
 if model.flow_lm.insert_bos_before_voice:
     raise SystemExit(f"export-voice-prompt: {release} prepends a token before the voice; the browser does not")
 

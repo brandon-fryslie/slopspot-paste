@@ -23,6 +23,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXPORTED_VOICE_DIR, MODEL_ASSETS, SHA_PREFIX_CHARS, VOICE_IDS, shardPlan } from "../src/modelAssets";
 import { mirror, readSource } from "./modelAssetMirror";
+import { POCKET_TTS } from "./pocketTts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
@@ -49,9 +50,11 @@ writeFileSync(weightsFile, Buffer.concat(shardPlan(weights).map((shard) => readF
 
 // [LAW:dataflow-not-control-flow] Which voices are exported is decided once, as a list;
 // the loop below then runs the same steps for every row it is given.
-const exports = VOICE_IDS.map((id) => MODEL_ASSETS.voices[id]).flatMap((asset) =>
-  asset.source.kind === "exported" ? [{ id: asset.name, asset, origin: asset.source }] : [],
-);
+const exports = VOICE_IDS.flatMap((id) => {
+  const asset = MODEL_ASSETS.voices[id];
+  // The id, not the asset name, so a printed pin can be pasted beside the key it belongs to.
+  return asset.source.kind === "exported" ? [{ id, asset, origin: asset.source }] : [];
+});
 
 // Every voice is exported before any is filed, so a run that fails partway leaves the
 // directory as it was rather than half-remade.
@@ -63,7 +66,7 @@ for (const { id, asset, origin } of exports) {
   const recording = await fetchTo(origin.recording, join(work, `${id}${extname(new URL(origin.recording).pathname)}`));
   const upstream = await fetchTo(origin.upstream, join(work, `${id}-upstream.safetensors`));
   const out = join(work, `${id}.safetensors`);
-  execFileSync("uv", ["run", "--with", "pocket-tts==3.1.0", "--with", "pyyaml", "python", join(here, "export-voice-prompt.py"), weights.release, weightsFile, recording, upstream, out], { stdio: ["ignore", "inherit", "inherit"] });
+  execFileSync("uv", ["run", "--with", POCKET_TTS, "--with", "pyyaml", "python", join(here, "export-voice-prompt.py"), weights.release, weightsFile, recording, upstream, out], { stdio: ["ignore", "inherit", "inherit"] });
   const bytes = readFileSync(out);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const name = `${asset.name}-${sha256.slice(0, SHA_PREFIX_CHARS)}.safetensors`;

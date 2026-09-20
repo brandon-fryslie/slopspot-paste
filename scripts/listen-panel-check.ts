@@ -1946,7 +1946,8 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   part<HTMLLabelElement>(option("user", "eponine"), ".voice-label").click();
   assert("tapping a name picks its voice, as tapping the radio does", checked() === "eponine/javert/eponine");
   radio("user", "charles").click();
-  // The name says nothing, and Kyutai's say something false: Alba is a man's voice.
+  // The name says nothing about the sound, and can mislead — Alba, dropped from this
+  // catalogue, was a man's voice under a woman's name. This line is what the reader gets.
   const about = (role: string, voice: string): HTMLElement => part<HTMLElement>(option(role, voice), ".voice-about");
   assert("each voice says what it is like beside its name, the same words in every row", about("user", "charles").textContent === "Deep and gravelly · English · masculine" && PICKED_VOICES.every((role) => about(role, "charles").textContent === about("user", "charles").textContent));
   assert("every option carries one, and no two rows share an id", picker.querySelectorAll(".voice-about").length === PICKED_VOICES.length * VOICE_IDS.length && new Set([...picker.querySelectorAll(".voice-about")].map((el) => el.id)).size === PICKED_VOICES.length * VOICE_IDS.length);
@@ -2017,7 +2018,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   assert("resumed: the reader's units arrive and Claude's is asked in the voice picked cold", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.said().endsWith("synthesize 2") && (r.sent.at(-1) as { voice: string }).voice === "paul");
 
   radio("user", "jane").click();
-  assert("the reader's voice picked mid-listen: the unit under the cursor restarts in it — Claude's request gives way, unit 0 is asked again in Fantine — and the pick is kept", r.said().endsWith("cancel 2,synthesize 0") && (r.sent.at(-1) as { voice: string }).voice === "jane" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && readPick(r.store, []).user === "jane" && checked() === "jane/paul/eponine");
+  assert("the reader's voice picked mid-listen: the unit under the cursor restarts in it — Claude's request gives way, unit 0 is asked again in Jane — and the pick is kept", r.said().endsWith("cancel 2,synthesize 0") && (r.sent.at(-1) as { voice: string }).voice === "jane" && r.line() === "Pause | stop | Synthesizing ahead… · passage 1 of 2" && readPick(r.store, []).user === "jane" && checked() === "jane/paul/eponine");
   r.emit({ kind: "cancelled", unitId: 2 });
   r.emit({ kind: "audio", unitId: 0, frameIndex: 0, pcm: frame(0, 0) });
   assert("the new rendition plays from the unit's start", r.line() === "Pause | stop | Playing · passage 1 of 2" && r.where() === "t1 0-20 of 1");
@@ -2035,7 +2036,7 @@ console.log("createListenPanel: the voice picker — a pick made cold arrives wi
   part<HTMLButtonElement>(again.voices.picker, ".voice-reset").click();
   assert("reset: the defaults again, nothing left on the device, the request under the cursor withdrawn", checkedAgain() === "charles/javert/eponine" && again.store.keys().includes("listen.voices") === false && again.said().endsWith("cancel 0"));
   again.emit({ kind: "cancelled", unitId: 0 });
-  assert("the cancel lands: the unit under the cursor is asked again in Alba", again.said().endsWith("cancel 0,synthesize 0") && (again.sent.at(-1) as { voice: string }).voice === "charles");
+  assert("the cancel lands: the unit under the cursor is asked again in Charles", again.said().endsWith("cancel 0,synthesize 0") && (again.sent.at(-1) as { voice: string }).voice === "charles");
   again.stop.click();
   part<HTMLButtonElement>(again.voices.picker, '.voice-row[data-role="user"] .voice-option[data-voice="charles"] .voice-preview').click();
   assert("a preview with the voice on stage but idle: nothing to pause, the phrase asked", again.line() === "Listen | stop(off) | Ready" && again.said().endsWith("synthesize -1"));
@@ -2072,7 +2073,7 @@ console.log("createListenPanel: the voice picker in the mini-player — one pick
     [...root.querySelectorAll<HTMLButtonElement>(".voice-preview")].filter((b) => b.dataset.sounding === "true").map((b) => b.getAttribute("aria-label")).join();
   const both = (): string => `${pickedIn(dock.picker)} | ${pickedIn(mini.picker)}`;
 
-  assert("the mini-player carries a picker of its own: the same rows, the same six voices", mini.picker.querySelectorAll(".voice-row").length === PICKED_VOICES.length && mini.picker.querySelectorAll(".voice-option").length === PICKED_VOICES.length * VOICE_IDS.length);
+  assert("the mini-player carries a picker of its own: the same rows, the same hosted voices", mini.picker.querySelectorAll(".voice-row").length === PICKED_VOICES.length && mini.picker.querySelectorAll(".voice-option").length === PICKED_VOICES.length * VOICE_IDS.length);
   assert("both start closed, each toggle saying so", dock.picker.hidden && mini.picker.hidden && dock.toggle.getAttribute("aria-expanded") === "false" && mini.toggle.getAttribute("aria-expanded") === "false");
   // Two disclosures, not one shown twice: opening where the reader is reaching must not
   // unfold the other place behind the dock's panel.

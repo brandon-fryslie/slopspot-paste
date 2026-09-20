@@ -94,41 +94,57 @@ const KYUTAI_RECORDINGS = "https://huggingface.co/kyutai/tts-voices/resolve/3233
 
 const mirrored = (url: string): AssetOrigin => ({ kind: "mirrored", url });
 
-const mirroredVoice = (id: VoiceId): AssetOrigin => mirrored(`${KYUTAI_VOICES}/embeddings/${id}.safetensors`);
+// [LAW:types-are-the-program] Where a voice's bytes come from, as a function OF THE VOICE
+// rather than a finished value: an entry chooses the kind and says only what the id cannot
+// already say, and the id is applied to it below. An entry therefore cannot name one voice
+// and point at another's bytes — the slip that would ship voice B's sound under voice A's
+// name is not expressible.
+type VoiceOrigin = (id: VoiceId) => AssetOrigin;
 
-// [LAW:one-source-of-truth] The id names the state upstream publishes for this voice, so a
-// voice cannot be checked against another one's: only the recording is a free string, and
-// it is the one fact the id does not already carry.
-const exported = (id: VoiceId, recording: string): AssetOrigin => ({
-  kind: "exported",
-  recording: `${KYUTAI_RECORDINGS}/${recording}`,
-  upstream: `${KYUTAI_CATALOGUE}/${id}.safetensors`,
-});
+// One of Kyutai's original eight, whose prompt they publish.
+const kyutaiPrompt: VoiceOrigin = (id) => mirrored(`${KYUTAI_VOICES}/embeddings/${id}.safetensors`);
+
+// A voice they publish only as a primed state: exported here from the recording it was made
+// of, and proven against that state. The recording is the one fact the id does not carry.
+const exportedFrom =
+  (recording: string): VoiceOrigin =>
+  (id) => ({
+    kind: "exported",
+    recording: `${KYUTAI_RECORDINGS}/${recording}`,
+    upstream: `${KYUTAI_CATALOGUE}/${id}.safetensors`,
+  });
 
 // [LAW:types-are-the-program] What a hosted voice is declared with, each fact named: a
 // catalogue of fifty voices (slopspot-voices-9p4.3d3) is fifty of these, and a positional
-// list of seven would let two strings swap places without a word from the compiler.
+// list of seven would let two strings swap places without a word from the compiler. The id
+// is NOT among them — it is the key the entry is filed under, applied by `hostedVoices`.
 interface VoiceEntry {
-  readonly id: VoiceId;
   readonly bytes: number;
   readonly sha256: string;
-  readonly source: AssetOrigin;
+  readonly from: VoiceOrigin;
   readonly licence: "CC0-1.0" | "CC-BY-4.0";
   readonly attribution: string;
   readonly sample: Pinned;
   readonly qualities: VoiceQualities;
 }
 
-const voice = ({ id, bytes, sha256, source, licence, attribution, sample, qualities }: VoiceEntry): VoiceAsset => ({
+const voice = (id: VoiceId, { bytes, sha256, from, licence, attribution, sample, qualities }: VoiceEntry): VoiceAsset => ({
   name: `voice-${id}`,
   bytes,
   sha256,
   sample,
   qualities,
-  source,
+  source: from(id),
   licence,
   attribution,
 });
+
+// [LAW:one-source-of-truth] A voice's id is written ONCE, as the key it is filed under:
+// the asset's name, its published address and the upstream state it is checked against are
+// all derived from that one string. `Record<VoiceId, …>` still requires every id in
+// VOICE_IDS to have an entry, so the cast below asserts only what the map guarantees.
+const hostedVoices = (entries: Readonly<Record<VoiceId, VoiceEntry>>): Readonly<Record<VoiceId, VoiceAsset>> =>
+  Object.fromEntries(VOICE_IDS.map((id) => [id, voice(id, entries[id])])) as Readonly<Record<VoiceId, VoiceAsset>>;
 
 // [LAW:types-are-the-program] The checkpoint is the weights asset plus the facts about those
 // bytes that the rest of the pipeline reads, so they live on them: a swapped checkpoint
@@ -186,25 +202,30 @@ export interface VoiceQualities {
 //
 // HOW THE QUALITIES WERE ARRIVED AT. Not from the corpora's speaker sheets, which describe
 // the person who was recorded rather than the voice this model synthesizes, and not from
-// the names — Kyutai's Les Misérables names mislead, and Alba, a woman's name, is a man's
-// voice. Each was measured from the voice's own donated recording and from the sample the
-// reader hears: pitch and its range (median f0), pace (words over the sample's speech),
-// texture (harmonics-to-noise, jitter and shimmer — Javert and Marius read low because the
-// donors' voices are breathy and raspy, not because the recordings are noisy: denoising
-// them moves nothing), accent by a CommonAccent classifier over the recording in chunks,
-// and register by an age-and-gender classifier. A new voice is described the same way.
+// the names, which promise things they cannot keep: the catalogue used to host a voice
+// called Alba — a woman's name over a man's voice — and removing that confusion is half of
+// why these three words exist. Each was measured from the voice's own donated recording and
+// from the sample the reader hears: pitch and its spread (median f0, and the tenth to the
+// ninetieth percentile), pace (words over the sample's speech), texture (harmonics-to-noise,
+// jitter and shimmer — Javert and Charles read low because the donors' voices are breathy
+// and gravelly, not because the recordings are noisy: denoising them moves nothing), and
+// accent by a CommonAccent classifier. A new voice is described the same way.
 //
-// WHERE THE TWO DISAGREE, THE SAMPLE WINS, because the sample is the voice: the recording
-// says who donated it, and the reader never hears that. Éponine is why the rule is written
-// down. Her donated recording classifies as Scottish, and by her name and her corpus she
-// "is" Scottish — but the voice this model makes of her does not carry it: on the sample a
-// reader actually hears, Scotland is not in the top three at all (us 0.55, canada 0.43).
-// Calling her Scottish would have been the same false promise as the names themselves.
+// REGISTER IS NOT MEASURED. Brandon labelled every voice masculine or feminine by ear on the
+// audition board, and a classifier over a four-second sample does not overrule a person who
+// listened to it [LAW:one-source-of-truth].
 //
-// AND A CLAIM IS NO FIRMER THAN ITS MARGIN. The classifier's top label is only worth the
-// distance to its runner-up, so where the two are neighbours within about 0.15 the region
-// is named instead of the country — Éponine and Azelma are both North American on that
-// rule (margins 0.12 and 0.13), while Fantine's England leads by 0.45 and is named flat.
+// WHERE THE RECORDING AND THE SAMPLE DISAGREE, THE SAMPLE WINS, because the sample is the
+// voice: the recording says who donated it, and the reader never hears that. Caro Davy is
+// the standing case. Her donated recording leads Scottish (0.45 over England's 0.31 — itself
+// too thin to name), while the voice the model makes of her reads English on the sample by a
+// clear 0.23. Calling her Scottish would be the same false promise as the names.
+//
+// AND A CLAIM IS NO FIRMER THAN ITS MARGIN. The classifier emits a score per label, not a
+// distribution, so the top label is worth only the distance to its runner-up: where the two
+// are neighbours within about 0.15 the region is named instead of the country. Michael is
+// the extreme case — us 0.53 against canada 0.52 — and reads North American, while Paul's
+// England leads by 0.45 and is named flat.
 export interface VoiceAsset extends ModelAsset {
   readonly sample: Pinned;
   readonly qualities: VoiceQualities;
@@ -247,118 +268,107 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     licence: "CC-BY-4.0",
     attribution: "Kyutai Pocket TTS SentencePiece tokenizer",
   },
-  voices: {
-    caro_davy: voice({
-      id: "caro_davy",
+  voices: hostedVoices({
+    caro_davy: {
       bytes: 434264,
       sha256: "e2e4c81fee0f07d7cfca6dbd79d1ff37ee9956c59b9f6ddd8042bdc1b45847c2",
-      source: exported("caro_davy", "voice-zero/caro_davy.wav"),
+      from: exportedFrom("voice-zero/caro_davy.wav"),
       licence: "CC0-1.0",
       attribution: "LibriVox reader Caro Davy via Kyutai tts-voices",
       sample: { bytes: 31470, sha256: "e5fcfcb2fb28a1f4de57e07cdeaa9d83378fd086f60fa30379dee3ea56972a9d" },
       qualities: { character: "Rich and unhurried", accent: "English", register: "feminine" },
-    }),
-    charles: voice({
-      id: "charles",
+    },
+    charles: {
       bytes: 512088,
       sha256: "75efd9b32a2e93379bc8f9218c9fdc9ef42b70b151c6dbdd2b26d706151a72ed",
-      source: exported("charles", "vctk/p254_023_enhanced.wav"),
+      from: exportedFrom("vctk/p254_023_enhanced.wav"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p254 via Kyutai tts-voices",
       sample: { bytes: 24608, sha256: "1a4be840adda35adcd42cd711d9c834310d12086213dc00e8825b1a1b233797a" },
       qualities: { character: "Deep and gravelly", accent: "English", register: "masculine" },
-    }),
-    eponine: voice({
-      id: "eponine",
+    },
+    eponine: {
       bytes: 573528,
       sha256: "bb31940f62da665391de139da2e57d740757df26b73d7ec24152c78a3b8ac0c5",
-      source: mirroredVoice("eponine"),
+      from: kyutaiPrompt,
       licence: "CC-BY-4.0",
       attribution: "VCTK p262 via Kyutai tts-voices",
       sample: { bytes: 28241, sha256: "9a1be33f7646d06fc8ac6b75cda3be47cb5a9ff8c1f12bf4d95dc76995532ef8" },
       qualities: { character: "Warm and even", accent: "North American", register: "feminine" },
-    }),
-    eve: voice({
-      id: "eve",
+    },
+    eve: {
       bytes: 540760,
       sha256: "1803aec45779b118b55c314ad222ceb3ab82077b2053f436884b311ad90f8070",
-      source: exported("eve", "vctk/p361_023_enhanced.wav"),
+      from: exportedFrom("vctk/p361_023_enhanced.wav"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p361 via Kyutai tts-voices",
       sample: { bytes: 19496, sha256: "a477da95b725a6a9fbc63c5a1165c268e877f084a45745219e8560ebf0b0d082" },
       qualities: { character: "Bright and quick", accent: "American", register: "feminine" },
-    }),
-    george: voice({
-      id: "george",
+    },
+    george: {
       bytes: 516184,
       sha256: "bbd8d7f9f72fe51c15d645a6324c58911b70f5a107d06d5f7d5398c3440da7ed",
-      source: exported("george", "vctk/p315_023_enhanced.wav"),
+      from: exportedFrom("vctk/p315_023_enhanced.wav"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p315 via Kyutai tts-voices",
       sample: { bytes: 22295, sha256: "6556d80cc5c5dbf906626a7c14b3071f91037173382ac66bb79776bfdbe813a5" },
       qualities: { character: "Husky and quick", accent: "American", register: "masculine" },
-    }),
-    jane: voice({
-      id: "jane",
+    },
+    jane: {
       bytes: 610392,
       sha256: "0db8e9923b75032161bc9aa9ae3860f4df7991679c8af97bfa47e3f1eedd80f1",
-      source: exported("jane", "vctk/p339_023_enhanced.wav"),
+      from: exportedFrom("vctk/p339_023_enhanced.wav"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p339 via Kyutai tts-voices",
       sample: { bytes: 22843, sha256: "0502098acb3c8a157f3f53f631a8e6e60559712e1ac920e8c46e418c99d1f817" },
       qualities: { character: "Crisp and clear", accent: "North American", register: "feminine" },
-    }),
-    javert: voice({
-      id: "javert",
+    },
+    javert: {
       bytes: 512088,
       sha256: "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91",
-      source: mirroredVoice("javert"),
+      from: kyutaiPrompt,
       licence: "CC0-1.0",
       attribution: "voice-donations/Butter via Kyutai tts-voices",
       sample: { bytes: 39672, sha256: "db03a37eedc8df9bc6490f2ea76cf7a405b968c94e0c8b58bac2f2dc7eb5af0f" },
       qualities: { character: "Deep and breathy", accent: "American", register: "masculine" },
-    }),
-    michael: voice({
-      id: "michael",
+    },
+    michael: {
       bytes: 602200,
       sha256: "065367ae2f905a7b98c797b7b5c8b0d2f61b1e5be8a533e2be1a095c22e7ebc2",
-      source: exported("michael", "vctk/p360_023_enhanced.wav"),
+      from: exportedFrom("vctk/p360_023_enhanced.wav"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p360 via Kyutai tts-voices",
       sample: { bytes: 24830, sha256: "f006d36144163b2c24ce47acf759be931e3def32baedae0ca3741fd703769884" },
       qualities: { character: "Low and steady", accent: "North American", register: "masculine" },
-    }),
-    paul: voice({
-      id: "paul",
+    },
+    paul: {
       bytes: 577624,
       sha256: "94b9391c450969a43ab6528083b73c85279e99fd99d0c37c170da078d69961e0",
-      source: exported("paul", "vctk/p259_023_enhanced.wav"),
+      from: exportedFrom("vctk/p259_023_enhanced.wav"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p259 via Kyutai tts-voices",
       sample: { bytes: 24097, sha256: "e1a073089b88574fb96d82f559757cf9ee238a222e0003d956f35525682eea09" },
       qualities: { character: "Dry and even", accent: "English", register: "masculine" },
-    }),
-    peter_yearsley: voice({
-      id: "peter_yearsley",
+    },
+    peter_yearsley: {
       bytes: 307288,
       sha256: "d9bfa20ce5817e83924f03c7de71bcbc88976f8e91421fdaa26968a209da602c",
-      source: exported("peter_yearsley", "voice-zero/peter_yearsley.wav"),
+      from: exportedFrom("voice-zero/peter_yearsley.wav"),
       licence: "CC0-1.0",
       attribution: "LibriVox reader Peter Yearsley via Kyutai tts-voices",
       sample: { bytes: 26271, sha256: "37e1052409f4764990477ac56ab986706a18aa3d94911630e0f76d549c03ccf8" },
       qualities: { character: "Low and lively", accent: "English", register: "masculine" },
-    }),
-    vera: voice({
-      id: "vera",
+    },
+    vera: {
       bytes: 557144,
       sha256: "964319ff19c8f27a167f96e288f032de0d72a98cb14c7842b7f8badda2c251ee",
-      source: exported("vera", "vctk/p229_023_enhanced.wav"),
+      from: exportedFrom("vctk/p229_023_enhanced.wav"),
       licence: "CC-BY-4.0",
       attribution: "VCTK p229 via Kyutai tts-voices",
       sample: { bytes: 22885, sha256: "fa7987240e31992d7acb2c559aaada24e4b15beacceb5d353f62535853001024" },
       qualities: { character: "Smooth and calm", accent: "English", register: "feminine" },
-    }),
-  },
+    },
+  }),
 };
 
 export const allModelAssets = (manifest: ModelAssetManifest): readonly ModelAsset[] => [

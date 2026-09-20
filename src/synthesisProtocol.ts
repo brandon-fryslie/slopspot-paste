@@ -12,10 +12,12 @@
 // A per-string round trip would cost hundreds of messages per paste; one message per paste
 // costs one.
 //
-// WHY THERE IS NO setVoice. The manifest hosts six voices at half a megabyte each; the worker
-// loads all of them beside the weights, so a synthesize request names its voice as a value
-// and there is no "voice not loaded" state to reject [LAW:dataflow-not-control-flow]. Cost,
-// stated once: 3.3 MB on top of the 236 MB weights, downloaded once per device.
+// WHY THERE IS NO setVoice. The worker loads EVERY voice the manifest hosts beside the
+// weights, so a synthesize request names its voice as a value and there is no "voice not
+// loaded" state to reject [LAW:dataflow-not-control-flow]. Cost, stated once: each voice is
+// a third to two thirds of a megabyte, and the eleven hosted today come to 5.7 MB on top of
+// the 236 MB weights, downloaded once per device. That sum grows with the catalogue, which
+// is what slopspot-voices-9p4.ehv exists to stop — loading a voice when it is first needed.
 //
 // WHY `clone` IS LEGAL IN EVERY PHASE. A cloned voice (clonedVoice.ts) is samples the page
 // holds, not an asset the worker fetches: the page tells the worker each clone it keeps, and

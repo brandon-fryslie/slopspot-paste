@@ -24,9 +24,7 @@ import { MODEL_ASSETS, VOICE_IDS, shardPlan } from "../src/modelAssets";
 import { previewText } from "../src/voiceChoice";
 import { SAMPLE_PREFIX, sampleFile } from "../src/voiceSample";
 import { mirror, readSource } from "./modelAssetMirror";
-
-// The pocket-tts the samples are rendered with: the version the pinned bytes came from.
-const POCKET_TTS = "pocket-tts==3.1.0";
+import { POCKET_TTS } from "./pocketTts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");

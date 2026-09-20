@@ -96,7 +96,7 @@ console.log("the rule: a row per speaker, four voices");
   // The system is a SPEAKER, so it is a row the reader picks — a Claude Code transcript is
   // full of words the harness wrote and the reader never typed (parsers/jsonl.ts speakerOf).
   assert("the system's row speaks for the system, in the voice the reader gave it", map.system === "vera" && map.system !== map.user && map.system !== map.assistant);
-  assert("the defaults: Alba for the reader, Javert for Claude and the narrator, Eponine for the system", DEFAULT_VOICES.user === "charles" && DEFAULT_VOICES.assistant === "javert" && DEFAULT_VOICES.narrator === "javert" && DEFAULT_VOICES.system === "eponine");
+  assert("the defaults: Charles for the reader, Javert for Claude and the narrator, Eponine for the system", DEFAULT_VOICES.user === "charles" && DEFAULT_VOICES.assistant === "javert" && DEFAULT_VOICES.narrator === "javert" && DEFAULT_VOICES.system === "eponine");
   assert("the same pick is the same pick; a pick that differs in one role is not", samePick(CHOSEN, { ...CHOSEN }) && !samePick(CHOSEN, { ...CHOSEN, user: "charles" }));
 }
 
@@ -135,9 +135,9 @@ console.log("what each voice is like, in the words a reader picks by");
   assert("every hosted voice is described: three parts, none of them empty", described.every((line) => line.split(" · ").length === 3 && line.split(" · ").every((part) => part.trim().length > 0)));
   assert("no two voices read alike: the description is what tells them apart", new Set(described).size === VOICE_IDS.length);
   assert("the register is one of the two words a row can be", VOICE_IDS.every((id) => ["masculine", "feminine"].includes(MODEL_ASSETS.voices[id].qualities.register)));
-  // The names are Kyutai's, from Les Misérables, and they are not the voices: a reader who
-  // goes by the name alone picks a man for Alba's woman's name. The description is the fix,
-  // so it must not merely repeat the name.
+  // A name is not a voice: this catalogue once carried Alba, a woman's name over a man's
+  // voice, and a reader going by the name alone would have picked wrong. The description is
+  // the fix, so it must not merely repeat the name.
   assert("a description never leans on the name", VOICE_IDS.every((id) => !voiceDescription(id, []).toLowerCase().includes(id)));
 }
 

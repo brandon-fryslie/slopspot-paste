@@ -19,8 +19,8 @@
 // participant, so it speaks with the assistant's voice. The rule is `voiceMapOf`, the one
 // derivation of the map from the pick [LAW:one-source-of-truth].
 //
-// A VALUE, NOT AN ASSET. All six voices are loaded beside the weights, so a pick downloads
-// nothing and changes no asset: the map is data the performer reads, and the rendition
+// A VALUE, NOT AN ASSET. Every hosted voice is loaded beside the weights, so a pick
+// downloads nothing and changes no asset: the map is data the performer reads, and the rendition
 // hash already names the voice each unit is spoken in. Cost, stated once: a preview is one
 // short generation on the GPU.
 //
@@ -142,9 +142,10 @@ export const voiceName = (voice: VoiceKey, clones: ReadonlyArray<ClonedVoice>): 
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(" ");
 
-// What a voice is like, in one line beside its name — because the name says nothing, and
-// Kyutai's Les Misérables names say something false: Alba is a man's voice. The three
-// qualities are the manifest's [LAW:one-source-of-truth]; this is only how they read.
+// What a voice is like, in one line beside its name — because the name says nothing, and a
+// name can say something false: the catalogue used to host Alba, a woman's name over a
+// man's voice, and this line is what makes that unnecessary to guess at. The three qualities
+// are the manifest's [LAW:one-source-of-truth]; this is only how they read.
 export const voiceDescription = (voice: VoiceKey, clones: ReadonlyArray<ClonedVoice>): string => {
   if (isClonedKey(voice)) return `Your recording · ${Math.round(cloneOf(voice, clones).samples.length / SAMPLE_RATE)} s · kept on this device`;
   const { character, accent, register } = MODEL_ASSETS.voices[voice].qualities;
