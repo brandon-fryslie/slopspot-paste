@@ -19,9 +19,9 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXPORTED_VOICE_DIR, MODEL_ASSETS, SHA_PREFIX_CHARS, VOICE_IDS, shardPlan } from "../src/modelAssets";
+import { EXPORTED_VOICE_DIR, MODEL_ASSETS, VOICE_IDS, exportedVoiceFile, shardPlan } from "../src/modelAssets";
 import { mirror, readSource } from "./modelAssetMirror";
 import { POCKET_TTS } from "./pocketTts";
 
@@ -30,6 +30,9 @@ const repoRoot = join(here, "..");
 const publicDir = join(repoRoot, "public");
 const exportsDir = join(repoRoot, EXPORTED_VOICE_DIR);
 const work = mkdtempSync(join(tmpdir(), "voice-prompts-"));
+// [LAW:no-silent-failure] leaves the failure alone and takes the scratch with it: a failed
+// run would otherwise strand a 236 MB copy of the weights in $TMPDIR, once per attempt.
+process.on("exit", () => rmSync(work, { recursive: true, force: true }));
 mkdirSync(exportsDir, { recursive: true });
 
 const fetchTo = async (url: string, path: string): Promise<string> => {
@@ -69,20 +72,28 @@ for (const { id, asset, origin } of exports) {
   execFileSync("uv", ["run", "--with", POCKET_TTS, "--with", "pyyaml", "python", join(here, "export-voice-prompt.py"), weights.release, weightsFile, recording, upstream, out], { stdio: ["ignore", "inherit", "inherit"] });
   const bytes = readFileSync(out);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  const name = `${asset.name}-${sha256.slice(0, SHA_PREFIX_CHARS)}.safetensors`;
+  // [LAW:one-source-of-truth] The name the build will LOOK for, asked of the same function
+  // that looks for it — not rebuilt to the same shape here, where it could drift into a
+  // file every later build reports missing and this script cheerfully remakes wrong.
+  const name = basename(exportedVoiceFile({ ...asset, sha256 }));
   made.set(name, bytes);
   console.log(`export-voice-prompts: ${id} — ${name}, ${bytes.byteLength} bytes`);
   pinned.push(`  ${id}  bytes: ${bytes.byteLength}, sha256: "${sha256}"`);
 }
 
+// The new bytes land BEFORE anything is swept, so at no instant does the directory hold
+// fewer voices than the manifest pins — a sweep that dies partway then costs a stale file,
+// never a missing one, and a stale file is what the next run removes.
+for (const [name, bytes] of made) writeFileSync(join(exportsDir, name), bytes);
+
 // [LAW:carrying-cost] Nothing stays in the directory but what was just exported: a voice's
 // old bytes, and the export of a voice no longer hosted, would otherwise ride into every
 // later deploy — and these are the only model bytes the repo carries, so nobody would see.
+// `recursive` because a stray directory here (a .DS_Store folder, an editor's scratch) must
+// go the same way rather than throwing EISDIR with half the sweep done.
 for (const stale of readdirSync(exportsDir)) {
   if (made.has(stale)) continue;
-  rmSync(join(exportsDir, stale));
+  rmSync(join(exportsDir, stale), { recursive: true });
   console.log(`export-voice-prompts: removed stale ${stale}`);
 }
-for (const [name, bytes] of made) writeFileSync(join(exportsDir, name), bytes);
-rmSync(work, { recursive: true, force: true });
 console.log(`export-voice-prompts: pin these in src/modelAssets.ts:\n${pinned.join("\n")}`);

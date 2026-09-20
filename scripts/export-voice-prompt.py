@@ -84,6 +84,12 @@ for name, want in sorted(theirs.items()):
         if not bool((got == want).all()):
             raise SystemExit(f"export-voice-prompt: {name} is {got.tolist()} here and {want.tolist()} upstream")
         continue
+    # Identical is identical, and cosine cannot say so for a pair of zero vectors: it divides
+    # by a clamped norm and answers 0.0, which would fail the bar below and blame the
+    # recording for two tensors that match bit for bit [LAW:no-silent-failure] — a loud
+    # failure that lies is worse than a quiet one.
+    if torch.equal(got, want):
+        continue
     cosine = float(torch.nn.functional.cosine_similarity(got.float().flatten(), want.float().flatten(), dim=0))
     if cosine < AGREEMENT:
         raise SystemExit(f"export-voice-prompt: {name} agrees with upstream to only {cosine:.6f} — this is not the voice upstream published")

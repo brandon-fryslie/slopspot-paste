@@ -436,8 +436,14 @@ console.log("mirror:");
 
   await mirror(dir, source(synthData), synth);
   writeFileSync(join(dir, `${MODEL_ASSET_PREFIX}weights-000000000000.part0`), new Uint8Array(3));
+  const kept = [synth, exportedAsset]
+    .flatMap((asset) => shardPlan(asset).map((s) => s.url.slice(MODEL_ASSET_PREFIX.length)))
+    .sort()
+    .join(",");
   const removed = pruneStaleParts(dir, [synth, exportedAsset]);
-  assert("prune removes only parts no current plan names", removed.join() === `${MODEL_ASSET_PREFIX}weights-000000000000.part0`);
+  // Both halves: what it says it removed, AND what is actually left. Without the second, an
+  // implementation that reported one stale file while deleting the live ones would pass.
+  assert("prune removes only parts no current plan names", removed.join() === `${MODEL_ASSET_PREFIX}weights-000000000000.part0` && listed() === kept);
   rmSync(dir, { recursive: true });
   rmSync(repo, { recursive: true });
 }
