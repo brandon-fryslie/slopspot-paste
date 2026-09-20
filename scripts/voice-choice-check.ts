@@ -56,7 +56,7 @@ console.log("the pick's round trip");
 console.log("a stored value this build did not write reads as the default, role by role");
 {
   // A shape that names no role at all: every role reads as its default.
-  const garbage = ["not json", '"charles"', "[]", "{}", '{"user":"charles"}', "null"];
+  const garbage = ["not json", '"charles"', "[]", "{}", '{"user":"vera"}', "null"];
   for (const raw of garbage) {
     const store = memoryPreferences();
     store.setItem(PICK_KEY, raw);
@@ -96,7 +96,7 @@ console.log("the rule: a row per speaker, four voices");
   // The system is a SPEAKER, so it is a row the reader picks — a Claude Code transcript is
   // full of words the harness wrote and the reader never typed (parsers/jsonl.ts speakerOf).
   assert("the system's row speaks for the system, in the voice the reader gave it", map.system === "vera" && map.system !== map.user && map.system !== map.assistant);
-  assert("the defaults: Charles for the reader, Javert for Claude and the narrator, Eponine for the system", DEFAULT_VOICES.user === "charles" && DEFAULT_VOICES.assistant === "javert" && DEFAULT_VOICES.narrator === "javert" && DEFAULT_VOICES.system === "eponine");
+  assert("the defaults: Vera for the reader, Javert for Claude and the narrator, Eponine for the system", DEFAULT_VOICES.user === "vera" && DEFAULT_VOICES.assistant === "javert" && DEFAULT_VOICES.narrator === "javert" && DEFAULT_VOICES.system === "eponine");
   assert("the same pick is the same pick; a pick that differs in one role is not", samePick(CHOSEN, { ...CHOSEN }) && !samePick(CHOSEN, { ...CHOSEN, user: "charles" }));
 }
 

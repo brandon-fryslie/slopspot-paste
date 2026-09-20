@@ -11,9 +11,10 @@
 //
 // [LAW:one-source-of-truth] Nothing here names a voice, a recording or an upstream state:
 // the manifest does, and this walks it. The output file is named from the hash of the bytes
-// just produced, which is also how `exportedVoiceFile` addresses them — so an export whose
-// bytes have changed lands at a name the manifest does not point at, and the next build
-// says so rather than publishing bytes nobody pinned.
+// just produced, asked of the same `exportedVoiceFile` the build reads them back with — so an
+// export whose bytes have changed lands at a name the manifest does not point at. That is
+// SAID and fails the run, and the file the manifest still pins is left where it is, so a
+// verification run can report drift without making the repo unbuildable.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,7 +22,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXPORTED_VOICE_DIR, MODEL_ASSETS, VOICE_IDS, exportedVoiceFile, shardPlan } from "../src/modelAssets";
+import { EXPORTED_VOICE_DIR, MODEL_ASSETS, SHA_PREFIX_CHARS, VOICE_IDS, exportedVoiceFile, shardPlan } from "../src/modelAssets";
 import { mirror, readSource } from "./modelAssetMirror";
 import { POCKET_TTS } from "./pocketTts";
 
@@ -63,6 +64,7 @@ const exports = VOICE_IDS.flatMap((id) => {
 // directory as it was rather than half-remade.
 const made = new Map<string, Uint8Array>();
 const pinned: string[] = [];
+const drifted: string[] = [];
 for (const { id, asset, origin } of exports) {
   console.log(`export-voice-prompts: ${id} — from ${origin.recording}…`);
   // pocket-tts reads the container by extension, so the copy keeps the recording's own.
@@ -79,6 +81,7 @@ for (const { id, asset, origin } of exports) {
   made.set(name, bytes);
   console.log(`export-voice-prompts: ${id} — ${name}, ${bytes.byteLength} bytes`);
   pinned.push(`  ${id}  bytes: ${bytes.byteLength}, sha256: "${sha256}"`);
+  if (sha256 !== asset.sha256) drifted.push(`  ${id}  manifest ${asset.sha256.slice(0, SHA_PREFIX_CHARS)} → exported ${sha256.slice(0, SHA_PREFIX_CHARS)}`);
 }
 
 // The new bytes land BEFORE anything is swept, so at no instant does the directory hold
@@ -86,14 +89,33 @@ for (const { id, asset, origin } of exports) {
 // never a missing one, and a stale file is what the next run removes.
 for (const [name, bytes] of made) writeFileSync(join(exportsDir, name), bytes);
 
-// [LAW:carrying-cost] Nothing stays in the directory but what was just exported: a voice's
-// old bytes, and the export of a voice no longer hosted, would otherwise ride into every
-// later deploy — and these are the only model bytes the repo carries, so nobody would see.
-// `recursive` because a stray directory here (a .DS_Store folder, an editor's scratch) must
-// go the same way rather than throwing EISDIR with half the sweep done.
+// [LAW:carrying-cost] Nothing stays in the directory but what was just exported OR what the
+// manifest currently pins: a voice's old bytes, and the export of a voice no longer hosted,
+// would otherwise ride into every later deploy — and these are the only model bytes the repo
+// carries, so nobody would see.
+//
+// WHY THE PINNED FILES ARE KEPT EVEN WHEN THIS RUN DID NOT MAKE THEM. The header invites
+// running this to prove the checked-in bytes still match the recordings, and an export is
+// verified to cosine 0.999, not to the bit — so a different torch, BLAS or device can produce
+// a valid export with a different hash. Sweeping on that would delete the file the manifest
+// names and break every build, with re-running this script (the remedy the build's own error
+// suggests) regenerating the same wrong name forever. Keeping both leaves the repo buildable
+// and the drift visible, and the next run sweeps the old file once the manifest is re-pinned.
+// `recursive` because a stray directory here must go the same way rather than throwing EISDIR
+// with half the sweep done.
+const keep = new Set([...made.keys(), ...exports.map(({ asset }) => basename(exportedVoiceFile(asset)))]);
 for (const stale of readdirSync(exportsDir)) {
-  if (made.has(stale)) continue;
+  if (keep.has(stale)) continue;
   rmSync(join(exportsDir, stale), { recursive: true });
   console.log(`export-voice-prompts: removed stale ${stale}`);
 }
 console.log(`export-voice-prompts: pin these in src/modelAssets.ts:\n${pinned.join("\n")}`);
+
+// [LAW:no-silent-failure] An export that does not hash to what the manifest pins is the whole
+// point of a verification run, so it is said and it fails the run — never printed among the
+// pins as though nothing had happened. Adding a voice lands here too, which is right: its
+// entry does not yet name these bytes.
+if (drifted.length > 0) {
+  console.error(`export-voice-prompts: ${drifted.length} export(s) do not match the manifest's pins — re-pin them, or find out why the bytes moved:\n${drifted.join("\n")}`);
+  process.exitCode = 1;
+}

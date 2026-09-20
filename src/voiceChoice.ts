@@ -48,12 +48,14 @@ export const ROLE_LABELS: Readonly<Record<PickedVoice, string>> = { user: "You",
 // that never picked hears Claude and the harness exactly as it heard them before
 // [LAW:no-ambient-temporal-coupling].
 //
-// The reader's own voice had to move: it was Alba, and Alba did not survive the audition.
-// Charles takes it as the one shipped voice marked "great" rather than merely kept, and as
-// a masculine voice like Alba, so the change of default is a change of quality and not of
-// character. [LAW:one-source-of-truth] this constant is the whole definition of each role's
-// voice, with no second copy to drift from it.
-export const DEFAULT_PICK: VoicePick = { user: "charles", assistant: "javert", system: "eponine" };
+// The reader's own voice had to move, because it was Alba and Alba did not survive the
+// audition. Brandon ruled it to a feminine voice rather than to the nearest replacement for
+// Alba, and Vera is the one: the smoothest voice in the catalogue by shimmer, and English
+// where Éponine is North American and Javert American — so the three voices a reader meets
+// before choosing anything are three distinguishable people, which is the whole point of
+// having more than one. [LAW:one-source-of-truth] this constant is the whole definition of
+// each role's voice, with no second copy to drift from it.
+export const DEFAULT_PICK: VoicePick = { user: "vera", assistant: "javert", system: "eponine" };
 
 // The rule: the map the script is derived with, from the pick.
 export const voiceMapOf = (pick: VoicePick): VoiceMap => ({

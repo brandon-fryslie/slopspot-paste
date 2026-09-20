@@ -99,6 +99,14 @@ for (const asset of exportedVoices) {
   assert(`${asset.name}: ${exportedVoiceFile(asset)} holds the ${asset.bytes} bytes the manifest pins`, bytes !== null && bytes.byteLength === asset.bytes && createHash("sha256").update(bytes).digest("hex") === asset.sha256);
 }
 assert("every exported voice is one part, so its repo file is the whole asset", exportedVoices.every((asset) => shardPlan(asset).length === 1));
+// And the other direction: nothing ELSE is in there. The sweep in export-voice-prompts.ts is
+// the only thing keeping a superseded export from riding into every later deploy, and these
+// are the only model bytes the repo carries, so a stray one would go unseen without this.
+assert(
+  `${EXPORTED_VOICE_DIR} holds the ${exportedVoices.length} pinned exports and nothing else`,
+  readdirSync(new URL(`../${EXPORTED_VOICE_DIR}/`, import.meta.url)).sort().join(",") ===
+    exportedVoices.map((asset) => exportedVoiceFile(asset).slice(EXPORTED_VOICE_DIR.length + 1)).sort().join(","),
+);
 
 for (const asset of assets) {
   const plan = shardPlan(asset);
