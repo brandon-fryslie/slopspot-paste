@@ -12,15 +12,51 @@
 // that does not match aborts the build, named by asset. Publishing unverified weights would
 // ship a model nobody measured.
 //
-// [LAW:effects-at-boundaries] The directory and the fetch are parameters, so the check drives
-// this against a temp directory and a stub fetch with no mocks of anything else.
+// [LAW:effects-at-boundaries] The directory and the byte reader are parameters, so the check
+// drives this against a temp directory and a stub reader with no mocks of anything else.
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { MODEL_ASSET_PREFIX, shardPlan, type ModelAsset } from "../src/modelAssets";
+import { MODEL_ASSET_PREFIX, exportedVoiceFile, shardPlan, type ModelAsset } from "../src/modelAssets";
 
 export type SourceFetch = (url: string) => Promise<Response>;
+
+// [LAW:types-are-the-program] How the build gets an asset's bytes: one function over the
+// whole asset. `mirror` takes this rather than a fetch, so it never learns that an origin
+// has kinds — it asks for bytes and verifies them, exactly as when every asset was a URL.
+export type ReadSource = (asset: ModelAsset) => Promise<Uint8Array>;
+
+const reason = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+// [LAW:single-enforcer] The ONE place AssetOrigin's two arms are told apart, and the only
+// code in the build that knows an exported voice's bytes are checked in rather than
+// fetched. `repoRoot` is the directory `exportedVoiceFile` paths are relative to.
+//
+// [LAW:no-silent-failure] Either arm failing is thrown, named by asset and by the place its
+// bytes were looked for — a missing export says how to make it again rather than leaving a
+// build to fail later on a hash nobody can explain.
+export const readSource =
+  (repoRoot: string, fetchSource: SourceFetch): ReadSource =>
+  async (asset): Promise<Uint8Array> => {
+    const origin = asset.source;
+    switch (origin.kind) {
+      case "mirrored":
+        try {
+          const response = await fetchSource(origin.url);
+          if (!response.ok) throw new Error(`responded ${response.status}`);
+          return new Uint8Array(await response.arrayBuffer());
+        } catch (e) {
+          throw new Error(`${asset.name}: ${origin.url} — ${reason(e)}`);
+        }
+      case "exported":
+        try {
+          return readFileSync(join(repoRoot, exportedVoiceFile(asset)));
+        } catch (e) {
+          throw new Error(`${asset.name}: ${exportedVoiceFile(asset)} — ${reason(e)}; remake it with scripts/export-voice-prompts.ts`);
+        }
+    }
+  };
 
 const sha256 = (chunks: readonly Uint8Array[]): string => {
   const hash = createHash("sha256");
@@ -36,18 +72,11 @@ export const mirrorIsCorrect = (publicDir: string, asset: ModelAsset): boolean =
   return sized && sha256(paths.map((p) => readFileSync(p.path))) === asset.sha256;
 };
 
-export type MirrorResult = { readonly asset: ModelAsset; readonly action: "verified" | "fetched" };
+export type MirrorResult = { readonly asset: ModelAsset; readonly action: "verified" | "written" };
 
-export const mirror = async (publicDir: string, fetchSource: SourceFetch, asset: ModelAsset): Promise<MirrorResult> => {
+export const mirror = async (publicDir: string, read: ReadSource, asset: ModelAsset): Promise<MirrorResult> => {
   if (mirrorIsCorrect(publicDir, asset)) return { asset, action: "verified" };
-  let data: Uint8Array;
-  try {
-    const response = await fetchSource(asset.source);
-    if (!response.ok) throw new Error(`responded ${response.status}`);
-    data = new Uint8Array(await response.arrayBuffer());
-  } catch (e) {
-    throw new Error(`${asset.name}: ${asset.source} — ${e instanceof Error ? e.message : String(e)}`);
-  }
+  const data = await read(asset);
   if (data.byteLength !== asset.bytes) {
     throw new Error(`${asset.name}: expected ${asset.bytes} bytes, received ${data.byteLength}`);
   }
@@ -60,7 +89,7 @@ export const mirror = async (publicDir: string, fetchSource: SourceFetch, asset:
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, data.subarray(shard.start, shard.end));
   }
-  return { asset, action: "fetched" };
+  return { asset, action: "written" };
 };
 
 // [LAW:carrying-cost] A new model build is a new file name; the old parts would otherwise

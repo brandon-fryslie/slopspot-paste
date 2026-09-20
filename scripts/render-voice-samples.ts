@@ -23,13 +23,13 @@ import { fileURLToPath } from "node:url";
 import { MODEL_ASSETS, VOICE_IDS, shardPlan } from "../src/modelAssets";
 import { previewText } from "../src/voiceChoice";
 import { SAMPLE_PREFIX, sampleFile } from "../src/voiceSample";
-import { mirror } from "./modelAssetMirror";
-
-// The pocket-tts the samples are rendered with: the version the pinned bytes came from.
-const POCKET_TTS = "pocket-tts==3.1.0";
+import { mirror, readSource } from "./modelAssetMirror";
+import { POCKET_TTS } from "./pocketTts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const publicDir = join(here, "..", "public");
+const repoRoot = join(here, "..");
+const publicDir = join(repoRoot, "public");
+const read = readSource(repoRoot, fetch);
 const samplesDir = join(publicDir, SAMPLE_PREFIX);
 const work = mkdtempSync(join(tmpdir(), "voice-samples-"));
 mkdirSync(samplesDir, { recursive: true });
@@ -43,7 +43,7 @@ for (const id of VOICE_IDS) {
   const [shard, ...rest] = shardPlan(asset);
   if (shard === undefined || rest.length !== 0) throw new Error(`render-voice-samples: ${id}'s embedding is not one part`);
   // The very bytes the manifest names, not whatever file sits at that name.
-  await mirror(publicDir, fetch, asset);
+  await mirror(publicDir, read, asset);
   const embedding = join(publicDir, shard.url);
   const wav = join(work, `${id}.wav`);
   const m4a = join(work, `${id}.m4a`);

@@ -19,8 +19,8 @@
 // participant, so it speaks with the assistant's voice. The rule is `voiceMapOf`, the one
 // derivation of the map from the pick [LAW:one-source-of-truth].
 //
-// A VALUE, NOT AN ASSET. All six voices are loaded beside the weights, so a pick downloads
-// nothing and changes no asset: the map is data the performer reads, and the rendition
+// A VALUE, NOT AN ASSET. Every hosted voice is loaded beside the weights, so a pick
+// downloads nothing and changes no asset: the map is data the performer reads, and the rendition
 // hash already names the voice each unit is spoken in. Cost, stated once: a preview is one
 // short generation on the GPU.
 //
@@ -42,12 +42,20 @@ export type VoicePick = Readonly<Record<PickedVoice, VoiceKey>>;
 // the harness by what the page already calls it in every bubble it speaks from.
 export const ROLE_LABELS: Readonly<Record<PickedVoice, string>> = { user: "You", assistant: "Claude", system: "System" };
 
-// Until the reader picks, the q35.1 spike's word-accuracy ranking chooses: the voices
-// Whisper transcribed with zero errors take the roles that say the most. The system's
-// default is the voice it always spoke with before it had a row, so a device that never
-// picks hears exactly what it heard before [LAW:one-source-of-truth]: this constant is the
-// whole definition of "the system's voice", with no second copy to drift from it.
-export const DEFAULT_PICK: VoicePick = { user: "alba", assistant: "javert", system: "eponine" };
+// Until the reader picks, these three speak. Chosen by ear, from the twenty-two voice
+// audition (slopspot-voices-9p4.3d3): Javert and Éponine keep the roles they already had —
+// both came back a clear yes, Javert with the warmest note of the whole board — so a device
+// that never picked hears Claude and the harness exactly as it heard them before
+// [LAW:no-ambient-temporal-coupling].
+//
+// The reader's own voice had to move, because it was Alba and Alba did not survive the
+// audition. Brandon ruled it to a feminine voice rather than to the nearest replacement for
+// Alba, and Vera is the one: the smoothest voice in the catalogue by shimmer, and English
+// where Éponine is North American and Javert American — so the three voices a reader meets
+// before choosing anything are three distinguishable people, which is the whole point of
+// having more than one. [LAW:one-source-of-truth] this constant is the whole definition of
+// each role's voice, with no second copy to drift from it.
+export const DEFAULT_PICK: VoicePick = { user: "vera", assistant: "javert", system: "eponine" };
 
 // The rule: the map the script is derived with, from the pick.
 export const voiceMapOf = (pick: VoicePick): VoiceMap => ({
@@ -123,14 +131,23 @@ export const cloneOf = (voice: ClonedVoiceKey, clones: ReadonlyArray<ClonedVoice
   return clone;
 };
 
-// Each hosted voice is named for a person, the id being the name in lower case; a clone is
-// named by the reader who made it.
+// Each hosted voice is named for a person and its id is that name written as a slug, so the
+// name is read back off the id rather than stored twice [LAW:one-source-of-truth]: each
+// underscore-separated part capitalised, which is "Javert" for the donated voices and
+// "Peter Yearsley" for the LibriVox readers who go by both their names. A clone is named by
+// the reader who made it.
 export const voiceName = (voice: VoiceKey, clones: ReadonlyArray<ClonedVoice>): string =>
-  isClonedKey(voice) ? cloneOf(voice, clones).name : voice.charAt(0).toUpperCase() + voice.slice(1);
+  isClonedKey(voice)
+    ? cloneOf(voice, clones).name
+    : voice
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
 
-// What a voice is like, in one line beside its name — because the name says nothing, and
-// Kyutai's Les Misérables names say something false: Alba is a man's voice. The three
-// qualities are the manifest's [LAW:one-source-of-truth]; this is only how they read.
+// What a voice is like, in one line beside its name — because the name says nothing, and a
+// name can say something false: the catalogue used to host Alba, a woman's name over a
+// man's voice, and this line is what makes that unnecessary to guess at. The three qualities
+// are the manifest's [LAW:one-source-of-truth]; this is only how they read.
 export const voiceDescription = (voice: VoiceKey, clones: ReadonlyArray<ClonedVoice>): string => {
   if (isClonedKey(voice)) return `Your recording · ${Math.round(cloneOf(voice, clones).samples.length / SAMPLE_RATE)} s · kept on this device`;
   const { character, accent, register } = MODEL_ASSETS.voices[voice].qualities;

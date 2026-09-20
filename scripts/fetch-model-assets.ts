@@ -7,14 +7,17 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MODEL_ASSETS, allModelAssets } from "../src/modelAssets";
-import { mirror, pruneStaleParts } from "./modelAssetMirror";
+import { MODEL_ASSETS, allModelAssets, exportedVoiceFile } from "../src/modelAssets";
+import { mirror, pruneStaleParts, readSource } from "./modelAssetMirror";
 
-const publicDir = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const publicDir = join(repoRoot, "public");
 const assets = allModelAssets(MODEL_ASSETS);
+const read = readSource(repoRoot, fetch);
 
 for (const asset of assets) {
-  const { action } = await mirror(publicDir, fetch, asset);
-  console.log(`fetch-model-assets: ${asset.name} — ${action === "verified" ? "mirror verified, nothing to do" : `fetched ${asset.bytes} bytes from ${asset.source}, verified and mirrored`}`);
+  const { action } = await mirror(publicDir, read, asset);
+  const from = asset.source.kind === "mirrored" ? asset.source.url : exportedVoiceFile(asset);
+  console.log(`fetch-model-assets: ${asset.name} — ${action === "verified" ? "mirror verified, nothing to do" : `took ${asset.bytes} bytes from ${from}, verified and mirrored`}`);
 }
 for (const url of pruneStaleParts(publicDir, assets)) console.log(`fetch-model-assets: removed stale ${url}`);
