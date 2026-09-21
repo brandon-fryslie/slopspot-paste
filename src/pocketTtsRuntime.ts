@@ -53,7 +53,7 @@ import { safetensors } from "@jax-js/loaders";
 import { fromBinary } from "@bufbuild/protobuf";
 import { ModelProtoSchema, ModelProto_SentencePiece_Type, TrainerSpec_ModelType } from "sentencepiece-buf/model";
 import { toFloat, type ClonedVoice, type VoiceKey } from "./clonedVoice";
-import { loadAssets, type AssetIo, type AssetProgress, type FetchLike } from "./modelAssetLoader";
+import { loadAssets, type AssetIo, type AssetProgress, type FetchLike, type LoadedAsset } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { UnitText } from "./speechScript";
 import type { GeneratedFrame, GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
@@ -259,10 +259,53 @@ interface Hydrated extends Tokenizer {
   readonly voices: Map<VoiceKey, np.Array>;
 }
 
-const hydrate = (bytesOf: (asset: ModelAsset) => Uint8Array<ArrayBuffer>): Hydrated => ({
-  ...parseTokenizer(bytesOf(MODEL_ASSETS.tokenizer)),
-  model: fromSafetensors(safetensors.parse(bytesOf(MODEL_ASSETS.weights)), WEIGHT_DTYPE),
-  voices: new Map(VOICE_IDS.map((id) => [id, voicePrompt(id, bytesOf(MODEL_ASSETS.voices[id]))])),
+// [LAW:parse-dont-validate] loadAssets returns one LoadedAsset per asset it was given, as
+// the same asset objects; a miss here is a broken loader, not a case to skip.
+const bytesOf = (loaded: readonly LoadedAsset[]) => (asset: ModelAsset): Uint8Array<ArrayBuffer> => {
+  const found = loaded.find((l) => l.asset === asset);
+  if (found === undefined) throw new Error(`loader returned no bytes for ${asset.name}`);
+  return found.data;
+};
+
+// WHY THIS IS ITS OWN FUNCTION, AND MUST STAY ONE. Hydration is the last moment the 236 MB
+// of weights are needed: what crosses out of here is `Hydrated`, which holds device arrays
+// and no bytes at all. That boundary is the whole point — a closure keeps its ENTIRE
+// defining scope alive, so a `LoadedModel` built in the same frame as the loaded bytes pins
+// all 241 MB of them for as long as a reader can speak, which measured as 556 MB of resident
+// renderer memory against 185 MB with the frames apart (slopspot-read-along-i9a). Inlining
+// this into its caller, or having it return the model rather than `Hydrated`, puts the bytes
+// and the model's closures back in one frame and silently restores the leak
+// [LAW:decomposition] [LAW:types-are-the-program].
+const hydrate = (loaded: readonly LoadedAsset[]): Hydrated => {
+  const bytes = bytesOf(loaded);
+  return {
+    ...parseTokenizer(bytes(MODEL_ASSETS.tokenizer)),
+    model: fromSafetensors(safetensors.parse(bytes(MODEL_ASSETS.weights)), WEIGHT_DTYPE),
+    voices: new Map(VOICE_IDS.map((id) => [id, voicePrompt(id, bytes(MODEL_ASSETS.voices[id]))])),
+  };
+};
+
+// The model the handler speaks with, built from `Hydrated` ALONE — see above: this
+// signature is what keeps the loaded bytes out of the frame every one of these closures
+// carries.
+const modelOf = (hydrated: Hydrated): LoadedModel => ({
+  backend: "webgpu",
+  countTokens: (text) => hydrated.encode(text).length,
+  generate: (unit, voice) => generate(hydrated, unit, voice),
+  addVoice: (voice) => {
+    // A clone told again replaces its prompt. Derived BEFORE the old one is released:
+    // an encode that throws must leave the prompt the model already holds intact, or
+    // the map keeps a freed tensor under a key the handler still counts as known and
+    // the next generation reads disposed memory [LAW:no-silent-failure].
+    const prompt = clonePrompt(hydrated.model, voice);
+    hydrated.voices.get(voice.key)?.dispose();
+    hydrated.voices.set(voice.key, prompt);
+  },
+  removeVoice: (voice) => {
+    hydrated.voices.get(voice)?.dispose();
+    hydrated.voices.delete(voice);
+  },
+  dispose: () => tree.dispose([hydrated.model, [...hydrated.voices.values()]]),
 });
 
 // [LAW:parse-dont-validate] The prompt of a voice the model holds; a miss is the handler's
@@ -414,33 +457,6 @@ export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
     if (!outcome.ok) return { ok: false, failure: outcome.failure };
     // [LAW:no-silent-failure] A refused prune costs quota, never the voice: said, and loaded past.
     if (outcome.pruning.kind === "refused") console.warn("listen: an earlier model build's copies could not be cleared; the voice loads without clearing them", outcome.pruning.message);
-    // [LAW:parse-dont-validate] loadAssets returns one LoadedAsset per asset it was given,
-    // as the same asset objects; a miss here is a broken loader, not a case to skip.
-    const bytesOf = (asset: ModelAsset): Uint8Array<ArrayBuffer> => {
-      const loaded = outcome.loaded.find((l) => l.asset === asset);
-      if (loaded === undefined) throw new Error(`loader returned no bytes for ${asset.name}`);
-      return loaded.data;
-    };
-    const hydrated = hydrate(bytesOf);
-    const model: LoadedModel = {
-      backend: "webgpu",
-      countTokens: (text) => hydrated.encode(text).length,
-      generate: (unit, voice) => generate(hydrated, unit, voice),
-      addVoice: (voice) => {
-        // A clone told again replaces its prompt. Derived BEFORE the old one is released:
-        // an encode that throws must leave the prompt the model already holds intact, or
-        // the map keeps a freed tensor under a key the handler still counts as known and
-        // the next generation reads disposed memory [LAW:no-silent-failure].
-        const prompt = clonePrompt(hydrated.model, voice);
-        hydrated.voices.get(voice.key)?.dispose();
-        hydrated.voices.set(voice.key, prompt);
-      },
-      removeVoice: (voice) => {
-        hydrated.voices.get(voice)?.dispose();
-        hydrated.voices.delete(voice);
-      },
-      dispose: () => tree.dispose([hydrated.model, [...hydrated.voices.values()]]),
-    };
-    return { ok: true, model };
+    return { ok: true, model: modelOf(hydrate(outcome.loaded)) };
   },
 });
