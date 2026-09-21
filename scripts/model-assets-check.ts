@@ -4,11 +4,13 @@
 //  1. src/modelAssets.ts — the manifest and its derivations. The shard plan must tile an
 //     asset exactly under the static-asset file ceiling; addresses and MODEL_VERSION must
 //     change when, and only when, the bytes do.
-//  2. src/modelAssetLoader.ts — the browser edge. A network download reports byte-level
-//     progress, verifies the hash, and persists; a second load fetches ZERO parts; a
-//     wrong byte, a short read, an HTTP error or a transport error is a typed failure
-//     with no bytes; a store that cannot write is reported, not hidden; stale entries
-//     are pruned.
+//  2. src/modelAssetLoader.ts — the browser edge, where THE PART is the unit of
+//     everything: each part is fetched, proven against its own pinned hash, stored under
+//     its own key and handed to the sink alone, so no step ever holds a whole asset. A
+//     network download reports byte-level progress and persists; a second load fetches
+//     ZERO parts; a wrong byte, a short read, an HTTP error or a transport error is a
+//     typed failure and that part is not kept; a store that cannot write is reported, not
+//     hidden; stale entries are pruned.
 //  3. scripts/modelAssetMirror.ts — the deploy-time mirror against a temp directory: a
 //     correct mirror fetches nothing; a missing or wrong-sized part refetches; a wrong
 //     hash or a fetch that throws aborts by asset name; parts no plan names are removed.
@@ -16,25 +18,27 @@
 //     directory, both keyed on the same prefix.
 //
 // ─── loadAsset ACCEPT TABLE ──────────────────────────────────────────────────
-//   store has key, bytes prove         -> ok, origin store, 0 fetches
+//   store has every part, all prove    -> ok, origin store, 0 fetches, each part sunk
 //   store empty, parts correct         -> ok, origin network (miss absent), persisted
-//                                         written, stored
-//   store empty, a byte flipped        -> integrity failure, nothing stored
-//   store empty, a part truncated      -> integrity failure (short read), nothing stored
-//   a part 404s                        -> http failure naming the url, nothing stored,
-//                                         the other parts aborted
-//   a part's fetch rejects             -> network failure naming the url, nothing stored
-//   a part's body errors mid-stream    -> network failure naming the url, nothing stored
-//   store.write throws                 -> ok with persisted failed{message}; bytes returned
+//                                         written, every part stored under its own key
+//   a byte flipped in one part         -> integrity failure naming that part's key; that
+//                                         part is not stored and never reaches the sink
+//   a part truncated                   -> integrity failure naming the short read
+//   a part 404s                        -> http failure naming the url, the parts still in
+//                                         flight aborted, the 404 reported as the cause
+//   a part's fetch rejects             -> network failure naming the url, that part not kept
+//   a part's body errors mid-stream    -> network failure naming the url, that part not kept
+//   store.write throws                 -> ok with persisted failed{message}; bytes sunk
 //   store.read throws                  -> miss unreadable{message}: downloaded, persisted
 //                                         failed{message}
-//   store has key at the WRONG size    -> miss corrupt naming the size: re-downloaded, replaced
-//   store has key, right size, wrong   -> miss corrupt naming the hash: re-downloaded,
-//   bytes                                 replaced, never used
+//   one part at the WRONG size         -> miss corrupt naming the size: that part alone is
+//                                         re-downloaded and replaced; the rest never fetched
+//   one part, right size, wrong bytes  -> miss corrupt naming the hash: re-downloaded,
+//                                         replaced, the store's bytes never used
 //
 // ─── residency (modelResidency.ts) ──────────────────────────────────────────
-//   every asset listed at its size     -> resident
-//   one asset short (or absent)        -> absent, bytesToDownload = that asset's bytes
+//   every part listed at its size      -> resident
+//   one part short (or absent)         -> absent, bytesToDownload = that asset's bytes
 //   a stale key beside the live ones   -> resident; prune removes the stale key only
 //
 // ─── loadAssets (the set) ────────────────────────────────────────────────────
@@ -135,13 +139,25 @@ console.log("loader:");
 const SYNTH_BYTES = 2 * SHARD_BYTES + 12345;
 const synthData = new Uint8Array(new ArrayBuffer(SYNTH_BYTES));
 for (let i = 0; i < SYNTH_BYTES; i += 4096) synthData[i] = i & 0xff;
+const hashOf = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+// The cut is the manifest's, so the fixture's part hashes are read off the same plan the
+// loader will walk — a fixture that named its own boundaries could drift from it.
+const partsOf = (bytes: Uint8Array, count: number): readonly string[] =>
+  Array.from({ length: count }, (_, i) => hashOf(bytes.subarray(i * SHARD_BYTES, Math.min(bytes.byteLength, (i + 1) * SHARD_BYTES))));
 const synth: ModelAsset = {
   name: "synthetic",
   bytes: SYNTH_BYTES,
-  sha256: createHash("sha256").update(synthData).digest("hex"),
+  sha256: hashOf(synthData),
+  parts: partsOf(synthData, 3),
   source: { kind: "mirrored", url: "test://synthetic" },
   licence: "MIT",
   attribution: "check fixture",
+};
+const partKey = (asset: ModelAsset, index: number): string => shardPlan(asset)[index]!.url;
+const storedBytes = (store: MemoryStore, asset: ModelAsset): Uint8Array => {
+  const whole = new Uint8Array(new ArrayBuffer(asset.bytes));
+  for (const shard of shardPlan(asset)) whole.set(store.files.get(shard.url) ?? new Uint8Array(), shard.start);
+  return whole;
 };
 
 class MemoryStore implements AssetStore {
@@ -164,6 +180,24 @@ class MemoryStore implements AssetStore {
     this.files.delete(name);
   }
 }
+
+// The consumer every load below is driven through: it writes each part where the plan says
+// it goes, so "what the sink was handed" can be compared with the source byte for byte, and
+// records the offsets so an out-of-order or repeated part would show.
+const collect = () => {
+  const at: number[] = [];
+  const held = new Map<string, Uint8Array<ArrayBuffer>>();
+  return {
+    at,
+    sink: (part: Uint8Array<ArrayBuffer>, shard: { start: number }, asset: ModelAsset) => {
+      at.push(shard.start);
+      const whole = held.get(asset.name) ?? new Uint8Array(new ArrayBuffer(asset.bytes));
+      whole.set(part, shard.start);
+      held.set(asset.name, whole);
+    },
+    bytes: (asset: ModelAsset): Uint8Array<ArrayBuffer> => held.get(asset.name) ?? new Uint8Array(new ArrayBuffer(0)),
+  };
+};
 
 // A body that arrives the way a network body does: in chunks, not as one buffer.
 const CHUNK = 1024 * 1024;
@@ -203,24 +237,27 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   const store = new MemoryStore();
   const { fetchLike, calls } = serve(synthData);
   const progress: number[] = [];
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, (p) => progress.push(p.loadedBytes));
+  const taken = collect();
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, (n) => progress.push(n), taken.sink);
   assert("network load succeeds", outcome.ok);
   if (outcome.ok) {
     assert("origin is network from an absent entry, persisted written", outcome.loaded.origin.kind === "network" && outcome.loaded.origin.miss.kind === "absent" && outcome.loaded.origin.persisted.kind === "written");
-    assert("returned bytes equal the source", Buffer.compare(outcome.loaded.data, synthData) === 0);
   }
+  assert("the sink is handed every byte, in file order, once", Buffer.compare(taken.bytes(synth), synthData) === 0 && taken.at.join() === shardPlan(synth).map((s) => s.start).join());
   assert("every part was fetched exactly once", calls.length === 3 && new Set(calls).size === 3);
-  assert("progress is monotone and ends at the total", progress.every((v, i) => i === 0 || v >= progress[i - 1]!) && progress[progress.length - 1] === SYNTH_BYTES);
   const chunksServed = shardPlan(synth).reduce((n, s) => n + Math.ceil((s.end - s.start) / CHUNK), 0);
-  assert("progress is reported once per received chunk, starting at 0", progress.length === 1 + chunksServed && progress[0] === 0);
-  assert("store holds the bytes under the asset key", store.files.get(assetKey(synth))?.byteLength === SYNTH_BYTES);
+  assert("progress counts every received chunk and sums to the asset", progress.length === chunksServed && progress.reduce((a, b) => a + b, 0) === SYNTH_BYTES);
+  assert("the store holds each part under its own key", shardPlan(synth).every((s) => store.files.get(s.url)?.byteLength === s.end - s.start));
+  assert("and the stored parts reassemble into the source", Buffer.compare(storedBytes(store, synth), synthData) === 0);
 
   const again = serve(synthData);
   const secondProgress: number[] = [];
-  const second = await loadAsset(synth, { fetch: again.fetchLike, store }, (p) => secondProgress.push(p.loadedBytes));
+  const secondTaken = collect();
+  const second = await loadAsset(synth, { fetch: again.fetchLike, store }, (n) => secondProgress.push(n), secondTaken.sink);
   assert("second load fetches zero parts", again.calls.length === 0);
   assert("second load comes from the store", second.ok && second.loaded.origin.kind === "store");
-  assert("a store hit reports no progress: nothing was downloaded", secondProgress.length === 0);
+  assert("a stored part counts its bytes when it lands, so the bar means the same thing either way", secondProgress.reduce((a, b) => a + b, 0) === SYNTH_BYTES);
+  assert("and the sink is handed the store's bytes, whole", Buffer.compare(secondTaken.bytes(synth), synthData) === 0);
 }
 
 {
@@ -228,31 +265,36 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   const flipped = synthData.slice();
   flipped.fill(0xaa, SHARD_BYTES + 7, SHARD_BYTES + 8);
   const { fetchLike } = serve(flipped);
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
-  assert("a flipped byte is an integrity failure", !outcome.ok && outcome.failure.kind === "integrity");
-  assert("nothing is stored after an integrity failure", store.files.size === 0);
+  const taken = collect();
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {}, taken.sink);
+  assert("a flipped byte is an integrity failure naming the part it is in", !outcome.ok && outcome.failure.kind === "integrity" && outcome.failure.key === partKey(synth, 1));
+  // A part is proven alone, so the parts before the bad one are already proven and kept:
+  // the next attempt downloads only what is missing. What must never be kept is the part
+  // that failed [LAW:no-silent-failure].
+  assert("the failed part is not stored", !store.files.has(partKey(synth, 1)));
+  assert("and the sink never saw it", taken.at.includes(shardPlan(synth)[1]!.start) === false);
 }
 
 {
   const store = new MemoryStore();
   const plan = shardPlan(synth);
   const { fetchLike } = serve(synthData, (url) => (url === plan[1]!.url ? new Response(synthData.slice(plan[1]!.start, plan[1]!.end - 100)) : null));
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
-  assert("a truncated part is an integrity failure naming the short read", !outcome.ok && outcome.failure.kind === "integrity" && outcome.failure.actual.startsWith("short read"));
-  assert("nothing is stored after a short read", store.files.size === 0);
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {}, collect().sink);
+  assert("a truncated part is an integrity failure naming the short read", !outcome.ok && outcome.failure.kind === "integrity" && outcome.failure.actual === `${plan[1]!.end - plan[1]!.start - 100} of ${plan[1]!.end - plan[1]!.start} bytes`);
+  assert("a truncated part is not stored", !store.files.has(plan[1]!.url));
 }
 
 {
   const store = new MemoryStore();
   const plan = shardPlan(synth);
-  // Part 0 stays open until aborted; part 2 404s. The load can only return by aborting part 0.
+  // Part 0 stays open until aborted; part 1 404s. The load can only return by aborting part 0.
   const { fetchLike } = serve(synthData, (url, signal) =>
-    url === plan[0]!.url ? new Response(openUntilAborted(signal)) : url === plan[2]!.url ? new Response(null, { status: 404 }) : null,
+    url === plan[0]!.url ? new Response(openUntilAborted(signal)) : url === plan[1]!.url ? new Response(null, { status: 404 }) : null,
   );
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
-  assert("a 404 part is an http failure naming the url", !outcome.ok && outcome.failure.kind === "http" && outcome.failure.status === 404 && outcome.failure.url === plan[2]!.url);
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {}, collect().sink);
+  assert("a 404 part is an http failure naming the url", !outcome.ok && outcome.failure.kind === "http" && outcome.failure.status === 404 && outcome.failure.url === plan[1]!.url);
   assert("and the parts still in flight are aborted, the 404 reported as the cause", !outcome.ok && outcome.failure.kind === "http");
-  assert("nothing is stored after an http failure", store.files.size === 0);
+  assert("nothing is stored when no part ever proved", store.files.size === 0);
 }
 
 {
@@ -260,9 +302,9 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
   const plan = shardPlan(synth);
   const rejecting = async (url: string, init: { readonly signal: AbortSignal }) =>
     url === plan[1]!.url ? Promise.reject(new TypeError("Failed to fetch")) : serve(synthData).fetchLike(url, init);
-  const outcome = await loadAsset(synth, { fetch: rejecting, store }, () => {});
+  const outcome = await loadAsset(synth, { fetch: rejecting, store }, () => {}, collect().sink);
   assert("a part whose fetch rejects is a network failure naming the url", !outcome.ok && outcome.failure.kind === "network" && outcome.failure.url === plan[1]!.url && outcome.failure.message === "Failed to fetch");
-  assert("nothing is stored after a network failure", store.files.size === 0);
+  assert("the part that rejected is not stored", !store.files.has(plan[1]!.url));
 }
 
 {
@@ -275,61 +317,70 @@ const serve = (bytes: Uint8Array, fault: (url: string, signal: AbortSignal) => R
     },
   });
   const { fetchLike } = serve(synthData, (url) => (url === plan[1]!.url ? new Response(errorsMidStream) : null));
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {}, collect().sink);
   assert("a body that errors mid-stream is a network failure naming the url", !outcome.ok && outcome.failure.kind === "network" && outcome.failure.url === plan[1]!.url && outcome.failure.message === "connection reset");
-  assert("nothing is stored after a mid-stream error", store.files.size === 0);
+  assert("the part that errored is not stored", !store.files.has(plan[1]!.url));
 }
 
 {
   const store = new MemoryStore();
   store.fault = "QuotaExceededError";
-  store.files.set(assetKey(synth), synthData.slice() as Uint8Array<ArrayBuffer>);
+  store.files.set(partKey(synth, 0), synthData.slice(0, SHARD_BYTES) as Uint8Array<ArrayBuffer>);
   const { fetchLike, calls } = serve(synthData);
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
+  const taken = collect();
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {}, taken.sink);
   const origin = outcome.ok ? outcome.loaded.origin : null;
-  assert("a store that cannot be read is an unreadable miss naming the fault: the bytes are downloaded", outcome.ok && origin?.kind === "network" && origin.miss.kind === "unreadable" && origin.miss.message === "QuotaExceededError" && calls.length === 3 && outcome.loaded.data.byteLength === SYNTH_BYTES);
+  assert("a store that cannot be read is an unreadable miss naming the fault: the bytes are downloaded", outcome.ok && origin?.kind === "network" && origin.miss.kind === "unreadable" && origin.miss.message === "QuotaExceededError" && calls.length === 3 && Buffer.compare(taken.bytes(synth), synthData) === 0);
   assert("and the store's fault is reported as persisted failed with the message", origin?.kind === "network" && origin.persisted.kind === "failed" && origin.persisted.message === "QuotaExceededError");
 }
 
 {
   const store = new MemoryStore();
-  store.files.set(assetKey(synth), new Uint8Array(new ArrayBuffer(10)));
+  for (const shard of shardPlan(synth)) store.files.set(shard.url, synthData.slice(shard.start, shard.end) as Uint8Array<ArrayBuffer>);
+  store.files.set(partKey(synth, 1), new Uint8Array(new ArrayBuffer(10)));
   const { fetchLike, calls } = serve(synthData);
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {}, collect().sink);
   const origin = outcome.ok ? outcome.loaded.origin : null;
-  assert("a wrong-sized store entry is a corrupt miss naming the size, re-downloaded", origin?.kind === "network" && origin.miss.kind === "corrupt" && origin.miss.actual === `10 of ${SYNTH_BYTES} bytes` && calls.length === 3);
-  assert("and replaced in the store", store.files.get(assetKey(synth))?.byteLength === SYNTH_BYTES);
+  assert("a wrong-sized part is a corrupt miss naming the size, re-downloaded", origin?.kind === "network" && origin.miss.kind === "corrupt" && origin.miss.actual === `10 of ${SHARD_BYTES} bytes` && calls.length === 1 && calls[0] === partKey(synth, 1));
+  assert("and replaced in the store, while the parts that proved were never fetched", store.files.get(partKey(synth, 1))?.byteLength === SHARD_BYTES && !calls.includes(partKey(synth, 0)));
 }
 
 {
   const store = new MemoryStore();
-  const wrong = synthData.slice();
-  wrong.fill(0x55, SHARD_BYTES + 7, SHARD_BYTES + 8);
-  store.files.set(assetKey(synth), wrong);
+  const wrong = synthData.slice(SHARD_BYTES, 2 * SHARD_BYTES);
+  wrong.fill(0x55, 7, 8);
+  for (const shard of shardPlan(synth)) store.files.set(shard.url, synthData.slice(shard.start, shard.end) as Uint8Array<ArrayBuffer>);
+  store.files.set(partKey(synth, 1), wrong as Uint8Array<ArrayBuffer>);
   const { fetchLike, calls } = serve(synthData);
-  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {});
+  const taken = collect();
+  const outcome = await loadAsset(synth, { fetch: fetchLike, store }, () => {}, taken.sink);
   const origin = outcome.ok ? outcome.loaded.origin : null;
-  assert("a right-sized store entry with the wrong bytes is a corrupt miss naming its hash, re-downloaded", origin?.kind === "network" && origin.miss.kind === "corrupt" && origin.miss.expected === synth.sha256 && origin.miss.actual === createHash("sha256").update(wrong).digest("hex") && calls.length === 3);
-  assert("the bytes handed on are the network's, never the store's", outcome.ok && Buffer.compare(outcome.loaded.data, synthData) === 0);
-  assert("and the store now holds the proven bytes", Buffer.compare(store.files.get(assetKey(synth))!, synthData) === 0 && origin?.kind === "network" && origin.persisted.kind === "written");
+  assert("a right-sized part with the wrong bytes is a corrupt miss naming its hash, re-downloaded", origin?.kind === "network" && origin.miss.kind === "corrupt" && origin.miss.expected === synth.parts![1] && origin.miss.actual === hashOf(wrong) && calls.length === 1);
+  assert("the bytes handed on are the network's, never the store's", Buffer.compare(taken.bytes(synth), synthData) === 0);
+  assert("and the store now holds the proven bytes", Buffer.compare(storedBytes(store, synth), synthData) === 0 && origin?.kind === "network" && origin.persisted.kind === "written");
 }
 
 // ── 2b. residency ─────────────────────────────────────────────────────────────
 console.log("residency:");
 {
-  const small: ModelAsset = { ...synth, name: "small", bytes: 4096, sha256: createHash("sha256").update(synthData.subarray(0, 4096)).digest("hex") };
+  const smallData = synthData.subarray(0, 4096);
+  const small: ModelAsset = { ...synth, name: "small", bytes: 4096, sha256: hashOf(smallData), parts: undefined };
   const both = [small, synth];
   const store = new MemoryStore();
   assert("an empty store: absent, every byte to download", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "absent", bytesToDownload: 4096 + SYNTH_BYTES }));
-  store.files.set(assetKey(synth), synthData.slice());
+  for (const shard of shardPlan(synth)) store.files.set(shard.url, synthData.slice(shard.start, shard.end) as Uint8Array<ArrayBuffer>);
   assert("one asset short: absent, its bytes to download", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "absent", bytesToDownload: 4096 }));
-  store.files.set(assetKey(small), new Uint8Array(new ArrayBuffer(10)));
+  store.files.set(partKey(small, 0), new Uint8Array(new ArrayBuffer(10)));
   assert("an entry at the wrong size counts as absent", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "absent", bytesToDownload: 4096 }));
-  store.files.set(assetKey(small), synthData.slice(0, 4096));
-  assert("every asset listed at its size: resident", (await readResidency(store, both)).kind === "resident");
-  store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
+  store.files.set(partKey(small, 0), smallData.slice() as Uint8Array<ArrayBuffer>);
+  assert("every part listed at its size: resident", (await readResidency(store, both)).kind === "resident");
+  const onePartShort = store.files.get(partKey(synth, 2))!;
+  store.files.delete(partKey(synth, 2));
+  assert("one part of one asset missing: that whole asset's bytes are quoted", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "absent", bytesToDownload: SYNTH_BYTES }));
+  store.files.set(partKey(synth, 2), onePartShort);
+  store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000.part0`, new Uint8Array(new ArrayBuffer(1)));
   assert("a stale key beside the live ones changes nothing", (await readResidency(store, both)).kind === "resident");
-  assert("and prune removes only the stale key", JSON.stringify(await pruneStaleAssets(store, both)) === JSON.stringify({ kind: "pruned", removed: [`${MODEL_ASSET_PREFIX}weights-000000000000`] }) && (await readResidency(store, both)).kind === "resident");
+  assert("and prune removes only the stale key", JSON.stringify(await pruneStaleAssets(store, both)) === JSON.stringify({ kind: "pruned", removed: [`${MODEL_ASSET_PREFIX}weights-000000000000.part0`] }) && (await readResidency(store, both)).kind === "resident");
   assert("the pure derivation is the same answer over the same listing", JSON.stringify(residencyOf(await store.list(), both)) === JSON.stringify({ kind: "resident" }));
   store.fault = "SecurityError: private browsing";
   assert("a store that cannot be listed: unavailable with its message", JSON.stringify(await readResidency(store, both)) === JSON.stringify({ kind: "unavailable", message: "SecurityError: private browsing", bytesToDownload: 4096 + SYNTH_BYTES }));
@@ -342,32 +393,36 @@ console.log("residency:");
 {
   const store = new MemoryStore();
   const { fetchLike } = serve(synthData);
-  const small: ModelAsset = { ...synth, name: "small", bytes: 4096, sha256: createHash("sha256").update(synthData.subarray(0, 4096)).digest("hex") };
+  const smallData = synthData.subarray(0, 4096);
+  const small: ModelAsset = { ...synth, name: "small", bytes: 4096, sha256: hashOf(smallData), parts: undefined };
   const plan = shardPlan(small);
-  const fetchBoth = async (url: string, init: { readonly signal: AbortSignal }) => (url === plan[0]!.url ? new Response(synthData.slice(0, 4096)) : fetchLike(url, init));
+  const fetchBoth = async (url: string, init: { readonly signal: AbortSignal }) => (url === plan[0]!.url ? new Response(smallData.slice()) : fetchLike(url, init));
   const progress: number[] = [];
-  const outcome = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => progress.push(p.loadedBytes));
+  const taken = collect();
+  const outcome = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => progress.push(p.loadedBytes), taken.sink);
   assert("loadAssets loads a set in order", outcome.ok && outcome.loaded.map((l) => l.asset.name).join(",") === "small,synthetic");
+  assert("every asset in the set reaches the sink whole", Buffer.compare(taken.bytes(small), smallData) === 0 && Buffer.compare(taken.bytes(synth), synthData) === 0);
   assert("set progress is summed across assets, each count said once, and ends on the last byte", progress.every((v, i) => i === 0 || v > progress[i - 1]!) && progress[0] === 0 && progress[progress.length - 1] === 4096 + SYNTH_BYTES);
   const heldProgress: number[] = [];
-  const held = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => heldProgress.push(p.loadedBytes));
-  assert("a set the store holds reports the last byte once and no partial: no bar flashes", held.ok && held.loaded.every((l) => l.origin.kind === "store") && heldProgress.join() === String(4096 + SYNTH_BYTES));
+  const held = await loadAssets([small, synth], { fetch: fetchBoth, store }, (p) => heldProgress.push(p.loadedBytes), collect().sink);
+  assert("a set the store holds counts its parts and ends on the last byte", held.ok && held.loaded.every((l) => l.origin.kind === "store") && heldProgress[heldProgress.length - 1] === 4096 + SYNTH_BYTES);
 
-  store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
+  store.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000.part0`, new Uint8Array(new ArrayBuffer(1)));
   store.files.set("unrelated", new Uint8Array(new ArrayBuffer(1)));
-  const reloaded = await loadAssets([small, synth], { fetch: fetchBoth, store }, () => {});
+  const reloaded = await loadAssets([small, synth], { fetch: fetchBoth, store }, () => {}, collect().sink);
   assert(
     "the set's load prunes first, and only stale entries under the prefix",
-    reloaded.ok && JSON.stringify(reloaded.pruning) === JSON.stringify({ kind: "pruned", removed: [`${MODEL_ASSET_PREFIX}weights-000000000000`] }) && store.files.has("unrelated") && store.files.has(assetKey(synth)),
+    reloaded.ok && JSON.stringify(reloaded.pruning) === JSON.stringify({ kind: "pruned", removed: [`${MODEL_ASSET_PREFIX}weights-000000000000.part0`] }) && store.files.has("unrelated") && store.files.has(partKey(synth, 0)),
   );
 
   // slopspot-read-along-a35.azu: a browser blocking site data refuses the whole store, and
   // the page's word for it is "each listen downloads" — so the set's load must be a path
   // that ends in bytes, not in the store's refusal.
   store.fault = "Storage directory access is denied.";
-  const refused = await loadAssets([small, synth], { fetch: fetchBoth, store }, () => {});
+  const refusedTaken = collect();
+  const refused = await loadAssets([small, synth], { fetch: fetchBoth, store }, () => {}, refusedTaken.sink);
   const refusal = { kind: "failed", message: "Storage directory access is denied." };
-  assert("a store that refuses everything: the set downloads and is handed on in memory", refused.ok && Buffer.compare(refused.loaded[1]!.data, synthData) === 0);
+  assert("a store that refuses everything: the set downloads and is handed on in memory", refused.ok && Buffer.compare(refusedTaken.bytes(synth), synthData) === 0);
   assert(
     "and every refusal is a value on the outcome: the prune refused, each asset unreadable and not kept",
     refused.ok &&
@@ -376,9 +431,9 @@ console.log("residency:");
   );
   store.fault = null;
   const locked = Object.assign(new MemoryStore(), { remove: async () => { throw new Error("NoModificationAllowedError: the file is locked"); } });
-  locked.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000`, new Uint8Array(new ArrayBuffer(1)));
-  const unpruned = await loadAssets([small, synth], { fetch: fetchBoth, store: locked }, () => {});
-  assert("a store that lists but refuses a removal: the prune refused, the set still loads and is kept", unpruned.ok && unpruned.pruning.kind === "refused" && locked.files.has(assetKey(synth)));
+  locked.files.set(`${MODEL_ASSET_PREFIX}weights-000000000000.part0`, new Uint8Array(new ArrayBuffer(1)));
+  const unpruned = await loadAssets([small, synth], { fetch: fetchBoth, store: locked }, () => {}, collect().sink);
+  assert("a store that lists but refuses a removal: the prune refused, the set still loads and is kept", unpruned.ok && unpruned.pruning.kind === "refused" && locked.files.has(partKey(synth, 0)));
 }
 
 // ── 3. mirror ─────────────────────────────────────────────────────────────────

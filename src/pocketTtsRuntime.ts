@@ -53,7 +53,7 @@ import { safetensors } from "@jax-js/loaders";
 import { fromBinary } from "@bufbuild/protobuf";
 import { ModelProtoSchema, ModelProto_SentencePiece_Type, TrainerSpec_ModelType } from "sentencepiece-buf/model";
 import { toFloat, type ClonedVoice, type VoiceKey } from "./clonedVoice";
-import { loadAssets, type AssetIo, type AssetProgress, type FetchLike, type LoadedAsset } from "./modelAssetLoader";
+import { loadAssets, type AssetIo, type AssetProgress, type FetchLike, type PartSink } from "./modelAssetLoader";
 import { FRAME_MS, MODEL_ASSETS, VOICE_IDS, allModelAssets, type ModelAsset, type VoiceId } from "./modelAssets";
 import type { UnitText } from "./speechScript";
 import type { GeneratedFrame, GenerationEnd, LoadResult, LoadedModel, SynthesisRuntime } from "./synthesisHandler";
@@ -61,12 +61,14 @@ import type { Support } from "./synthesisProtocol";
 import {
   createFlowLMState,
   createMimiDecodeState,
-  fromSafetensors,
+  fromWeightArrays,
   runFlowLMStep,
   runMimiDecode,
   runMimiEncode,
+  weightArray,
   type PocketTTS,
 } from "./vendor/pocket-tts";
+import { createSafetensorsStream } from "./safetensorsStream";
 import { createWordAligner, isVoiced, planAlignment, unitScores, wordsBegun } from "./wordAlignment";
 
 // The bound on one unit's generation loop. A unit holds at most MAX_UNIT_TOKENS (50) text
@@ -259,35 +261,78 @@ interface Hydrated extends Tokenizer {
   readonly voices: Map<VoiceKey, np.Array>;
 }
 
-// [LAW:parse-dont-validate] loadAssets returns one LoadedAsset per asset it was given, as
-// the same asset objects; a miss here is a broken loader, not a case to skip.
-const bytesOf = (loaded: readonly LoadedAsset[]) => (asset: ModelAsset): Uint8Array<ArrayBuffer> => {
-  const found = loaded.find((l) => l.asset === asset);
-  if (found === undefined) throw new Error(`loader returned no bytes for ${asset.name}`);
-  return found.data;
+// [LAW:parse-dont-validate] A tensor's bytes read as the pairs they are. An odd length is
+// not half a float — it is the plan or the stream disagreeing about where this tensor ends,
+// and is thrown rather than rounded away [LAW:no-silent-failure].
+const halfFloats = (bytes: Uint8Array<ArrayBuffer>, name: string): Float16Array<ArrayBuffer> => {
+  if (bytes.byteLength % 2 !== 0) throw new Error(`weight ${name}: ${bytes.byteLength} bytes is not a whole number of f16`);
+  return new Float16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
 };
 
-// WHY THIS IS ITS OWN FUNCTION, AND MUST STAY ONE. Hydration is the last moment the 236 MB
-// of weights are needed: what crosses out of here is `Hydrated`, which holds device arrays
-// and no bytes at all. That boundary is the whole point — a closure keeps its ENTIRE
-// defining scope alive, so a `LoadedModel` built in the same frame as the loaded bytes pins
-// all 241 MB of them for as long as a reader can speak, which measured as 556 MB of resident
-// renderer memory against 185 MB with the frames apart (slopspot-read-along-i9a). Inlining
-// this into its caller, or having it return the model rather than `Hydrated`, puts the bytes
-// and the model's closures back in one frame and silently restores the leak
-// [LAW:decomposition] [LAW:types-are-the-program].
-const hydrate = (loaded: readonly LoadedAsset[]): Hydrated => {
-  const bytes = bytesOf(loaded);
+// [LAW:decomposition] The model built as its bytes arrive: parts go in, `Hydrated` comes
+// out. One sentence, no "and" — this is the loader's sink and nothing else; it fetches
+// nothing and decides nothing about where a part came from.
+//
+// WHY ASSEMBLY IS INCREMENTAL. The reason the whole module exists in this shape: each
+// weight is handed to the GPU the moment its last byte lands and its bytes are dropped, so
+// what the device holds in JS at once is one part and one tensor — 41 MB at this build's
+// worst — instead of the 236 MB the whole file used to cost, plus the copy hashing it
+// needed (slopspot-read-along-i9a). The small assets are collected whole because they are
+// small: a voice is half a megabyte and the tokenizer is a proto that only parses entire.
+interface Assembly {
+  readonly take: PartSink;
+  readonly finish: () => Hydrated;
+}
+
+const createAssembly = (): Assembly => {
+  const weights: Record<string, np.Array> = {};
+  const stream = createSafetensorsStream(MODEL_ASSETS.weights.bytes, (tensor) => {
+    weights[tensor.name] = weightArray(
+      tensor.name,
+      { dtype: tensor.dtype, shape: tensor.shape, data: halfFloats(tensor.data, tensor.name) },
+      WEIGHT_DTYPE,
+    );
+  });
+  const collected = new Map<ModelAsset, Uint8Array<ArrayBuffer>>();
+
+  // [LAW:parse-dont-validate] An asset the load was asked for and never delivered is a
+  // broken loader, thrown, never a default voice or an empty tokenizer.
+  const bytesOf = (asset: ModelAsset): Uint8Array<ArrayBuffer> => {
+    const held = collected.get(asset);
+    if (held === undefined) throw new Error(`the load handed over no bytes for ${asset.name}`);
+    return held;
+  };
+
   return {
-    ...parseTokenizer(bytes(MODEL_ASSETS.tokenizer)),
-    model: fromSafetensors(safetensors.parse(bytes(MODEL_ASSETS.weights)), WEIGHT_DTYPE),
-    voices: new Map(VOICE_IDS.map((id) => [id, voicePrompt(id, bytes(MODEL_ASSETS.voices[id]))])),
+    take: (part, shard, asset) => {
+      if (asset === MODEL_ASSETS.weights) {
+        stream.push(part, shard.start);
+        return;
+      }
+      const whole = collected.get(asset) ?? new Uint8Array(new ArrayBuffer(asset.bytes));
+      whole.set(part, shard.start);
+      collected.set(asset, whole);
+    },
+    finish: () => {
+      // The stream's own word that every tensor the header named arrived, before a single
+      // weight is read as a model [LAW:no-silent-failure].
+      stream.finish();
+      return {
+        ...parseTokenizer(bytesOf(MODEL_ASSETS.tokenizer)),
+        model: fromWeightArrays(weights),
+        voices: new Map(VOICE_IDS.map((id) => [id, voicePrompt(id, bytesOf(MODEL_ASSETS.voices[id]))])),
+      };
+    },
   };
 };
 
-// The model the handler speaks with, built from `Hydrated` ALONE — see above: this
-// signature is what keeps the loaded bytes out of the frame every one of these closures
-// carries.
+// The model the handler speaks with, built from `Hydrated` ALONE, and that signature is
+// load-bearing: a closure keeps its ENTIRE defining scope alive, so a `LoadedModel` built in
+// the frame that held the loaded bytes pinned all 241 MB of them for as long as a reader
+// could speak — 556 MB of resident renderer memory against 185 MB with the frames apart
+// (slopspot-read-along-i9a). Inlining this into its caller puts the bytes and these closures
+// back in one frame and silently restores the leak [LAW:decomposition]
+// [LAW:types-are-the-program].
 const modelOf = (hydrated: Hydrated): LoadedModel => ({
   backend: "webgpu",
   countTokens: (text) => hydrated.encode(text).length,
@@ -453,10 +498,11 @@ export const pocketTtsRuntime = (io: AssetIo): SynthesisRuntime => ({
     const assets = allModelAssets(MODEL_ASSETS);
     // The handler's abort joins the loader's own per-asset abort on every part's fetch.
     const fetch: FetchLike = (url, init) => io.fetch(url, { signal: AbortSignal.any([init.signal, signal]) });
-    const outcome = await loadAssets(assets, { ...io, fetch }, onProgress);
+    const assembly = createAssembly();
+    const outcome = await loadAssets(assets, { ...io, fetch }, onProgress, assembly.take);
     if (!outcome.ok) return { ok: false, failure: outcome.failure };
     // [LAW:no-silent-failure] A refused prune costs quota, never the voice: said, and loaded past.
     if (outcome.pruning.kind === "refused") console.warn("listen: an earlier model build's copies could not be cleared; the voice loads without clearing them", outcome.pruning.message);
-    return { ok: true, model: modelOf(hydrate(outcome.loaded)) };
+    return { ok: true, model: modelOf(assembly.finish()) };
   },
 });
