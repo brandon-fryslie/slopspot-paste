@@ -64,12 +64,22 @@ const sha256 = (chunks: readonly Uint8Array[]): string => {
   return hash.digest("hex");
 };
 
-// The mirror is correct when every part exists at its planned size and the parts hash to
-// the manifest's SHA-256. Sizes first because a stat is free and a hash of 236 MB is not.
+// The mirror is correct when every part exists at its planned size, hashes to the hash the
+// manifest pins for THAT part, and the parts together hash to the manifest's hash for the
+// whole. Sizes first because a stat is free and a hash of 236 MB is not.
+//
+// [LAW:one-source-of-truth] The two hashes are two claims about one set of bytes — a part's
+// (what the browser proves a download against, modelAssetLoader.ts) and the whole's (what
+// the asset is addressed by). They are checked together, here, at the only place that holds
+// the bytes both describe, so a manifest whose part hashes drift from its own asset hash
+// cannot reach a deploy: it fails the build instead of failing every reader's device.
 export const mirrorIsCorrect = (publicDir: string, asset: ModelAsset): boolean => {
-  const paths = shardPlan(asset).map((s) => ({ path: join(publicDir, s.url), size: s.end - s.start }));
-  const sized = paths.every((p) => existsSync(p.path) && statSync(p.path).size === p.size);
-  return sized && sha256(paths.map((p) => readFileSync(p.path))) === asset.sha256;
+  const parts = shardPlan(asset).map((shard) => ({ path: join(publicDir, shard.url), size: shard.end - shard.start, sha256: shard.sha256 }));
+  const sized = parts.every((part) => existsSync(part.path) && statSync(part.path).size === part.size);
+  if (!sized) return false;
+  const read = parts.map((part) => readFileSync(part.path));
+  const pinned = parts.every((part, i) => sha256([read[i] as Uint8Array]) === part.sha256);
+  return pinned && sha256(read) === asset.sha256;
 };
 
 export type MirrorResult = { readonly asset: ModelAsset; readonly action: "verified" | "written" };
@@ -84,10 +94,22 @@ export const mirror = async (publicDir: string, read: ReadSource, asset: ModelAs
   if (actual !== asset.sha256) {
     throw new Error(`${asset.name}: SHA-256 mismatch — manifest ${asset.sha256}, received ${actual}`);
   }
-  for (const shard of shardPlan(asset)) {
+  // [LAW:no-silent-failure] The parts are cut here, so this is where the manifest's claim
+  // about each one is proven. A mismatch is the manifest being wrong about bytes that are
+  // right — nothing a reader could diagnose — so it aborts the build and says what the
+  // manifest should have said.
+  const plan = shardPlan(asset);
+  const cut = plan.map((shard) => data.subarray(shard.start, shard.end));
+  const wrong = plan.findIndex((shard, i) => sha256([cut[i] as Uint8Array]) !== shard.sha256);
+  if (wrong !== -1) {
+    throw new Error(
+      `${asset.name}: the manifest pins part ${wrong} as ${plan[wrong]!.sha256}, but these bytes are ${sha256([cut[wrong] as Uint8Array])} — correct the parts list in src/modelAssets.ts`,
+    );
+  }
+  for (const [i, shard] of plan.entries()) {
     const path = join(publicDir, shard.url);
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, data.subarray(shard.start, shard.end));
+    writeFileSync(path, cut[i] as Uint8Array);
   }
   return { asset, action: "written" };
 };

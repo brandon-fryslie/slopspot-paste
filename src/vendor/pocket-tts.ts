@@ -1094,30 +1094,41 @@ const weightMapper = new WeightMapper({
   autoCamelCase: true,
 });
 
+// One weight onto the device. Split out of `fromSafetensors` so a caller holding a single
+// tensor's bytes — the streaming hydrator, which never has the whole file — converts it the
+// same way the whole-file path does [LAW:one-source-of-truth].
+export function weightArray(
+  key: string,
+  tensor: { dtype: string; shape: readonly number[]; data: safetensors.TensorData },
+  dtype: np.DType = np.float32,
+): np.Array {
+  if (tensor.dtype !== "F16") {
+    throw new Error(`Unexpected dtype ${tensor.dtype} for weight ${key}`);
+  }
+  const shape = tensor.shape as number[];
+  if (dtype === np.float16) {
+    return np.array(tensor.data as Float16Array<ArrayBuffer>, { dtype, shape });
+  }
+  if (dtype === np.float32) {
+    return np.array(new Float32Array(tensor.data as Float16Array<ArrayBuffer>), { dtype, shape });
+  }
+  throw new Error(`Unsupported Pocket TTS dtype ${dtype}`);
+}
+
+// The model's structure, from weights already on the device and named as the file names
+// them. The nesting and the renaming are this file's knowledge, so both paths reach the
+// model through here.
+export function fromWeightArrays(weights: Record<string, np.Array>): PocketTTS {
+  return safetensors.toNested(weightMapper.mapObject(weights));
+}
+
 export function fromSafetensors(
   file: safetensors.File,
   dtype: np.DType = np.float32,
 ): PocketTTS {
-  const mappedWeights = weightMapper.mapObject(file.tensors);
   const hydrated: Record<string, np.Array> = {};
-  for (const [key, value] of Object.entries(mappedWeights)) {
-    if (value.dtype === "F16") {
-      if (dtype === np.float16) {
-        hydrated[key] = np.array(value.data as Float16Array<ArrayBuffer>, {
-          dtype,
-          shape: value.shape,
-        });
-      } else if (dtype === np.float32) {
-        hydrated[key] = np.array(
-          new Float32Array(value.data as Float16Array<ArrayBuffer>),
-          { dtype, shape: value.shape },
-        );
-      } else {
-        throw new Error(`Unsupported Pocket TTS dtype ${dtype}`);
-      }
-    } else {
-      throw new Error(`Unexpected dtype ${value.dtype} for weight ${key}`);
-    }
+  for (const [key, value] of Object.entries(file.tensors)) {
+    hydrated[key] = weightArray(key, value, dtype);
   }
-  return safetensors.toNested(hydrated);
+  return fromWeightArrays(hydrated);
 }

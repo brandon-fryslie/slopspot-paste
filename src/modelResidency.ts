@@ -7,16 +7,17 @@
 //
 // [LAW:one-source-of-truth] Residency is derived from THE store the loader reads and writes,
 // through THE keys the manifest derives: the directory listing the loader's own store
-// returns, matched against modelAssets.assetKey. There is no second cache, no "downloaded"
+// returns, matched against the part urls modelAssets.shardPlan gives. There is no second
+// cache, no "downloaded"
 // flag beside the bytes that could outlive them — the browser evicts the bytes, the next
 // listing says `absent`, and nothing had to be told.
 //
 // WHAT `resident` CLAIMS, AND WHAT IT DOES NOT. A listing carries names and sizes, not
 // bytes; hashing 236 MB on every page view for a status line would cost every reader a
-// read they may never need. So `resident` is the directory's word — every asset the
-// manifest names is listed at its size — and the BYTES are proven at load: the loader
-// hashes what it reads back against the manifest, and a right-sized entry with the wrong
-// bytes is replaced there, reported as a download. The two facts are stated by their two
+// read they may never need. So `resident` is the directory's word — every part the manifest
+// cuts is listed at its size — and the BYTES are proven at load: the loader hashes each part
+// it reads back against the manifest, and a right-sized part with the wrong bytes is
+// replaced there, reported as a download. The two facts are stated by their two
 // owners; neither is a copy of the other [FRAMING:representation].
 //
 // [LAW:effects-at-boundaries] The derivation is pure over a listing; the two effects — the
@@ -25,7 +26,7 @@
 // store and a stub of the request.
 
 import type { StoreEntry } from "./modelAssetLoader";
-import { type ModelAsset, assetKey } from "./modelAssets";
+import { type ModelAsset, shardPlan } from "./modelAssets";
 
 // [LAW:types-are-the-program] The three things a store can say about the model. `absent`
 // carries the bytes still to download, because a store may hold some assets and not others
@@ -40,12 +41,17 @@ export type Residency =
 
 const wholeModel = (assets: readonly ModelAsset[]): number => assets.reduce((sum, asset) => sum + asset.bytes, 0);
 
-// The pure derivation: an asset is held when the listing has its key at its size. Entries
-// the manifest does not name — a stale build's, another tool's — are simply not asked about;
-// the loader prunes the stale ones before its next write.
+// The pure derivation: an asset is held when the listing has EVERY part of it at that
+// part's size — the store keeps parts, because that is the unit the loader proves and
+// writes (modelAssetLoader.ts), so residency is read in the same unit. An asset missing one
+// part is an asset the next listen downloads; it downloads only the parts it lacks, but the
+// bytes quoted before the tap are the asset's, because that is the promise a reader can
+// hold the site to. Entries the manifest does not name — a stale build's, another tool's —
+// are simply not asked about; the loader prunes them before its next write.
 export const residencyOf = (listing: ReadonlyArray<StoreEntry>, assets: readonly ModelAsset[]): Residency => {
   const held = new Map(listing.map((entry) => [entry.name, entry.size]));
-  const bytesToDownload = wholeModel(assets.filter((asset) => held.get(assetKey(asset)) !== asset.bytes));
+  const absent = assets.filter((asset) => shardPlan(asset).some((shard) => held.get(shard.url) !== shard.end - shard.start));
+  const bytesToDownload = wholeModel(absent);
   return bytesToDownload === 0 ? { kind: "resident" } : { kind: "absent", bytesToDownload };
 };
 

@@ -55,6 +55,17 @@ export interface ModelAsset {
   readonly source: AssetOrigin;
   readonly licence: "MIT" | "CC0-1.0" | "CC-BY-4.0";
   readonly attribution: string;
+  // The SHA-256 of each published part, in order. WHY A PART IS PINNED AND NOT ONLY THE
+  // WHOLE: a device proves what it has by hashing it, and hashing is not a streaming
+  // operation in any browser — so an asset whose only stated identity is the whole file can
+  // only be proven by holding the whole file, which for the 236 MB checkpoint cost a phone
+  // its tab (slopspot-read-along-i9a). Pinned per part, the same bytes are proven 24 MiB at
+  // a time and nothing ever holds more than one.
+  //
+  // An asset cut into ONE part IS that part, so `asset.sha256` already IS its part's hash
+  // and naming it twice would be two clocks over one fact [LAW:one-source-of-truth]. Only a
+  // cut asset carries a list, and `shardPlan` is the one place that derivation is made.
+  readonly parts?: readonly string[];
 }
 
 // The voices this site hosts, in the order the picker offers them: by name, so a reader
@@ -254,6 +265,21 @@ export const MODEL_ASSETS: ModelAssetManifest = {
     release: "english_2026-01",
     bytes: 235738516,
     sha256: "792e653ea1604197bf6bd2a76ac355f5ec41ef88961bf1dbf729d027d6e20f6c",
+    // Read from the mirrored parts, which the build proves against the sha256 above before
+    // it writes one of them (scripts/modelAssetMirror.ts) — so these are derived from the
+    // same bytes that hash, never a second claim about them.
+    parts: [
+      "42512019f87e14c63c080c61c9bb042482b598538d969ba45d8fdf39470850ab",
+      "8d596c9c34d540a2d99d3edaf22fb8d952500656554609a739fb5c254ed4bbce",
+      "1b6019d0a8a33a8267cfa97f27fbeccd58be4c70cc7250c4db1f23d8b3a821ef",
+      "78cde992ec5fedc31a95696f49d2569125fd4899ed45016a351ce7af842004d6",
+      "3e91bc31883857cc71f9121d71487f3481cfd1dd7f00a53169da2427a03534c5",
+      "126f7e817b4dfe9a637ee920f4cd41d443566a85eb751b9df32798531086b2bd",
+      "ea2b7455b32bbeec96661a5a35b61c1ea2fb3be97ff693983cc95688394b19ff",
+      "bd32eeed1db32fd90ba4ba935f0839808c9feb046c812c39c6d839c22cc51fb7",
+      "9785c125ef0dba47cee07cc064ed1808cb719abb75cc8aca70bca9bf6e99f3d0",
+      "2b56d541e7ee89a008b7bfa77aac8c9c9807663433e4e5de3653a33eed538608",
+    ],
     source: mirrored(
       "https://huggingface.co/ekzhang/jax-js-models/resolve/2b0fc51b4f76ff56611741ab9267593decde7639/kyutai-pocket-tts_b6369a24-fp16.safetensors",
     ),
@@ -412,17 +438,33 @@ export interface Shard {
   readonly url: string;
   readonly start: number;
   readonly end: number;
+  // What these bytes must hash to. Every part carries one, so a part is provable alone.
+  readonly sha256: string;
 }
+
+// [LAW:parse-dont-validate] The hash of every part of an asset, proven to be one per part
+// before any of them is used. A cut asset that names no parts — or names the wrong number —
+// is a manifest nobody can verify a download against, and is thrown rather than loaded past
+// [LAW:no-silent-failure].
+const partHashes = (asset: ModelAsset, count: number): readonly string[] => {
+  const named = asset.parts ?? [asset.sha256];
+  if (named.length !== count) {
+    throw new Error(`${asset.name}: ${asset.bytes} bytes cut into ${count} parts, but the manifest names ${named.length} part hashes`);
+  }
+  return named;
+};
 
 // [LAW:dataflow-not-control-flow] The one cut rule. ceil(bytes / SHARD_BYTES) contiguous
 // half-open ranges, at least one (an empty asset would still name one part; none is empty).
 export const shardPlan = (asset: ModelAsset): readonly Shard[] => {
   const key = assetKey(asset);
   const count = Math.max(1, Math.ceil(asset.bytes / SHARD_BYTES));
+  const hashes = partHashes(asset, count);
   return Array.from({ length: count }, (_, i) => ({
     url: `${key}.part${i}`,
     start: i * SHARD_BYTES,
     end: Math.min(asset.bytes, (i + 1) * SHARD_BYTES),
+    sha256: hashes[i] as string,
   }));
 };
 
